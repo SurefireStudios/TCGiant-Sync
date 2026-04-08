@@ -19,7 +19,7 @@ TCGiant Sync is a comprehensive WordPress/WooCommerce plugin that seamlessly bri
 * **Unlimited Syncing:** No cap on imported products or active syncs.
 * **Priority Support:** Get direct assistance from the team.
 
-*Upgrade your account at [tcgiant.com/sync](https://tcgiant.com/pro).*
+*Upgrade your account at [tcgiant.com/pro](https://tcgiant.com/pro).*
 
 ## 📋 Requirements
 - **WordPress:** Version `5.8` or higher
