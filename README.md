@@ -1,5 +1,4 @@
 # TCGiant Sync
-![Logo]([https://example.com](https://tcgiant.com/pro/logo.png))
 [![License: GPL v2+](https://img.shields.io/badge/License-GPL%20v2%2B-blue.svg)](https://www.gnu.org/licenses/gpl-2.0.html)
 [![Requires PHP](https://img.shields.io/badge/PHP-7.4%2B-green.svg)](#)
 [![Tested up to](https://img.shields.io/badge/WordPress-6.9-blue.svg)](#)
