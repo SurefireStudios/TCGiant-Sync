@@ -5,6 +5,7 @@
  * Manages the batch import process from eBay to WooCommerce.
  *
  * @package TCGiant_Sync
+ * @license GPL-2.0-or-later
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -43,6 +44,7 @@ class TCGiant_Sync_Importer {
 		add_action( 'tcgiant_sync_process_item_import', array( $this, 'process_item_import' ), 10, 1 );
 		add_action( 'tcgiant_sync_fetch_listings', array( $this, 'fetch_listings_page' ), 10, 1 );
 		add_action( 'tcgiant_sync_download_images', array( $this, 'download_product_images' ), 10, 2 );
+		add_action( 'tcgiant_sync_prune_orphans', array( $this, 'prune_orphaned_items' ) );
 	}
 
 	/**
@@ -104,7 +106,7 @@ class TCGiant_Sync_Importer {
 		if ( ! $force ) {
 			$current = self::get_sync_state();
 			if ( in_array( $current['status'], array( 'scanning', 'importing' ), true ) ) {
-				TCGiant_Sync_Logger::log( 'Sync already in progress — skipping duplicate request.' );
+				TCGiant_Sync_Logger::log( 'Sync already in progress - skipping duplicate request.' );
 				return;
 			}
 		}
@@ -136,6 +138,9 @@ class TCGiant_Sync_Importer {
 			'started_at'      => current_time( 'mysql' ),
 			'last_item_title' => '',
 		) );
+
+		// Clear active IDs list for pruning orphaned items.
+		delete_option( 'tcgiant_sync_active_ids' );
 
 		TCGiant_Sync_Logger::log( sprintf( 'Starting sync for: %s', $filter_name ) );
 		as_enqueue_async_action( 'tcgiant_sync_fetch_listings', array( 'page_number' => 1 ), 'tcgiant_sync_group' );
@@ -186,7 +191,7 @@ class TCGiant_Sync_Importer {
 		// Debug: log resolved category IDs on the first page so we can verify matching.
 		if ( $page_number === 1 && $is_filtering ) {
 			TCGiant_Sync_Logger::log( sprintf(
-				'Category filter active: "%s" → resolved to IDs: [%s]',
+				'Category filter active: "%s" -> resolved to IDs: [%s]',
 				$settings['category_ids'],
 				implode( ', ', $valid_ids )
 			) );
@@ -203,12 +208,17 @@ class TCGiant_Sync_Importer {
 			}
 		}
 
+		$active_ids_batch = array();
+
 		foreach ( $items as $item ) {
 			$item_id = $item['ItemID'] ?? '';
 			
 			if ( empty( $item_id ) ) {
 				continue;
 			}
+
+			// Store for pruning. We record ALL encountered IDs from pagination.
+			$active_ids_batch[] = $item_id;
 
 			// Category pre-filter.
 			if ( $is_filtering && empty( $valid_ids ) ) {
@@ -234,6 +244,12 @@ class TCGiant_Sync_Importer {
 			$queued_count++;
 		}
 
+		if ( ! empty( $active_ids_batch ) ) {
+			$existing_active = get_option( 'tcgiant_sync_active_ids', array() );
+			$existing_active = is_array( $existing_active ) ? $existing_active : array();
+			update_option( 'tcgiant_sync_active_ids', array_unique( array_merge( $existing_active, $active_ids_batch ) ) );
+		}
+
 		// Update state with running totals.
 		$state = self::get_sync_state();
 		$new_total_found = $state['total_found'] + count( $items );
@@ -254,7 +270,7 @@ class TCGiant_Sync_Importer {
 			) );
 		}
 
-		// Schedule next page — fast (2s) when no matches, slower when items are queued.
+		// Schedule next page - fast (2s) when no matches, slower when items are queued.
 		if ( $page_number < $total_pages ) {
 			$delay_next_page = $queued_count > 0 ? ( $queued_count * 3 ) + 5 : 2;
 			as_schedule_single_action( time() + $delay_next_page, 'tcgiant_sync_fetch_listings', array( 'page_number' => $page_number + 1 ), 'tcgiant_sync_group' );
@@ -268,6 +284,9 @@ class TCGiant_Sync_Importer {
 					'last_completed' => current_time( 'mysql' ),
 				) );
 				TCGiant_Sync_Logger::log( 'Scan complete. No matching items found.' );
+				
+				// Ensure pruning runs even if 0 items matched the filter, because items might have ended.
+				as_enqueue_async_action( 'tcgiant_sync_prune_orphans', array(), 'tcgiant_sync_group' );
 			}
 		}
 	}
@@ -357,7 +376,13 @@ class TCGiant_Sync_Importer {
 			
 			foreach ( $order['lineItems'] as $line ) {
 				$sku = $line['sku'] ?? '';
-				$quantity = isset($line['quantity']) ? (int) $line['quantity'] : 1;
+				$legacy_item_id = $line['legacyItemId'] ?? '';
+
+				if ( empty( $sku ) && ! empty( $legacy_item_id ) ) {
+					$sku = 'EBAY-' . $legacy_item_id;
+				}
+
+				$quantity = isset( $line['quantity'] ) ? (int) $line['quantity'] : 1;
 				$line_item_id = $line['lineItemId'] ?? '';
 
 				if ( empty( $sku ) || empty( $line_item_id ) ) {
@@ -365,6 +390,16 @@ class TCGiant_Sync_Importer {
 				}
 
 				$product_id = wc_get_product_id_by_sku( $sku );
+
+				if ( ! $product_id && ! empty( $legacy_item_id ) ) {
+					global $wpdb;
+					// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+					$fallback_id = $wpdb->get_var( $wpdb->prepare( "SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key = '_ebay_item_id' AND meta_value = %s LIMIT 1", $legacy_item_id ) );
+					if ( $fallback_id ) {
+						$product_id = (int) $fallback_id;
+					}
+				}
+
 				if ( ! $product_id ) {
 					continue;
 				}
@@ -447,7 +482,7 @@ class TCGiant_Sync_Importer {
 
 				$price_display = ! empty( $product_data['price'] ) ? '$' . $product_data['price'] : 'No price';
 				TCGiant_Sync_Logger::log( sprintf(
-					'Imported: "%s" → WC #%d (%s, Qty: %d)',
+					'Imported: "%s" -> WC #%d (%s, Qty: %d)',
 					$title, $product_id, $price_display, $product_data['stock_quantity']
 				), 'success' );
 			} else {
@@ -510,7 +545,66 @@ class TCGiant_Sync_Importer {
 				'Sync complete! %d imported, %d errors out of %d total.',
 				$state['total_processed'], $state['total_errors'], $state['total_queued']
 			), 'success' );
+
+			// Trigger cleanup of sold/ended items.
+			as_enqueue_async_action( 'tcgiant_sync_prune_orphans', array(), 'tcgiant_sync_group' );
 		}
+	}
+
+	/**
+	 * Remove WooCommerce products that are no longer active on eBay.
+	 */
+	public function prune_orphaned_items() {
+		$active_ids = get_option( 'tcgiant_sync_active_ids', array() );
+		if ( ! is_array( $active_ids ) ) {
+			return;
+		}
+
+		global $wpdb;
+
+		// Get all products that have an _ebay_item_id.
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$ebay_linked_products = $wpdb->get_results(
+			"SELECT post_id, meta_value as ebay_id 
+			FROM {$wpdb->postmeta} pm
+			JOIN {$wpdb->posts} p ON p.ID = pm.post_id 
+			WHERE pm.meta_key = '_ebay_item_id' AND pm.meta_value != '' AND p.post_type = 'product' AND p.post_status != 'trash'"
+		);
+
+		$trashed_count = 0;
+
+		foreach ( $ebay_linked_products as $row ) {
+			$ebay_id = $row->ebay_id;
+			$product_id = $row->post_id;
+
+			if ( ! in_array( $ebay_id, $active_ids, true ) && ! empty( $active_ids ) ) {
+				// The item is no longer on eBay.
+				wp_trash_post( $product_id );
+				$trashed_count++;
+			} elseif ( empty( $active_ids ) ) {
+				// Safety check: if active_ids is entirely empty, maybe the scan failed or they have 0 items.
+				// Wait, if they truly have 0 items on eBay, active_ids IS empty.
+				// But to be completely safe, we shouldn't delete their entire store if active_ids is empty due to a bug.
+				// We'll verify directly with the API as a fallback.
+				$api = TCGiant_Sync_API::instance();
+				$ebay_response = $api->get_item( $ebay_id );
+				if ( ! is_wp_error( $ebay_response ) && isset( $ebay_response['Item']['SellingStatus']['ListingStatus'] ) ) {
+					$status = $ebay_response['Item']['SellingStatus']['ListingStatus'];
+					if ( 'Active' !== $status ) {
+						wp_trash_post( $product_id );
+						$trashed_count++;
+					}
+				}
+			}
+		}
+
+		if ( $trashed_count > 0 ) {
+			TCGiant_Sync_Logger::log( sprintf( 'Inventory Pruning: Trashed %d products that are no longer active on eBay.', $trashed_count ), 'success' );
+		} else {
+			TCGiant_Sync_Logger::log( 'Inventory Pruning: No orphaned products found.' );
+		}
+
+		delete_option( 'tcgiant_sync_active_ids' );
 	}
 
 	/**
@@ -528,9 +622,31 @@ class TCGiant_Sync_Importer {
 		require_once ABSPATH . 'wp-admin/includes/file.php';
 		require_once ABSPATH . 'wp-admin/includes/image.php';
 
-		// Skip if product already has a thumbnail (re-import protection).
+		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
+		$overwrite_images = ! empty( $settings['overwrite_images'] );
+
+		// Skip if product already has a thumbnail (re-import protection) and overwrite is disabled.
 		if ( has_post_thumbnail( $product_id ) ) {
-			return;
+			if ( ! $overwrite_images ) {
+				return;
+			}
+
+			// User wants to overwrite: delete existing thumbnail to avoid media library bloat.
+			$thumb_id = get_post_thumbnail_id( $product_id );
+			if ( $thumb_id ) {
+				wp_delete_attachment( $thumb_id, true );
+				delete_post_thumbnail( $product_id );
+			}
+
+			// Delete existing gallery images.
+			$gallery = get_post_meta( $product_id, '_product_image_gallery', true );
+			if ( ! empty( $gallery ) ) {
+				$gallery_ids = explode( ',', $gallery );
+				foreach ( $gallery_ids as $g_id ) {
+					wp_delete_attachment( $g_id, true );
+				}
+				delete_post_meta( $product_id, '_product_image_gallery' );
+			}
 		}
 
 		$gallery_ids = array();

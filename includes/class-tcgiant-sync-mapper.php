@@ -5,6 +5,7 @@
  * Maps eBay inventory item data to WooCommerce product data.
  *
  * @package TCGiant_Sync
+ * @license GPL-2.0-or-later
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -69,7 +70,7 @@ class TCGiant_Sync_Mapper {
 		$product_data['stock_quantity'] = max( 0, $quantity - $sold );
 		$product_data['manage_stock'] = true;
 
-		// Map Price — handle all eBay XML→JSON price structures.
+		// Map Price - handle all eBay XML->JSON price structures.
 		$product_data['price'] = $this->extract_price( $ebay_item );
 
 		// Map Store Categories.
@@ -118,7 +119,7 @@ class TCGiant_Sync_Mapper {
 	/**
 	 * Extract a clean numeric price from eBay's various response formats.
 	 *
-	 * eBay Trading API XML→JSON can return prices as:
+	 * eBay Trading API XML->JSON can return prices as:
 	 * - A plain string: "29.99"
 	 * - An array: {"@attributes": {"currencyID": "USD"}, "#text": "29.99"}
 	 * - An array with underscore: {"__text": "29.99"}
@@ -162,7 +163,7 @@ class TCGiant_Sync_Mapper {
 		}
 
 		if ( is_array( $raw ) ) {
-			// SimpleXML→JSON format: {"#text": "29.99", "@attributes": {...}}
+			// SimpleXML->JSON format: {"#text": "29.99", "@attributes": {...}}
 			if ( isset( $raw['#text'] ) ) {
 				return (string) $raw['#text'];
 			}
@@ -237,30 +238,69 @@ class TCGiant_Sync_Mapper {
 		
 		$product = $product_id ? wc_get_product( $product_id ) : new WC_Product_Simple();
 
-		$product->set_name( $product_data['title'] );
-		$product->set_description( $product_data['description'] );
+		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
+		$is_new = ! $product_id;
+		$sync_decisions = array();
+
+		if ( $is_new ) {
+			$sync_decisions[] = 'New product imported. All fields synced from eBay.';
+		}
+
+		if ( $is_new || ! empty( $settings['overwrite_title'] ) ) {
+			$product->set_name( $product_data['title'] );
+			if ( ! $is_new ) $sync_decisions[] = 'Title updated (eBay won)';
+		} elseif ( ! $is_new ) {
+			$sync_decisions[] = 'Title skipped (WooCommerce won)';
+		}
+
+		if ( $is_new || ! empty( $settings['overwrite_desc'] ) ) {
+			$product->set_description( $product_data['description'] );
+			if ( ! $is_new ) $sync_decisions[] = 'Description updated (eBay won)';
+		} elseif ( ! $is_new ) {
+			$sync_decisions[] = 'Description skipped (WooCommerce won)';
+		}
+
+		// SKU is always enforced so WooCommerce knows which eBay item this is.
 		$product->set_sku( $product_data['sku'] );
+
+		// Stock is ALWAYS managed by eBay.
 		$product->set_manage_stock( true );
 		$product->set_stock_quantity( $product_data['stock_quantity'] );
+		$sync_decisions[] = 'Stock synced to ' . $product_data['stock_quantity'] . ' (eBay won)';
 		
 		// Set price (already extracted as clean numeric string).
-		if ( ! empty( $product_data['price'] ) ) {
+		// By default setting empty('overwrite_price') means DO NOT overwrite if exists.
+		// However, in settings we defaulted it to 1.
+		$overwrite_price = isset( $settings['overwrite_price'] ) ? $settings['overwrite_price'] : '1';
+		if ( ! empty( $product_data['price'] ) && ( $is_new || '1' === $overwrite_price ) ) {
 			$product->set_regular_price( $product_data['price'] );
+			if ( ! $is_new ) $sync_decisions[] = 'Price updated (eBay won)';
+		} elseif ( ! $is_new && ! empty( $product_data['price'] ) ) {
+			$sync_decisions[] = 'Price skipped (WooCommerce won)';
 		}
 		
+		$overwrite_taxonomy = ! empty( $settings['overwrite_taxonomy'] );
+
 		// Set WooCommerce categories from eBay Store Categories.
-		if ( ! empty( $product_data['store_categories'] ) ) {
-			$cat_ids = $this->resolve_and_create_categories( $product_data['store_categories'] );
-			if ( ! empty( $cat_ids ) ) {
-				$product->set_category_ids( $cat_ids );
+		if ( $is_new || $overwrite_taxonomy ) {
+			if ( ! empty( $product_data['store_categories'] ) ) {
+				$cat_ids = $this->resolve_and_create_categories( $product_data['store_categories'] );
+				if ( ! empty( $cat_ids ) ) {
+					$product->set_category_ids( $cat_ids );
+				}
 			}
+			if ( ! $is_new ) $sync_decisions[] = 'Categories & Tags updated (eBay won)';
+		} elseif ( ! $is_new ) {
+			$sync_decisions[] = 'Categories & Tags skipped (WooCommerce won)';
 		}
 		
 		// Set WooCommerce tags from eBay Item Specifics.
-		if ( ! empty( $product_data['tags'] ) ) {
-			$tag_ids = $this->resolve_and_create_tags( $product_data['tags'] );
-			if ( ! empty( $tag_ids ) ) {
-				$product->set_tag_ids( $tag_ids );
+		if ( $is_new || $overwrite_taxonomy ) {
+			if ( ! empty( $product_data['tags'] ) ) {
+				$tag_ids = $this->resolve_and_create_tags( $product_data['tags'] );
+				if ( ! empty( $tag_ids ) ) {
+					$product->set_tag_ids( $tag_ids );
+				}
 			}
 		}
 		
@@ -286,6 +326,22 @@ class TCGiant_Sync_Mapper {
 		// Set Custom Meta (including _ebay_item_id for tracking).
 		foreach ( $product_data['meta'] as $key => $val ) {
 			$product->update_meta_data( $key, $val );
+		}
+
+		// Update Sync Log.
+		if ( ! empty( $sync_decisions ) ) {
+			$existing_logs = $product->get_meta( '_tcgiant_sync_log', true );
+			if ( ! is_array( $existing_logs ) ) {
+				$existing_logs = array();
+			}
+
+			array_unshift( $existing_logs, array(
+				'timestamp' => current_time( 'mysql' ),
+				'decisions' => $sync_decisions,
+			) );
+
+			$existing_logs = array_slice( $existing_logs, 0, 20 ); // Keep last 20 syncs
+			$product->update_meta_data( '_tcgiant_sync_log', $existing_logs );
 		}
 
 		return $product->save();

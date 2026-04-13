@@ -3,6 +3,7 @@
  * Webhook Handler for eBay Notifications
  *
  * @package TCGiant_Sync
+ * @license GPL-2.0-or-later
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -13,6 +14,12 @@ if ( ! defined( 'ABSPATH' ) ) {
  * TCGiant_Sync_Webhooks class
  */
 class TCGiant_Sync_Webhooks {
+
+	/**
+	 * Shared HMAC signing key used to verify webhook payloads
+	 * forwarded by the TCGiant relay server.
+	 */
+	const RELAY_SIGNING_KEY = 'tcgiant_relay_secret_key_500';
 
 	/**
 	 * Instance.
@@ -60,7 +67,7 @@ class TCGiant_Sync_Webhooks {
 		$body      = $request->get_body();
 		
 		// Verify signature from TCGiant Relay.
-		$relay_secret = 'tcgiant_relay_secret_key_500'; 
+		$relay_secret = self::RELAY_SIGNING_KEY;
 		$expected_signature = hash_hmac( 'sha256', $body . $timestamp, $relay_secret );
 
 		if ( ! hash_equals( $expected_signature, (string) $signature ) ) {
@@ -71,24 +78,26 @@ class TCGiant_Sync_Webhooks {
 		$ebay_user_id = $params['notification']['data']['userId'] ?? $params['userId'] ?? '';
 
 		if ( empty( $ebay_user_id ) ) {
-			// Empty payload / test ping — acknowledge instantly, no logging, no DB.
+			// Empty payload / test ping - acknowledge instantly, no logging, no DB.
 			return new WP_REST_Response( array( 'status' => 'acknowledged' ), 200 );
 		}
 
 		// Rate limit: skip if we processed a deletion in the last 30 seconds.
-		// eBay sends many test pings rapidly — each one runs wc_get_orders which is expensive.
+		// eBay sends many test pings rapidly - each one runs wc_get_orders which is expensive.
 		$rate_key = 'tcgiant_del_rate';
 		if ( get_transient( $rate_key ) ) {
 			return new WP_REST_Response( array( 'status' => 'rate_limited' ), 200 );
 		}
 		set_transient( $rate_key, 1, 30 );
 
-		// Query for matching orders — this is the expensive part.
+		// Query for matching orders - this is the expensive part.
+		// phpcs:disable WordPress.DB.SlowDBQuery.slow_db_query_meta_key, WordPress.DB.SlowDBQuery.slow_db_query_meta_value
 		$orders = wc_get_orders( array(
 			'meta_key'   => '_ebay_user_id',
 			'meta_value' => $ebay_user_id,
 			'limit'      => -1,
 		) );
+		// phpcs:enable WordPress.DB.SlowDBQuery.slow_db_query_meta_key, WordPress.DB.SlowDBQuery.slow_db_query_meta_value
 
 		// Only process and log if we actually find matching orders.
 		if ( empty( $orders ) ) {

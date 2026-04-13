@@ -1,3 +1,10 @@
+/**
+ * TCGiant Sync - Admin Styles
+ *
+ * @package TCGiant_Sync
+ * @license GPL-2.0-or-later
+ */
+
 :root {
     --tc-primary: #3b82f6;
     --tc-secondary: #6366f1;
@@ -13,7 +20,7 @@
     --tc-radius-sm: 8px;
 }
 
-/* ─── Base — high specificity to beat WP admin ─── */
+/* ─── Base - high specificity to beat WP admin ─── */
 .wrap.tc-dashboard-wrap {
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
     color: var(--tc-text-main);
@@ -81,7 +88,7 @@
     line-height: 1.5;
 }
 
-/* ═══ ROW LAYOUTS — forced grid ═══ */
+/* ═══ ROW LAYOUTS - forced grid ═══ */
 .wrap.tc-dashboard-wrap .tc-row-2col {
     display: grid !important;
     grid-template-columns: 1fr 1fr !important;
@@ -93,6 +100,64 @@
     display: grid !important;
     grid-template-columns: 1fr 1fr 1fr !important;
     gap: 20px !important;
+    margin-bottom: 20px; /* added for stacking */
+}
+
+.wrap.tc-dashboard-wrap .tc-row-1col {
+    display: grid !important;
+    grid-template-columns: 1fr !important;
+    gap: 20px !important;
+    margin-bottom: 20px;
+}
+
+/* ─── Top Bar ─── */
+.wrap.tc-dashboard-wrap .tc-top-bar {
+    display: grid !important;
+    grid-template-columns: 1fr 1fr !important;
+    gap: 20px !important;
+    margin-bottom: 20px;
+}
+
+.wrap.tc-dashboard-wrap .tc-top-card {
+    background: var(--tc-card-bg);
+    border: 1px solid var(--tc-border);
+    border-radius: var(--tc-radius);
+    padding: 16px 20px;
+    box-shadow: 0 1px 3px rgb(0 0 0 / 0.05);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.wrap.tc-dashboard-wrap .tc-top-card-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.wrap.tc-dashboard-wrap .tc-top-card-icon {
+    font-size: 24px;
+    width: 24px;
+    height: 24px;
+    color: var(--tc-primary);
+}
+
+.wrap.tc-dashboard-wrap .tc-top-card-text h3 {
+    margin: 0 0 4px 0;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.wrap.tc-dashboard-wrap .tc-top-card-text p {
+    margin: 0;
+    font-size: 13px;
+    color: var(--tc-text-muted);
+}
+
+.wrap.tc-dashboard-wrap .tc-top-card-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
 }
 
 /* ─── Cards ─── */
@@ -416,8 +481,12 @@
 
 @media (max-width: 782px) {
     .wrap.tc-dashboard-wrap .tc-row-2col { grid-template-columns: 1fr !important; }
+    .wrap.tc-dashboard-wrap .tc-top-bar { grid-template-columns: 1fr !important; }
     .wrap.tc-dashboard-wrap .tc-row-3col { grid-template-columns: 1fr !important; }
     .wrap.tc-dashboard-wrap .tc-row-3col > .tc-card:last-child { grid-column: auto; }
+    .wrap.tc-dashboard-wrap .tc-top-card { flex-direction: column; align-items: stretch; gap: 12px; }
+    .wrap.tc-dashboard-wrap .tc-top-card-right { display: flex; align-items: stretch; }
+    .wrap.tc-dashboard-wrap .tc-top-card-right .tc-button { width: 100%; justify-content: center; }
 }
 
 /* ─── Pro/Free Badges ─── */

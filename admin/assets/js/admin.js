@@ -1,7 +1,10 @@
 /**
- * TCGiant Sync — Admin Dashboard JS
+ * TCGiant Sync - Admin Dashboard JS
  *
  * Handles live status polling, log refresh, store category dropdown, and license management.
+ *
+ * @package TCGiant_Sync
+ * @license GPL-2.0-or-later
  */
 (function($) {
     'use strict';
@@ -41,7 +44,7 @@
             switch (s.status) {
                 case 'scanning':
                     label = 'Scanning eBay…';
-                    detail = 'Page ' + s.current_page + (s.total_pages ? '/' + s.total_pages : '') + ' — ' + s.filter_name;
+                    detail = 'Page ' + s.current_page + (s.total_pages ? '/' + s.total_pages : '') + ' - ' + s.filter_name;
                     break;
                 case 'importing':
                     label = 'Importing…';
@@ -61,7 +64,7 @@
                     break;
                 case 'limit_reached':
                     label = 'Import Limit Reached';
-                    detail = lic.active_count + '/' + lic.free_limit + ' products — Upgrade to Pro for unlimited';
+                    detail = lic.active_count + '/' + lic.free_limit + ' products - Upgrade to Pro for unlimited';
                     break;
                 default:
                     label = 'Idle';
@@ -260,7 +263,7 @@
                     alert(res.data.message || 'Failed to load categories.');
                     return;
                 }
-                $dropdown.empty().append('<option value="">— Select a category —</option>');
+                $dropdown.empty().append('<option value="">- Select a category -</option>');
                 res.data.categories.forEach(function(cat) {
                     $dropdown.append('<option value="' + esc(cat.raw) + '">' + esc(cat.name) + '</option>');
                 });

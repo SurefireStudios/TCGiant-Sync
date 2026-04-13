@@ -1,0 +1,11 @@
+*** TCGiant Sync Changelog ***
+
+2026-04-09 - version 1.0.0
+* Added - Initial release.
+* Added - eBay OAuth 2.0 connection via secure relay.
+* Added - Product import with automatic WooCommerce mapping.
+* Added - Inventory synchronization between eBay and WooCommerce.
+* Added - Admin dashboard with live status polling and logs.
+* Added - Store category filtering for targeted imports.
+* Added - Marketplace Account Deletion notification support.
+* Update - Freemium licensing with Pro upgrade path.

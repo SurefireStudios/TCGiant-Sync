@@ -3,6 +3,7 @@
  * Admin Logic
  *
  * @package TCGiant_Sync
+ * @license GPL-2.0-or-later
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -48,6 +49,10 @@ class TCGiant_Sync_Admin {
 		add_action( 'wp_ajax_tcgiant_get_store_categories', array( $this, 'ajax_get_store_categories' ) );
 		add_action( 'wp_ajax_tcgiant_activate_license', array( $this, 'ajax_activate_license' ) );
 		add_action( 'wp_ajax_tcgiant_deactivate_license', array( $this, 'ajax_deactivate_license' ) );
+
+		// WooCommerce Product Metabox Hooks
+		add_filter( 'woocommerce_product_data_tabs', array( $this, 'add_sync_log_tab' ) );
+		add_action( 'woocommerce_product_data_panels', array( $this, 'render_sync_log_panel' ) );
 	}
 
 	/**
@@ -81,7 +86,7 @@ class TCGiant_Sync_Admin {
 		}
 
 		TCGiant_Sync_Importer::instance()->start_full_sync( true );
-		wp_redirect( admin_url( 'admin.php?page=tcgiant-sync&sync_started=1' ) );
+		wp_safe_redirect( admin_url( 'admin.php?page=tcgiant-sync&sync_started=1' ) );
 		exit;
 	}
 
@@ -98,7 +103,7 @@ class TCGiant_Sync_Admin {
 			ActionScheduler_QueueRunner::instance()->run();
 		}
 
-		wp_redirect( admin_url( 'admin.php?page=tcgiant-sync&queue_processed=1' ) );
+		wp_safe_redirect( admin_url( 'admin.php?page=tcgiant-sync&queue_processed=1' ) );
 		exit;
 	}
 
@@ -119,7 +124,7 @@ class TCGiant_Sync_Admin {
 		TCGiant_Sync_Importer::update_sync_state( array( 'status' => 'stopped' ) );
 		TCGiant_Sync_Logger::log( 'Emergency Stop: All sync jobs cleared.', 'warning' );
 
-		wp_redirect( admin_url( 'admin.php?page=tcgiant-sync' ) );
+		wp_safe_redirect( admin_url( 'admin.php?page=tcgiant-sync' ) );
 		exit;
 	}
 
@@ -133,7 +138,7 @@ class TCGiant_Sync_Admin {
 		}
 
 		TCGiant_Sync_Logger::clear();
-		wp_redirect( admin_url( 'admin.php?page=tcgiant-sync&log_cleared=1' ) );
+		wp_safe_redirect( admin_url( 'admin.php?page=tcgiant-sync&log_cleared=1' ) );
 		exit;
 	}
 
@@ -163,23 +168,27 @@ class TCGiant_Sync_Admin {
 	 * Handle OAuth Callback.
 	 */
 	public function handle_oauth_callback() {
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
 		if ( ! isset( $_GET['page'] ) || ( 'tcgiant-sync-settings' !== $_GET['page'] && 'tcgiant-sync' !== $_GET['page'] ) ) {
 			return;
 		}
 
-		if ( isset( $_GET['ebay_access_token'] ) ) {
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		if ( isset( $_GET['ebay_access_token'], $_GET['ebay_refresh_token'], $_GET['ebay_expires_in'] ) ) {
 			$oauth = TCGiant_Sync_OAuth::instance();
+			// phpcs:disable WordPress.Security.NonceVerification.Recommended
 			$data = array(
-				'access_token'  => sanitize_text_field( $_GET['ebay_access_token'] ),
-				'refresh_token' => sanitize_text_field( $_GET['ebay_refresh_token'] ),
-				'expires_in'    => sanitize_text_field( $_GET['ebay_expires_in'] ),
+				'access_token'  => sanitize_text_field( wp_unslash( $_GET['ebay_access_token'] ) ),
+				'refresh_token' => sanitize_text_field( wp_unslash( $_GET['ebay_refresh_token'] ) ),
+				'expires_in'    => sanitize_text_field( wp_unslash( $_GET['ebay_expires_in'] ) ),
 			);
+			// phpcs:enable WordPress.Security.NonceVerification.Recommended
 
 			if ( $oauth->save_tokens_from_relay( $data ) ) {
-				wp_redirect( admin_url( 'admin.php?page=tcgiant-sync&auth=success' ) );
+				wp_safe_redirect( admin_url( 'admin.php?page=tcgiant-sync&auth=success' ) );
 				exit;
 			} else {
-				wp_redirect( admin_url( 'admin.php?page=tcgiant-sync&auth=failed' ) );
+				wp_safe_redirect( admin_url( 'admin.php?page=tcgiant-sync&auth=failed' ) );
 				exit;
 			}
 		}
@@ -189,7 +198,26 @@ class TCGiant_Sync_Admin {
 	 * Register settings.
 	 */
 	public function register_settings() {
-		register_setting( 'tcgiant_sync_ebay_group', 'tcgiant_sync_ebay_settings' );
+		register_setting( 'tcgiant_sync_ebay_group', 'tcgiant_sync_ebay_settings', array(
+			'type'              => 'array',
+			'sanitize_callback' => array( $this, 'sanitize_settings' ),
+		) );
+	}
+
+	/**
+	 * Sanitize settings array.
+	 *
+	 * @param array $input Input settings.
+	 * @return array Sanitized settings.
+	 */
+	public function sanitize_settings( $input ) {
+		$sanitized = array();
+		if ( is_array( $input ) ) {
+			foreach ( $input as $key => $value ) {
+				$sanitized[ sanitize_key( $key ) ] = sanitize_text_field( $value );
+			}
+		}
+		return $sanitized;
 	}
 
 	/**
@@ -245,25 +273,25 @@ class TCGiant_Sync_Admin {
 		} else {
 			foreach ( $entries as $entry ) {
 				$level_class = '';
-				$icon = '📋';
+				$icon = '[Log]';
 				switch ( $entry['level'] ) {
 					case 'error':
 						$level_class = 'tc-is-error';
-						$icon = '❌';
+						$icon = '[X]';
 						break;
 					case 'success':
 						$level_class = 'tc-is-success';
-						$icon = '✅';
+						$icon = '[OK]';
 						break;
 					case 'warning':
 						$level_class = 'tc-is-warning';
-						$icon = '⚠️';
+						$icon = '[!]';
 						break;
 				}
 				printf(
 					'<div class="tc-log-entry %s"><span class="tc-log-icon">%s</span><span class="tc-log-time">%s</span><span class="tc-log-msg">%s</span></div>',
 					esc_attr( $level_class ),
-					$icon,
+					esc_html( $icon ),
 					esc_html( $entry['timestamp'] ),
 					esc_html( $entry['message'] )
 				);
@@ -301,7 +329,7 @@ class TCGiant_Sync_Admin {
 			$flatten = function( $cats, $depth = 0 ) use ( &$flatten, &$categories ) {
 				if ( ! is_array( $cats ) ) return;
 				foreach ( $cats as $cat ) {
-					$prefix = str_repeat( '— ', $depth );
+					$prefix = str_repeat( '- ', $depth );
 					$categories[] = array(
 						'id'   => $cat['CategoryID'] ?? '',
 						'name' => $prefix . ( $cat['Name'] ?? '' ),
@@ -356,21 +384,29 @@ class TCGiant_Sync_Admin {
 			);
 		}
 
+		// Proactively refresh the token if needed before checking health.
+		if ( $oauth->is_authenticated() ) {
+			$oauth->get_access_token();
+			$settings = $oauth->get_settings(); // Refresh local settings array with new expiry.
+		}
+
 		// Token Expiry.
 		if ( $oauth->is_authenticated() && isset( $settings['token_expiry'] ) ) {
 			$remaining = $settings['token_expiry'] - time();
 			$health['token'] = array(
 				'label'  => __( 'Token Health', 'tcgiant-sync' ),
 				'status' => $remaining > 3600 ? 'active' : ( $remaining > 0 ? 'warning' : 'inactive' ),
+				/* translators: %s: time remaining until token expires */
 				'text'   => $remaining > 0 ? sprintf( __( 'Expires in %s', 'tcgiant-sync' ), human_time_diff( time(), $settings['token_expiry'] ) ) : __( 'Expired', 'tcgiant-sync' ),
 			);
 		}
 
-		// Cron Status — FIXED: use correct hook name.
+		// Cron Status - FIXED: use correct hook name.
 		$cron_active = wp_next_scheduled( 'tcgiant_sync_poll_ebay_cron' );
 		$health['cron'] = array(
 			'label'  => __( 'Auto-Sync Scheduler', 'tcgiant-sync' ),
 			'status' => $cron_active ? 'active' : 'inactive',
+			/* translators: %s: time remaining until next sync */
 			'text'   => $cron_active ? sprintf( __( 'Next: %s', 'tcgiant-sync' ), human_time_diff( time(), $cron_active ) ) : __( 'Disabled', 'tcgiant-sync' ),
 		);
 
@@ -384,6 +420,7 @@ class TCGiant_Sync_Admin {
 		global $wpdb;
 
 		// Count WooCommerce products synced from eBay.
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		$synced_products = (int) $wpdb->get_var(
 			"SELECT COUNT(DISTINCT p.ID) FROM {$wpdb->posts} p
 			 INNER JOIN {$wpdb->postmeta} pm ON pm.post_id = p.ID
@@ -396,6 +433,7 @@ class TCGiant_Sync_Admin {
 		// Pending Action Scheduler jobs.
 		$pending_jobs = 0;
 		if ( class_exists( 'ActionScheduler' ) ) {
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 			$pending_jobs = (int) $wpdb->get_var(
 				"SELECT COUNT(*) FROM {$wpdb->prefix}actionscheduler_actions
 				 WHERE `group_id` IN (SELECT group_id FROM {$wpdb->prefix}actionscheduler_groups WHERE slug = 'tcgiant_sync_group')
@@ -422,7 +460,7 @@ class TCGiant_Sync_Admin {
 			wp_send_json_error( array( 'message' => 'Unauthorized.' ) );
 		}
 
-		$key = isset( $_POST['license_key'] ) ? sanitize_text_field( $_POST['license_key'] ) : '';
+		$key = isset( $_POST['license_key'] ) ? sanitize_text_field( wp_unslash( $_POST['license_key'] ) ) : '';
 		$license = TCGiant_Sync_License::instance();
 		$result = $license->activate_license( $key );
 
@@ -457,5 +495,54 @@ class TCGiant_Sync_Admin {
 			'message' => $result['message'],
 			'license' => $license->get_status_for_ui(),
 		) );
+	}
+
+	/**
+	 * Add custom tab to WooCommerce Product Data metabox.
+	 *
+	 * @param array $tabs Current tabs.
+	 * @return array
+	 */
+	public function add_sync_log_tab( $tabs ) {
+		$tabs['tcgiant_sync_log'] = array(
+			'label'    => __( 'eBay Sync Log', 'tcgiant-sync' ),
+			'target'   => 'tcgiant_sync_log_data',
+			'class'    => array( 'show_if_simple', 'show_if_variable' ),
+			'priority' => 90,
+		);
+		return $tabs;
+	}
+
+	/**
+	 * Render the custom tab content.
+	 */
+	public function render_sync_log_panel() {
+		global $post;
+
+		echo '<div id="tcgiant_sync_log_data" class="panel woocommerce_options_panel hide_if_grouped hide_if_external">';
+		
+		$logs = get_post_meta( $post->ID, '_tcgiant_sync_log', true );
+		
+		if ( empty( $logs ) || ! is_array( $logs ) ) {
+			echo '<div style="padding:15px;"><p>' . esc_html__( 'This product has not synced yet, or no sync decisions have been logged.', 'tcgiant-sync' ) . '</p></div>';
+		} else {
+			echo '<div style="padding:15px; max-height: 400px; overflow-y: auto;">';
+			echo '<p style="margin-top:0;"><strong>' . esc_html__( 'Recent Sync Decisions (Last 20)', 'tcgiant-sync' ) . '</strong></p>';
+			foreach ( $logs as $entry ) {
+				echo '<div style="margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid #eee;">';
+				echo '<strong style="color: #666; font-size: 11px;">' . esc_html( $entry['timestamp'] ?? 'Unknown Time' ) . '</strong>';
+				if ( ! empty( $entry['decisions'] ) && is_array( $entry['decisions'] ) ) {
+					echo '<ul style="margin-top: 4px; padding-left: 16px; margin-bottom: 0; list-style-type: disc;">';
+					foreach ( $entry['decisions'] as $decision ) {
+						echo '<li>' . esc_html( $decision ) . '</li>';
+					}
+					echo '</ul>';
+				}
+				echo '</div>';
+			}
+			echo '</div>';
+		}
+
+		echo '</div>';
 	}
 }

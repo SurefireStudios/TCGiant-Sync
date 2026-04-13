@@ -1,18 +1,21 @@
 <?php
 /**
  * Plugin Name: TCGiant Sync
- * Plugin URI:  https://tcgiant.com
+ * Plugin URI:  https://github.com/SurefireStudios/TCGiant-Sync
  * Description: Production-ready eBay to WooCommerce synchronization for TCG products.
  * Version:     1.0.0
  * Author:      TCGiant Team
- * Author URI:  https://tcgiant.com
+ * Author URI:  https://surefirestudios.io
  * Text Domain: tcgiant-sync
  * Domain Path: /languages
  * Requires at least: 5.8
  * Requires PHP: 7.4
  * WC requires at least: 5.0
+ * License:     GPL-2.0-or-later
+ * License URI: https://www.gnu.org/licenses/gpl-2.0.html
  *
  * @package TCGiant_Sync
+ * @license GPL-2.0-or-later
  */
 
 if ( ! defined( 'ABSPATH' ) ) {

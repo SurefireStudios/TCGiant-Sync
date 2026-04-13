@@ -5,6 +5,7 @@
  * Provides methods to interact with eBay Inventory and Fulfillment APIs.
  *
  * @package TCGiant_Sync
+ * @license GPL-2.0-or-later
  */
 
 if ( ! defined( 'ABSPATH' ) ) {

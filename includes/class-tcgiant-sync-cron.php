@@ -5,6 +5,7 @@
  * Handles scheduled synchronization tasks.
  *
  * @package TCGiant_Sync
+ * @license GPL-2.0-or-later
  */
 
 if ( ! defined( 'ABSPATH' ) ) {

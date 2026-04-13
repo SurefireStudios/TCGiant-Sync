@@ -3,6 +3,7 @@
  * eBay OAuth 2.0 Client
  *
  * @package TCGiant_Sync
+ * @license GPL-2.0-or-later
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -126,19 +127,10 @@ class TCGiant_Sync_OAuth {
 			return false;
 		}
 
-		$client_id = $settings['app_id'];
-		$client_secret = $settings['cert_id'];
-		$auth_header = base64_encode( $client_id . ':' . $client_secret );
-
-		$response = wp_remote_post( self::TOKEN_ENDPOINT_PRODUCTION, array(
-			'headers' => array(
-				'Content-Type'  => 'application/x-www-form-urlencoded',
-				'Authorization' => 'Basic ' . $auth_header,
-			),
+		$response = wp_remote_post( 'https://tcgiant.com/syncconnect/relay.php', array(
 			'body'    => array(
-				'grant_type'    => 'refresh_token',
+				'action'        => 'refresh',
 				'refresh_token' => $settings['refresh_token'],
-				'scope'         => 'https://api.ebay.com/oauth/api_scope https://api.ebay.com/oauth/api_scope/sell.inventory https://api.ebay.com/oauth/api_scope/sell.fulfillment',
 			),
 		) );
 
@@ -156,7 +148,7 @@ class TCGiant_Sync_OAuth {
 			return $body['access_token'];
 		}
 
-		TCGiant_Sync_Logger::error( 'Token Refresh Error Body: ' . json_encode( $body ) );
+		TCGiant_Sync_Logger::error( 'Token Refresh Error Body: ' . wp_json_encode( $body ) );
 		return false;
 	}
 }

@@ -1,0 +1,822 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TCGiant - Building Modern Tools for the TCG Community</title>
+    <link rel="icon" type="image/png" href="favicon.png">
+    <meta name="description"
+        content="TCGiant is building a growing suite of software for trading card sellers, collectors, and shops.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0b1020;
+            --bg-soft: #11182c;
+            --panel: rgba(255, 255, 255, 0.05);
+            --panel-soft: rgba(255, 255, 255, 0.02);
+            --text: #f8fafc;
+            --muted: #a7b0c3;
+            --accent: #6366f1;
+            --accent-2: #8b5cf6;
+            --green: #22c55e;
+            --green-bg: rgba(34, 197, 94, 0.15);
+            --amber: #f59e0b;
+            --amber-bg: rgba(245, 158, 11, 0.15);
+            --blue: #3b82f6;
+            --blue-bg: rgba(59, 130, 246, 0.15);
+            --border: rgba(255, 255, 255, 0.12);
+            --shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+            --radius-lg: 24px;
+            --radius: 16px;
+            --max: 1200px;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background:
+                radial-gradient(circle at top left, rgba(99, 102, 241, 0.15), transparent 35%),
+                radial-gradient(circle at top right, rgba(139, 92, 246, 0.12), transparent 30%),
+                linear-gradient(180deg, #09101f 0%, #0b1020 100%);
+            color: var(--text);
+            line-height: 1.6;
+            min-height: 100vh;
+        }
+
+        a {
+            color: inherit;
+            text-decoration: none;
+            transition: color 0.2s ease, opacity 0.2s ease;
+        }
+
+        .container {
+            width: min(var(--max), calc(100% - 48px));
+            margin: 0 auto;
+        }
+
+        /* --- Global Ulilities --- */
+        .gradient-text {
+            background: linear-gradient(135deg, #a3b1ff 0%, #d4a5ff 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .pill {
+            display: inline-flex;
+            align-items: center;
+            border-radius: 999px;
+            padding: 6px 14px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 16px;
+        }
+
+        .pill-emerald {
+            color: #4ade80;
+            background: var(--green-bg);
+            border: 1px solid rgba(74, 222, 128, 0.2);
+        }
+
+        .pill-amber {
+            color: #fbbf24;
+            background: var(--amber-bg);
+            border: 1px solid rgba(251, 191, 36, 0.2);
+        }
+
+        .pill-blue {
+            color: #60a5fa;
+            background: var(--blue-bg);
+            border: 1px solid rgba(96, 165, 250, 0.2);
+        }
+
+        .btn {
+            display: inline-flex;
+            justify-content: center;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 24px;
+            border-radius: 999px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            cursor: pointer;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--accent), var(--accent-2));
+            color: #fff;
+            box-shadow: 0 8px 24px rgba(99, 102, 241, 0.25);
+            border: none;
+        }
+
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: #fff;
+        }
+
+        .btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.1);
+            border-color: rgba(255, 255, 255, 0.3);
+        }
+
+        /* --- Header --- */
+        header {
+            position: sticky;
+            top: 0;
+            z-index: 50;
+            border-bottom: 1px solid var(--border);
+            background: rgba(11, 16, 32, 0.8);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+        }
+
+        .header-inner {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px 0;
+        }
+
+        .logo {
+            font-size: 1.4rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 40px;
+            font-size: 0.95rem;
+            color: var(--muted);
+            font-weight: 500;
+        }
+
+        .nav-links a:hover {
+            color: #fff;
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        /* --- Hero Section --- */
+        .hero {
+            padding: 120px 0 80px;
+            position: relative;
+        }
+
+        .hero-grid {
+            display: grid;
+            grid-template-columns: 1.1fr 0.9fr;
+            gap: 60px;
+            align-items: center;
+        }
+
+        .hero h1 {
+            font-size: clamp(2.8rem, 5vw, 4rem);
+            line-height: 1.05;
+            letter-spacing: -0.03em;
+            margin-bottom: 24px;
+        }
+
+        .hero p.lead {
+            font-size: 1.15rem;
+            color: var(--muted);
+            max-width: 580px;
+            margin-bottom: 36px;
+        }
+
+        .hero-actions {
+            display: flex;
+            gap: 16px;
+            margin-bottom: 40px;
+            flex-wrap: wrap;
+        }
+
+        .hero-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 24px;
+            font-size: 0.9rem;
+            color: var(--muted);
+        }
+
+        .hero-tags span {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .hero-tags span::before {
+            content: "✦";
+            font-size: 0.7rem;
+            color: var(--accent);
+        }
+
+        /* --- Flagship Card --- */
+        .flagship-box {
+            position: relative;
+        }
+
+        .flagship-box::before {
+            content: '';
+            position: absolute;
+            inset: -2px;
+            background: linear-gradient(135deg, var(--accent), transparent, var(--accent-2));
+            border-radius: var(--radius-lg);
+            z-index: -1;
+            opacity: 0.5;
+            filter: blur(8px);
+        }
+
+        .flagship-card {
+            background: var(--bg-soft);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            padding: 32px;
+            box-shadow: var(--shadow);
+        }
+
+        .flagship-card-inner {
+            background: var(--panel-soft);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: var(--radius);
+            padding: 24px;
+        }
+
+        .flagship-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 16px;
+        }
+
+        .flagship-header h2 {
+            font-size: 1.8rem;
+            margin-top: 4px;
+        }
+
+        .flagship-header p {
+            font-size: 0.85rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: var(--muted);
+        }
+
+        .flagship-desc {
+            font-size: 0.95rem;
+            color: var(--muted);
+            margin-bottom: 24px;
+        }
+
+        .flagship-features {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+
+        .feature-item {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            padding: 16px;
+            border-radius: 12px;
+        }
+
+        .feature-item h4 {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--muted);
+            margin-bottom: 8px;
+        }
+
+        .feature-item p {
+            font-size: 0.85rem;
+            color: #d1d5db;
+        }
+
+        .flagship-card .btn {
+            margin-top: 24px;
+            width: 100%;
+        }
+
+        /* --- Sections General --- */
+        .section {
+            padding: 100px 0;
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .section-header {
+            max-width: 700px;
+            margin-bottom: 60px;
+        }
+
+        .kicker {
+            font-size: 0.85rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.15em;
+            color: var(--muted);
+            display: block;
+            margin-bottom: 12px;
+        }
+
+        .section-header h2 {
+            font-size: clamp(2rem, 3.5vw, 2.8rem);
+            line-height: 1.1;
+            letter-spacing: -0.02em;
+            margin-bottom: 20px;
+        }
+
+        .section-header p {
+            font-size: 1.1rem;
+            color: var(--muted);
+        }
+
+        /* --- Products Grid --- */
+        .products-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 24px;
+        }
+
+        .product-card {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            padding: 40px 32px;
+            display: flex;
+            flex-direction: column;
+            transition: transform 0.2s ease, background 0.2s ease;
+        }
+
+        .product-card.dashed {
+            background: transparent;
+            border: 1px dashed rgba(255, 255, 255, 0.2);
+        }
+
+        .product-card:hover {
+            background: rgba(255, 255, 255, 0.08);
+            transform: translateY(-4px);
+        }
+
+        .product-card h3 {
+            font-size: 1.5rem;
+            margin: 20px 0 12px;
+        }
+
+        .product-card p.desc {
+            color: var(--muted);
+            font-size: 0.95rem;
+            margin-bottom: 24px;
+            flex-grow: 1;
+        }
+
+        .check-list {
+            list-style: none;
+            display: grid;
+            gap: 12px;
+            margin-bottom: 32px;
+        }
+
+        .check-list li {
+            padding-left: 24px;
+            position: relative;
+            font-size: 0.9rem;
+            color: #d1d5db;
+        }
+
+        .check-list li::before {
+            content: "→";
+            color: var(--accent-2);
+            position: absolute;
+            left: 0;
+            top: 0;
+            font-weight: 800;
+        }
+
+        .product-link {
+            color: #fff;
+            font-weight: 600;
+            font-size: 0.95rem;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .product-link:hover {
+            color: var(--accent);
+        }
+
+        /* --- Roadmap & About --- */
+        .two-col-layout {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 60px;
+            align-items: center;
+        }
+
+        .two-col-layout.align-start {
+            align-items: start;
+        }
+
+        .timeline-grid {
+            display: grid;
+            gap: 20px;
+        }
+
+        .timeline-card {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 24px;
+        }
+
+        .timeline-card h3 {
+            font-size: 1.15rem;
+            margin-bottom: 8px;
+        }
+
+        .timeline-card p {
+            color: var(--muted);
+            font-size: 0.95rem;
+        }
+
+        .about-card {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            padding: 40px;
+        }
+
+        .about-card h3 {
+            font-size: 1.4rem;
+            margin-bottom: 24px;
+        }
+
+        .about-card p {
+            color: var(--muted);
+            margin-bottom: 16px;
+            font-size: 1rem;
+        }
+
+        /* --- CTA Section --- */
+        .cta-wrapper {
+            padding-bottom: 100px;
+        }
+
+        .cta-box {
+            background: linear-gradient(135deg, rgba(99, 102, 241, 0.1), rgba(139, 92, 246, 0.15));
+            border: 1px solid rgba(139, 92, 246, 0.3);
+            border-radius: 32px;
+            padding: 60px;
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 40px;
+            align-items: center;
+            box-shadow: 0 30px 60px rgba(0, 0, 0, 0.4);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .cta-box::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            right: 0;
+            bottom: 0;
+            left: 0;
+            background: url('data:image/svg+xml;utf8,<svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg"><filter id="noiseFilter"><feTurbulence type="fractalNoise" baseFrequency="0.65" numOctaves="3" stitchTiles="stitch"/></filter><rect width="100%" height="100%" filter="url(%23noiseFilter)"/></svg>');
+            opacity: 0.04;
+            pointer-events: none;
+        }
+
+        .cta-box h2 {
+            font-size: clamp(2rem, 3vw, 2.5rem);
+            letter-spacing: -0.02em;
+            margin-bottom: 16px;
+            margin-top: 12px;
+        }
+
+        .cta-box p {
+            color: #d1d5db;
+            font-size: 1.1rem;
+            max-width: 600px;
+        }
+
+        .cta-actions {
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+
+        /* --- Footer --- */
+        footer {
+            border-top: 1px solid var(--border);
+            padding: 40px 0;
+            color: var(--muted);
+            font-size: 0.9rem;
+        }
+
+        .footer-inner {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 20px;
+        }
+
+        .footer-links {
+            display: flex;
+            gap: 24px;
+        }
+
+        .footer-links a:hover {
+            color: #fff;
+        }
+
+        /* --- Mobile Responsive --- */
+        @media (max-width: 980px) {
+
+            .hero-grid,
+            .products-grid,
+            .two-col-layout,
+            .cta-box {
+                grid-template-columns: 1fr;
+            }
+
+            .nav-links {
+                display: none;
+            }
+
+            .cta-box {
+                padding: 40px 30px;
+            }
+        }
+
+        @media (max-width: 640px) {
+            .hero {
+                padding: 60px 0;
+            }
+
+            .flagship-features {
+                grid-template-columns: 1fr;
+            }
+
+            .hero-actions .btn {
+                width: 100%;
+            }
+
+            .header-actions .btn:first-child {
+                display: none;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <header>
+        <div class="container header-inner">
+            <a href="#" class="logo" style="display: flex; align-items: center; gap: 10px;">
+                <img src="monster-logo.png" alt="TCGiant Mascot" style="height: 38px; width: auto; object-fit: contain;">
+                TCGiant
+            </a>
+
+            <nav class="nav-links">
+                <a href="#products">Products</a>
+                <a href="#roadmap">Roadmap</a>
+                <a href="#about">About</a>
+            </nav>
+
+            <div class="header-actions">
+                <a href="#products" class="btn btn-secondary" style="padding: 8px 18px; font-size: 0.85rem;">View
+                    Products</a>
+                <a href="/sync" class="btn btn-primary" style="padding: 8px 18px; font-size: 0.85rem;">Explore
+                    Sync</a>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <section class="hero">
+            <div class="container hero-grid">
+                <div>
+                    <div class="pill pill-emerald">Building modern tools for the trading card community</div>
+                    <h1>TCG tools that help sellers work smarter, not harder.</h1>
+                    <p class="lead">TCGiant is building a growing suite of software for trading card sellers,
+                        collectors, and shops. Our mission is simple: make it easier to manage inventory, sync listings,
+                        and run a better card business online.</p>
+
+                    <div class="hero-actions">
+                        <a href="/sync" class="btn btn-primary">View TCGiant Sync</a>
+                        <a href="#roadmap" class="btn btn-secondary">See What’s Coming</a>
+                    </div>
+
+                    <div class="hero-tags">
+                        <span>Built for TCG sellers</span>
+                        <span>Inventory-focused workflows</span>
+                        <span>More tools launching soon</span>
+                    </div>
+                </div>
+
+                <div class="flagship-box">
+                    <div class="flagship-card">
+                        <div class="flagship-card-inner">
+                            <div class="flagship-header">
+                                <div>
+                                    <p>Flagship Product</p>
+                                    <h2>TCGiant Sync</h2>
+                                </div>
+                                <span class="pill pill-emerald"
+                                    style="font-size: 0.7rem; padding: 4px 10px; margin: 0;">Live Now</span>
+                            </div>
+                            <p class="flagship-desc">Sync your eBay inventory with your WooCommerce store so your
+                                listings, stock, and product data stay aligned across both platforms.</p>
+
+                            <div class="flagship-features">
+                                <div class="feature-item">
+                                    <h4>Inventory Sync</h4>
+                                    <p>Keep stock counts accurate and reduce overselling.</p>
+                                </div>
+                                <div class="feature-item">
+                                    <h4>Product Matching</h4>
+                                    <p>Connect eBay listings to WooCommerce products with less manual work.</p>
+                                </div>
+                                <div class="feature-item">
+                                    <h4>Seller Focused</h4>
+                                    <p>Built for real card shops and inventory-heavy workflows.</p>
+                                </div>
+                                <div class="feature-item">
+                                    <h4>More Coming</h4>
+                                    <p>TCGiant is growing into a full ecosystem of tools.</p>
+                                </div>
+                            </div>
+
+                            <a href="/sync" class="btn btn-secondary">Learn More About Sync</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="products" class="section">
+            <div class="container">
+                <div class="section-header">
+                    <span class="kicker">Products</span>
+                    <h2>Starting with one strong tool. <span class="gradient-text">Expanding into a platform.</span>
+                    </h2>
+                    <p>We’re focused on building useful software that solves real problems for the TCG community.</p>
+                </div>
+
+                <div class="products-grid">
+                    <!-- Product 1 -->
+                    <div class="product-card">
+                        <div>
+                            <span class="pill pill-emerald" style="font-size: 0.7rem;">Available</span>
+                            <h3>TCGiant Sync</h3>
+                            <p class="desc">Connect eBay and WooCommerce to keep your inventory aligned and your
+                                workflow smoother.</p>
+                            <ul class="check-list">
+                                <li>eBay to WooCommerce sync</li>
+                                <li>Inventory and listing updates</li>
+                                <li>Built for trading card sellers</li>
+                            </ul>
+                        </div>
+                        <a href="/sync" class="product-link">Visit product →</a>
+                    </div>
+
+                    <!-- Product 2 -->
+                    <div class="product-card">
+                        <div>
+                            <span class="pill pill-amber" style="font-size: 0.7rem;">Coming Soon</span>
+                            <h3>[Redacted]]</h3>
+                            <p class="desc">A growing toolbox of features to help sellers organize, manage, and scale
+                                their card business.</p>
+                            <ul class="check-list">
+                                <li>Workflow helpers</li>
+                                <li>Operational tools</li>
+                                <li>Seller-first utilities</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <!-- Product 3 -->
+                    <div class="product-card dashed">
+                        <div>
+                            <span class="pill pill-blue" style="font-size: 0.7rem;">In Planning</span>
+                            <h3>Future Products</h3>
+                            <p class="desc">We’re actively exploring more tools for card shops, online sellers, and the
+                                broader TCG space.</p>
+                            <ul class="check-list">
+                                <li>More platform integrations</li>
+                                <li>Inventory intelligence</li>
+                                <li>Growth-focused features</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="roadmap" class="section" style="background: rgba(255,255,255,0.015);">
+            <div class="container two-col-layout align-start">
+                <div>
+                    <span class="kicker">Roadmap</span>
+                    <h2>Built for where the TCG market is headed.</h2>
+                    <p style="color: var(--muted); font-size: 1.1rem; margin-top: 20px;">TCGiant is not just one plugin.
+                        It’s the start of a cleaner, smarter software stack for the trading card world.</p>
+                </div>
+
+                <div class="timeline-grid">
+                    <div class="timeline-card">
+                        <h3>Multi-channel tools</h3>
+                        <p>Future products aimed at helping sellers operate across more platforms with less friction.
+                        </p>
+                    </div>
+                    <div class="timeline-card">
+                        <h3>Inventory workflows</h3>
+                        <p>Tools to simplify the day-to-day work of managing large card inventories.</p>
+                    </div>
+                    <div class="timeline-card">
+                        <h3>Seller insights</h3>
+                        <p>Smarter data and utilities to help shops and sellers make better decisions.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="about" class="section">
+            <div class="container two-col-layout">
+                <div>
+                    <span class="kicker">About TCGiant</span>
+                    <h2>Software made for people who actually sell cards.</h2>
+                    <p style="color: var(--muted); font-size: 1.1rem; margin-top: 20px;">We’re building practical tools
+                        for the TCG community with a focus on clean workflows, modern design, and features that solve
+                        real seller pain points.</p>
+                </div>
+
+                <div class="about-card">
+                    <h3>Why it matters</h3>
+                    <p>Managing inventory across platforms is messy. Oversells, manual updates, and scattered workflows
+                        slow sellers down.</p>
+                    <p>TCGiant is here to make selling trading cards online feel more streamlined, reliable, and
+                        scalable.</p>
+                </div>
+            </div>
+        </section>
+
+        <section class="cta-wrapper">
+            <div class="container">
+                <div class="cta-box">
+                    <div>
+                        <span class="kicker">Get started</span>
+                        <h2>Check out TCGiant Sync and follow what’s next.</h2>
+                        <p>Start with our flagship product today and keep an eye on the next generation of tools we’re
+                            building for the TCG community.</p>
+                    </div>
+                    <div class="cta-actions">
+                        <a href="/sync" class="btn btn-primary"
+                            style="background: white; color: black; box-shadow: 0 4px 14px rgba(255,255,255,0.25);">Visit
+                            TCGiant Sync</a>
+                        <a href="mailto:hello@tcgiant.com" class="btn btn-secondary">Contact Us</a>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <div class="container footer-inner">
+            <p>© 2026 TCGiant. Building tools for the TCG community.</p>
+            <div class="footer-links">
+                <a href="/sync">TCGiant Sync</a>
+                <a href="mailto:hello@tcgiant.com">Contact</a>
+            </div>
+        </div>
+    </footer>
+</body>
+
+</html>

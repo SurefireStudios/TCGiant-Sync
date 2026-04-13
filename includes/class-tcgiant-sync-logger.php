@@ -3,6 +3,7 @@
  * Logger Class
  *
  * @package TCGiant_Sync
+ * @license GPL-2.0-or-later
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -67,7 +68,7 @@ class TCGiant_Sync_Logger {
 		$timestamp = current_time( 'Y-m-d H:i:s' );
 		$entry = "[$timestamp] [$level] $message" . PHP_EOL;
 
-		// Cap log file size — truncate to last 200 lines if over limit.
+		// Cap log file size - truncate to last 200 lines if over limit.
 		if ( file_exists( $log_file ) && filesize( $log_file ) > self::MAX_LOG_SIZE ) {
 			$lines = file( $log_file );
 			$lines = array_slice( $lines, -200 );
