@@ -40,12 +40,13 @@ class TCGiant_Sync_API {
 	/**
 	 * Send request to eBay API.
 	 *
-	 * @param string $endpoint API Endpoint.
-	 * @param string $method   HTTP Method.
-	 * @param array  $body     Request body.
-	 * @param array  $params   Query parameters.
+	 * @param string  $endpoint   API Endpoint.
+	 * @param string  $method     HTTP Method.
+	 * @param array   $body       Request body.
+	 * @param array   $params     Query parameters.
+	 * @param boolean $log_errors Whether to log errors automatically.
 	 */
-	public function request( $endpoint, $method = 'GET', $body = array(), $params = array() ) {
+	public function request( $endpoint, $method = 'GET', $body = array(), $params = array(), $log_errors = true ) {
 		$token = TCGiant_Sync_OAuth::instance()->get_access_token();
 
 		if ( ! $token ) {
@@ -83,7 +84,9 @@ class TCGiant_Sync_API {
 		$body = json_decode( wp_remote_retrieve_body( $response ), true );
 
 		if ( $code > 299 ) {
-			TCGiant_Sync_Logger::error( sprintf( 'eBay API Error (%d): %s', $code, wp_remote_retrieve_body( $response ) ) );
+			if ( $log_errors ) {
+				TCGiant_Sync_Logger::error( sprintf( 'eBay API Error (%d): %s', $code, wp_remote_retrieve_body( $response ) ) );
+			}
 			return new WP_Error( 'api_error', sprintf( 'eBay API Error %d', $code ), $body );
 		}
 
@@ -219,10 +222,11 @@ class TCGiant_Sync_API {
 	/**
 	 * Get inventory item by SKU.
 	 *
-	 * @param string $sku The SKU.
+	 * @param string  $sku        The SKU.
+	 * @param boolean $log_errors Whether to log errors automatically.
 	 */
-	public function get_inventory_item( $sku ) {
-		return $this->request( 'sell/inventory/v1/inventory_item/' . rawurlencode( $sku ) );
+	public function get_inventory_item( $sku, $log_errors = true ) {
+		return $this->request( 'sell/inventory/v1/inventory_item/' . rawurlencode( $sku ), 'GET', array(), array(), $log_errors );
 	}
 
 	/**
@@ -242,16 +246,77 @@ class TCGiant_Sync_API {
 	 * Note: Inventory API uses SKU to manage availability.
 	 */
 	public function update_inventory_item_availability( $sku, $quantity ) {
-		// First get the item to preserve other data (optional, depends on use case, 
-		// but Inventory API requires full object for PUT).
-		$item = $this->get_inventory_item( $sku );
+		// Check if this is a Trading API listing (EBAY-{ItemID} SKU pattern).
+		// These listings don't exist in the Inventory (REST) API and will always 404.
+		if ( preg_match( '/^EBAY-(\d+)$/', $sku, $matches ) ) {
+			return $this->update_trading_api_stock( $matches[1], $quantity );
+		}
+
+		// Try the Inventory API first.
+		$item = $this->get_inventory_item( $sku, false );
+
+		// If 404, the listing was created via Trading API with a custom SKU.
+		// Fall back to ReviseInventoryStatus using the stored eBay Item ID.
 		if ( is_wp_error( $item ) ) {
+			$error_data = $item->get_error_data();
+			$is_not_found = ( isset( $error_data['errors'][0]['errorId'] ) && 25710 === $error_data['errors'][0]['errorId'] );
+
+			if ( $is_not_found ) {
+				// Look up the eBay Item ID from WooCommerce product meta.
+				$item_id = $this->resolve_ebay_item_id_from_sku( $sku );
+				if ( $item_id ) {
+					return $this->update_trading_api_stock( $item_id, $quantity );
+				}
+				
+				return new WP_Error( 'not_found_on_ebay', __( 'Item not found on eBay. It may not be linked.', 'tcgiant-sync' ) );
+			}
 			return $item;
 		}
 
 		$item['availability']['shipToLocationAvailability']['quantity'] = (int) $quantity;
 		
 		return $this->request( 'sell/inventory/v1/inventory_item/' . rawurlencode( $sku ), 'PUT', $item );
+	}
+
+	/**
+	 * Update stock quantity via the Trading API's ReviseInventoryStatus.
+	 *
+	 * This works for listings created through the Trading API (legacy listings)
+	 * that don't exist in the Inventory (REST) API.
+	 *
+	 * @param string $item_id  The eBay Item ID (numeric).
+	 * @param int    $quantity New stock quantity.
+	 * @return array|WP_Error API response or error.
+	 */
+	public function update_trading_api_stock( $item_id, $quantity ) {
+		$xml = '
+<InventoryStatus>
+	<ItemID>' . esc_attr( $item_id ) . '</ItemID>
+	<Quantity>' . (int) $quantity . '</Quantity>
+</InventoryStatus>';
+
+		return $this->trading_api_request( 'ReviseInventoryStatus', $xml );
+	}
+
+	/**
+	 * Look up the eBay Item ID from a WooCommerce product by its SKU.
+	 *
+	 * @param string $sku The product SKU.
+	 * @return string|false The eBay Item ID, or false if not found.
+	 */
+	private function resolve_ebay_item_id_from_sku( $sku ) {
+		$product_id = wc_get_product_id_by_sku( $sku );
+		if ( ! $product_id ) {
+			return false;
+		}
+
+		$product = wc_get_product( $product_id );
+		if ( ! $product ) {
+			return false;
+		}
+
+		$item_id = $product->get_meta( '_ebay_item_id' );
+		return ! empty( $item_id ) ? $item_id : false;
 	}
 	/**
 	 * Get recent orders from eBay Fulfillment API.

@@ -204,17 +204,15 @@ class TCGiant_Sync_Admin {
 		) );
 	}
 
-	/**
-	 * Sanitize settings array.
-	 *
-	 * @param array $input Input settings.
-	 * @return array Sanitized settings.
-	 */
 	public function sanitize_settings( $input ) {
 		$sanitized = array();
 		if ( is_array( $input ) ) {
 			foreach ( $input as $key => $value ) {
-				$sanitized[ sanitize_key( $key ) ] = sanitize_text_field( $value );
+				if ( is_array( $value ) ) {
+					$sanitized[ sanitize_key( $key ) ] = array_map( 'sanitize_text_field', $value );
+				} else {
+					$sanitized[ sanitize_key( $key ) ] = sanitize_text_field( $value );
+				}
 			}
 		}
 		return $sanitized;

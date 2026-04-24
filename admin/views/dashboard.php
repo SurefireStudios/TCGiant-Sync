@@ -181,6 +181,29 @@ if (empty($settings['redirect_uri'])) {
 							</p>
 						</div>
 					</div>
+
+					<div class="tc-field" style="margin-top: 24px;">
+						<label class="tc-label"><?php esc_html_e('WooCommerce Sync Categories', 'tcgiant-sync'); ?></label>
+						<?php
+							$woo_cats = get_terms( array( 'taxonomy' => 'product_cat', 'hide_empty' => false ) );
+							$selected_woo_cats = isset( $settings['woo_category_ids'] ) && is_array( $settings['woo_category_ids'] ) ? $settings['woo_category_ids'] : array();
+						?>
+						<div class="tc-checkbox-group" style="max-height: 160px; overflow-y: auto; border: 1px solid var(--tc-border); padding: 12px; border-radius: 4px; background: #fff;">
+							<?php if ( ! empty( $woo_cats ) && ! is_wp_error( $woo_cats ) ) : ?>
+								<?php foreach ( $woo_cats as $cat ) : ?>
+									<label style="display: block; margin-bottom: 6px; font-weight: normal; cursor: pointer;">
+										<input type="checkbox" name="tcgiant_sync_ebay_settings[woo_category_ids][]" value="<?php echo esc_attr( $cat->term_id ); ?>" <?php checked( in_array( $cat->term_id, $selected_woo_cats ) ); ?>>
+										<?php echo esc_html( $cat->name ); ?>
+									</label>
+								<?php endforeach; ?>
+							<?php else: ?>
+								<p style="margin:0; font-size: 13px; color: #666;"><?php esc_html_e('No WooCommerce categories found.', 'tcgiant-sync'); ?></p>
+							<?php endif; ?>
+						</div>
+						<p class="tc-hint" style="margin-top: 8px;">
+							<?php esc_html_e('Select which WooCommerce categories should push inventory to eBay when sold. If none are selected, ALL items will try to sync.', 'tcgiant-sync'); ?>
+						</p>
+					</div>
 				</div>
 
 				<!-- Scheduling -->

@@ -49,10 +49,31 @@ class TCGiant_Sync_Inventory {
 	 * @param WC_Order $order The order object.
 	 */
 	public function sync_stock_to_ebay( $order ) {
+		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
+		
+		// Respect the master kill-switch if set.
+		if ( isset( $settings['enable_order_sync'] ) && '0' === $settings['enable_order_sync'] ) {
+			return;
+		}
+
+		$woo_sync_cats = isset( $settings['woo_category_ids'] ) && is_array( $settings['woo_category_ids'] ) ? $settings['woo_category_ids'] : array();
+
 		foreach ( $order->get_items() as $item ) {
 			$product = $item->get_product();
 			if ( ! $product ) {
 				continue;
+			}
+
+			// If specific WooCommerce categories were chosen, filter items out.
+			if ( ! empty( $woo_sync_cats ) ) {
+				$product_id   = $product->get_parent_id() ? $product->get_parent_id() : $product->get_id();
+				$product_cats = wp_get_post_terms( $product_id, 'product_cat', array( 'fields' => 'ids' ) );
+				if ( ! is_wp_error( $product_cats ) ) {
+					$intersect = array_intersect( $woo_sync_cats, $product_cats );
+					if ( empty( $intersect ) ) {
+						continue; // The product is not in any of the allowed syncer categories.
+					}
+				}
 			}
 
 			$sku = $product->get_sku();
@@ -91,7 +112,11 @@ class TCGiant_Sync_Inventory {
 		$result = $api->update_inventory_item_availability( $sku, $quantity );
 
 		if ( is_wp_error( $result ) ) {
-			TCGiant_Sync_Logger::error( sprintf( 'Failed to sync stock to eBay for SKU %s. Error: %s', $sku, $result->get_error_message() ) );
+			if ( 'not_found_on_ebay' === $result->get_error_code() ) {
+				TCGiant_Sync_Logger::log( sprintf( 'Skipped eBay sync for SKU %s: Item is not linked to eBay.', $sku ) );
+			} else {
+				TCGiant_Sync_Logger::error( sprintf( 'Failed to sync stock to eBay for SKU %s. Error: %s', $sku, $result->get_error_message() ) );
+			}
 		} else {
 			TCGiant_Sync_Logger::log( sprintf( 'Successfully synced stock to eBay for SKU %s', $sku ) );
 		}
