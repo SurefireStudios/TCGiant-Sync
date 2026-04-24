@@ -1,5 +1,17 @@
 *** TCGiant Sync Changelog ***
 
+2026-04-24 - version 1.0.2
+* Feature - Added "Push to eBay" exporter module: push WooCommerce products to eBay as brand-new listings directly from the dashboard.
+* Feature - Bulk push support via WooCommerce Products list "Push to eBay" bulk action (powered by Action Scheduler).
+* Feature - Per-product "Push to eBay" button in the WooCommerce product edit screen (eBay Sync Log tab).
+* Feature - Per-product eBay Category ID and Condition overrides, falling back to global defaults.
+* Feature - Export settings section in TCGiant Sync dashboard: default eBay Category ID, default Condition, and Business Policy selectors (Shipping, Returns, Payments).
+* Feature - One-click "Fetch / Refresh Policies from eBay" — fetches seller's Business Policies live via eBay Account API and populates dropdowns.
+* Feature - Smart re-push detection: if a product already has an eBay Item ID, the exporter uses ReviseItem to update the listing instead of creating a duplicate.
+* Feature - eBay Business Policies prerequisite notice in settings — shows red warning with enrollment link if policies aren't configured, turns blue confirmation once all three are saved.
+* API - Added Trading API AddItem and ReviseItem methods for creating and updating eBay listings.
+* API - Added REST Account API methods: get_fulfillment_policies(), get_return_policies(), get_payment_policies().
+
 2026-04-24 - version 1.0.1
 * Fix - Suppressed API error logging for WooCommerce-only items that don't exist on eBay.
 * Feature - Added WooCommerce category selectors to lock down inventory outgoing sync.

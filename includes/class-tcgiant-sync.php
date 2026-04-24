@@ -111,6 +111,9 @@ final class TCGiant_Sync {
 		// Initialize Importer.
 		TCGiant_Sync_Importer::instance();
 
+		// Initialize Exporter.
+		TCGiant_Sync_Exporter::instance();
+
 		// Initialize Cron.
 		TCGiant_Sync_Cron::instance();
 

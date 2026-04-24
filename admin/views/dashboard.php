@@ -6,600 +6,182 @@
  * @license GPL-2.0-or-later
  */
 
-if (!defined('ABSPATH')) {
+if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
 // phpcs:disable WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound
 
-$admin = TCGiant_Sync_Admin::instance();
-$health = $admin->get_system_health();
-$stats = $admin->get_sync_stats();
-$sync_state = TCGiant_Sync_Importer::get_sync_state();
+$admin            = TCGiant_Sync_Admin::instance();
+$health           = $admin->get_system_health();
+$stats            = $admin->get_sync_stats();
+$sync_state       = TCGiant_Sync_Importer::get_sync_state();
 $is_authenticated = TCGiant_Sync_OAuth::instance()->is_authenticated();
-$settings = TCGiant_Sync_OAuth::instance()->get_settings();
-$auth_url = TCGiant_Sync_OAuth::instance()->get_authorization_url();
-$log_entries = TCGiant_Sync_Logger::get_recent_entries(20);
-$license = TCGiant_Sync_License::instance();
-$license_ui = $license->get_status_for_ui();
+$settings         = TCGiant_Sync_OAuth::instance()->get_settings();
+$log_entries      = TCGiant_Sync_Logger::get_recent_entries( 20 );
+$license          = TCGiant_Sync_License::instance();
+$license_ui       = $license->get_status_for_ui();
+$export_state     = TCGiant_Sync_Exporter::get_export_state();
 
-// Auto-recover sync state if the user has upgraded but the database status is stuck.
-if ('limit_reached' === $sync_state['status'] && $license_ui['can_import']) {
-	$sync_state['status'] = 'stopped';
-	TCGiant_Sync_Importer::update_sync_state(array('status' => 'stopped'));
-}
-
-if (empty($settings['redirect_uri'])) {
-	$settings['redirect_uri'] = admin_url('admin.php?page=tcgiant-sync');
-	update_option('tcgiant_sync_ebay_settings', $settings);
+if ( empty( $settings['redirect_uri'] ) ) {
+	$settings['redirect_uri'] = admin_url( 'admin.php?page=tcgiant-sync' );
+	update_option( 'tcgiant_sync_ebay_settings', $settings );
 }
 ?>
+
 <div class="wrap tc-dashboard-wrap">
 	<div class="tc-header">
 		<h1>
-			<?php esc_html_e('TCGiant Sync', 'tcgiant-sync'); ?>
-			<?php if ($license_ui['is_pro']): ?>
+			<?php esc_html_e( 'TCGiant Sync', 'tcgiant-sync' ); ?>
+			<?php if ( $license_ui['is_pro'] ) : ?>
 				<span class="tc-pro-badge">PRO</span>
-			<?php else: ?>
+			<?php else : ?>
 				<span class="tc-free-badge">FREE</span>
 			<?php endif; ?>
 		</h1>
 		<p class="tc-subtitle">
-			<?php esc_html_e('Sync and list your eBay items directly to your WordPress WooCommerce store with an automated inventory plugin. Keep stock levels, pricing, and product details updated in real-time, so you can sell across both platforms without manual updates or overselling.', 'tcgiant-sync'); ?>
+			<?php esc_html_e( 'Bidirectional eBay ↔ WooCommerce sync for TCG products. Use the menu to import listings, push products, or adjust settings.', 'tcgiant-sync' ); ?>
 		</p>
 	</div>
 
-	<?php
-	// phpcs:disable WordPress.Security.NonceVerification.Recommended
-	?>
-	<?php if (isset($_GET['sync_started']) && '1' === $_GET['sync_started']): ?>
-		<div class="notice notice-success is-dismissible">
-			<p><?php esc_html_e('Full catalog sync has been queued in the background.', 'tcgiant-sync'); ?></p>
-		</div>
+	<?php // phpcs:disable WordPress.Security.NonceVerification.Recommended ?>
+	<?php if ( isset( $_GET['log_cleared'] ) && '1' === $_GET['log_cleared'] ) : ?>
+		<div class="notice notice-success is-dismissible"><p><?php esc_html_e( 'Sync log cleared successfully.', 'tcgiant-sync' ); ?></p></div>
 	<?php endif; ?>
-	<?php if (isset($_GET['queue_processed']) && '1' === $_GET['queue_processed']): ?>
-		<div class="notice notice-success is-dismissible">
-			<p><?php esc_html_e('Queue runner executed manually.', 'tcgiant-sync'); ?></p>
-		</div>
-	<?php endif; ?>
-	<?php if (isset($_GET['log_cleared']) && '1' === $_GET['log_cleared']): ?>
-		<div class="notice notice-success is-dismissible">
-			<p><?php esc_html_e('Sync log cleared successfully.', 'tcgiant-sync'); ?></p>
-		</div>
-	<?php endif; ?>
-	<?php if (isset($_GET['auth']) && 'success' === $_GET['auth']): ?>
-		<div class="notice notice-success is-dismissible">
-			<p><?php esc_html_e('Successfully authenticated with eBay.', 'tcgiant-sync'); ?></p>
-		</div>
-	<?php elseif (isset($_GET['auth']) && 'failed' === $_GET['auth']): ?>
-		<div class="notice notice-error is-dismissible">
-			<p><?php esc_html_e('eBay authentication failed. Please try again.', 'tcgiant-sync'); ?></p>
-		</div>
-	<?php endif; ?>
-	<?php if (isset($_GET['settings-updated'])): ?>
-		<div class="notice notice-success is-dismissible">
-			<p><?php esc_html_e('Settings saved.', 'tcgiant-sync'); ?></p>
-		</div>
-	<?php endif; ?>
-	<?php
-	// phpcs:enable WordPress.Security.NonceVerification.Recommended
-	?>
+	<?php // phpcs:enable WordPress.Security.NonceVerification.Recommended ?>
 
-	<!-- - - -  TOP BAR: AUTHENTICATION & LICENSE - - -  -->
-	<div class="tc-top-bar">
-		<!-- Authentication -->
+	<!-- ─── QUICK STATS BAR ─── -->
+	<div class="tc-top-bar" style="margin-bottom:20px;">
+
+		<!-- Import Status Card -->
 		<div class="tc-top-card">
 			<div class="tc-top-card-left">
-				<span class="dashicons dashicons-plugins-checked tc-top-card-icon"></span>
+				<span class="dashicons dashicons-download tc-top-card-icon"></span>
 				<div class="tc-top-card-text">
-					<h3><?php esc_html_e('eBay Connection', 'tcgiant-sync'); ?></h3>
-					<?php if ($is_authenticated): ?>
-						<p><span class="dashicons dashicons-yes-alt" style="color: var(--tc-success); font-size:13px; width:13px; height:13px; vertical-align:text-bottom;"></span> <?php /* translators: %s: eBay store name */ echo esc_html(sprintf(__('Connected: %s', 'tcgiant-sync'), $settings['store_name'] ?? 'eBay Store')); ?></p>
-					<?php else: ?>
-						<p><span class="dashicons dashicons-warning" style="color: var(--tc-warning); font-size:13px; width:13px; height:13px; vertical-align:text-bottom;"></span> <?php esc_html_e('Not Connected', 'tcgiant-sync'); ?></p>
-					<?php endif; ?>
+					<h3><?php esc_html_e( 'Import Status', 'tcgiant-sync' ); ?></h3>
+					<p>
+						<strong><?php echo esc_html( $stats['synced_products'] ); ?></strong> <?php esc_html_e( 'synced products', 'tcgiant-sync' ); ?>
+						&nbsp;·&nbsp;
+						<span class="tc-sync-dot <?php echo esc_attr( $sync_state['status'] ); ?>" style="display:inline-block;width:8px;height:8px;border-radius:50%;vertical-align:middle;"></span>
+						<?php
+						$import_labels = array(
+							'scanning'      => 'Scanning',
+							'importing'     => 'Importing',
+							'complete'      => 'Complete',
+							'stopped'       => 'Idle',
+							'error'         => 'Error',
+							'limit_reached' => 'Limit Reached',
+						);
+						echo esc_html( $import_labels[ $sync_state['status'] ] ?? 'Idle' );
+						?>
+					</p>
 				</div>
 			</div>
 			<div class="tc-top-card-right">
-				<?php if ($is_authenticated): ?>
-					<a href="<?php echo esc_url($auth_url); ?>" class="tc-button secondary"><?php esc_html_e('Reconnect', 'tcgiant-sync'); ?></a>
-				<?php else: ?>
-					<a href="<?php echo esc_url($auth_url); ?>" class="tc-button success"><?php esc_html_e('Connect to eBay', 'tcgiant-sync'); ?></a>
-				<?php endif; ?>
+				<a href="<?php echo esc_url( admin_url( 'admin.php?page=tcgiant-import' ) ); ?>" class="tc-button secondary"><?php esc_html_e( 'Import →', 'tcgiant-sync' ); ?></a>
 			</div>
 		</div>
 
-		<!-- License -->
-		<div class="tc-top-card" id="tc-license-section">
+		<!-- Export Status Card -->
+		<div class="tc-top-card">
 			<div class="tc-top-card-left">
-				<span class="dashicons dashicons-awards tc-top-card-icon"></span>
+				<span class="dashicons dashicons-upload tc-top-card-icon"></span>
 				<div class="tc-top-card-text">
-					<h3><?php esc_html_e('License Status', 'tcgiant-sync'); ?></h3>
-					<?php if ($license_ui['is_pro']): ?>
-						<p><span class="dashicons dashicons-yes-alt" style="color: var(--tc-success); font-size:13px; width:13px; height:13px; vertical-align:text-bottom;"></span> <?php esc_html_e('Pro License Active', 'tcgiant-sync'); ?> <?php if ($license_ui['variant'] === 'lifetime'): ?><span class="tc-lifetime-badge" style="margin-left:4px;"><?php esc_html_e('Lifetime', 'tcgiant-sync'); ?></span><?php endif; ?></p>
-					<?php else: ?>
-						<p><?php esc_html_e('Free Tier (Max 50 Products)', 'tcgiant-sync'); ?></p>
-					<?php endif; ?>
-				</div>
-			</div>
-			<div class="tc-top-card-right" style="position: relative;">
-				<?php if ($license_ui['is_pro']): ?>
-					<button type="button" class="tc-button secondary" id="tc-deactivate-license"><?php esc_html_e('Deactivate', 'tcgiant-sync'); ?></button>
-				<?php else: ?>
-					<div style="display:flex; flex-direction:column; align-items:flex-end;">
-						<div class="tc-license-row" style="margin:0; width:260px;">
-							<input type="text" class="tc-input" id="tc-license-key" placeholder="<?php esc_attr_e('Enter license key...', 'tcgiant-sync'); ?>" autocomplete="off" style="padding: 7px 10px;">
-							<button type="button" class="tc-button" id="tc-activate-license" style="padding: 7px 14px;"><?php esc_html_e('Activate', 'tcgiant-sync'); ?></button>
-						</div>
-						<div id="tc-license-message" class="tc-license-msg" style="display:none; position:absolute; top:40px; right:0; width:100%; box-sizing:border-box; z-index:10;"></div>
-						<a href="<?php echo esc_url($license_ui['upgrade_url']); ?>" target="_blank" rel="noopener" style="font-size:11px; margin-top:6px; color:var(--tc-primary); text-decoration:none; display:flex; align-items:center; gap:3px; font-weight:600;">
-							<span class="dashicons dashicons-external" style="font-size:12px; width:12px; height:12px;"></span> <?php esc_html_e('Get TCGiant Sync Pro - $49/yr', 'tcgiant-sync'); ?>
-						</a>
-					</div>
-				<?php endif; ?>
-			</div>
-		</div>
-	</div>
-
-	<!-- - - -  ROW 2: SETTINGS & OPERATIONS (2 columns) - - -  -->
-	<div class="tc-row-2col">
-
-		<!-- ─── SETTINGS ─── -->
-		<div class="tc-card">
-			<h2><span class="dashicons dashicons-admin-settings"></span><?php esc_html_e('Sync Settings', 'tcgiant-sync'); ?></h2>
-			
-			<form method="post" action="options.php">
-				<?php settings_fields('tcgiant_sync_ebay_group'); ?>
-				<?php
-				$preserve_keys = array('access_token', 'refresh_token', 'token_expiry', 'relay_secret', 'redirect_uri', 'app_id', 'cert_id', 'store_name', 'import_status');
-				foreach ($preserve_keys as $key) {
-					if (!empty($settings[$key])) {
-						echo '<input type="hidden" name="tcgiant_sync_ebay_settings[' . esc_attr($key) . ']" value="' . esc_attr($settings[$key]) . '">';
-					}
-				}
-				?>
-
-				<!-- Category Filter -->
-				<div class="tc-section" style="padding-top:0; border-top:none; margin-top:0;">
-					<h3 class="tc-section-title"><?php esc_html_e('Import Filters', 'tcgiant-sync'); ?></h3>
-					<div class="tc-field">
-						<label class="tc-label"><?php esc_html_e('eBay Store Categories', 'tcgiant-sync'); ?></label>
-						<div class="tc-category-selector" id="tc-category-selector">
-							<div class="tc-category-tags" id="tc-category-tags"></div>
-							<input type="hidden" name="tcgiant_sync_ebay_settings[category_ids]" id="tc-category-hidden"
-								value="<?php echo esc_attr($settings['category_ids'] ?? ''); ?>">
-							<div style="display: flex; gap: 6px;">
-								<select class="tc-select" id="tc-category-dropdown" style="display:none;">
-									<option value=""><?php esc_html_e('- Select a category -', 'tcgiant-sync'); ?>
-									</option>
-								</select>
-								<button type="button" class="tc-button secondary" id="tc-load-categories"
-									style="white-space:nowrap; flex-shrink:0; font-size:12px;"><?php esc_html_e('Load eBay Categories', 'tcgiant-sync'); ?></button>
-							</div>
-							<p class="tc-hint">
-								<?php esc_html_e('Load your store categories, then select which ones to import. Leave empty to import all.', 'tcgiant-sync'); ?>
-							</p>
-						</div>
-					</div>
-
-					<div class="tc-field" style="margin-top: 24px;">
-						<label class="tc-label"><?php esc_html_e('WooCommerce Sync Categories', 'tcgiant-sync'); ?></label>
-						<?php
-							$woo_cats = get_terms( array( 'taxonomy' => 'product_cat', 'hide_empty' => false ) );
-							$selected_woo_cats = isset( $settings['woo_category_ids'] ) && is_array( $settings['woo_category_ids'] ) ? $settings['woo_category_ids'] : array();
-						?>
-						<div class="tc-checkbox-group" style="max-height: 160px; overflow-y: auto; border: 1px solid var(--tc-border); padding: 12px; border-radius: 4px; background: #fff;">
-							<?php if ( ! empty( $woo_cats ) && ! is_wp_error( $woo_cats ) ) : ?>
-								<?php foreach ( $woo_cats as $cat ) : ?>
-									<label style="display: block; margin-bottom: 6px; font-weight: normal; cursor: pointer;">
-										<input type="checkbox" name="tcgiant_sync_ebay_settings[woo_category_ids][]" value="<?php echo esc_attr( $cat->term_id ); ?>" <?php checked( in_array( $cat->term_id, $selected_woo_cats ) ); ?>>
-										<?php echo esc_html( $cat->name ); ?>
-									</label>
-								<?php endforeach; ?>
-							<?php else: ?>
-								<p style="margin:0; font-size: 13px; color: #666;"><?php esc_html_e('No WooCommerce categories found.', 'tcgiant-sync'); ?></p>
-							<?php endif; ?>
-						</div>
-						<p class="tc-hint" style="margin-top: 8px;">
-							<?php esc_html_e('Select which WooCommerce categories should push inventory to eBay when sold. If none are selected, ALL items will try to sync.', 'tcgiant-sync'); ?>
-						</p>
-					</div>
-				</div>
-
-				<!-- Scheduling -->
-				<div class="tc-section">
-					<h3 class="tc-section-title"><?php esc_html_e('Scheduling', 'tcgiant-sync'); ?></h3>
-					<div class="tc-field">
-						<label class="tc-label"
-							for="ebay_sync_interval"><?php esc_html_e('Auto-Sync Interval', 'tcgiant-sync'); ?></label>
-						<select name="tcgiant_sync_ebay_settings[sync_interval]" id="ebay_sync_interval"
-							class="tc-select">
-							<option value="disabled" <?php selected($settings['sync_interval'] ?? 'disabled', 'disabled'); ?>><?php esc_html_e('Disabled (Manual Only)', 'tcgiant-sync'); ?>
-							</option>
-							<option value="tcgiant_15mins" <?php selected($settings['sync_interval'] ?? 'disabled', 'tcgiant_15mins'); ?>><?php esc_html_e('Every 15 Minutes', 'tcgiant-sync'); ?>
-							</option>
-							<option value="tcgiant_hourly" <?php selected($settings['sync_interval'] ?? 'disabled', 'tcgiant_hourly'); ?>><?php esc_html_e('Hourly', 'tcgiant-sync'); ?></option>
-							<option value="twicedaily" <?php selected($settings['sync_interval'] ?? 'disabled', 'twicedaily'); ?>><?php esc_html_e('Twice Daily', 'tcgiant-sync'); ?></option>
-							<option value="daily" <?php selected($settings['sync_interval'] ?? 'disabled', 'daily'); ?>>
-								<?php esc_html_e('Daily', 'tcgiant-sync'); ?>
-							</option>
-						</select>
-					</div>
-
-					<div class="tc-field">
-						<label
-							class="tc-label"><?php esc_html_e('Reduce WooCommerce stock on eBay sale?', 'tcgiant-sync'); ?></label>
-						<div class="tc-radio-group">
-							<label><input type="radio" name="tcgiant_sync_ebay_settings[enable_order_sync]" value="1"
-									<?php checked($settings['enable_order_sync'] ?? '0', '1'); ?>> Yes</label>
-							<label><input type="radio" name="tcgiant_sync_ebay_settings[enable_order_sync]" value="0"
-									<?php checked($settings['enable_order_sync'] ?? '0', '0'); ?>> No</label>
-						</div>
-					</div>
-				</div>
-
-				<!-- Field Map Overwrites -->
-				<div class="tc-section">
-					<h3 class="tc-section-title"><?php esc_html_e('Data Mapping (Existing Products)', 'tcgiant-sync'); ?></h3>
-					<p class="tc-hint" style="margin-bottom:12px;">
-						<?php esc_html_e('What should happen when an existing product gets re-synced? (Stock is always updated from eBay).', 'tcgiant-sync'); ?>
-					</p>
-
-					<div class="tc-field">
-						<label class="tc-label"><?php esc_html_e('Overwrite Title', 'tcgiant-sync'); ?></label>
-						<div class="tc-radio-group">
-							<label><input type="radio" name="tcgiant_sync_ebay_settings[overwrite_title]" value="1" <?php checked( $settings['overwrite_title'] ?? '0', '1' ); ?>> Yes</label>
-							<label><input type="radio" name="tcgiant_sync_ebay_settings[overwrite_title]" value="0" <?php checked( $settings['overwrite_title'] ?? '0', '0' ); ?>> No</label>
-						</div>
-					</div>
-
-					<div class="tc-field">
-						<label class="tc-label"><?php esc_html_e('Overwrite Description', 'tcgiant-sync'); ?></label>
-						<div class="tc-radio-group">
-							<label><input type="radio" name="tcgiant_sync_ebay_settings[overwrite_desc]" value="1" <?php checked( $settings['overwrite_desc'] ?? '0', '1' ); ?>> Yes</label>
-							<label><input type="radio" name="tcgiant_sync_ebay_settings[overwrite_desc]" value="0" <?php checked( $settings['overwrite_desc'] ?? '0', '0' ); ?>> No (Recommended)</label>
-						</div>
-					</div>
-
-					<div class="tc-field">
-						<label class="tc-label"><?php esc_html_e('Overwrite Price', 'tcgiant-sync'); ?></label>
-						<div class="tc-radio-group">
-							<label><input type="radio" name="tcgiant_sync_ebay_settings[overwrite_price]" value="1" <?php checked( $settings['overwrite_price'] ?? '1', '1' ); ?>> Yes</label>
-							<label><input type="radio" name="tcgiant_sync_ebay_settings[overwrite_price]" value="0" <?php checked( $settings['overwrite_price'] ?? '1', '0' ); ?>> No</label>
-						</div>
-					</div>
-					
-					<div class="tc-field">
-						<label class="tc-label"><?php esc_html_e('Overwrite Images', 'tcgiant-sync'); ?></label>
-						<div class="tc-radio-group">
-							<label><input type="radio" name="tcgiant_sync_ebay_settings[overwrite_images]" value="1" <?php checked( $settings['overwrite_images'] ?? '0', '1' ); ?>> Yes</label>
-							<label><input type="radio" name="tcgiant_sync_ebay_settings[overwrite_images]" value="0" <?php checked( $settings['overwrite_images'] ?? '0', '0' ); ?>> No (Recommended)</label>
-						</div>
-					</div>
-
-					<div class="tc-field">
-						<label class="tc-label"><?php esc_html_e('Overwrite Categories & Tags', 'tcgiant-sync'); ?></label>
-						<div class="tc-radio-group">
-							<label><input type="radio" name="tcgiant_sync_ebay_settings[overwrite_taxonomy]" value="1" <?php checked( $settings['overwrite_taxonomy'] ?? '0', '1' ); ?>> Yes</label>
-							<label><input type="radio" name="tcgiant_sync_ebay_settings[overwrite_taxonomy]" value="0" <?php checked( $settings['overwrite_taxonomy'] ?? '0', '0' ); ?>> No</label>
-						</div>
-					</div>
-				</div>
-
-				<div class="tc-form-footer" style="padding-top: 16px; margin-top: 16px; border-top: 1px solid var(--tc-border);">
-					<button type="submit"
-						class="tc-button full-width" style="font-size:14px; padding: 12px 20px;"><?php esc_html_e('Save Settings', 'tcgiant-sync'); ?></button>
-				</div>
-			</form>
-		</div>
-
-		<!-- ─── OPERATIONS ─── -->
-		<div class="tc-card">
-			<h2><span class="dashicons dashicons-performance"></span><?php esc_html_e('Operations', 'tcgiant-sync'); ?></h2>
-			
-			<!-- Usage Meter -->
-			<div class="tc-section tc-usage-section">
-				<h3 class="tc-section-title"><?php esc_html_e('Import Usage', 'tcgiant-sync'); ?></h3>
-				<div class="tc-usage-meter" id="tc-usage-meter">
-					<?php if ($license_ui['is_pro']): ?>
-						<div class="tc-usage-pro">
-							<span class="dashicons dashicons-yes-alt" style="color: var(--tc-success);"></span>
-							<span><strong><?php echo esc_html($license_ui['active_count']); ?></strong>
-								<?php esc_html_e('active products', 'tcgiant-sync'); ?> -
-								<em><?php esc_html_e('Unlimited', 'tcgiant-sync'); ?></em></span>
-						</div>
-					<?php else: ?>
-						<div class="tc-usage-bar-wrap">
-							<div class="tc-usage-counts">
-								<span><strong
-										id="tc-usage-count"><?php echo esc_html($license_ui['active_count']); ?></strong>
-									/ <?php echo esc_html($license_ui['free_limit']); ?>
-									<?php esc_html_e('products', 'tcgiant-sync'); ?></span>
-								<span class="tc-usage-remaining"
-									id="tc-usage-remaining"><?php echo esc_html($license_ui['remaining']); ?>
-									<?php esc_html_e('remaining', 'tcgiant-sync'); ?></span>
-							</div>
-							<div class="tc-usage-bar">
-								<div class="tc-usage-fill <?php echo $license_ui['usage_pct'] >= 90 ? 'tc-usage-critical' : ($license_ui['usage_pct'] >= 70 ? 'tc-usage-warning' : ''); ?>"
-									id="tc-usage-fill" style="width: <?php echo esc_attr($license_ui['usage_pct']); ?>%;">
-								</div>
-							</div>
-						</div>
-						<?php if ($license_ui['usage_pct'] >= 80): ?>
-							<div class="tc-upgrade-nudge">
-								<p><?php esc_html_e('Running low on import slots!', 'tcgiant-sync'); ?></p>
-								<a href="<?php echo esc_url($license_ui['upgrade_url']); ?>" target="_blank" rel="noopener"
-									class="tc-button tc-upgrade-btn">
-									<span class="dashicons dashicons-superhero-alt" style="font-size:16px;"></span>
-									<?php esc_html_e('Upgrade to Pro', 'tcgiant-sync'); ?>
-								</a>
-							</div>
+					<h3><?php esc_html_e( 'Export Status', 'tcgiant-sync' ); ?></h3>
+					<p>
+						<strong><?php echo esc_html( $export_state['total_pushed'] ?? '0' ); ?></strong> <?php esc_html_e( 'pushed to eBay', 'tcgiant-sync' ); ?>
+						<?php if ( ! empty( $export_state['last_completed'] ) ) : ?>
+							&nbsp;·&nbsp; <?php echo esc_html( 'Last: ' . $export_state['last_completed'] ); ?>
 						<?php endif; ?>
-					<?php endif; ?>
+					</p>
 				</div>
 			</div>
-
-			<!-- Actions -->
-			<?php if ($is_authenticated): ?>
-				<div class="tc-section">
-					<h3 class="tc-section-title"><?php esc_html_e('Fetch Inventory', 'tcgiant-sync'); ?></h3>
-					<p class="tc-section-desc">
-						<?php esc_html_e('Scan your eBay store and queue matching items for import into WooCommerce.', 'tcgiant-sync'); ?>
-					</p>
-					<?php if (!$license_ui['can_import']): ?>
-						<div class="tc-limit-reached-inline">
-							<span class="dashicons dashicons-lock" style="color: var(--tc-warning);"></span>
-							<span><?php esc_html_e('Import limit reached. Upgrade to continue.', 'tcgiant-sync'); ?></span>
-						</div>
-					<?php endif; ?>
-					<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
-						<input type="hidden" name="action" value="tcgiant_sync_now">
-						<?php wp_nonce_field('tcgiant_sync_now'); ?>
-						<button type="submit" class="tc-button full-width" id="tc-fetch-btn" <?php echo !$license_ui['can_import'] ? 'disabled style="opacity:0.5; cursor:not-allowed;"' : ''; ?>>
-							<span class="dashicons dashicons-download" style="font-size:16px;"></span>
-							<?php esc_html_e('Fetch Inventory', 'tcgiant-sync'); ?>
-						</button>
-					</form>
-				</div>
-
-				<div class="tc-section">
-					<h3 class="tc-section-title"><?php esc_html_e('Clean Sold Items', 'tcgiant-sync'); ?></h3>
-					<p class="tc-section-desc">
-						<?php esc_html_e('Runs a full sync to verify active listings and removes WooCommerce products that are no longer active on eBay.', 'tcgiant-sync'); ?>
-					</p>
-					<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
-						<input type="hidden" name="action" value="tcgiant_sync_now">
-						<?php wp_nonce_field('tcgiant_sync_now'); ?>
-						<button type="submit" class="tc-button secondary full-width">
-							<span class="dashicons dashicons-trash" style="font-size:16px;"></span>
-							<?php esc_html_e('Prune Inventory', 'tcgiant-sync'); ?>
-						</button>
-					</form>
-				</div>
-
-				<div class="tc-section">
-					<h3 class="tc-section-title"><?php esc_html_e('Process Queue', 'tcgiant-sync'); ?></h3>
-					<p class="tc-section-desc">
-						<?php esc_html_e('Force-run any pending background jobs immediately instead of waiting for WordPress cron.', 'tcgiant-sync'); ?>
-					</p>
-					<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
-						<input type="hidden" name="action" value="tcgiant_force_queue">
-						<?php wp_nonce_field('tcgiant_force_queue'); ?>
-						<button type="submit" class="tc-button secondary full-width">
-							<span class="dashicons dashicons-controls-play" style="font-size:16px;"></span>
-							<?php esc_html_e('Process Queue', 'tcgiant-sync'); ?>
-						</button>
-					</form>
-				</div>
-
-				<div class="tc-section">
-					<h3 class="tc-section-title tc-danger-text"><?php esc_html_e('Emergency Stop', 'tcgiant-sync'); ?></h3>
-					<p class="tc-section-desc">
-						<?php esc_html_e('Immediately cancel all pending and scheduled sync jobs. This cannot be undone.', 'tcgiant-sync'); ?>
-					</p>
-					<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>"
-						onsubmit="return confirm('Stop all sync jobs?');">
-						<input type="hidden" name="action" value="tcgiant_stop_sync">
-						<?php wp_nonce_field('tcgiant_stop_sync'); ?>
-						<button type="submit" class="tc-button danger full-width">
-							<span class="dashicons dashicons-dismiss" style="font-size:16px;"></span>
-							<?php esc_html_e('STOP SYNC', 'tcgiant-sync'); ?>
-						</button>
-					</form>
-				</div>
-			<?php else: ?>
-				<div class="tc-section">
-					<p class="tc-section-desc">
-						<?php esc_html_e('Connect your eBay account to access sync operations.', 'tcgiant-sync'); ?>
-					</p>
-					<a href="<?php echo esc_url($auth_url); ?>"
-						class="tc-button success full-width"><?php esc_html_e('Connect to eBay', 'tcgiant-sync'); ?></a>
-				</div>
-			<?php endif; ?>
+			<div class="tc-top-card-right">
+				<a href="<?php echo esc_url( admin_url( 'admin.php?page=tcgiant-export' ) ); ?>" class="tc-button secondary"><?php esc_html_e( 'Push →', 'tcgiant-sync' ); ?></a>
+			</div>
 		</div>
 	</div>
 
-	<!-- - - -  ROW 3: SYSTEM HEALTH + SYNC STATUS (2 columns) - - -  -->
+	<!-- ─── SYSTEM HEALTH + LOG ─── -->
 	<div class="tc-row-2col">
 
-		<!-- ─── SYSTEM HEALTH ─── -->
+		<!-- System Health -->
 		<div class="tc-card">
-			<h2><span class="dashicons dashicons-heart"></span><?php esc_html_e('System Health', 'tcgiant-sync'); ?></h2>
+			<h2><span class="dashicons dashicons-heart"></span> <?php esc_html_e( 'System Health', 'tcgiant-sync' ); ?></h2>
 			<div class="health-list">
-				<?php foreach ($health as $key => $metric): ?>
+				<?php foreach ( $health as $metric ) : ?>
 					<div class="health-item">
-						<span class="health-label"><?php echo esc_html($metric['label']); ?></span>
-						<span class="status-badge <?php echo esc_attr($metric['status']); ?>">
-							<?php echo esc_html($metric['text']); ?>
-						</span>
+						<span class="health-label"><?php echo esc_html( $metric['label'] ); ?></span>
+						<span class="status-badge <?php echo esc_attr( $metric['status'] ); ?>"><?php echo esc_html( $metric['text'] ); ?></span>
 					</div>
 				<?php endforeach; ?>
 				<div class="health-item">
-					<span class="health-label"><?php esc_html_e('License', 'tcgiant-sync'); ?></span>
+					<span class="health-label"><?php esc_html_e( 'eBay Connection', 'tcgiant-sync' ); ?></span>
+					<span class="status-badge <?php echo $is_authenticated ? 'active' : 'error'; ?>">
+						<?php echo $is_authenticated ? esc_html( $settings['store_name'] ?? 'Connected' ) : esc_html__( 'Not Connected', 'tcgiant-sync' ); ?>
+					</span>
+				</div>
+				<div class="health-item">
+					<span class="health-label"><?php esc_html_e( 'License', 'tcgiant-sync' ); ?></span>
 					<span class="status-badge <?php echo $license_ui['is_pro'] ? 'active' : 'warning'; ?>">
-						<?php echo $license_ui['is_pro'] ? esc_html__('Pro Active', 'tcgiant-sync') : esc_html__('Free Tier', 'tcgiant-sync'); ?>
+						<?php echo $license_ui['is_pro'] ? esc_html__( 'Pro Active', 'tcgiant-sync' ) : esc_html__( 'Free Tier', 'tcgiant-sync' ); ?>
+					</span>
+				</div>
+				<div class="health-item">
+					<span class="health-label"><?php esc_html_e( 'Export Policies', 'tcgiant-sync' ); ?></span>
+					<?php
+					$policies_ok = ! empty( $settings['export_fulfillment_policy'] )
+					            && ! empty( $settings['export_return_policy'] )
+					            && ! empty( $settings['export_payment_policy'] );
+					?>
+					<span class="status-badge <?php echo $policies_ok ? 'active' : 'warning'; ?>">
+						<?php echo $policies_ok ? esc_html__( 'Configured', 'tcgiant-sync' ) : esc_html__( 'Not Set', 'tcgiant-sync' ); ?>
 					</span>
 				</div>
 			</div>
+
+			<!-- Quick Links -->
+			<div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--tc-border);display:flex;flex-wrap:wrap;gap:8px;">
+				<a href="<?php echo esc_url( admin_url( 'admin.php?page=tcgiant-import' ) ); ?>" class="tc-button secondary" style="flex:1;text-align:center;font-size:12px;">
+					<span class="dashicons dashicons-download" style="font-size:14px;"></span> <?php esc_html_e( 'Import', 'tcgiant-sync' ); ?>
+				</a>
+				<a href="<?php echo esc_url( admin_url( 'admin.php?page=tcgiant-export' ) ); ?>" class="tc-button secondary" style="flex:1;text-align:center;font-size:12px;">
+					<span class="dashicons dashicons-upload" style="font-size:14px;"></span> <?php esc_html_e( 'Push to eBay', 'tcgiant-sync' ); ?>
+				</a>
+				<a href="<?php echo esc_url( admin_url( 'admin.php?page=tcgiant-settings' ) ); ?>" class="tc-button secondary" style="flex:1;text-align:center;font-size:12px;">
+					<span class="dashicons dashicons-admin-settings" style="font-size:14px;"></span> <?php esc_html_e( 'Settings', 'tcgiant-sync' ); ?>
+				</a>
+			</div>
 		</div>
 
-		<!-- ─── SYNC STATUS (Live) ─── -->
-		<div class="tc-card">
-			<h2><span class="dashicons dashicons-update"></span><?php esc_html_e('Sync Status', 'tcgiant-sync'); ?></h2>
-
-			<!-- Status Indicator -->
-			<div class="tc-sync-indicator">
-				<div class="tc-sync-dot <?php echo esc_attr($sync_state['status']); ?>"></div>
-				<div>
-					<div class="tc-sync-status" id="tc-hero-status">
-						<?php
-						switch ($sync_state['status']) {
-							case 'scanning':
-								echo 'Scanning eBay...';
-								break;
-							case 'importing':
-								echo 'Importing...';
-								break;
-							case 'complete':
-								echo 'Complete';
-								break;
-							case 'stopped':
-								echo 'Stopped';
-								break;
-							case 'error':
-								echo 'Error';
-								break;
-							case 'limit_reached':
-								echo 'Import Limit Reached';
-								break;
-							default:
-								echo 'Idle';
-						}
-						?>
-					</div>
-					<div class="tc-sync-detail" id="tc-hero-detail">
-						<?php
-						if ('scanning' === $sync_state['status']) {
-							echo 'Page ' . esc_html($sync_state['current_page']) . ($sync_state['total_pages'] ? '/' . esc_html($sync_state['total_pages']) : '');
-							echo ' - ' . esc_html($sync_state['filter_name']);
-							echo ' - ' . esc_html($sync_state['filter_name']);
-						} elseif ('importing' === $sync_state['status']) {
-							echo esc_html($sync_state['total_processed']) . '/' . esc_html($sync_state['total_queued']) . ' items';
-						} elseif ('complete' === $sync_state['status']) {
-							echo esc_html($sync_state['total_processed']) . ' imported, ' . esc_html($sync_state['total_errors']) . ' errors';
-						} elseif ('limit_reached' === $sync_state['status']) {
-							echo sprintf(
-								/* translators: %1$d: Number of active products, %2$d: Maximum free limit */
-								esc_html__('%1$d/%2$d products - Upgrade to Pro for unlimited', 'tcgiant-sync'),
-								absint($license_ui['active_count']),
-								absint($license_ui['free_limit'])
-							);
-						} elseif (!empty($sync_state['last_completed'])) {
-							echo 'Last: ' . esc_html($sync_state['last_completed']);
-						} else {
-							echo 'No sync has run yet.';
-						}
-						?>
-					</div>
-				</div>
-			</div>
-
-			<?php if ('limit_reached' === $sync_state['status']): ?>
-				<div class="tc-limit-reached-card">
-					<p><?php esc_html_e('You\'ve reached the free tier limit of 50 active products. Upgrade to TCGiant Sync Pro for unlimited imports.', 'tcgiant-sync'); ?>
-					</p>
-					<a href="<?php echo esc_url($license_ui['upgrade_url']); ?>" target="_blank" rel="noopener"
-						class="tc-button tc-upgrade-btn full-width">
-						<span class="dashicons dashicons-superhero-alt" style="font-size:16px;"></span>
-						<?php esc_html_e('Upgrade to Pro - $49/year', 'tcgiant-sync'); ?>
-					</a>
-				</div>
-			<?php endif; ?>
-
-			<!-- Progress Bar -->
-			<div id="tc-progress" class="tc-progress-wrap"
-				style="display: <?php echo 'importing' === $sync_state['status'] ? 'block' : 'none'; ?>;">
-				<?php
-				$pct = 0;
-				if ($sync_state['total_queued'] > 0) {
-					$pct = round((($sync_state['total_processed'] + $sync_state['total_errors']) / $sync_state['total_queued']) * 100);
-				}
-				?>
-				<div class="tc-progress-bar">
-					<div class="tc-progress-fill" style="width: <?php echo esc_attr($pct); ?>%;"></div>
-				</div>
-				<div class="tc-progress-text"><?php echo esc_html($pct); ?>%</div>
-			</div>
-
-			<!-- Counters -->
-			<div class="tc-sync-stats">
-				<div class="tc-mini-stat">
-					<span class="tc-mini-val"
-						id="tc-stat-synced"><?php echo esc_html($stats['synced_products']); ?></span>
-					<span class="tc-mini-label">Products</span>
-				</div>
-				<div class="tc-mini-stat">
-					<span class="tc-mini-val"
-						id="tc-stat-queued"><?php echo esc_html($sync_state['total_queued'] ?: '0'); ?></span>
-					<span class="tc-mini-label">Queued</span>
-				</div>
-				<div class="tc-mini-stat">
-					<span class="tc-mini-val"
-						id="tc-stat-pending"><?php echo esc_html($stats['pending_jobs']); ?></span>
-					<span class="tc-mini-label">Pending</span>
-				</div>
-			</div>
-
-			<?php if (!empty($sync_state['last_item_title']) && in_array($sync_state['status'], array('importing', 'complete'), true)): ?>
-				<div class="tc-last-item">
-					<span class="tc-mini-label">Latest:</span>
-					<span id="tc-last-item-title"><?php echo esc_html($sync_state['last_item_title']); ?></span>
-				</div>
-			<?php endif; ?>
-		</div>
-	</div>
-
-	<!-- - - -  ROW 4: ACTIVITY LOG (1 column) - - -  -->
-	<div class="tc-row-1col">
-		<!-- ─── ACTIVITY LOG ─── -->
+		<!-- Activity Log -->
 		<div class="tc-card">
 			<div class="tc-log-header">
-				<h2 style="margin-bottom:0;"><span class="dashicons dashicons-list-view"></span><?php esc_html_e('Activity Log', 'tcgiant-sync'); ?></h2>
-				<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin:0;">
+				<h2 style="margin-bottom:0;"><span class="dashicons dashicons-list-view"></span> <?php esc_html_e( 'Activity Log', 'tcgiant-sync' ); ?></h2>
+				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin:0;">
 					<input type="hidden" name="action" value="tcgiant_clear_log">
-					<?php wp_nonce_field('tcgiant_clear_log'); ?>
-					<button type="submit" class="tc-button secondary" style="font-size:11px; padding: 4px 10px;"><?php esc_html_e('Clear', 'tcgiant-sync'); ?></button>
+					<?php wp_nonce_field( 'tcgiant_clear_log' ); ?>
+					<button type="submit" class="tc-button secondary" style="font-size:11px;padding:4px 10px;"><?php esc_html_e( 'Clear', 'tcgiant-sync' ); ?></button>
 				</form>
 			</div>
 			<div class="tc-log-viewer" id="tc-log-content">
-				<?php if (empty($log_entries)): ?>
-					<div class="tc-log-entry tc-log-empty">
-						<?php esc_html_e('No activity recorded yet.', 'tcgiant-sync'); ?>
-					</div>
-				<?php else: ?>
-					<?php foreach ($log_entries as $entry):
+				<?php if ( empty( $log_entries ) ) : ?>
+					<div class="tc-log-entry tc-log-empty"><?php esc_html_e( 'No activity recorded yet.', 'tcgiant-sync' ); ?></div>
+				<?php else : ?>
+					<?php foreach ( $log_entries as $entry ) :
 						$level_class = '';
 						$icon = '[Log]';
-						switch ($entry['level']) {
-							case 'error':
-								$level_class = 'tc-is-error';
-								$icon = '[X]';
-								break;
-							case 'success':
-								$level_class = 'tc-is-success';
-								$icon = '[OK]';
-								break;
-							case 'warning':
-								$level_class = 'tc-is-warning';
-								$icon = '[!]';
-								break;
+						switch ( $entry['level'] ) {
+							case 'error':   $level_class = 'tc-is-error';   $icon = '[X]';  break;
+							case 'success': $level_class = 'tc-is-success'; $icon = '[OK]'; break;
+							case 'warning': $level_class = 'tc-is-warning'; $icon = '[!]';  break;
 						}
-						?>
-						<div class="tc-log-entry <?php echo esc_attr($level_class); ?>">
-							<span class="tc-log-icon"><?php echo esc_html($icon); ?></span>
-							<span class="tc-log-time"><?php echo esc_html($entry['timestamp']); ?></span>
-							<span class="tc-log-msg"><?php echo esc_html($entry['message']); ?></span>
-						</div>
+					?>
+					<div class="tc-log-entry <?php echo esc_attr( $level_class ); ?>">
+						<span class="tc-log-icon"><?php echo esc_html( $icon ); ?></span>
+						<span class="tc-log-time"><?php echo esc_html( $entry['timestamp'] ); ?></span>
+						<span class="tc-log-msg"><?php echo esc_html( $entry['message'] ); ?></span>
+					</div>
 					<?php endforeach; ?>
 				<?php endif; ?>
 			</div>

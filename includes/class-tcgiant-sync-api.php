@@ -331,4 +331,67 @@ class TCGiant_Sync_API {
 			'filter' => 'creationdate:[' . gmdate( 'Y-m-d\TH:i:s\Z', strtotime( '-24 hours' ) ) . '..]'
 		) );
 	}
+
+	/**
+	 * Create a new eBay listing via Trading API AddItem.
+	 *
+	 * @param string $item_xml The <Item>...</Item> XML block to wrap in the request.
+	 * @return array|WP_Error Parsed API response or error. On success, contains 'ItemID'.
+	 */
+	public function add_item( $item_xml ) {
+		$xml = '<ErrorLanguage>en_US</ErrorLanguage>
+<WarningLevel>High</WarningLevel>
+' . $item_xml;
+		return $this->trading_api_request( 'AddItem', $xml );
+	}
+
+	/**
+	 * Revise an existing eBay listing via Trading API ReviseItem.
+	 *
+	 * @param string $item_xml The <Item>...</Item> XML block to wrap in the request.
+	 *                         Must include <ItemID> inside the block.
+	 * @return array|WP_Error Parsed API response or error.
+	 */
+	public function revise_item( $item_xml ) {
+		$xml = '<ErrorLanguage>en_US</ErrorLanguage>
+<WarningLevel>High</WarningLevel>
+' . $item_xml;
+		return $this->trading_api_request( 'ReviseItem', $xml );
+	}
+
+	/**
+	 * Fetch fulfillment (shipping) policies from eBay Account API.
+	 *
+	 * @param string $marketplace_id eBay marketplace ID, default EBAY_US.
+	 * @return array|WP_Error List of fulfillment policies or error.
+	 */
+	public function get_fulfillment_policies( $marketplace_id = 'EBAY_US' ) {
+		return $this->request( 'sell/account/v1/fulfillment_policy', 'GET', array(), array(
+			'marketplace_id' => $marketplace_id,
+		) );
+	}
+
+	/**
+	 * Fetch return policies from eBay Account API.
+	 *
+	 * @param string $marketplace_id eBay marketplace ID, default EBAY_US.
+	 * @return array|WP_Error List of return policies or error.
+	 */
+	public function get_return_policies( $marketplace_id = 'EBAY_US' ) {
+		return $this->request( 'sell/account/v1/return_policy', 'GET', array(), array(
+			'marketplace_id' => $marketplace_id,
+		) );
+	}
+
+	/**
+	 * Fetch payment policies from eBay Account API.
+	 *
+	 * @param string $marketplace_id eBay marketplace ID, default EBAY_US.
+	 * @return array|WP_Error List of payment policies or error.
+	 */
+	public function get_payment_policies( $marketplace_id = 'EBAY_US' ) {
+		return $this->request( 'sell/account/v1/payment_policy', 'GET', array(), array(
+			'marketplace_id' => $marketplace_id,
+		) );
+	}
 }

@@ -43,14 +43,27 @@ class TCGiant_Sync_Admin {
 		add_action( 'admin_post_tcgiant_clear_log', array( $this, 'handle_clear_log' ) );
 		add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_admin_assets' ) );
 		
-		// AJAX endpoints.
+		// AJAX endpoints — Import.
 		add_action( 'wp_ajax_tcgiant_sync_status', array( $this, 'ajax_sync_status' ) );
 		add_action( 'wp_ajax_tcgiant_get_logs', array( $this, 'ajax_get_logs' ) );
 		add_action( 'wp_ajax_tcgiant_get_store_categories', array( $this, 'ajax_get_store_categories' ) );
 		add_action( 'wp_ajax_tcgiant_activate_license', array( $this, 'ajax_activate_license' ) );
 		add_action( 'wp_ajax_tcgiant_deactivate_license', array( $this, 'ajax_deactivate_license' ) );
 
-		// WooCommerce Product Metabox Hooks
+		// AJAX endpoints — Export.
+		add_action( 'wp_ajax_tcgiant_push_product', array( $this, 'ajax_push_product' ) );
+		add_action( 'wp_ajax_tcgiant_fetch_policies', array( $this, 'ajax_fetch_policies' ) );
+		add_action( 'wp_ajax_tcgiant_export_status', array( $this, 'ajax_export_status' ) );
+
+		// Bulk action on WooCommerce Products list.
+		add_filter( 'bulk_actions-edit-product', array( $this, 'register_bulk_push_action' ) );
+		add_filter( 'handle_bulk_actions-edit-product', array( $this, 'handle_bulk_push_action' ), 10, 3 );
+		add_action( 'admin_notices', array( $this, 'bulk_push_admin_notice' ) );
+
+		// Save per-product export overrides.
+		add_action( 'woocommerce_process_product_meta', array( $this, 'save_product_export_meta' ) );
+
+		// WooCommerce Product Metabox Hooks.
 		add_filter( 'woocommerce_product_data_tabs', array( $this, 'add_sync_log_tab' ) );
 		add_action( 'woocommerce_product_data_panels', array( $this, 'render_sync_log_panel' ) );
 	}
@@ -59,7 +72,13 @@ class TCGiant_Sync_Admin {
 	 * Enqueue admin assets.
 	 */
 	public function enqueue_admin_assets( $hook ) {
-		if ( 'toplevel_page_tcgiant-sync' !== $hook ) {
+		$tc_pages = array(
+			'toplevel_page_tcgiant-sync',
+			'tcgiant-sync_page_tcgiant-import',
+			'tcgiant-sync_page_tcgiant-export',
+			'tcgiant-sync_page_tcgiant-settings',
+		);
+		if ( ! in_array( $hook, $tc_pages, true ) ) {
 			return;
 		}
 
@@ -155,6 +174,42 @@ class TCGiant_Sync_Admin {
 			'dashicons-update',
 			56
 		);
+
+		add_submenu_page(
+			'tcgiant-sync',
+			__( 'Dashboard', 'tcgiant-sync' ),
+			__( 'Dashboard', 'tcgiant-sync' ),
+			'manage_options',
+			'tcgiant-sync',
+			array( $this, 'render_dashboard_page' )
+		);
+
+		add_submenu_page(
+			'tcgiant-sync',
+			__( 'Import from eBay', 'tcgiant-sync' ),
+			__( 'Import from eBay', 'tcgiant-sync' ),
+			'manage_options',
+			'tcgiant-import',
+			array( $this, 'render_import_page' )
+		);
+
+		add_submenu_page(
+			'tcgiant-sync',
+			__( 'Push to eBay', 'tcgiant-sync' ),
+			__( 'Push to eBay', 'tcgiant-sync' ),
+			'manage_options',
+			'tcgiant-export',
+			array( $this, 'render_export_page' )
+		);
+
+		add_submenu_page(
+			'tcgiant-sync',
+			__( 'Settings', 'tcgiant-sync' ),
+			__( 'Settings', 'tcgiant-sync' ),
+			'manage_options',
+			'tcgiant-settings',
+			array( $this, 'render_settings_page' )
+		);
 	}
 
 	/**
@@ -165,11 +220,32 @@ class TCGiant_Sync_Admin {
 	}
 
 	/**
+	 * Render Import from eBay page.
+	 */
+	public function render_import_page() {
+		include_once TCGIANT_SYNC_PATH . 'admin/views/import.php';
+	}
+
+	/**
+	 * Render Push to eBay page.
+	 */
+	public function render_export_page() {
+		include_once TCGIANT_SYNC_PATH . 'admin/views/export.php';
+	}
+
+	/**
+	 * Render Settings page.
+	 */
+	public function render_settings_page() {
+		include_once TCGIANT_SYNC_PATH . 'admin/views/settings.php';
+	}
+
+	/**
 	 * Handle OAuth Callback.
 	 */
 	public function handle_oauth_callback() {
 		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
-		if ( ! isset( $_GET['page'] ) || ( 'tcgiant-sync-settings' !== $_GET['page'] && 'tcgiant-sync' !== $_GET['page'] ) ) {
+		if ( ! isset( $_GET['page'] ) || ! in_array( $_GET['page'], array( 'tcgiant-sync', 'tcgiant-settings' ), true ) ) {
 			return;
 		}
 
@@ -495,6 +571,163 @@ class TCGiant_Sync_Admin {
 		) );
 	}
 
+	// =========================================================================
+	// Export / Push to eBay — Admin Methods
+	// =========================================================================
+
+	/**
+	 * AJAX: Push a single product to eBay from the product edit screen.
+	 */
+	public function ajax_push_product() {
+		check_ajax_referer( 'tcgiant_sync_ajax' );
+
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'Unauthorized.' ) );
+		}
+
+		$product_id = isset( $_POST['product_id'] ) ? (int) $_POST['product_id'] : 0;
+		if ( ! $product_id ) {
+			wp_send_json_error( array( 'message' => 'Invalid product ID.' ) );
+		}
+
+		$exporter = TCGiant_Sync_Exporter::instance();
+		$queued   = $exporter->push_product( $product_id );
+
+		if ( $queued ) {
+			wp_send_json_success( array( 'message' => 'Product queued for push to eBay. Check the Activity Log for results.' ) );
+		} else {
+			wp_send_json_error( array( 'message' => 'Could not queue product. It may not exist.' ) );
+		}
+	}
+
+	/**
+	 * AJAX: Fetch business policies from eBay and return as JSON.
+	 */
+	public function ajax_fetch_policies() {
+		check_ajax_referer( 'tcgiant_sync_ajax' );
+
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'Unauthorized.' ) );
+		}
+
+		if ( ! TCGiant_Sync_OAuth::instance()->is_authenticated() ) {
+			wp_send_json_error( array( 'message' => 'Not connected to eBay.' ) );
+		}
+
+		// Bust cache so we always get fresh data on explicit refresh.
+		TCGiant_Sync_Exporter::clear_policy_cache();
+
+		$fulfillment = TCGiant_Sync_Exporter::get_policies( 'fulfillment' );
+		$return      = TCGiant_Sync_Exporter::get_policies( 'return' );
+		$payment     = TCGiant_Sync_Exporter::get_policies( 'payment' );
+
+		if ( is_wp_error( $fulfillment ) ) {
+			$raw_msg = $fulfillment->get_error_message();
+
+			// 403 means the current OAuth token was issued without the sell.account scope.
+			// The user must re-authenticate via Settings → Reconnect to get a new token.
+			if ( false !== strpos( $raw_msg, '403' ) ) {
+				wp_send_json_error( array(
+					'message' => 'Permission denied (403). Your eBay token was issued without the required account scope. Go to Settings → Reconnect to re-authenticate, then try again.',
+				) );
+			}
+
+			wp_send_json_error( array(
+				'message' => 'Could not fetch policies: ' . $raw_msg . '. If this persists, try reconnecting to eBay via Settings.',
+			) );
+		}
+
+		wp_send_json_success( array(
+			'fulfillment' => is_array( $fulfillment ) ? $fulfillment : array(),
+			'return'      => is_array( $return )      ? $return      : array(),
+			'payment'     => is_array( $payment )     ? $payment     : array(),
+		) );
+	}
+
+	/**
+	 * AJAX: Return current export queue state for dashboard polling.
+	 */
+	public function ajax_export_status() {
+		check_ajax_referer( 'tcgiant_sync_ajax' );
+		wp_send_json_success( array(
+			'state' => TCGiant_Sync_Exporter::get_export_state(),
+		) );
+	}
+
+	/**
+	 * Register "Push to eBay" as a WooCommerce bulk action.
+	 *
+	 * @param array $actions Existing bulk actions.
+	 * @return array
+	 */
+	public function register_bulk_push_action( $actions ) {
+		$actions['tcgiant_push_to_ebay'] = __( 'Push to eBay', 'tcgiant-sync' );
+		return $actions;
+	}
+
+	/**
+	 * Handle the "Push to eBay" bulk action.
+	 *
+	 * @param string $redirect_to Redirect URL.
+	 * @param string $action      Action name.
+	 * @param int[]  $post_ids    Selected product IDs.
+	 * @return string Modified redirect URL.
+	 */
+	public function handle_bulk_push_action( $redirect_to, $action, $post_ids ) {
+		if ( 'tcgiant_push_to_ebay' !== $action ) {
+			return $redirect_to;
+		}
+
+		$exporter = TCGiant_Sync_Exporter::instance();
+		$queued   = $exporter->bulk_push_products( $post_ids );
+
+		return add_query_arg(
+			array(
+				'tcgiant_pushed' => $queued,
+				'post_type'      => 'product',
+			),
+			$redirect_to
+		);
+	}
+
+	/**
+	 * Display admin notice after bulk push is queued.
+	 */
+	public function bulk_push_admin_notice() {
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		if ( ! isset( $_REQUEST['tcgiant_pushed'] ) ) {
+			return;
+		}
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		$count = (int) $_REQUEST['tcgiant_pushed'];
+		echo '<div class="notice notice-success is-dismissible"><p>';
+		printf(
+			/* translators: %d: number of products queued */
+			esc_html( _n( '%d product queued for push to eBay.', '%d products queued for push to eBay.', $count, 'tcgiant-sync' ) ),
+			(int) $count
+		);
+		echo ' <a href="' . esc_url( admin_url( 'admin.php?page=tcgiant-sync' ) ) . '">' . esc_html__( 'View progress →', 'tcgiant-sync' ) . '</a></p></div>';
+	}
+
+	/**
+	 * Save per-product eBay export override fields.
+	 *
+	 * @param int $post_id WooCommerce Product ID.
+	 */
+	public function save_product_export_meta( $post_id ) {
+		if ( ! current_user_can( 'edit_post', $post_id ) ) {
+			return;
+		}
+		// phpcs:disable WordPress.Security.NonceVerification.Missing
+		if ( isset( $_POST['_ebay_export_category_id'] ) ) {
+			update_post_meta( $post_id, '_ebay_export_category_id', sanitize_text_field( wp_unslash( $_POST['_ebay_export_category_id'] ) ) );
+		}
+		if ( isset( $_POST['_ebay_export_condition_id'] ) ) {
+			update_post_meta( $post_id, '_ebay_export_condition_id', sanitize_text_field( wp_unslash( $_POST['_ebay_export_condition_id'] ) ) );
+		}
+		// phpcs:enable WordPress.Security.NonceVerification.Missing
+	}
+
 	/**
 	 * Add custom tab to WooCommerce Product Data metabox.
 	 *
@@ -512,27 +745,101 @@ class TCGiant_Sync_Admin {
 	}
 
 	/**
-	 * Render the custom tab content.
+	 * Render the custom tab content — includes eBay export controls and sync log.
 	 */
 	public function render_sync_log_panel() {
 		global $post;
+		$product_id = $post->ID;
 
 		echo '<div id="tcgiant_sync_log_data" class="panel woocommerce_options_panel hide_if_grouped hide_if_external">';
-		
-		$logs = get_post_meta( $post->ID, '_tcgiant_sync_log', true );
-		
+		echo '<div style="padding:15px;">';
+
+		// ---- Push to eBay Section ----
+		$ebay_item_id   = get_post_meta( $product_id, '_ebay_item_id', true );
+		$export_status  = get_post_meta( $product_id, '_ebay_export_status', true );
+		$export_error   = get_post_meta( $product_id, '_ebay_export_error', true );
+		$last_pushed    = get_post_meta( $product_id, '_ebay_export_last_pushed', true );
+		$cat_override   = get_post_meta( $product_id, '_ebay_export_category_id', true );
+		$cond_override  = get_post_meta( $product_id, '_ebay_export_condition_id', true );
+
+		$global_settings = TCGiant_Sync_OAuth::instance()->get_settings();
+		$global_cat      = $global_settings['export_category_id'] ?? '';
+
+		echo '<div style="border:1px solid #ddd; border-radius:4px; padding:12px; margin-bottom:16px; background:#fafafa;">';
+		echo '<h4 style="margin:0 0 10px; font-size:13px; color:#23282d;">📤 ' . esc_html__( 'Push to eBay', 'tcgiant-sync' ) . '</h4>';
+
+		// eBay listing status.
+		if ( ! empty( $ebay_item_id ) ) {
+			$listing_url = 'https://www.ebay.com/itm/' . esc_attr( $ebay_item_id );
+			echo '<p style="margin:0 0 8px;"><strong>' . esc_html__( 'eBay Item ID:', 'tcgiant-sync' ) . '</strong> ';
+			echo '<a href="' . esc_url( $listing_url ) . '" target="_blank">' . esc_html( $ebay_item_id ) . ' ↗</a>';
+			if ( $last_pushed ) {
+				echo ' <span style="color:#888; font-size:11px;">(' . esc_html__( 'Last pushed:', 'tcgiant-sync' ) . ' ' . esc_html( $last_pushed ) . ')</span>';
+			}
+			echo '</p>';
+		}
+
+		// Export error notice.
+		if ( 'error' === $export_status && ! empty( $export_error ) ) {
+			echo '<p style="color:#cc1818; background:#fff0f0; border:1px solid #fcc; padding:6px 8px; border-radius:3px; font-size:12px; margin:0 0 8px;">';
+			echo '⚠ ' . esc_html( $export_error );
+			echo '</p>';
+		}
+
+		// Per-product overrides.
+		echo '<div style="display:flex; gap:12px; margin-bottom:10px; flex-wrap:wrap;">';
+
+		// Category override.
+		echo '<div style="flex:1; min-width:140px;">';
+		echo '<label style="display:block; font-size:12px; color:#555; margin-bottom:3px;">';
+		echo esc_html__( 'eBay Category ID', 'tcgiant-sync' );
+		if ( $global_cat ) {
+			echo ' <span style="color:#888;">(global: ' . esc_html( $global_cat ) . ')</span>';
+		}
+		echo '</label>';
+		echo '<input type="text" name="_ebay_export_category_id" value="' . esc_attr( $cat_override ) . '" placeholder="' . esc_attr( $global_cat ?: __( 'Use global default', 'tcgiant-sync' ) ) . '" style="width:100%; font-size:12px;">';
+		echo '</div>';
+
+		// Condition override.
+		$conditions = TCGiant_Sync_Exporter::CONDITIONS;
+		$global_cond = $global_settings['export_condition_id'] ?? '1000';
+		echo '<div style="flex:1; min-width:140px;">';
+		echo '<label style="display:block; font-size:12px; color:#555; margin-bottom:3px;">';
+		echo esc_html__( 'Condition', 'tcgiant-sync' );
+		echo ' <span style="color:#888;">(global: ' . esc_html( $conditions[ $global_cond ] ?? $global_cond ) . ')</span>';
+		echo '</label>';
+		echo '<select name="_ebay_export_condition_id" style="width:100%; font-size:12px;">';
+		echo '<option value="">' . esc_html__( '— Use global default —', 'tcgiant-sync' ) . '</option>';
+		foreach ( $conditions as $cid => $clabel ) {
+			echo '<option value="' . esc_attr( $cid ) . '"' . selected( $cond_override, $cid, false ) . '>' . esc_html( $clabel ) . '</option>';
+		}
+		echo '</select>';
+		echo '</div>';
+
+		echo '</div>'; // end flex row
+
+		// Push button.
+		$btn_label = ! empty( $ebay_item_id ) ? __( '↺ Update eBay Listing', 'tcgiant-sync' ) : __( '📤 Push to eBay', 'tcgiant-sync' );
+		echo '<button type="button" id="tcgiant-push-btn" class="button button-primary" data-product-id="' . esc_attr( $product_id ) . '" style="margin-top:4px;">' . esc_html( $btn_label ) . '</button>';
+		echo ' <span id="tcgiant-push-status" style="margin-left:8px; font-size:12px; color:#555;"></span>';
+
+		echo '</div>'; // end push box
+
+		// ---- Sync Log Section ----
+		$logs = get_post_meta( $product_id, '_tcgiant_sync_log', true );
+
 		if ( empty( $logs ) || ! is_array( $logs ) ) {
-			echo '<div style="padding:15px;"><p>' . esc_html__( 'This product has not synced yet, or no sync decisions have been logged.', 'tcgiant-sync' ) . '</p></div>';
+			echo '<p style="color:#888;">' . esc_html__( 'No import sync decisions logged yet.', 'tcgiant-sync' ) . '</p>';
 		} else {
-			echo '<div style="padding:15px; max-height: 400px; overflow-y: auto;">';
-			echo '<p style="margin-top:0;"><strong>' . esc_html__( 'Recent Sync Decisions (Last 20)', 'tcgiant-sync' ) . '</strong></p>';
+			echo '<p style="margin:0 0 6px;"><strong>' . esc_html__( 'Import Sync Log (Last 20)', 'tcgiant-sync' ) . '</strong></p>';
+			echo '<div style="max-height: 300px; overflow-y: auto;">';
 			foreach ( $logs as $entry ) {
-				echo '<div style="margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid #eee;">';
+				echo '<div style="margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid #eee;">';
 				echo '<strong style="color: #666; font-size: 11px;">' . esc_html( $entry['timestamp'] ?? 'Unknown Time' ) . '</strong>';
 				if ( ! empty( $entry['decisions'] ) && is_array( $entry['decisions'] ) ) {
-					echo '<ul style="margin-top: 4px; padding-left: 16px; margin-bottom: 0; list-style-type: disc;">';
+					echo '<ul style="margin-top: 4px; padding-left: 16px; margin-bottom: 0;">';
 					foreach ( $entry['decisions'] as $decision ) {
-						echo '<li>' . esc_html( $decision ) . '</li>';
+						echo '<li style="font-size:12px;">' . esc_html( $decision ) . '</li>';
 					}
 					echo '</ul>';
 				}
@@ -541,6 +848,33 @@ class TCGiant_Sync_Admin {
 			echo '</div>';
 		}
 
-		echo '</div>';
+		echo '</div></div>'; // end padding + panel
+
+		// Inline JS for the Push button.
+		?>
+		<script>
+		(function($){
+			$('#tcgiant-push-btn').on('click', function(){
+				var btn = $(this);
+				var status = $('#tcgiant-push-status');
+				btn.prop('disabled', true);
+				status.text('Saving overrides and queuing push...');
+				// Save post first so override fields are persisted, then trigger push.
+				$.post(ajaxurl, {
+					action: 'tcgiant_push_product',
+					product_id: btn.data('product-id'),
+					_ajax_nonce: '<?php echo esc_js( wp_create_nonce( 'tcgiant_sync_ajax' ) ); ?>'
+				}, function(res){
+					if (res.success) {
+						status.css('color','#2a8a2a').text('✔ ' + res.data.message);
+					} else {
+						status.css('color','#cc1818').text('✖ ' + (res.data ? res.data.message : 'Unknown error'));
+						btn.prop('disabled', false);
+					}
+				});
+			});
+		})(jQuery);
+		</script>
+		<?php
 	}
 }

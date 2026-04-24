@@ -4,11 +4,11 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 1.0.1
+Stable tag: 1.0.2
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
-Sync your eBay TCG listings to WooCommerce automatically. Import products, map categories, and keep inventory in sync.
+Sync your eBay TCG listings to WooCommerce automatically — and push WooCommerce products back to eBay as new listings. Import products, map categories, keep inventory in sync, and create listings in both directions.
 
 == Description ==
 
@@ -22,6 +22,9 @@ TCGiant Sync bridges your eBay store and WooCommerce, enabling automatic import 
 * Real-time inventory synchronization
 * Live sync dashboard with status monitoring
 * Activity logging for troubleshooting
+* **Push to eBay** — create new eBay listings directly from WooCommerce (single product or bulk)
+* Per-product eBay Category and Condition overrides
+* Business Policy management (Shipping, Returns, Payments) with one-click fetch
 
 **Pro Features (requires license key):**
 
@@ -36,8 +39,17 @@ TCGiant Sync bridges your eBay store and WooCommerce, enabling automatic import 
 4. Navigate to **TCGiant Sync** in the admin menu.
 5. Click **Connect to eBay** to authorize your eBay account.
 6. Select your store categories and start syncing!
+7. To push listings to eBay, configure Export Defaults in Settings (Category ID + Business Policies), then use the **Push to eBay** button on any product.
 
 == Frequently Asked Questions ==
+
+= Can I push WooCommerce products to eBay? =
+
+Yes! As of version 1.0.2, TCGiant Sync includes a full export module. Configure your default eBay Category ID and Business Policies in TCGiant Sync → Settings, then use the "Push to eBay" button on any product edit screen, or select multiple products and use the bulk action on the WooCommerce Products list.
+
+= What are eBay Business Policies? =
+
+Business Policies are eBay's system for managing reusable Shipping, Return, and Payment settings across your listings. Your seller account must be enrolled to use the Push to eBay feature. Most accounts are enrolled automatically — if not, you can enroll at bizpolicy.ebay.com.
 
 = Does this plugin require WooCommerce? =
 
@@ -65,8 +77,22 @@ TCGiant Sync is optimized for graded trading card game (TCG) collectibles, inclu
 2. eBay connection settings with one-click OAuth.
 3. Category filter selector for targeted imports.
 4. Live activity log with real-time updates.
+5. Push to eBay export settings with Business Policy selector.
+6. Per-product Push to eBay button with Category and Condition overrides.
 
 == Changelog ==
+
+= 1.0.2 - 2026-04-24 =
+* Feature: Added "Push to eBay" exporter module — create eBay listings directly from WooCommerce.
+* Feature: Bulk push via WooCommerce Products list bulk action (Action Scheduler powered).
+* Feature: Per-product Push to eBay button in the product edit screen (eBay Sync Log tab).
+* Feature: Per-product eBay Category ID and Condition overrides with global defaults fallback.
+* Feature: Export Defaults settings section — default Category ID, Condition, and Business Policy selectors.
+* Feature: One-click Fetch Policies from eBay — populates Shipping, Return, and Payment policy dropdowns live.
+* Feature: Smart re-push detection — updates existing listings via ReviseItem instead of creating duplicates.
+* Feature: eBay Business Policies prerequisite notice with context-aware red warning / blue confirmation states.
+* API: Added Trading API AddItem and ReviseItem support.
+* API: Added REST Account API policy fetching (fulfillment, return, payment).
 
 = 1.0.1 - 2026-04-24 =
 * Fix: Suppressed API error logging for WooCommerce-only items that don't exist on eBay.
@@ -84,8 +110,11 @@ TCGiant Sync is optimized for graded trading card game (TCG) collectibles, inclu
 
 == Upgrade Notice ==
 
+= 1.0.2 =
+Major feature release: Push to eBay exporter module. Create and update eBay listings directly from WooCommerce — individually or in bulk. Requires eBay Business Policies to be enabled on your seller account.
+
 = 1.0.1 =
-* Allows strict WooCommerce-first category sync mapping.
+Allows strict WooCommerce-first category sync mapping.
 
 = 1.0.0 =
 Initial release of TCGiant Sync.

@@ -14,6 +14,7 @@
         initLogPolling();
         initCategorySelector();
         initLicenseManager();
+        initPolicyFetcher();
     });
 
     /* ─── Status Polling ─── */
@@ -305,4 +306,50 @@
         function esc(str) { return $('<span>').text(str).html(); }
     }
 
+    /* ─── Policy Fetcher ─── */
+    function initPolicyFetcher() {
+        var $btn    = $('#tc-fetch-policies');
+        var $status = $('#tc-policy-status');
+        if (!$btn.length) return;
+
+        $btn.on('click', function() {
+            $btn.prop('disabled', true);
+            $status.text('Fetching from eBay…').css('color', '#555');
+
+            $.post(tcgiantSync.ajaxUrl, {
+                action: 'tcgiant_fetch_policies',
+                _ajax_nonce: tcgiantSync.nonce
+            }, function(res) {
+                $btn.prop('disabled', false);
+
+                if (!res.success) {
+                    $status.css('color', '#cc1818').text('✖ ' + (res.data ? res.data.message : 'Failed to fetch policies.'));
+                    return;
+                }
+
+                populatePolicySelect('#tc-policy-fulfillment', res.data.fulfillment);
+                populatePolicySelect('#tc-policy-return',      res.data.return);
+                populatePolicySelect('#tc-policy-payment',     res.data.payment);
+
+                $status.css('color', '#2a8a2a').text('✔ Policies loaded. Select each and save settings.');
+            }).fail(function() {
+                $btn.prop('disabled', false);
+                $status.css('color', '#cc1818').text('✖ Network error.');
+            });
+        });
+
+        function populatePolicySelect(selector, policies) {
+            var $sel = $(selector);
+            var current = $sel.val();
+            $sel.empty().append('<option value="">— Select policy —</option>');
+            if (policies && policies.length) {
+                policies.forEach(function(p) {
+                    var selected = (current && current === p.id) ? ' selected' : '';
+                    $sel.append('<option value="' + p.id + '"' + selected + '>' + p.name + ' (' + p.id + ')</option>');
+                });
+            }
+        }
+    }
+
 })(jQuery);
+
