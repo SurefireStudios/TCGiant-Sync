@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 1.0.0
+Stable tag: 1.0.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -68,6 +68,10 @@ TCGiant Sync is optimized for graded trading card game (TCG) collectibles, inclu
 
 == Changelog ==
 
+= 1.0.1 - 2026-04-24 =
+* Fix: Suppressed API error logging for WooCommerce-only items that don't exist on eBay.
+* Feature: Added WooCommerce category selectors to lock down inventory outgoing sync.
+
 = 1.0.0 - 2026-04-09 =
 * Initial release.
 * eBay OAuth 2.0 connection via secure relay.
@@ -79,6 +83,9 @@ TCGiant Sync is optimized for graded trading card game (TCG) collectibles, inclu
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 1.0.1 =
+* Allows strict WooCommerce-first category sync mapping.
 
 = 1.0.0 =
 Initial release of TCGiant Sync.

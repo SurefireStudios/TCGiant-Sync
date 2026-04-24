@@ -1,5 +1,9 @@
 *** TCGiant Sync Changelog ***
 
+2026-04-24 - version 1.0.1
+* Fix - Suppressed API error logging for WooCommerce-only items that don't exist on eBay.
+* Feature - Added WooCommerce category selectors to lock down inventory outgoing sync.
+
 2026-04-09 - version 1.0.0
 * Added - Initial release.
 * Added - eBay OAuth 2.0 connection via secure relay.
