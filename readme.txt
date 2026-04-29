@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 1.0.2
+Stable tag: 1.0.3
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -82,6 +82,12 @@ TCGiant Sync is optimized for graded trading card game (TCG) collectibles, inclu
 
 == Changelog ==
 
+= 1.0.3 - 2026-04-29 =
+* Feature: "Recent Sales — Sync to eBay" dashboard panel showing last 10 WooCommerce orders with a per-order Push to eBay button.
+* Feature: Direct AJAX order sync — bypasses Action Scheduler and WP-Cron entirely to prevent accidental eBay→WooCommerce re-import side effects.
+* Fix: eBay Trading API now correctly handles qty = 0 — instead of sending an invalid ReviseInventoryStatus request, the listing is ended via EndItem (NotAvailable).
+* API: Added end_item() Trading API method for closing sold-out listings.
+
 = 1.0.2 - 2026-04-24 =
 * Feature: Added "Push to eBay" exporter module — create eBay listings directly from WooCommerce.
 * Feature: Bulk push via WooCommerce Products list bulk action (Action Scheduler powered).
@@ -109,6 +115,9 @@ TCGiant Sync is optimized for graded trading card game (TCG) collectibles, inclu
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 1.0.3 =
+Adds per-order "Sync to eBay" panel to the dashboard. Sold a card on WooCommerce? Click Push to eBay on that order to instantly update eBay stock — no queue, no cron. Also fixes a crash when stock hits 0 (now correctly ends the eBay listing instead of sending an invalid qty=0 API call).
 
 = 1.0.2 =
 Major feature release: Push to eBay exporter module. Create and update eBay listings directly from WooCommerce — individually or in bulk. Requires eBay Business Policies to be enabled on your seller account.

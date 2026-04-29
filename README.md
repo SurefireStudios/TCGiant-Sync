@@ -1,6 +1,6 @@
 # TCGiant Sync
 
-[![Version](https://img.shields.io/badge/Version-1.0.2-orange.svg)](#)
+[![Version](https://img.shields.io/badge/Version-1.0.3-orange.svg)](#)
 [![License: GPL v2+](https://img.shields.io/badge/License-GPL%20v2%2B-blue.svg)](https://www.gnu.org/licenses/gpl-2.0.html)
 [![Requires PHP](https://img.shields.io/badge/PHP-7.4%2B-green.svg)](#)
 [![Tested up to](https://img.shields.io/badge/WordPress-6.9-blue.svg)](#)
@@ -121,6 +121,7 @@ Whether a sale happens on eBay or WooCommerce, stock is adjusted on both platfor
 
 | Version | Date | Highlights |
 |---|---|---|
+| [v1.0.3](../../releases/tag/v1.0.3) | 2026-04-29 | Per-order sale sync dashboard panel, EndItem for qty=0 fix |
 | [v1.0.2](../../releases/tag/v1.0.2) | 2026-04-24 | Push to eBay, multi-page dashboard, Business Policy integration |
 | [v1.0.1](../../releases/tag/v1.0.1) | 2026-04-24 | WooCommerce category sync, silence 404s for local-only products |
 | [v1.0.0](../../releases/tag/v1.0.0) | 2026-04-09 | Initial release |

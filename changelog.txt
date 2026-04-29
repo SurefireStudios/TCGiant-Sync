@@ -1,5 +1,11 @@
 *** TCGiant Sync Changelog ***
 
+2026-04-29 - version 1.0.3
+* Feature - Added "Recent Sales — Sync to eBay" dashboard panel showing the last 10 WooCommerce orders with a per-order Push to eBay button.
+* Feature - Direct AJAX order sync bypasses Action Scheduler and WP-Cron entirely, preventing accidental eBay→WooCommerce re-imports as a side effect.
+* Fix - eBay Trading API qty = 0 error resolved: when WooCommerce stock hits 0 the listing is now ended via EndItem (NotAvailable) instead of sending an invalid ReviseInventoryStatus request.
+* API - Added end_item() Trading API method for closing sold-out eBay listings.
+
 2026-04-24 - version 1.0.2
 * Feature - Added "Push to eBay" exporter module: push WooCommerce products to eBay as brand-new listings directly from the dashboard.
 * Feature - Bulk push support via WooCommerce Products list "Push to eBay" bulk action (powered by Action Scheduler).
