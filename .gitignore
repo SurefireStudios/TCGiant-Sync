@@ -1,3 +1,5 @@
 *.zip
 sync-page-export/
 relay.php
+zips/
+website/

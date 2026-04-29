@@ -289,6 +289,12 @@ class TCGiant_Sync_API {
 	 * @return array|WP_Error API response or error.
 	 */
 	public function update_trading_api_stock( $item_id, $quantity ) {
+		// eBay's ReviseInventoryStatus rejects qty = 0.
+		// When stock is depleted, the correct action is to end the listing.
+		if ( (int) $quantity <= 0 ) {
+			return $this->end_item( $item_id );
+		}
+
 		$xml = '
 <InventoryStatus>
 	<ItemID>' . esc_attr( $item_id ) . '</ItemID>
@@ -296,6 +302,32 @@ class TCGiant_Sync_API {
 </InventoryStatus>';
 
 		return $this->trading_api_request( 'ReviseInventoryStatus', $xml );
+	}
+
+	/**
+	 * End (close) an eBay listing via Trading API EndItem.
+	 *
+	 * Used when WooCommerce stock hits 0 — eBay does not allow setting
+	 * quantity to 0 via ReviseInventoryStatus, so we end the listing instead.
+	 *
+	 * @param string $item_id The eBay Item ID (numeric).
+	 * @return array|WP_Error API response or error.
+	 */
+	public function end_item( $item_id ) {
+		$xml = '
+<ItemID>' . esc_attr( $item_id ) . '</ItemID>
+<EndingReason>NotAvailable</EndingReason>';
+
+		$result = $this->trading_api_request( 'EndItem', $xml );
+
+		if ( ! is_wp_error( $result ) ) {
+			TCGiant_Sync_Logger::log(
+				sprintf( 'eBay listing %s ended (stock = 0).', $item_id ),
+				'success'
+			);
+		}
+
+		return $result;
 	}
 
 	/**

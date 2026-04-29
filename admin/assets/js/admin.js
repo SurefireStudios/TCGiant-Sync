@@ -15,6 +15,7 @@
         initCategorySelector();
         initLicenseManager();
         initPolicyFetcher();
+        initOrderSync();
     });
 
     /* ─── Status Polling ─── */
@@ -349,6 +350,57 @@
                 });
             }
         }
+    }
+
+    /* ─── Order Sync → eBay ─── */
+    function initOrderSync() {
+        $(document).on('click', '.tc-push-order-btn', function() {
+            var $btn     = $(this);
+            var orderId  = $btn.data('order-id');
+            var $row     = $btn.closest('tr');
+            var $result  = $row.find('.tc-order-result');
+
+            $btn.prop('disabled', true).text('Pushing…');
+            $result.hide().text('');
+
+            $.post(tcgiantSync.ajaxUrl, {
+                action:      'tcgiant_sync_order_to_ebay',
+                _ajax_nonce: tcgiantSync.nonce,
+                order_id:    orderId
+            }, function(res) {
+                $btn.prop('disabled', false).html('<span class="dashicons dashicons-yes" style="font-size:13px;vertical-align:middle;"></span> Push to eBay');
+
+                if (!res.success) {
+                    $result.css('color', '#cc1818').text('✖ ' + (res.data ? res.data.message : 'Error')).show();
+                    return;
+                }
+
+                var results = res.data.results || [];
+                if (!results.length) {
+                    $result.css('color', '#888').text('No linked products found.').show();
+                    return;
+                }
+
+                // Build a summary: show after button
+                var success = 0, skipped = 0, errors = 0;
+                var msgs = [];
+                results.forEach(function(r) {
+                    if (r.status === 'success')  { success++; msgs.push('✔ ' + r.product + ': ' + r.message); }
+                    if (r.status === 'skipped')  { skipped++; msgs.push('— ' + r.product + ': ' + r.message); }
+                    if (r.status === 'error')    { errors++;  msgs.push('✖ ' + r.product + ': ' + r.message); }
+                });
+
+                var color = errors > 0 ? '#cc1818' : (success > 0 ? '#2a8a2a' : '#888');
+                var summary = success + ' pushed' + (skipped ? ', ' + skipped + ' skipped' : '') + (errors ? ', ' + errors + ' failed' : '');
+
+                $result.css('color', color).text(summary)
+                       .attr('title', msgs.join('\n'))
+                       .show();
+            }).fail(function() {
+                $btn.prop('disabled', false).html('<span class="dashicons dashicons-yes" style="font-size:13px;vertical-align:middle;"></span> Push to eBay');
+                $result.css('color', '#cc1818').text('✖ Network error').show();
+            });
+        });
     }
 
 })(jQuery);

@@ -39,6 +39,7 @@ class TCGiant_Sync_Admin {
 		add_action( 'admin_init', array( $this, 'register_settings' ) );
 		add_action( 'admin_post_tcgiant_sync_now', array( $this, 'handle_manual_sync' ) );
 		add_action( 'admin_post_tcgiant_force_queue', array( $this, 'handle_force_queue' ) );
+		add_action( 'wp_ajax_tcgiant_sync_order_to_ebay', array( $this, 'ajax_sync_order_to_ebay' ) );
 		add_action( 'admin_post_tcgiant_stop_sync', array( $this, 'handle_stop_sync' ) );
 		add_action( 'admin_post_tcgiant_clear_log', array( $this, 'handle_clear_log' ) );
 		add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_admin_assets' ) );
@@ -124,6 +125,99 @@ class TCGiant_Sync_Admin {
 
 		wp_safe_redirect( admin_url( 'admin.php?page=tcgiant-sync&queue_processed=1' ) );
 		exit;
+	}
+
+	/**
+	 * AJAX: Sync a specific WooCommerce order's stock directly to eBay.
+	 *
+	 * This bypasses Action Scheduler and WP-Cron entirely — it reads the
+	 * order items, gets their current WooCommerce stock, and calls the eBay
+	 * API directly and synchronously. Nothing else runs as a side effect.
+	 */
+	public function ajax_sync_order_to_ebay() {
+		check_ajax_referer( 'tcgiant_sync_ajax' );
+
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'Unauthorized.' ) );
+		}
+
+		$order_id = isset( $_POST['order_id'] ) ? absint( $_POST['order_id'] ) : 0;
+		if ( ! $order_id ) {
+			wp_send_json_error( array( 'message' => 'Invalid order ID.' ) );
+		}
+
+		$order = wc_get_order( $order_id );
+		if ( ! $order ) {
+			wp_send_json_error( array( 'message' => 'Order not found.' ) );
+		}
+
+		$api     = TCGiant_Sync_API::instance();
+		$results = array();
+
+		foreach ( $order->get_items() as $item ) {
+			$product = $item->get_product();
+			if ( ! $product ) {
+				continue;
+			}
+
+			$sku      = $product->get_meta( '_ebay_sku' ) ?: $product->get_sku();
+			$new_qty  = $product->get_stock_quantity();
+			$name     = $product->get_name();
+
+			if ( empty( $sku ) ) {
+				$results[] = array(
+					'product' => $name,
+					'status'  => 'skipped',
+					'message' => 'No SKU set — cannot identify on eBay.',
+				);
+				continue;
+			}
+
+			TCGiant_Sync_Logger::log( sprintf(
+				'Manual order sync: Pushing stock for SKU %s (Order #%d) → Qty %d',
+				$sku, $order_id, (int) $new_qty
+			) );
+
+			// Direct API call — no queue, no cron, no side effects.
+			$result = $api->update_inventory_item_availability( $sku, (int) $new_qty );
+
+			if ( is_wp_error( $result ) ) {
+				if ( 'not_found_on_ebay' === $result->get_error_code() ) {
+					$results[] = array(
+						'product' => $name,
+						'sku'     => $sku,
+						'status'  => 'skipped',
+						'message' => 'Not linked to an eBay listing.',
+					);
+				} else {
+					TCGiant_Sync_Logger::error( sprintf(
+						'Manual order sync failed for SKU %s: %s',
+						$sku, $result->get_error_message()
+					) );
+					$results[] = array(
+						'product' => $name,
+						'sku'     => $sku,
+						'status'  => 'error',
+						'message' => $result->get_error_message(),
+					);
+				}
+			} else {
+				TCGiant_Sync_Logger::log( sprintf(
+					'Manual order sync success: SKU %s set to Qty %d on eBay.',
+					$sku, (int) $new_qty
+				), 'success' );
+				$results[] = array(
+					'product' => $name,
+					'sku'     => $sku,
+					'status'  => 'success',
+					'message' => (int) $new_qty === 0
+						? 'eBay listing ended (sold out)'
+						: 'eBay stock set to ' . (int) $new_qty,
+				);
+			}
+		}
+
+		wp_send_json_success( array( 'results' => $results ) );
 	}
 
 	/**
