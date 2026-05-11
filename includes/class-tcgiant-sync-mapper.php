@@ -233,8 +233,39 @@ class TCGiant_Sync_Mapper {
 	 * @param array $product_data Mapped product data.
 	 */
 	public function save_as_product( $product_data ) {
-		// Check for existing product by SKU (handles re-imports).
-		$product_id = wc_get_product_id_by_sku( $product_data['sku'] );
+		$item_id = $product_data['meta']['_ebay_item_id'];
+		$product_id = false;
+
+		// 1. Check by exact eBay Item ID first.
+		global $wpdb;
+		$found_by_meta = $wpdb->get_var( $wpdb->prepare( "SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key = '_ebay_item_id' AND meta_value = %s LIMIT 1", $item_id ) );
+		
+		if ( $found_by_meta ) {
+			$product_id = (int) $found_by_meta;
+		}
+
+		// 2. If not found by Item ID, check by SKU to link to existing WC product.
+		if ( ! $product_id && ! empty( $product_data['sku'] ) ) {
+			$sku_product_id = wc_get_product_id_by_sku( $product_data['sku'] );
+			if ( $sku_product_id ) {
+				$existing_item_id = get_post_meta( $sku_product_id, '_ebay_item_id', true );
+				if ( empty( $existing_item_id ) || $existing_item_id === $item_id ) {
+					// Safe to link.
+					$product_id = $sku_product_id;
+				}
+			}
+		}
+
+		// 3. Prevent SKU conflicts on save.
+		// Check if the intended SKU is already taken by a DIFFERENT product.
+		if ( ! empty( $product_data['sku'] ) ) {
+			$conflict_id = wc_get_product_id_by_sku( $product_data['sku'] );
+			if ( $conflict_id && $conflict_id !== $product_id ) {
+				// SKU is taken by another product. We must make this one unique.
+				$product_data['sku'] .= '-' . $item_id;
+				TCGiant_Sync_Logger::log( sprintf( 'Duplicate SKU detected. Appending Item ID to ensure uniqueness: %s', $product_data['sku'] ), 'warning' );
+			}
+		}
 		
 		$product = $product_id ? wc_get_product( $product_id ) : new WC_Product_Simple();
 

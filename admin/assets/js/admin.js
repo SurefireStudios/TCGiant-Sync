@@ -396,6 +396,13 @@
                 $result.css('color', color).text(summary)
                        .attr('title', msgs.join('\n'))
                        .show();
+
+                if (errors === 0 && (success > 0 || skipped > 0)) {
+                    $btn.removeClass('tc-push-order-btn').addClass('secondary').css({'background': '#f3f4f6', 'color': '#9ca3af', 'border-color': '#e5e7eb', 'cursor': 'default'}).html('<span class="dashicons dashicons-yes" style="font-size:13px;vertical-align:middle;"></span> Synced').prop('disabled', true);
+                    setTimeout(function() {
+                        $row.fadeOut(400, function() { $(this).remove(); });
+                    }, 2500);
+                }
             }).fail(function() {
                 $btn.prop('disabled', false).html('<span class="dashicons dashicons-yes" style="font-size:13px;vertical-align:middle;"></span> Push to eBay');
                 $result.css('color', '#cc1818').text('✖ Network error').show();

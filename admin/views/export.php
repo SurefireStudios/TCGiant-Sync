@@ -17,6 +17,7 @@ $settings         = TCGiant_Sync_OAuth::instance()->get_settings();
 $license          = TCGiant_Sync_License::instance();
 $license_ui       = $license->get_status_for_ui();
 $auth_url         = TCGiant_Sync_OAuth::instance()->get_authorization_url();
+$log_entries      = TCGiant_Sync_Logger::get_recent_entries( 20 );
 
 $policies_configured = ! empty( $settings['export_fulfillment_policy'] )
                     && ! empty( $settings['export_return_policy'] )
@@ -208,5 +209,39 @@ $export_state = TCGiant_Sync_Exporter::get_export_state();
 			</div>
 		</div>
 	</div>
+
+	<!-- Activity Log -->
+	<div class="tc-card" style="margin-top:20px;">
+		<div class="tc-log-header">
+			<h2 style="margin-bottom:0;"><span class="dashicons dashicons-list-view"></span> <?php esc_html_e( 'Activity Log', 'tcgiant-sync' ); ?></h2>
+			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin:0;">
+				<input type="hidden" name="action" value="tcgiant_clear_log">
+				<?php wp_nonce_field( 'tcgiant_clear_log' ); ?>
+				<button type="submit" class="tc-button secondary" style="font-size:11px;padding:4px 10px;"><?php esc_html_e( 'Clear', 'tcgiant-sync' ); ?></button>
+			</form>
+		</div>
+		<div class="tc-log-viewer" id="tc-log-content">
+			<?php if ( empty( $log_entries ) ) : ?>
+				<div class="tc-log-entry tc-log-empty"><?php esc_html_e( 'No activity recorded yet.', 'tcgiant-sync' ); ?></div>
+			<?php else : ?>
+				<?php foreach ( $log_entries as $entry ) :
+					$level_class = '';
+					$icon = '[Log]';
+					switch ( $entry['level'] ) {
+						case 'error':   $level_class = 'tc-is-error';   $icon = '[X]';  break;
+						case 'success': $level_class = 'tc-is-success'; $icon = '[OK]'; break;
+						case 'warning': $level_class = 'tc-is-warning'; $icon = '[!]';  break;
+					}
+				?>
+				<div class="tc-log-entry <?php echo esc_attr( $level_class ); ?>">
+					<span class="tc-log-icon"><?php echo esc_html( $icon ); ?></span>
+					<span class="tc-log-time"><?php echo esc_html( $entry['timestamp'] ); ?></span>
+					<span class="tc-log-msg"><?php echo esc_html( $entry['message'] ); ?></span>
+				</div>
+				<?php endforeach; ?>
+			<?php endif; ?>
+		</div>
+	</div>
+
 	<?php endif; ?>
 </div>

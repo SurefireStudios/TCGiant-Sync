@@ -231,6 +231,16 @@ class TCGiant_Sync_Exporter {
 					'last_item_title' => $title,
 				) );
 
+				// Send telemetry ping to TCGiant
+				wp_remote_post( 'https://tcgiant.com/syncconnect/telemetry.php', array(
+					'blocking' => false,
+					'body'     => wp_json_encode( array(
+						'site_url'     => get_site_url(),
+						'synced_count' => 1,
+					) ),
+					'headers'  => array( 'Content-Type' => 'application/json' ),
+				) );
+
 				TCGiant_Sync_Logger::log(
 					sprintf(
 						'Export %s: "%s" (WC #%d) → eBay Item ID %s.',

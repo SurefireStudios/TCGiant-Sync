@@ -217,6 +217,22 @@ class TCGiant_Sync_Admin {
 			}
 		}
 
+		$has_errors = false;
+		$has_success_or_skip = false;
+		foreach ( $results as $res ) {
+			if ( 'error' === $res['status'] ) {
+				$has_errors = true;
+			}
+			if ( in_array( $res['status'], array( 'success', 'skipped' ), true ) ) {
+				$has_success_or_skip = true;
+			}
+		}
+
+		if ( ! $has_errors && $has_success_or_skip ) {
+			$order->update_meta_data( '_tcgiant_sync_pushed', '1' );
+			$order->save_meta_data();
+		}
+
 		wp_send_json_success( array( 'results' => $results ) );
 	}
 
