@@ -1,5 +1,12 @@
 *** TCGiant Sync Changelog ***
 
+2026-05-11 - version 1.1.0
+* Feature - Smart duplicate SKU resolution during import. Automatically detects if an eBay SKU is already used by a different product and appends the eBay Item ID to prevent WooCommerce overwriting.
+* Feature - Activity Log is now fully responsive and available on all plugin pages (Dashboard, Import, Export).
+* Feature - Visual feedback and auto-hide added to the "Recent Sales — Sync to eBay" dashboard widget upon successful manual push.
+* Feature - Dashboard automatically filters out recently pushed orders so they don't persist after success.
+* Feature - Added telemetry ping to track successful exports.
+
 2026-04-29 - version 1.0.3
 * Feature - Added "Recent Sales — Sync to eBay" dashboard panel showing the last 10 WooCommerce orders with a per-order Push to eBay button.
 * Feature - Direct AJAX order sync bypasses Action Scheduler and WP-Cron entirely, preventing accidental eBay→WooCommerce re-imports as a side effect.
