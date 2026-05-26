@@ -740,3 +740,32 @@
     0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(245,158,11,0.4); }
     50% { opacity: 0.6; box-shadow: 0 0 0 8px rgba(245,158,11,0); }
 }
+
+/* ─── Recent Sales Table ─── */
+.wrap.tc-dashboard-wrap .tc-sales-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.wrap.tc-dashboard-wrap .tc-sales-table th {
+    text-align: left;
+    padding: 10px 8px;
+    color: var(--tc-text-muted);
+    font-weight: 600;
+    border-bottom: 2px solid var(--tc-border);
+}
+
+.wrap.tc-dashboard-wrap .tc-order-row {
+    border-bottom: 1px solid var(--tc-border);
+    transition: background-color 0.2s ease, transform 0.2s ease;
+}
+
+.wrap.tc-dashboard-wrap .tc-order-row:hover {
+    background-color: #f8fafc;
+}
+
+.wrap.tc-dashboard-wrap .tc-order-row td {
+    padding: 12px 8px;
+    vertical-align: middle;
+}

@@ -42,6 +42,7 @@ class TCGiant_Sync_Admin {
 		add_action( 'wp_ajax_tcgiant_sync_order_to_ebay', array( $this, 'ajax_sync_order_to_ebay' ) );
 		add_action( 'admin_post_tcgiant_stop_sync', array( $this, 'handle_stop_sync' ) );
 		add_action( 'admin_post_tcgiant_clear_log', array( $this, 'handle_clear_log' ) );
+		add_action( 'admin_post_tcgiant_clear_recent_sales', array( $this, 'handle_clear_recent_sales' ) );
 		add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_admin_assets' ) );
 		
 		// AJAX endpoints — Import.
@@ -268,6 +269,37 @@ class TCGiant_Sync_Admin {
 
 		TCGiant_Sync_Logger::clear();
 		wp_safe_redirect( admin_url( 'admin.php?page=tcgiant-sync&log_cleared=1' ) );
+		exit;
+	}
+
+	/**
+	 * Handle clearing recent sales from the dashboard.
+	 */
+	public function handle_clear_recent_sales() {
+		check_admin_referer( 'tcgiant_clear_recent_sales' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'Unauthorized.', 'tcgiant-sync' ) );
+		}
+
+		$recent_orders = wc_get_orders( array(
+			'limit'      => 10,
+			'orderby'    => 'date',
+			'order'      => 'DESC',
+			'status'     => array( 'wc-completed', 'wc-processing' ),
+			'meta_query' => array(
+				array(
+					'key'     => '_tcgiant_sync_pushed',
+					'compare' => 'NOT EXISTS',
+				),
+			),
+		) );
+
+		foreach ( $recent_orders as $order ) {
+			$order->update_meta_data( '_tcgiant_sync_pushed', 'cleared' );
+			$order->save_meta_data();
+		}
+
+		wp_safe_redirect( admin_url( 'admin.php?page=tcgiant-sync&sales_cleared=1' ) );
 		exit;
 	}
 

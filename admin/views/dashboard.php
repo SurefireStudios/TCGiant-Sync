@@ -48,6 +48,9 @@ if ( empty( $settings['redirect_uri'] ) ) {
 	<?php if ( isset( $_GET['log_cleared'] ) && '1' === $_GET['log_cleared'] ) : ?>
 		<div class="notice notice-success is-dismissible"><p><?php esc_html_e( 'Sync log cleared successfully.', 'tcgiant-sync' ); ?></p></div>
 	<?php endif; ?>
+	<?php if ( isset( $_GET['sales_cleared'] ) && '1' === $_GET['sales_cleared'] ) : ?>
+		<div class="notice notice-success is-dismissible"><p><?php esc_html_e( 'Recent sales cleared.', 'tcgiant-sync' ); ?></p></div>
+	<?php endif; ?>
 	<?php if ( isset( $_GET['queue_processed'] ) && '1' === $_GET['queue_processed'] ) : ?>
 		<div class="notice notice-success is-dismissible"><p><?php esc_html_e( 'Queue processed. Check the Activity Log for results.', 'tcgiant-sync' ); ?></p></div>
 	<?php endif; ?>
@@ -159,7 +162,14 @@ if ( empty( $settings['redirect_uri'] ) ) {
 
 		<!-- Recent WooCommerce Orders — Push Stock to eBay -->
 		<div class="tc-card" style="margin-top:0;">
-			<h2><span class="dashicons dashicons-cart"></span> <?php esc_html_e( 'Recent Sales — Sync to eBay', 'tcgiant-sync' ); ?></h2>
+			<div class="tc-log-header">
+				<h2 style="margin-bottom:0;"><span class="dashicons dashicons-cart"></span> <?php esc_html_e( 'Recent Sales — Sync to eBay', 'tcgiant-sync' ); ?></h2>
+				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin:0;">
+					<input type="hidden" name="action" value="tcgiant_clear_recent_sales">
+					<?php wp_nonce_field( 'tcgiant_clear_recent_sales' ); ?>
+					<button type="submit" class="tc-button secondary" style="font-size:11px;padding:4px 10px;"><?php esc_html_e( 'Clear', 'tcgiant-sync' ); ?></button>
+				</form>
+			</div>
 			<p style="color:var(--tc-text-muted,#666);font-size:12px;margin-top:-8px;margin-bottom:12px;">
 				<?php esc_html_e( 'Sold something on your site? Click "Push to eBay" on that order to instantly update the stock on your eBay listing — no queue, no cron.', 'tcgiant-sync' ); ?>
 			</p>
@@ -180,14 +190,14 @@ if ( empty( $settings['redirect_uri'] ) ) {
 			<?php if ( empty( $recent_orders ) ) : ?>
 				<p style="color:var(--tc-text-muted,#888);font-style:italic;"><?php esc_html_e( 'No recent orders found.', 'tcgiant-sync' ); ?></p>
 			<?php else : ?>
-				<table style="width:100%;border-collapse:collapse;font-size:12px;">
+				<table class="tc-sales-table">
 					<thead>
-						<tr style="border-bottom:1px solid var(--tc-border);">
-							<th style="text-align:left;padding:6px 4px;color:var(--tc-text-muted,#555);font-weight:600;">Order</th>
-							<th style="text-align:left;padding:6px 4px;color:var(--tc-text-muted,#555);font-weight:600;">Date</th>
-							<th style="text-align:left;padding:6px 4px;color:var(--tc-text-muted,#555);font-weight:600;">Items</th>
-							<th style="text-align:left;padding:6px 4px;color:var(--tc-text-muted,#555);font-weight:600;">Status</th>
-							<th style="text-align:right;padding:6px 4px;"></th>
+						<tr>
+							<th>Order</th>
+							<th>Date</th>
+							<th>Items</th>
+							<th>Status</th>
+							<th></th>
 						</tr>
 					</thead>
 					<tbody>
@@ -202,20 +212,20 @@ if ( empty( $settings['redirect_uri'] ) ) {
 							$items_str = substr( $items_str, 0, 57 ) . '...';
 						}
 						?>
-						<tr class="tc-order-row" style="border-bottom:1px solid var(--tc-border);" data-order-id="<?php echo esc_attr( $recent_order->get_id() ); ?>">
-							<td style="padding:8px 4px;"><strong>#<?php echo esc_html( $recent_order->get_id() ); ?></strong></td>
-							<td style="padding:8px 4px;color:var(--tc-text-muted,#666);"><?php echo esc_html( $recent_order->get_date_created()->date( 'M j, g:ia' ) ); ?></td>
-							<td style="padding:8px 4px;"><?php echo esc_html( $items_str ); ?></td>
-							<td style="padding:8px 4px;">
-								<span style="font-size:11px;padding:2px 7px;border-radius:10px;background:<?php echo 'wc-completed' === 'wc-' . $recent_order->get_status() ? '#d1fae5' : '#fef3c7'; ?>;color:<?php echo 'wc-completed' === 'wc-' . $recent_order->get_status() ? '#065f46' : '#92400e'; ?>;">
+						<tr class="tc-order-row" data-order-id="<?php echo esc_attr( $recent_order->get_id() ); ?>">
+							<td><strong>#<?php echo esc_html( $recent_order->get_id() ); ?></strong></td>
+							<td style="color:var(--tc-text-muted,#666);"><?php echo esc_html( $recent_order->get_date_created()->date( 'M j, g:ia' ) ); ?></td>
+							<td><?php echo esc_html( $items_str ); ?></td>
+							<td>
+								<span style="font-size:11px;padding:3px 8px;border-radius:12px;font-weight:500;background:<?php echo 'wc-completed' === 'wc-' . $recent_order->get_status() ? '#d1fae5' : '#fef3c7'; ?>;color:<?php echo 'wc-completed' === 'wc-' . $recent_order->get_status() ? '#065f46' : '#92400e'; ?>;">
 									<?php echo esc_html( ucfirst( $recent_order->get_status() ) ); ?>
 								</span>
 							</td>
-							<td style="padding:8px 4px;text-align:right;">
+							<td style="text-align:right;">
 								<button
 									class="tc-button tc-push-order-btn"
 									data-order-id="<?php echo esc_attr( $recent_order->get_id() ); ?>"
-									style="font-size:11px;padding:4px 10px;background:var(--tc-accent,#2563eb);color:#fff;white-space:nowrap;"
+									style="font-size:11px;padding:5px 12px;background:var(--tc-accent,#2563eb);color:#fff;white-space:nowrap;box-shadow:0 2px 4px rgba(37,99,235,0.2);"
 								>
 									<span class="dashicons dashicons-yes" style="font-size:13px;vertical-align:middle;"></span>
 									<?php esc_html_e( 'Push to eBay', 'tcgiant-sync' ); ?>
