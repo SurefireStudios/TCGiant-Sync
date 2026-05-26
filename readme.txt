@@ -2,9 +2,9 @@
 Contributors: tcgiantteam
 Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
-Tested up to: 6.9
+Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.1.0
+Stable tag: 1.1.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -81,6 +81,10 @@ TCGiant Sync is optimized for graded trading card game (TCG) collectibles, inclu
 6. Per-product Push to eBay button with Category and Condition overrides.
 
 == Changelog ==
+
+= 1.1.1 - 2026-05-26 =
+* Compatibility: Tested and verified for WordPress 7.0.
+* Feature: Telemetry now includes license plan data.
 
 = 1.1.0 - 2026-05-11 =
 * Feature: Smart duplicate SKU resolution during import. Automatically detects if an eBay SKU is already used by a different product and appends the eBay Item ID to prevent WooCommerce overwriting.
