@@ -1,9 +1,9 @@
 # TCGiant Sync
 
-[![Version](https://img.shields.io/badge/Version-1.1.0-orange.svg)](#)
+[![Version](https://img.shields.io/badge/Version-1.1.1-orange.svg)](#)
 [![License: GPL v2+](https://img.shields.io/badge/License-GPL%20v2%2B-blue.svg)](https://www.gnu.org/licenses/gpl-2.0.html)
 [![Requires PHP](https://img.shields.io/badge/PHP-7.4%2B-green.svg)](#)
-[![Tested up to](https://img.shields.io/badge/WordPress-6.9-blue.svg)](#)
+[![Tested up to](https://img.shields.io/badge/WordPress-7.0-blue.svg)](#)
 [![WooCommerce](https://img.shields.io/badge/WooCommerce-5.0%2B-purple.svg)](#)
 
 **TCGiant Sync** is a bidirectional eBay ↔ WooCommerce sync plugin built for trading card game sellers. Import your eBay listings into WooCommerce *and* push WooCommerce products back to eBay as live listings — all from one dashboard.
@@ -121,6 +121,7 @@ Whether a sale happens on eBay or WooCommerce, stock is adjusted on both platfor
 
 | Version | Date | Highlights |
 |---|---|---|
+| [v1.1.1](../../releases/tag/v1.1.1) | 2026-05-26 | Tested up to WordPress 7.0, Admin telemetry logs license tier |
 | [v1.1.0](../../releases/tag/v1.1.0) | 2026-05-11 | Smart duplicate SKU resolution, Activity Log improvements, and sync feedback UI |
 | [v1.0.3](../../releases/tag/v1.0.3) | 2026-04-29 | Per-order sale sync dashboard panel, EndItem for qty=0 fix |
 | [v1.0.2](../../releases/tag/v1.0.2) | 2026-04-24 | Push to eBay, multi-page dashboard, Business Policy integration |
