@@ -39,6 +39,7 @@ class TCGiant_Sync_Cron {
 		add_filter( 'cron_schedules', array( $this, 'add_cron_intervals' ) );
 		add_action( 'tcgiant_sync_poll_ebay_cron', array( $this, 'poll_ebay' ) );
 		add_action( 'tcgiant_sync_poll_ebay_cron', array( $this, 'sync_orders' ) );
+		add_action( 'tcgiant_sync_poll_ebay_cron', array( $this, 'ping_telemetry' ) );
 		
 		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
 		$interval = $settings['sync_interval'] ?? 'tcgiant_hourly';
@@ -89,6 +90,27 @@ class TCGiant_Sync_Cron {
 		
 		TCGiant_Sync_Logger::log( 'WP-Cron: Starting scheduled eBay Order Sync...' );
 		TCGiant_Sync_Importer::instance()->sync_recent_orders();
+	}
+
+	/**
+	 * Send an absolute telemetry ping to keep dashboard accurate.
+	 */
+	public function ping_telemetry() {
+		$license_data = TCGiant_Sync_License::instance()->get_license_data();
+		$license_type = 'free';
+		if ( ! empty( $license_data['status'] ) && 'active' === $license_data['status'] ) {
+			$license_type = ! empty( $license_data['variant'] ) ? $license_data['variant'] : 'pro';
+		}
+
+		wp_remote_post( 'https://tcgiant.com/syncconnect/telemetry.php', array(
+			'blocking' => false,
+			'body'     => wp_json_encode( array(
+				'site_url'     => get_site_url(),
+				'synced_total' => TCGiant_Sync_License::instance()->get_active_product_count(),
+				'license_type' => $license_type,
+			) ),
+			'headers'  => array( 'Content-Type' => 'application/json' ),
+		) );
 	}
 
 	/**
