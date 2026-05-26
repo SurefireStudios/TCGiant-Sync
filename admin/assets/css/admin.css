@@ -260,17 +260,19 @@
     width: 100%;
     border: 1px solid var(--tc-border) !important;
     border-radius: var(--tc-radius-sm);
-    padding: 7px 10px;
+    padding: 8px 12px;
     font-size: 13px;
     font-family: inherit;
-    background: white;
+    background: #f8fafc;
     max-width: 100% !important;
+    transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
 }
 .wrap.tc-dashboard-wrap .tc-input:focus,
 .wrap.tc-dashboard-wrap .tc-select:focus {
     border-color: var(--tc-primary) !important;
+    background: #ffffff;
     outline: none;
-    box-shadow: 0 0 0 3px rgba(59,130,246,0.1);
+    box-shadow: 0 0 0 3px rgba(59,130,246,0.15);
 }
 .wrap.tc-dashboard-wrap .tc-hint { font-size: 11px; color: var(--tc-text-muted); margin-top: 4px; }
 .wrap.tc-dashboard-wrap .tc-radio-group { display: flex; gap: 16px; }
@@ -768,4 +770,108 @@
 .wrap.tc-dashboard-wrap .tc-order-row td {
     padding: 12px 8px;
     vertical-align: middle;
+}
+
+/* ─── Horizontal Tab Navigation ─── */
+.wrap.tc-dashboard-wrap .tc-nav-tabs-wrapper {
+    margin-bottom: 24px;
+}
+
+.wrap.tc-dashboard-wrap .tc-nav-tabs {
+    display: flex;
+    gap: 16px;
+    border-bottom: 1px solid var(--tc-border);
+    margin-bottom: 24px;
+}
+
+.wrap.tc-dashboard-wrap .tc-nav-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 16px 12px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--tc-text-muted);
+    text-decoration: none !important;
+    border-bottom: 3px solid transparent;
+    transition: all 0.2s ease;
+    margin-bottom: -1px;
+}
+
+.wrap.tc-dashboard-wrap .tc-nav-tab:hover {
+    color: var(--tc-text-main);
+}
+
+.wrap.tc-dashboard-wrap .tc-nav-tab-active {
+    color: var(--tc-primary);
+    border-bottom-color: var(--tc-primary);
+}
+
+.wrap.tc-dashboard-wrap .tc-nav-tab .dashicons {
+    font-size: 18px;
+    width: 18px;
+    height: 18px;
+}
+
+/* ─── Premium Empty States ─── */
+.wrap.tc-dashboard-wrap .tc-premium-empty-state {
+    padding: 32px 20px;
+    text-align: center;
+    border: 2px dashed var(--tc-border);
+    border-radius: var(--tc-radius);
+    background: rgba(255, 255, 255, 0.4);
+}
+
+.wrap.tc-dashboard-wrap .tc-premium-empty-state .dashicons {
+    font-size: 32px;
+    width: 32px;
+    height: 32px;
+    color: #cbd5e1;
+    margin-bottom: 12px;
+}
+
+.wrap.tc-dashboard-wrap .tc-premium-empty-state p {
+    margin: 0;
+    font-size: 13px;
+    color: var(--tc-text-muted);
+}
+
+/* ─── Animated Progress Bar Stripe ─── */
+.wrap.tc-dashboard-wrap .tc-progress-fill {
+    background-image: linear-gradient(
+        45deg,
+        rgba(255, 255, 255, 0.15) 25%,
+        transparent 25%,
+        transparent 50%,
+        rgba(255, 255, 255, 0.15) 50%,
+        rgba(255, 255, 255, 0.15) 75%,
+        transparent 75%,
+        transparent
+    );
+    background-size: 1rem 1rem;
+    animation: tc-progress-stripe 1s linear infinite;
+}
+
+@keyframes tc-progress-stripe {
+    from { background-position: 1rem 0; }
+    to { background-position: 0 0; }
+}
+
+/* ─── Custom Scrollbar for Log Viewer ─── */
+.wrap.tc-dashboard-wrap .tc-log-viewer::-webkit-scrollbar {
+    width: 8px;
+}
+
+.wrap.tc-dashboard-wrap .tc-log-viewer::-webkit-scrollbar-track {
+    background: #0f172a;
+    border-radius: 4px;
+}
+
+.wrap.tc-dashboard-wrap .tc-log-viewer::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 4px;
+}
+
+.wrap.tc-dashboard-wrap .tc-log-viewer::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.3);
 }

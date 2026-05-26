@@ -44,6 +44,8 @@ if ( empty( $settings['redirect_uri'] ) ) {
 		</p>
 	</div>
 
+	<?php TCGiant_Sync_Admin::instance()->render_tabs( 'dashboard' ); ?>
+
 	<?php // phpcs:disable WordPress.Security.NonceVerification.Recommended ?>
 	<?php if ( isset( $_GET['log_cleared'] ) && '1' === $_GET['log_cleared'] ) : ?>
 		<div class="notice notice-success is-dismissible"><p><?php esc_html_e( 'Sync log cleared successfully.', 'tcgiant-sync' ); ?></p></div>
@@ -188,7 +190,10 @@ if ( empty( $settings['redirect_uri'] ) ) {
 			) );
 			?>
 			<?php if ( empty( $recent_orders ) ) : ?>
-				<p style="color:var(--tc-text-muted,#888);font-style:italic;"><?php esc_html_e( 'No recent orders found.', 'tcgiant-sync' ); ?></p>
+				<div class="tc-premium-empty-state">
+					<span class="dashicons dashicons-cart"></span>
+					<p><?php esc_html_e( 'No recent sales found.', 'tcgiant-sync' ); ?></p>
+				</div>
 			<?php else : ?>
 				<table class="tc-sales-table">
 					<thead>
@@ -253,7 +258,10 @@ if ( empty( $settings['redirect_uri'] ) ) {
 		</div>
 		<div class="tc-log-viewer" id="tc-log-content">
 			<?php if ( empty( $log_entries ) ) : ?>
-				<div class="tc-log-entry tc-log-empty"><?php esc_html_e( 'No activity recorded yet.', 'tcgiant-sync' ); ?></div>
+				<div class="tc-premium-empty-state" style="margin-top:20px;border-color:rgba(255,255,255,0.1);">
+					<span class="dashicons dashicons-welcome-write-blog" style="color:#64748b;"></span>
+					<p style="color:#64748b;"><?php esc_html_e( 'No activity recorded yet.', 'tcgiant-sync' ); ?></p>
+				</div>
 			<?php else : ?>
 				<?php foreach ( $log_entries as $entry ) :
 					$level_class = '';

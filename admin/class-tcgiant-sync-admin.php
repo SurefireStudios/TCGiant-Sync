@@ -355,6 +355,32 @@ class TCGiant_Sync_Admin {
 	}
 
 	/**
+	 * Render the horizontal tab navigation.
+	 */
+	public function render_tabs( $active_tab = 'dashboard' ) {
+		$tabs = array(
+			'dashboard' => array( 'title' => __( 'Dashboard', 'tcgiant-sync' ), 'icon' => 'dashicons-dashboard', 'page' => 'tcgiant-sync' ),
+			'import'    => array( 'title' => __( 'Import from eBay', 'tcgiant-sync' ), 'icon' => 'dashicons-download', 'page' => 'tcgiant-import' ),
+			'export'    => array( 'title' => __( 'Push to eBay', 'tcgiant-sync' ), 'icon' => 'dashicons-upload', 'page' => 'tcgiant-export' ),
+			'settings'  => array( 'title' => __( 'Settings', 'tcgiant-sync' ), 'icon' => 'dashicons-admin-settings', 'page' => 'tcgiant-settings' ),
+		);
+
+		echo '<div class="tc-nav-tabs">';
+		foreach ( $tabs as $id => $tab ) {
+			$active_class = ( $active_tab === $id ) ? ' tc-nav-tab-active' : '';
+			$url = admin_url( 'admin.php?page=' . $tab['page'] );
+			printf(
+				'<a href="%s" class="tc-nav-tab%s"><span class="dashicons %s"></span> %s</a>',
+				esc_url( $url ),
+				esc_attr( $active_class ),
+				esc_attr( $tab['icon'] ),
+				esc_html( $tab['title'] )
+			);
+		}
+		echo '</div>';
+	}
+
+	/**
 	 * Render Dashboard.
 	 */
 	public function render_dashboard_page() {

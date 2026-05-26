@@ -1,7 +1,7 @@
 # TCGiant Sync
 
-[![Version](https://img.shields.io/badge/Version-1.1.1-orange.svg)](#)
-[![License: GPL v2+](https://img.shields.io/badge/License-GPL%20v2%2B-blue.svg)](https://www.gnu.org/licenses/gpl-2.0.html)
+[![Version](https://img.shields.io/badge/version-1.1.2-blue.svg)
+![Tested up to](https://img.shields.io/badge/tested%20up%20to-WP%207.0-brightgreen.svg)](https://www.gnu.org/licenses/gpl-2.0.html)
 [![Requires PHP](https://img.shields.io/badge/PHP-7.4%2B-green.svg)](#)
 [![Tested up to](https://img.shields.io/badge/WordPress-7.0-blue.svg)](#)
 [![WooCommerce](https://img.shields.io/badge/WooCommerce-5.0%2B-purple.svg)](#)
@@ -119,9 +119,10 @@ Whether a sale happens on eBay or WooCommerce, stock is adjusted on both platfor
 
 ## 📦 Releases
 
-| Version | Date | Highlights |
-|---|---|---|
-| [v1.1.1](../../releases/tag/v1.1.1) | 2026-05-26 | Tested up to WordPress 7.0, Admin telemetry logs license tier |
+| Version | Date | Key Changes |
+|---------|------|-------------|
+| **1.1.2** | 2026-05-26 | Complete UI/UX overhaul. Added global tab navigation, animated progress bars, premium empty states, dark-mode custom scrollbars for logs, input field polish, and "Clear Recent Sales" functionality. |
+| **1.1.1** | 2026-05-26 | Verified WP 7.0 compatibility. Fixed total sync counter in dashboard telemetry. License plan is now tracked securely. |
 | [v1.1.0](../../releases/tag/v1.1.0) | 2026-05-11 | Smart duplicate SKU resolution, Activity Log improvements, and sync feedback UI |
 | [v1.0.3](../../releases/tag/v1.0.3) | 2026-04-29 | Per-order sale sync dashboard panel, EndItem for qty=0 fix |
 | [v1.0.2](../../releases/tag/v1.0.2) | 2026-04-24 | Push to eBay, multi-page dashboard, Business Policy integration |

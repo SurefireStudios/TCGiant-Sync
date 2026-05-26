@@ -37,6 +37,8 @@ $export_state = TCGiant_Sync_Exporter::get_export_state();
 		<p class="tc-subtitle"><?php esc_html_e( 'Create and update eBay listings directly from your WooCommerce products — individually or in bulk.', 'tcgiant-sync' ); ?></p>
 	</div>
 
+	<?php TCGiant_Sync_Admin::instance()->render_tabs( 'export' ); ?>
+
 	<?php if ( ! $is_authenticated ) : ?>
 		<div class="tc-card" style="text-align:center;padding:40px 20px;">
 			<span class="dashicons dashicons-lock" style="font-size:48px;color:var(--tc-warning);width:48px;height:48px;margin-bottom:16px;display:block;margin-left:auto;margin-right:auto;"></span>
@@ -222,7 +224,10 @@ $export_state = TCGiant_Sync_Exporter::get_export_state();
 		</div>
 		<div class="tc-log-viewer" id="tc-log-content">
 			<?php if ( empty( $log_entries ) ) : ?>
-				<div class="tc-log-entry tc-log-empty"><?php esc_html_e( 'No activity recorded yet.', 'tcgiant-sync' ); ?></div>
+				<div class="tc-premium-empty-state" style="margin-top:20px;border-color:rgba(255,255,255,0.1);">
+					<span class="dashicons dashicons-welcome-write-blog" style="color:#64748b;"></span>
+					<p style="color:#64748b;"><?php esc_html_e( 'No activity recorded yet.', 'tcgiant-sync' ); ?></p>
+				</div>
 			<?php else : ?>
 				<?php foreach ( $log_entries as $entry ) :
 					$level_class = '';

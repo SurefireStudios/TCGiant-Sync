@@ -39,6 +39,8 @@ if ( $sync_state['total_queued'] > 0 ) {
 		<p class="tc-subtitle"><?php esc_html_e( 'Fetch your eBay listings and import them into WooCommerce. Monitor live progress and manage your import queue.', 'tcgiant-sync' ); ?></p>
 	</div>
 
+	<?php TCGiant_Sync_Admin::instance()->render_tabs( 'import' ); ?>
+
 	<?php // phpcs:disable WordPress.Security.NonceVerification.Recommended ?>
 	<?php if ( isset( $_GET['sync_started'] ) && '1' === $_GET['sync_started'] ) : ?>
 		<div class="notice notice-success is-dismissible"><p><?php esc_html_e( 'Full catalog sync has been queued in the background.', 'tcgiant-sync' ); ?></p></div>
@@ -246,7 +248,10 @@ if ( $sync_state['total_queued'] > 0 ) {
 		</div>
 		<div class="tc-log-viewer" id="tc-log-content">
 			<?php if ( empty( $log_entries ) ) : ?>
-				<div class="tc-log-entry tc-log-empty"><?php esc_html_e( 'No activity recorded yet.', 'tcgiant-sync' ); ?></div>
+				<div class="tc-premium-empty-state" style="margin-top:20px;border-color:rgba(255,255,255,0.1);">
+					<span class="dashicons dashicons-welcome-write-blog" style="color:#64748b;"></span>
+					<p style="color:#64748b;"><?php esc_html_e( 'No activity recorded yet.', 'tcgiant-sync' ); ?></p>
+				</div>
 			<?php else : ?>
 				<?php foreach ( $log_entries as $entry ) :
 					$level_class = '';

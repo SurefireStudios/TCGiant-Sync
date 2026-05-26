@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.1.1
+Stable tag: 1.1.2
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -81,6 +81,14 @@ TCGiant Sync is optimized for graded trading card game (TCG) collectibles, inclu
 6. Per-product Push to eBay button with Category and Condition overrides.
 
 == Changelog ==
+
+= 1.1.2 =
+* Feature: Added modern horizontal tab navigation across all admin pages.
+* UX: Implemented "Premium Empty States" for Recent Sales and Activity Logs.
+* UX: Added CSS animations (barber pole effect) to progress bars during sync operations.
+* UX: Custom dark-mode sleek scrollbars added to the Activity Log viewer.
+* Polish: Form inputs and buttons updated with subtle hover and focus states.
+* Feature: Added "Clear" button to Recent Sales widget on Dashboard.
 
 = 1.1.1 - 2026-05-26 =
 * Compatibility: Tested and verified for WordPress 7.0.

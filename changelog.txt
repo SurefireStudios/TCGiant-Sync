@@ -1,6 +1,17 @@
 *** TCGiant Sync Changelog ***
 
-2026-05-11 - version 1.1.0
+2026-05-26 - version 1.1.2
+- Feature: Added modern horizontal tab navigation across all admin pages.
+- UX: Implemented "Premium Empty States" for Recent Sales and Activity Logs.
+- UX: Added CSS animations (barber pole effect) to progress bars during sync operations.
+- UX: Custom dark-mode sleek scrollbars added to the Activity Log viewer.
+- Polish: Form inputs and buttons updated with subtle hover and focus states.
+- Feature: Added "Clear" button to Recent Sales widget on Dashboard.
+
+2026-05-26 - version 1.1.1
+- Compatibility: Tested and verified for WordPress 7.0.
+- Feature: Telemetry now includes license plan data.
+- Fix: Addressed absolute sync total overwriting during oauth reconnects.
 * Feature - Smart duplicate SKU resolution during import. Automatically detects if an eBay SKU is already used by a different product and appends the eBay Item ID to prevent WooCommerce overwriting.
 * Feature - Activity Log is now fully responsive and available on all plugin pages (Dashboard, Import, Export).
 * Feature - Visual feedback and auto-hide added to the "Recent Sales — Sync to eBay" dashboard widget upon successful manual push.

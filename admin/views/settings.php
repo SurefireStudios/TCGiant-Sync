@@ -47,6 +47,8 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 		<p class="tc-subtitle"><?php esc_html_e( 'Manage your eBay connection, license, and sync configuration.', 'tcgiant-sync' ); ?></p>
 	</div>
 
+	<?php TCGiant_Sync_Admin::instance()->render_tabs( 'settings' ); ?>
+
 	<?php if ( isset( $_GET['settings-updated'] ) ) : // phpcs:ignore ?>
 		<div class="notice notice-success is-dismissible"><p><?php esc_html_e( 'Settings saved.', 'tcgiant-sync' ); ?></p></div>
 	<?php endif; ?>
