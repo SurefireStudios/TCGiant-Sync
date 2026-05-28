@@ -1,0 +1,2025 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/png" href="favicon.png">
+    <title>TCGiant Sync — Bidirectional eBay ↔ WooCommerce Sync for TCG Sellers</title>
+    <meta name="description"
+        content="Import eBay listings into WooCommerce and push WooCommerce products back to eBay — automatically. Keep inventory in sync across both platforms without overselling.">
+    <link rel="canonical" href="https://tcgiant.com/pro/" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <script src="https://app.lemonsqueezy.com/js/lemon.js" defer></script>
+    <style>
+        :root {
+            --bg: #0b1020;
+            --bg-soft: #11182c;
+            --panel: rgba(255, 255, 255, 0.05);
+            --panel-strong: rgba(255, 255, 255, 0.08);
+            --text: #f8fafc;
+            --muted: #a7b0c3;
+            --accent: #6366f1;
+            --accent-2: #8b5cf6;
+            --green: #22c55e;
+            --hot: #f59e0b;
+            --danger: #fb7185;
+            --border: rgba(255, 255, 255, 0.12);
+            --shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+            --radius: 20px;
+            --max: 1120px;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background:
+                radial-gradient(circle at top left, rgba(99, 102, 241, 0.20), transparent 35%),
+                radial-gradient(circle at top right, rgba(139, 92, 246, 0.16), transparent 30%),
+                linear-gradient(180deg, #09101f 0%, #0b1020 100%);
+            color: var(--text);
+            line-height: 1.6;
+        }
+
+        a {
+            color: inherit;
+            text-decoration: none;
+        }
+
+        .container {
+            width: min(var(--max), calc(100% - 32px));
+            margin: 0 auto;
+        }
+
+        .section {
+            padding: 88px 0;
+        }
+
+        .eyebrow {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            background: rgba(255, 255, 255, 0.04);
+            color: #dbe4ff;
+            border-radius: 999px;
+            padding: 8px 14px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            margin-bottom: 22px;
+        }
+
+        .hero-logo {
+            max-width: 380px;
+            height: auto;
+            margin-bottom: 30px;
+            display: block;
+        }
+
+        .hero {
+            padding: 84px 0 42px;
+        }
+
+        .hero-grid {
+            display: grid;
+            grid-template-columns: 1.15fr 0.85fr;
+            gap: 32px;
+            align-items: center;
+        }
+
+        h1 {
+            font-size: clamp(2.4rem, 6vw, 4.6rem);
+            line-height: 1.02;
+            letter-spacing: -0.04em;
+            font-weight: 800;
+            margin-bottom: 20px;
+        }
+
+        .gradient {
+            background: linear-gradient(135deg, #7c83ff 0%, #b06bff 60%, #d9a9ff 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .lead {
+            color: var(--muted);
+            font-size: 1.1rem;
+            max-width: 760px;
+            margin-bottom: 28px;
+        }
+
+        .hero-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 14px;
+            margin-bottom: 18px;
+        }
+
+        .btn {
+            display: inline-flex;
+            justify-content: center;
+            align-items: center;
+            gap: 10px;
+            padding: 14px 22px;
+            border-radius: 12px;
+            font-weight: 700;
+            transition: transform .18s ease, opacity .18s ease, border-color .18s ease;
+            border: 1px solid transparent;
+        }
+
+        .btn:hover {
+            transform: translateY(-1px);
+            opacity: 0.97;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--accent), var(--accent-2));
+            color: #fff;
+            box-shadow: 0 12px 30px rgba(99, 102, 241, 0.35);
+        }
+
+        .btn-secondary {
+            border-color: var(--border);
+            background: rgba(255, 255, 255, 0.04);
+            color: #eef2ff;
+        }
+
+        .fine-print {
+            color: #8f9ab0;
+            font-size: 0.94rem;
+        }
+
+        .hero-card,
+        .panel,
+        .price-card,
+        .quote,
+        .mini-card {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            box-shadow: var(--shadow);
+            border-radius: var(--radius);
+            backdrop-filter: blur(8px);
+        }
+
+        .hero-card {
+            padding: 24px;
+        }
+
+        .hero-card h3 {
+            font-size: 1rem;
+            margin-bottom: 14px;
+            color: #e8eeff;
+        }
+
+        .sync-flow {
+            display: grid;
+            gap: 14px;
+        }
+
+        .sync-step {
+            display: grid;
+            grid-template-columns: 48px 1fr;
+            gap: 14px;
+            align-items: start;
+            padding: 14px;
+            border-radius: 14px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+        }
+
+        .sync-icon {
+            width: 48px;
+            height: 48px;
+            border-radius: 14px;
+            display: grid;
+            place-items: center;
+            font-weight: 800;
+            background: linear-gradient(135deg, rgba(99, 102, 241, 0.25), rgba(139, 92, 246, 0.25));
+            color: #fff;
+        }
+
+        .sync-step strong {
+            display: block;
+            margin-bottom: 4px;
+            font-size: 0.98rem;
+        }
+
+        .sync-step span {
+            color: var(--muted);
+            font-size: 0.94rem;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+            margin-top: 28px;
+        }
+
+        .mini-card {
+            padding: 16px;
+            text-align: center;
+        }
+
+        .mini-card strong {
+            display: block;
+            font-size: 1.45rem;
+            margin-bottom: 6px;
+        }
+
+        .mini-card span {
+            color: var(--muted);
+            font-size: 0.94rem;
+        }
+
+        .section-head {
+            max-width: 760px;
+            margin: 0 auto 34px;
+            text-align: center;
+        }
+
+        .section-head h2 {
+            font-size: clamp(1.8rem, 4vw, 3rem);
+            line-height: 1.1;
+            margin-bottom: 14px;
+            letter-spacing: -0.03em;
+        }
+
+        .section-head p {
+            color: var(--muted);
+            font-size: 1.05rem;
+        }
+
+        .grid-3,
+        .grid-2 {
+            display: grid;
+            gap: 20px;
+        }
+
+        .grid-3 {
+            grid-template-columns: repeat(3, 1fr);
+        }
+
+        .grid-2 {
+            grid-template-columns: repeat(2, 1fr);
+        }
+
+        .panel {
+            padding: 26px;
+        }
+
+        .panel h3 {
+            font-size: 1.15rem;
+            margin-bottom: 10px;
+        }
+
+        .panel p,
+        .panel li {
+            color: var(--muted);
+        }
+
+        .check-list,
+        .plain-list {
+            list-style: none;
+            display: grid;
+            gap: 12px;
+            margin-bottom: 24px;
+        }
+
+        .check-list li,
+        .plain-list li {
+            padding-left: 28px;
+            position: relative;
+        }
+
+        .check-list li::before {
+            content: "✓";
+            color: var(--green);
+            position: absolute;
+            left: 0;
+            top: 0;
+            font-weight: 800;
+        }
+
+        .plain-list li::before {
+            content: "✕";
+            color: var(--danger);
+            position: absolute;
+            left: 0;
+            top: 0;
+            font-weight: 800;
+        }
+
+        .check-list li.disabled {
+            color: var(--muted);
+            opacity: 0.6;
+        }
+
+        .check-list li.disabled::before {
+            content: "✕";
+            color: var(--danger);
+        }
+
+        .steps {
+            counter-reset: item;
+        }
+
+        .steps .panel {
+            position: relative;
+            padding-top: 64px;
+        }
+
+        .steps .panel::before {
+            counter-increment: item;
+            content: counter(item);
+            position: absolute;
+            top: 22px;
+            left: 22px;
+            width: 30px;
+            height: 30px;
+            border-radius: 999px;
+            display: grid;
+            place-items: center;
+            font-size: 0.92rem;
+            font-weight: 800;
+            background: linear-gradient(135deg, var(--accent), var(--accent-2));
+            color: #fff;
+        }
+
+        .pricing {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 22px;
+            align-items: stretch;
+        }
+
+        .price-card {
+            padding: 30px;
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .price-card.featured {
+            border-color: rgba(245, 158, 11, 0.35);
+            background: linear-gradient(180deg, rgba(245, 158, 11, 0.10), rgba(255, 255, 255, 0.05));
+        }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 7px 12px;
+            border-radius: 999px;
+            font-size: 0.84rem;
+            font-weight: 700;
+            color: #fff;
+            background: linear-gradient(135deg, #f59e0b, #ef4444);
+            margin-bottom: 16px;
+            align-self: flex-start;
+        }
+
+        .plan-name {
+            font-size: 1.35rem;
+            font-weight: 700;
+            margin-bottom: 12px;
+        }
+
+        .price {
+            font-size: clamp(2.8rem, 5vw, 4rem);
+            line-height: 1;
+            font-weight: 800;
+            margin-bottom: 12px;
+        }
+
+        .price span {
+            font-size: 1rem;
+            font-weight: 500;
+            color: var(--muted);
+        }
+
+        .price-copy {
+            color: var(--muted);
+            margin-bottom: 22px;
+        }
+
+        .price-card .btn {
+            width: 100%;
+            margin-top: auto;
+        }
+
+        .quote {
+            padding: 30px;
+            text-align: center;
+        }
+
+        .quote p {
+            font-size: 1.15rem;
+            color: #edf2ff;
+            margin-bottom: 12px;
+        }
+
+        .quote span {
+            color: var(--muted);
+            font-size: 0.95rem;
+        }
+
+        .faq {
+            display: grid;
+            gap: 16px;
+        }
+
+        details {
+            border: 1px solid var(--border);
+            background: rgba(255, 255, 255, 0.04);
+            border-radius: 16px;
+            padding: 18px 18px;
+        }
+
+        summary {
+            cursor: pointer;
+            font-weight: 700;
+            list-style: none;
+        }
+
+        summary::-webkit-details-marker {
+            display: none;
+        }
+
+        details p {
+            color: var(--muted);
+            padding-top: 12px;
+        }
+
+        .final-cta {
+            text-align: center;
+            padding-top: 10px;
+        }
+
+        .final-cta h2 {
+            font-size: clamp(1.8rem, 4vw, 3rem);
+            line-height: 1.1;
+            margin-bottom: 16px;
+        }
+
+        .final-cta p {
+            color: var(--muted);
+            max-width: 760px;
+            margin: 0 auto 24px;
+        }
+
+        /* Contact CTA */
+        .contact-cta-wrapper {
+            padding: 0 0 88px;
+        }
+
+        .contact-cta {
+            background: linear-gradient(135deg, #161b33 0%, #1a1b41 100%);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 24px;
+            padding: 56px 64px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+        }
+
+        .contact-cta .eyebrow {
+            border: none;
+            background: transparent;
+            padding: 0;
+            color: #a5b4fc;
+            font-size: 0.85rem;
+            letter-spacing: 0.05em;
+            margin-bottom: 16px;
+            text-transform: uppercase;
+        }
+
+        .contact-cta h2 {
+            font-size: clamp(2rem, 4vw, 2.8rem);
+            line-height: 1.1;
+            margin-bottom: 16px;
+            letter-spacing: -0.02em;
+            color: #fff;
+            max-width: 900px;
+        }
+
+        .contact-cta p {
+            color: #a7b0c3;
+            font-size: 1.05rem;
+            line-height: 1.6;
+            max-width: 850px;
+            margin: 0 auto 32px;
+        }
+
+        .contact-cta-actions {
+            display: flex;
+            justify-content: center;
+            gap: 16px;
+            align-items: center;
+        }
+
+        .contact-cta .btn-white {
+            background: #fff;
+            color: #000;
+            padding: 16px 28px;
+            border-radius: 99px;
+            font-weight: 600;
+            box-shadow: 0 0 20px rgba(255, 255, 255, 0.2);
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .contact-cta .btn-white:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 0 30px rgba(255, 255, 255, 0.4);
+        }
+
+        @media (max-width: 980px) {
+            .contact-cta {
+                padding: 40px;
+            }
+        }
+
+        @media (max-width: 640px) {
+            .contact-cta {
+                padding: 32px 24px;
+            }
+
+            .contact-cta-actions {
+                flex-direction: column;
+                width: 100%;
+            }
+
+            .contact-cta .btn-white {
+                width: 100%;
+            }
+        }
+
+        .footer-logo {
+            max-width: 64px;
+            height: auto;
+            margin-bottom: 16px;
+            display: inline-block;
+        }
+
+        footer {
+            padding: 40px 0 70px;
+            text-align: center;
+            color: #7f8aa3;
+            font-size: 0.95rem;
+        }
+
+        @media (max-width: 980px) {
+
+            .hero-grid,
+            .grid-3,
+            .grid-2,
+            .pricing,
+            .stats {
+                grid-template-columns: 1fr;
+            }
+
+            .section {
+                padding: 72px 0;
+            }
+
+            .hero {
+                padding-top: 64px;
+            }
+        }
+
+        @media (max-width: 640px) {
+            .container {
+                width: min(var(--max), calc(100% - 20px));
+            }
+
+            .panel,
+            .price-card,
+            .hero-card,
+            .quote,
+            .mini-card {
+                border-radius: 18px;
+            }
+
+            .hero-actions {
+                flex-direction: column;
+            }
+
+            .btn {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <main>
+        <section class="hero">
+            <div class="container hero-grid">
+                <div>
+                    <img src="logo.png" alt="TCGiant Sync Logo" class="hero-logo">
+                    <div class="eyebrow">Now with bidirectional sync — eBay ↔ WooCommerce</div>
+                    <h1>Sell on both platforms. <span class="gradient">Let the plugin handle the rest.</span></h1>
+                    <p class="lead">TCGiant Sync bridges your eBay store and WooCommerce — in both directions. Pull eBay
+                        listings into your store automatically, or push WooCommerce products live to eBay in one click.
+                        Stock updates the moment anything sells, on either side.</p>
+
+                    <div class="hero-actions">
+                        <a href="https://github.com/SurefireStudios/TCGiant-Sync/releases"
+                            class="btn btn-primary">Download Plugin</a>
+                        <a href="#pricing" class="btn btn-secondary">See Pricing</a>
+                    </div>
+
+                    <p class="fine-print">Free forever for up to 50 products. No credit card required. Works with any
+                        eBay seller account.</p>
+
+                </div>
+
+                <aside class="hero-card">
+                    <h3>Two sync directions. One plugin.</h3>
+                    <div class="sync-flow">
+                        <div class="sync-step">
+                            <div class="sync-icon">↓</div>
+                            <div>
+                                <strong>Import: eBay → WooCommerce</strong>
+                                <span>Pull active eBay listings into your store. Stock, pricing, and details sync
+                                    automatically on a schedule.</span>
+                            </div>
+                        </div>
+                        <div class="sync-step">
+                            <div class="sync-icon">↑</div>
+                            <div>
+                                <strong>Push: WooCommerce → eBay</strong>
+                                <span>Create new eBay listings directly from your WooCommerce products — one at a time
+                                    or in bulk.</span>
+                            </div>
+                        </div>
+                        <div class="sync-step">
+                            <div class="sync-icon">⇄</div>
+                            <div>
+                                <strong>Always in sync</strong>
+                                <span>When anything sells on either platform, stock drops on the other side
+                                    automatically.</span>
+                            </div>
+                        </div>
+                    </div>
+                </aside>
+            </div>
+        </section>
+
+        <section class="section">
+            <div class="container">
+                <!-- ============================================================
+     TCGiant Sync — Promotional Video Widget
+     Drop this anywhere in your /pro page HTML.
+     No external dependencies required.
+     ============================================================ -->
+
+                <link rel="preconnect" href="https://fonts.googleapis.com">
+                <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+                <link
+                    href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=Rajdhani:wght@500;700&display=swap"
+                    rel="stylesheet">
+
+                <div id="tcg-promo-root">
+                    <div class="tcg-bg-grid"></div>
+                    <div class="tcg-orb tcg-orb1"></div>
+                    <div class="tcg-orb tcg-orb2"></div>
+                    <div class="tcg-pbar" id="tcg-pbar"></div>
+                    <div class="tcg-scene-label" id="tcg-scene-label">1 / 6</div>
+
+                    <!-- Scene 1: Hero -->
+                    <div class="tcg-scene tcg-active" id="tcg-s1">
+                        <div class="tcg-logo-badge">TCGiant Sync</div>
+                        <h2 class="tcg-h1">Sell on <span>both platforms.</span><br>Let the plugin handle the rest.</h2>
+                        <p class="tcg-sub">Bidirectional eBay ↔ WooCommerce sync built for trading card sellers.</p>
+                        <div class="tcg-pill-row">
+                            <span class="tcg-pill tcg-pill-accent">Free forever up to 50 items</span>
+                            <span class="tcg-pill">No credit card</span>
+                            <span class="tcg-pill">Works with any eBay account</span>
+                        </div>
+                    </div>
+
+                    <!-- Scene 2: Problem -->
+                    <div class="tcg-scene" id="tcg-s2">
+                        <div class="tcg-problem-title">Sound familiar?</div>
+                        <div class="tcg-pain-list">
+                            <div class="tcg-pain-item"><span class="tcg-x">✕</span> Sell a card on eBay and forget to
+                                pull it from your site — oversold.</div>
+                            <div class="tcg-pain-item"><span class="tcg-x">✕</span> Manually recreating every eBay
+                                listing in WooCommerce. Every. Time.</div>
+                            <div class="tcg-pain-item"><span class="tcg-x">✕</span> No fast way to push new WooCommerce
+                                products live to eBay in bulk.</div>
+                        </div>
+                    </div>
+
+                    <!-- Scene 3: Solution -->
+                    <div class="tcg-scene" id="tcg-s3">
+                        <div class="tcg-sol-title">One plugin. Two directions. Zero babysitting.</div>
+                        <div class="tcg-flow">
+                            <div class="tcg-flow-box tcg-ebay">
+                                <div class="tcg-fb-icon">🛒</div>
+                                <div class="tcg-fb-name">eBay Store</div>
+                                <div class="tcg-fb-sub">Your listings</div>
+                            </div>
+                            <div class="tcg-flow-arrow">
+                                <div class="tcg-arr-track">
+                                    <div class="tcg-arr-line">
+                                        <div class="tcg-arr-dot"></div>
+                                    </div>
+                                    <div class="tcg-arr-line tcg-arr-rev">
+                                        <div class="tcg-arr-dot"></div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="tcg-flow-box tcg-woo">
+                                <div class="tcg-fb-icon">⚡</div>
+                                <div class="tcg-fb-name">WooCommerce</div>
+                                <div class="tcg-fb-sub">Your store</div>
+                            </div>
+                        </div>
+                        <div class="tcg-feature-pills">
+                            <span class="tcg-fpill">↓ Import from eBay</span>
+                            <span class="tcg-fpill">↑ Push to eBay</span>
+                            <span class="tcg-fpill">⇄ Stock syncs both sides</span>
+                        </div>
+                    </div>
+
+                    <!-- Scene 4: Features -->
+                    <div class="tcg-scene" id="tcg-s4">
+                        <div class="tcg-feat-title">Built for TCG sellers</div>
+                        <div class="tcg-feat-grid">
+                            <div class="tcg-feat-card">
+                                <div class="tcg-fi">⬇</div>
+                                <div class="tcg-fn">Import from eBay</div>
+                                <div class="tcg-fd">Pull active listings into WooCommerce on a schedule.</div>
+                            </div>
+                            <div class="tcg-feat-card">
+                                <div class="tcg-fi">⬆</div>
+                                <div class="tcg-fn">Push to eBay</div>
+                                <div class="tcg-fd">Go live one product or hundreds — one click or bulk.</div>
+                            </div>
+                            <div class="tcg-feat-card">
+                                <div class="tcg-fi">🎯</div>
+                                <div class="tcg-fn">TCG Presets</div>
+                                <div class="tcg-fd">Pokémon, MTG, Yu-Gi-Oh!, Lorcana &amp; more built-in.</div>
+                            </div>
+                            <div class="tcg-feat-card">
+                                <div class="tcg-fi">📋</div>
+                                <div class="tcg-fn">Live Dashboard</div>
+                                <div class="tcg-fd">Health checks, sync status, and full activity log.</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Scene 5: Pricing -->
+                    <div class="tcg-scene" id="tcg-s5">
+                        <div class="tcg-price-title">Simple pricing. Start free.</div>
+                        <div class="tcg-price-row">
+                            <div class="tcg-price-card">
+                                <div class="tcg-price-name">Free</div>
+                                <div class="tcg-price-amt">$0</div>
+                                <div class="tcg-price-per">forever</div>
+                                <div class="tcg-price-tag">Up to 50 items</div>
+                            </div>
+                            <div class="tcg-price-card">
+                                <div class="tcg-price-name">Pro Monthly</div>
+                                <div class="tcg-price-amt">$5</div>
+                                <div class="tcg-price-per">/ month</div>
+                                <div class="tcg-price-tag">Unlimited sync</div>
+                            </div>
+                            <div class="tcg-price-card tcg-price-best">
+                                <div class="tcg-best-badge">Best value</div>
+                                <div class="tcg-price-name">Pro Annual</div>
+                                <div class="tcg-price-amt">$49</div>
+                                <div class="tcg-price-per">/ year</div>
+                                <div class="tcg-price-tag">Save 18%</div>
+                            </div>
+                            <div class="tcg-price-card">
+                                <div class="tcg-price-name">Lifetime</div>
+                                <div class="tcg-price-amt">$99</div>
+                                <div class="tcg-price-per">once</div>
+                                <div class="tcg-price-tag">Limited spots</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Scene 6: CTA -->
+                    <div class="tcg-scene" id="tcg-s6">
+                        <div class="tcg-cta-title">Stop <span>overselling.</span><br>Start syncing.</div>
+                        <div class="tcg-cta-sub">Free forever for up to 50 products. No credit card required.</div>
+                        <div class="tcg-cta-btns">
+                            <a href="https://github.com/SurefireStudios/TCGiant-Sync/releases"
+                                class="tcg-btn-primary">Download Free Plugin</a>
+                            <a href="#pricing" class="tcg-btn-ghost">See Pricing</a>
+                        </div>
+                        <div class="tcg-free-note">Works with any eBay seller account · WooCommerce plugin · Instant
+                            setup</div>
+                    </div>
+
+                    <!-- Controls -->
+                    <div class="tcg-controls">
+                        <button class="tcg-ctrl-btn" id="tcg-prevBtn" disabled>← Prev</button>
+                        <div class="tcg-dots" id="tcg-dots"></div>
+                        <button class="tcg-ctrl-btn" id="tcg-nextBtn">Next →</button>
+                    </div>
+                </div>
+
+                <style>
+                    #tcg-promo-root *,
+                    #tcg-promo-root *::before,
+                    #tcg-promo-root *::after {
+                        box-sizing: border-box !important;
+                    }
+
+                    #tcg-promo-root {
+                        font-family: 'Space Grotesk', sans-serif !important;
+                        background: #0a0a12 !important;
+                        color: #fff !important;
+                        width: 100% !important;
+                        min-height: 480px !important;
+                        position: relative !important;
+                        overflow: hidden !important;
+                        border-radius: 16px !important;
+                        max-width: 760px !important;
+                        margin: 40px auto !important;
+                        line-height: 1.5 !important;
+                        padding: 0 !important;
+                    }
+
+                    #tcg-promo-root .tcg-bg-grid {
+                        position: absolute !important;
+                        inset: 0 !important;
+                        background-image:
+                            linear-gradient(rgba(99, 91, 255, 0.08) 1px, transparent 1px),
+                            linear-gradient(90deg, rgba(99, 91, 255, 0.08) 1px, transparent 1px) !important;
+                        background-size: 40px 40px !important;
+                        animation: tcgGridMove 12s linear infinite !important;
+                        margin: 0 !important;
+                        padding: 0 !important;
+                    }
+
+                    @keyframes tcgGridMove {
+                        0% {
+                            background-position: 0 0;
+                        }
+
+                        100% {
+                            background-position: 40px 40px;
+                        }
+                    }
+
+                    #tcg-promo-root .tcg-orb {
+                        position: absolute !important;
+                        border-radius: 50% !important;
+                        filter: blur(60px) !important;
+                        opacity: 0.25;
+                        pointer-events: none !important;
+                        margin: 0 !important;
+                        padding: 0 !important;
+                    }
+
+                    #tcg-promo-root .tcg-orb1 {
+                        width: 300px !important;
+                        height: 300px !important;
+                        background: #635bff !important;
+                        top: -80px !important;
+                        left: -60px !important;
+                    }
+
+                    #tcg-promo-root .tcg-orb2 {
+                        width: 200px !important;
+                        height: 200px !important;
+                        background: #00d4aa !important;
+                        bottom: -50px !important;
+                        right: -40px !important;
+                    }
+
+                    #tcg-promo-root .tcg-pbar {
+                        position: absolute !important;
+                        top: 0 !important;
+                        left: 0 !important;
+                        height: 4px !important;
+                        background: linear-gradient(90deg, #635bff, #00d4aa) !important;
+                        border-radius: 0 2px 2px 0 !important;
+                        transition: width 0.05s linear !important;
+                        z-index: 99 !important;
+                        margin: 0 !important;
+                        padding: 0 !important;
+                    }
+
+                    #tcg-promo-root .tcg-scene-label {
+                        position: absolute !important;
+                        top: 20px !important;
+                        right: 24px !important;
+                        font-size: 12px !important;
+                        color: rgba(255, 255, 255, 0.3) !important;
+                        font-weight: 600 !important;
+                        letter-spacing: 1px !important;
+                        text-transform: uppercase !important;
+                        z-index: 99 !important;
+                        line-height: 1 !important;
+                        margin: 0 !important;
+                        padding: 0 !important;
+                    }
+
+                    #tcg-promo-root .tcg-scene {
+                        position: absolute !important;
+                        inset: 0 !important;
+                        display: flex !important;
+                        flex-direction: column !important;
+                        align-items: center !important;
+                        justify-content: center !important;
+                        padding: 40px 40px 80px !important;
+                        opacity: 0;
+                        pointer-events: none !important;
+                        margin: 0 !important;
+                    }
+
+                    #tcg-promo-root .tcg-scene.tcg-active {
+                        opacity: 1;
+                        pointer-events: auto !important;
+                    }
+
+                    /* Scene 1 */
+                    #tcg-promo-root .tcg-logo-badge {
+                        background: linear-gradient(135deg, #635bff, #8b5cf6) !important;
+                        border-radius: 12px !important;
+                        padding: 10px 20px !important;
+                        font-family: 'Rajdhani', sans-serif !important;
+                        font-size: 14px !important;
+                        font-weight: 700 !important;
+                        letter-spacing: 2px !important;
+                        text-transform: uppercase !important;
+                        color: #fff !important;
+                        margin: 0 0 24px 0 !important;
+                        animation: tcgFadeDown 0.6s ease forwards !important;
+                        opacity: 0;
+                        line-height: 1 !important;
+                        display: inline-block !important;
+                    }
+
+                    #tcg-promo-root .tcg-h1 {
+                        font-family: 'Rajdhani', sans-serif !important;
+                        font-size: 42px !important;
+                        font-weight: 700 !important;
+                        text-align: center !important;
+                        line-height: 1.15 !important;
+                        animation: tcgFadeUp 0.7s 0.15s ease forwards !important;
+                        opacity: 0;
+                        margin: 0 !important;
+                        padding: 0 !important;
+                    }
+
+                    #tcg-promo-root .tcg-h1 span {
+                        color: #00d4aa !important;
+                    }
+
+                    #tcg-promo-root .tcg-sub {
+                        font-size: 16px !important;
+                        color: rgba(255, 255, 255, 0.6) !important;
+                        text-align: center !important;
+                        margin: 16px 0 0 0 !important;
+                        max-width: 440px !important;
+                        line-height: 1.6 !important;
+                        animation: tcgFadeUp 0.7s 0.3s ease forwards !important;
+                        opacity: 0;
+                        padding: 0 !important;
+                    }
+
+                    #tcg-promo-root .tcg-pill-row {
+                        display: flex !important;
+                        margin: 26px 0 0 0 !important;
+                        animation: tcgFadeUp 0.7s 0.45s ease forwards !important;
+                        opacity: 0;
+                        flex-wrap: wrap !important;
+                        justify-content: center !important;
+                        padding: 0 !important;
+                        gap: 12px !important;
+                    }
+
+                    #tcg-promo-root .tcg-pill {
+                        background: rgba(255, 255, 255, 0.07) !important;
+                        border: 1px solid rgba(255, 255, 255, 0.12) !important;
+                        border-radius: 999px !important;
+                        padding: 8px 18px !important;
+                        margin: 0 !important;
+                        font-size: 14px !important;
+                        color: rgba(255, 255, 255, 0.75) !important;
+                        line-height: 1.4 !important;
+                        display: inline-flex !important;
+                        align-items: center !important;
+                    }
+
+                    #tcg-promo-root .tcg-pill-accent {
+                        background: rgba(0, 212, 170, 0.12) !important;
+                        border-color: rgba(0, 212, 170, 0.3) !important;
+                        color: #00d4aa !important;
+                    }
+
+                    /* Scene 2 */
+                    #tcg-promo-root .tcg-problem-title {
+                        font-family: 'Rajdhani', sans-serif !important;
+                        font-size: 32px !important;
+                        font-weight: 700 !important;
+                        color: #ff6b6b !important;
+                        text-align: center !important;
+                        margin: 0 0 28px 0 !important;
+                        animation: tcgFadeDown 0.5s ease forwards !important;
+                        opacity: 0;
+                        line-height: 1.2 !important;
+                        padding: 0 !important;
+                    }
+
+                    #tcg-promo-root .tcg-pain-list {
+                        display: flex !important;
+                        flex-direction: column !important;
+                        width: 100% !important;
+                        max-width: 480px !important;
+                        margin: 0 !important;
+                        padding: 0 !important;
+                        gap: 14px !important;
+                    }
+
+                    #tcg-promo-root .tcg-pain-item {
+                        display: flex !important;
+                        align-items: flex-start !important;
+                        gap: 14px !important;
+                        background: rgba(255, 107, 107, 0.08) !important;
+                        border: 1px solid rgba(255, 107, 107, 0.2) !important;
+                        border-radius: 12px !important;
+                        padding: 16px 20px !important;
+                        margin: 0 !important;
+                        font-size: 15px !important;
+                        color: rgba(255, 255, 255, 0.8) !important;
+                        opacity: 0;
+                        line-height: 1.5 !important;
+                    }
+
+                    #tcg-promo-root .tcg-pain-item:nth-child(1) {
+                        animation: tcgSlideIn 0.4s 0.1s ease forwards !important;
+                    }
+
+                    #tcg-promo-root .tcg-pain-item:nth-child(2) {
+                        animation: tcgSlideIn 0.4s 0.25s ease forwards !important;
+                    }
+
+                    #tcg-promo-root .tcg-pain-item:nth-child(3) {
+                        animation: tcgSlideIn 0.4s 0.4s ease forwards !important;
+                    }
+
+                    #tcg-promo-root .tcg-x {
+                        color: #ff6b6b !important;
+                        font-size: 18px !important;
+                        font-weight: 700 !important;
+                        flex-shrink: 0 !important;
+                        margin: 0 !important;
+                        line-height: 1.5 !important;
+                        padding: 0 !important;
+                    }
+
+                    /* Scene 3 */
+                    #tcg-promo-root .tcg-sol-title {
+                        font-family: 'Rajdhani', sans-serif !important;
+                        font-size: 28px !important;
+                        font-weight: 700 !important;
+                        color: #00d4aa !important;
+                        text-align: center !important;
+                        margin: 0 0 30px 0 !important;
+                        animation: tcgFadeDown 0.5s ease forwards !important;
+                        opacity: 0;
+                        line-height: 1.2 !important;
+                        padding: 0 !important;
+                    }
+
+                    #tcg-promo-root .tcg-flow {
+                        display: flex !important;
+                        align-items: center !important;
+                        justify-content: center !important;
+                        width: 100% !important;
+                        max-width: 580px !important;
+                        animation: tcgFadeUp 0.6s 0.2s ease forwards !important;
+                        opacity: 0;
+                        margin: 0 !important;
+                        padding: 0 !important;
+                        gap: 16px !important;
+                    }
+
+                    #tcg-promo-root .tcg-flow-box {
+                        background: rgba(255, 255, 255, 0.05) !important;
+                        border: 1px solid rgba(255, 255, 255, 0.12) !important;
+                        border-radius: 14px !important;
+                        padding: 22px 26px !important;
+                        text-align: center !important;
+                        flex: 1 !important;
+                        margin: 0 !important;
+                    }
+
+                    #tcg-promo-root .tcg-fb-icon {
+                        font-size: 26px !important;
+                        margin: 0 0 8px 0 !important;
+                        line-height: 1 !important;
+                        padding: 0 !important;
+                    }
+
+                    #tcg-promo-root .tcg-fb-name {
+                        font-size: 15px !important;
+                        font-weight: 600 !important;
+                        color: #fff !important;
+                        line-height: 1.2 !important;
+                        margin: 0 !important;
+                        padding: 0 !important;
+                    }
+
+                    #tcg-promo-root .tcg-fb-sub {
+                        font-size: 12px !important;
+                        color: rgba(255, 255, 255, 0.45) !important;
+                        margin: 4px 0 0 0 !important;
+                        line-height: 1.4 !important;
+                        padding: 0 !important;
+                    }
+
+                    #tcg-promo-root .tcg-ebay {
+                        border-color: rgba(99, 91, 255, 0.5) !important;
+                        background: rgba(99, 91, 255, 0.1) !important;
+                    }
+
+                    #tcg-promo-root .tcg-woo {
+                        border-color: rgba(0, 212, 170, 0.5) !important;
+                        background: rgba(0, 212, 170, 0.08) !important;
+                    }
+
+                    #tcg-promo-root .tcg-flow-arrow {
+                        flex: 0 0 70px !important;
+                        text-align: center !important;
+                        margin: 0 !important;
+                        padding: 0 !important;
+                    }
+
+                    #tcg-promo-root .tcg-arr-track {
+                        position: relative !important;
+                        height: 34px !important;
+                        display: flex !important;
+                        flex-direction: column !important;
+                        justify-content: space-between !important;
+                        margin: 0 !important;
+                        padding: 0 !important;
+                    }
+
+                    #tcg-promo-root .tcg-arr-line {
+                        height: 3px !important;
+                        background: linear-gradient(90deg, #635bff, #00d4aa) !important;
+                        border-radius: 2px !important;
+                        position: relative !important;
+                        overflow: visible !important;
+                        margin: 0 !important;
+                        padding: 0 !important;
+                    }
+
+                    #tcg-promo-root .tcg-arr-rev {
+                        background: linear-gradient(90deg, #00d4aa, #635bff) !important;
+                    }
+
+                    #tcg-promo-root .tcg-arr-dot {
+                        position: absolute !important;
+                        width: 10px !important;
+                        height: 10px !important;
+                        border-radius: 50% !important;
+                        top: -3px !important;
+                        animation: tcgMoveDot 1.6s linear infinite !important;
+                        margin: 0 !important;
+                        padding: 0 !important;
+                    }
+
+                    #tcg-promo-root .tcg-arr-line:first-child .tcg-arr-dot {
+                        background: #635bff !important;
+                    }
+
+                    #tcg-promo-root .tcg-arr-rev .tcg-arr-dot {
+                        background: #00d4aa !important;
+                        animation: tcgMoveDotRev 1.6s 0.8s linear infinite !important;
+                    }
+
+                    @keyframes tcgMoveDot {
+                        0% {
+                            left: 0;
+                        }
+
+                        100% {
+                            left: calc(100% - 10px);
+                        }
+                    }
+
+                    @keyframes tcgMoveDotRev {
+                        0% {
+                            left: calc(100% - 10px);
+                        }
+
+                        100% {
+                            left: 0;
+                        }
+                    }
+
+                    #tcg-promo-root .tcg-feature-pills {
+                        display: flex !important;
+                        flex-wrap: wrap !important;
+                        justify-content: center !important;
+                        margin: 26px 0 0 0 !important;
+                        animation: tcgFadeUp 0.6s 0.4s ease forwards !important;
+                        opacity: 0;
+                        padding: 0 !important;
+                        gap: 12px !important;
+                    }
+
+                    #tcg-promo-root .tcg-fpill {
+                        background: rgba(0, 212, 170, 0.1) !important;
+                        border: 1px solid rgba(0, 212, 170, 0.25) !important;
+                        border-radius: 999px !important;
+                        padding: 6px 16px !important;
+                        margin: 0 !important;
+                        font-size: 13px !important;
+                        color: #00d4aa !important;
+                        line-height: 1.4 !important;
+                        display: inline-flex !important;
+                        align-items: center !important;
+                    }
+
+                    /* Scene 4 */
+                    #tcg-promo-root .tcg-feat-title {
+                        font-family: 'Rajdhani', sans-serif !important;
+                        font-size: 30px !important;
+                        font-weight: 700 !important;
+                        text-align: center !important;
+                        margin: 0 0 24px 0 !important;
+                        animation: tcgFadeDown 0.5s ease forwards !important;
+                        opacity: 0;
+                        line-height: 1.2 !important;
+                        padding: 0 !important;
+                    }
+
+                    #tcg-promo-root .tcg-feat-grid {
+                        display: flex !important;
+                        flex-wrap: wrap !important;
+                        justify-content: center !important;
+                        width: 100% !important;
+                        max-width: 580px !important;
+                        margin: 0 !important;
+                        padding: 0 !important;
+                        gap: 16px !important;
+                    }
+
+                    #tcg-promo-root .tcg-feat-card {
+                        background: rgba(255, 255, 255, 0.04) !important;
+                        border: 1px solid rgba(255, 255, 255, 0.1) !important;
+                        border-radius: 14px !important;
+                        padding: 20px 22px !important;
+                        opacity: 0;
+                        margin: 0 !important;
+                        flex: 1 1 240px !important;
+                        max-width: 280px !important;
+                    }
+
+                    #tcg-promo-root .tcg-feat-card:nth-child(1) {
+                        animation: tcgFadeUp 0.4s 0.1s ease forwards !important;
+                    }
+
+                    #tcg-promo-root .tcg-feat-card:nth-child(2) {
+                        animation: tcgFadeUp 0.4s 0.2s ease forwards !important;
+                    }
+
+                    #tcg-promo-root .tcg-feat-card:nth-child(3) {
+                        animation: tcgFadeUp 0.4s 0.3s ease forwards !important;
+                    }
+
+                    #tcg-promo-root .tcg-feat-card:nth-child(4) {
+                        animation: tcgFadeUp 0.4s 0.4s ease forwards !important;
+                    }
+
+                    #tcg-promo-root .tcg-fi {
+                        font-size: 22px !important;
+                        margin: 0 0 10px 0 !important;
+                        line-height: 1 !important;
+                        padding: 0 !important;
+                    }
+
+                    #tcg-promo-root .tcg-fn {
+                        font-size: 15px !important;
+                        font-weight: 600 !important;
+                        color: #fff !important;
+                        margin: 0 0 6px 0 !important;
+                        line-height: 1.2 !important;
+                        padding: 0 !important;
+                    }
+
+                    #tcg-promo-root .tcg-fd {
+                        font-size: 12px !important;
+                        color: rgba(255, 255, 255, 0.45) !important;
+                        line-height: 1.5 !important;
+                        margin: 0 !important;
+                        padding: 0 !important;
+                    }
+
+                    /* Scene 5 */
+                    #tcg-promo-root .tcg-price-title {
+                        font-family: 'Rajdhani', sans-serif !important;
+                        font-size: 30px !important;
+                        font-weight: 700 !important;
+                        text-align: center !important;
+                        margin: 0 0 28px 0 !important;
+                        animation: tcgFadeDown 0.5s ease forwards !important;
+                        opacity: 0;
+                        line-height: 1.2 !important;
+                        padding: 0 !important;
+                    }
+
+                    #tcg-promo-root .tcg-price-row {
+                        display: flex !important;
+                        width: 100% !important;
+                        max-width: 620px !important;
+                        flex-wrap: wrap !important;
+                        justify-content: center !important;
+                        animation: tcgFadeUp 0.6s 0.2s ease forwards !important;
+                        opacity: 0;
+                        margin: 0 !important;
+                        padding: 0 !important;
+                        gap: 16px !important;
+                    }
+
+                    #tcg-promo-root .tcg-price-card {
+                        flex: 1 !important;
+                        min-width: 120px !important;
+                        max-width: 150px !important;
+                        background: rgba(255, 255, 255, 0.04) !important;
+                        border: 1px solid rgba(255, 255, 255, 0.1) !important;
+                        border-radius: 14px !important;
+                        padding: 22px 14px !important;
+                        margin: 0 !important;
+                        text-align: center !important;
+                        position: relative !important;
+                    }
+
+                    #tcg-promo-root .tcg-price-best {
+                        border-color: #635bff !important;
+                        background: rgba(99, 91, 255, 0.12) !important;
+                    }
+
+                    #tcg-promo-root .tcg-best-badge {
+                        position: absolute !important;
+                        top: -12px !important;
+                        left: 50% !important;
+                        transform: translateX(-50%) !important;
+                        background: #635bff !important;
+                        border-radius: 999px !important;
+                        padding: 4px 12px !important;
+                        font-size: 11px !important;
+                        font-weight: 700 !important;
+                        letter-spacing: 0.5px !important;
+                        white-space: nowrap !important;
+                        color: #fff !important;
+                        line-height: 1 !important;
+                        margin: 0 !important;
+                    }
+
+                    #tcg-promo-root .tcg-price-name {
+                        font-size: 12px !important;
+                        color: rgba(255, 255, 255, 0.5) !important;
+                        margin: 0 0 8px 0 !important;
+                        text-transform: uppercase !important;
+                        letter-spacing: 1px !important;
+                        line-height: 1 !important;
+                        padding: 0 !important;
+                    }
+
+                    #tcg-promo-root .tcg-price-amt {
+                        font-family: 'Rajdhani', sans-serif !important;
+                        font-size: 32px !important;
+                        font-weight: 700 !important;
+                        color: #fff !important;
+                        line-height: 1 !important;
+                        margin: 0 !important;
+                        padding: 0 !important;
+                    }
+
+                    #tcg-promo-root .tcg-price-per {
+                        font-size: 12px !important;
+                        color: rgba(255, 255, 255, 0.4) !important;
+                        margin: 4px 0 12px 0 !important;
+                        line-height: 1 !important;
+                        padding: 0 !important;
+                    }
+
+                    #tcg-promo-root .tcg-price-tag {
+                        font-size: 12px !important;
+                        color: #00d4aa !important;
+                        line-height: 1 !important;
+                        margin: 0 !important;
+                        padding: 0 !important;
+                    }
+
+                    /* Scene 6 */
+                    #tcg-promo-root .tcg-cta-title {
+                        font-family: 'Rajdhani', sans-serif !important;
+                        font-size: 42px !important;
+                        font-weight: 700 !important;
+                        text-align: center !important;
+                        line-height: 1.2 !important;
+                        animation: tcgFadeDown 0.5s ease forwards !important;
+                        opacity: 0;
+                        margin: 0 !important;
+                        padding: 0 !important;
+                    }
+
+                    #tcg-promo-root .tcg-cta-title span {
+                        color: #635bff !important;
+                    }
+
+                    #tcg-promo-root .tcg-cta-sub {
+                        font-size: 16px !important;
+                        color: rgba(255, 255, 255, 0.55) !important;
+                        text-align: center !important;
+                        margin: 16px 0 0 0 !important;
+                        animation: tcgFadeUp 0.5s 0.15s ease forwards !important;
+                        opacity: 0;
+                        line-height: 1.5 !important;
+                        padding: 0 !important;
+                    }
+
+                    #tcg-promo-root .tcg-cta-btns {
+                        display: flex !important;
+                        margin: 32px 0 0 0 !important;
+                        flex-wrap: wrap !important;
+                        justify-content: center !important;
+                        animation: tcgFadeUp 0.5s 0.3s ease forwards !important;
+                        opacity: 0;
+                        padding: 0 !important;
+                        gap: 16px !important;
+                    }
+
+                    #tcg-promo-root .tcg-btn-primary {
+                        display: inline-flex !important;
+                        align-items: center !important;
+                        justify-content: center !important;
+                        background: linear-gradient(135deg, #635bff, #8b5cf6) !important;
+                        color: #fff !important;
+                        border: none !important;
+                        border-radius: 12px !important;
+                        margin: 0 !important;
+                        padding: 0 28px !important;
+                        font-size: 15px !important;
+                        font-weight: 600 !important;
+                        cursor: pointer !important;
+                        font-family: 'Space Grotesk', sans-serif !important;
+                        text-decoration: none !important;
+                        transition: transform 0.15s, opacity 0.15s !important;
+                        height: 48px !important;
+                        line-height: 1 !important;
+                    }
+
+                    #tcg-promo-root .tcg-btn-primary:hover {
+                        transform: scale(1.04) !important;
+                        opacity: 0.9 !important;
+                    }
+
+                    #tcg-promo-root .tcg-btn-ghost {
+                        display: inline-flex !important;
+                        align-items: center !important;
+                        justify-content: center !important;
+                        background: rgba(255, 255, 255, 0.07) !important;
+                        color: #fff !important;
+                        border: 1px solid rgba(255, 255, 255, 0.15) !important;
+                        border-radius: 12px !important;
+                        margin: 0 !important;
+                        padding: 0 28px !important;
+                        font-size: 15px !important;
+                        font-weight: 600 !important;
+                        cursor: pointer !important;
+                        font-family: 'Space Grotesk', sans-serif !important;
+                        text-decoration: none !important;
+                        transition: transform 0.15s, background 0.15s !important;
+                        height: 48px !important;
+                        line-height: 1 !important;
+                    }
+
+                    #tcg-promo-root .tcg-btn-ghost:hover {
+                        transform: scale(1.04) !important;
+                        background: rgba(255, 255, 255, 0.12) !important;
+                    }
+
+                    #tcg-promo-root .tcg-free-note {
+                        font-size: 13px !important;
+                        color: rgba(255, 255, 255, 0.35) !important;
+                        margin: 18px 0 0 0 !important;
+                        text-align: center !important;
+                        animation: tcgFadeUp 0.5s 0.45s ease forwards !important;
+                        opacity: 0;
+                        line-height: 1.5 !important;
+                        padding: 0 !important;
+                    }
+
+                    /* Controls */
+                    #tcg-promo-root .tcg-controls {
+                        position: absolute !important;
+                        bottom: 20px !important;
+                        left: 50% !important;
+                        transform: translateX(-50%) !important;
+                        display: flex !important;
+                        align-items: center !important;
+                        z-index: 100 !important;
+                        margin: 0 !important;
+                        padding: 0 !important;
+                        gap: 12px !important;
+                    }
+
+                    #tcg-promo-root .tcg-ctrl-btn {
+                        display: inline-flex !important;
+                        align-items: center !important;
+                        justify-content: center !important;
+                        background: rgba(255, 255, 255, 0.1) !important;
+                        border: 1px solid rgba(255, 255, 255, 0.15) !important;
+                        margin: 0 !important;
+                        color: #fff !important;
+                        border-radius: 8px !important;
+                        padding: 0 18px !important;
+                        font-size: 14px !important;
+                        font-weight: 600 !important;
+                        cursor: pointer !important;
+                        font-family: 'Space Grotesk', sans-serif !important;
+                        transition: background 0.15s !important;
+                        height: 36px !important;
+                        line-height: 1 !important;
+                    }
+
+                    #tcg-promo-root .tcg-ctrl-btn:hover {
+                        background: rgba(255, 255, 255, 0.18) !important;
+                    }
+
+                    #tcg-promo-root .tcg-ctrl-btn:disabled {
+                        opacity: 0.35 !important;
+                        cursor: not-allowed !important;
+                    }
+
+                    #tcg-promo-root .tcg-dots {
+                        display: flex !important;
+                        margin: 0 !important;
+                        align-items: center !important;
+                        gap: 8px !important;
+                        padding: 0 !important;
+                    }
+
+                    #tcg-promo-root .tcg-dot {
+                        width: 8px !important;
+                        height: 8px !important;
+                        border-radius: 50% !important;
+                        margin: 0 !important;
+                        background: rgba(255, 255, 255, 0.25) !important;
+                        cursor: pointer !important;
+                        transition: background 0.2s, transform 0.2s !important;
+                        display: block !important;
+                        padding: 0 !important;
+                    }
+
+                    #tcg-promo-root .tcg-dot.tcg-dot-on {
+                        background: #635bff !important;
+                        transform: scale(1.3) !important;
+                    }
+
+                    /* Keyframes */
+                    @keyframes tcgFadeDown {
+                        from {
+                            opacity: 0;
+                            transform: translateY(-20px);
+                        }
+
+                        to {
+                            opacity: 1;
+                            transform: translateY(0);
+                        }
+                    }
+
+                    @keyframes tcgFadeUp {
+                        from {
+                            opacity: 0;
+                            transform: translateY(20px);
+                        }
+
+                        to {
+                            opacity: 1;
+                            transform: translateY(0);
+                        }
+                    }
+
+                    @keyframes tcgSlideIn {
+                        from {
+                            opacity: 0;
+                            transform: translateX(-24px);
+                        }
+
+                        to {
+                            opacity: 1;
+                            transform: translateX(0);
+                        }
+                    }
+                </style>
+
+                <script>
+                    (function () {
+                        var scenes = document.querySelectorAll('.tcg-scene');
+                        var dotsEl = document.getElementById('tcg-dots');
+                        var pbar = document.getElementById('tcg-pbar');
+                        var scLabel = document.getElementById('tcg-scene-label');
+                        var prevBtn = document.getElementById('tcg-prevBtn');
+                        var nextBtn = document.getElementById('tcg-nextBtn');
+                        var cur = 0;
+                        var autoTimer, progressTimer, progressStart;
+                        var DURATION = 5000;
+
+                        // Build dots
+                        for (var i = 0; i < scenes.length; i++) {
+                            var d = document.createElement('div');
+                            d.className = 'tcg-dot' + (i === 0 ? ' tcg-dot-on' : '');
+                            d.setAttribute('data-i', i);
+                            d.addEventListener('click', (function (idx) { return function () { goTo(idx); }; })(i));
+                            dotsEl.appendChild(d);
+                        }
+
+                        function goTo(n) {
+                            scenes[cur].classList.remove('tcg-active');
+                            dotsEl.children[cur].classList.remove('tcg-dot-on');
+                            cur = n;
+                            // Force reflow so CSS animations replay
+                            scenes[cur].classList.remove('tcg-active');
+                            void scenes[cur].offsetWidth;
+                            scenes[cur].classList.add('tcg-active');
+                            dotsEl.children[cur].classList.add('tcg-dot-on');
+                            prevBtn.disabled = cur === 0;
+                            nextBtn.disabled = cur === scenes.length - 1;
+                            scLabel.textContent = (cur + 1) + ' / ' + scenes.length;
+                            startProgress();
+                        }
+
+                        prevBtn.addEventListener('click', function () { goTo(Math.max(cur - 1, 0)); });
+                        nextBtn.addEventListener('click', function () { goTo(Math.min(cur + 1, scenes.length - 1)); });
+
+                        function startProgress() {
+                            clearTimeout(autoTimer);
+                            clearInterval(progressTimer);
+                            pbar.style.width = '0%';
+                            progressStart = Date.now();
+                            progressTimer = setInterval(function () {
+                                var pct = Math.min(((Date.now() - progressStart) / DURATION) * 100, 100);
+                                pbar.style.width = pct + '%';
+                            }, 50);
+                            if (cur < scenes.length - 1) {
+                                autoTimer = setTimeout(function () { goTo(cur + 1); }, DURATION);
+                            } else {
+                                clearInterval(progressTimer);
+                                pbar.style.width = '100%';
+                            }
+                        }
+
+                        startProgress();
+                    })();
+                </script>
+                <!-- ============================================================
+     End TCGiant Sync Promo Widget
+     ============================================================ -->
+
+                <div class="section-head">
+                    <h2>Selling on eBay and your website should not create more work</h2>
+                    <p>Most sellers end up babysitting inventory, fixing stock errors, and refunding oversold items.
+                        This plugin exists to remove that mess.</p>
+                </div>
+
+                <div class="grid-2">
+                    <div class="panel">
+                        <h3>Without TCGiant Sync</h3>
+                        <ul class="plain-list">
+                            <li>Sell a card on eBay and forget to remove it from your site</li>
+                            <li>Waste time manually recreating eBay listings in WooCommerce</li>
+                            <li>Risk overselling and issuing refunds</li>
+                            <li>Have no way to push new WooCommerce products to eBay quickly</li>
+                        </ul>
+                    </div>
+
+                    <div class="panel">
+                        <h3>With TCGiant Sync</h3>
+                        <ul class="check-list">
+                            <li>Import eBay listings into WooCommerce automatically</li>
+                            <li>Push WooCommerce products to eBay in one click or in bulk</li>
+                            <li>Stock updates the moment anything sells on either platform</li>
+                            <li>Pricing, conditions, and details stay consistent across both</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="section">
+            <div class="container">
+                <div class="section-head">
+                    <h2>Built around what TCG stores actually need</h2>
+                    <p>Both directions. Zero babysitting. Whether you start on eBay or WooCommerce, TCGiant Sync keeps
+                        your inventory accurate across both platforms.</p>
+                </div>
+
+                <div class="grid-3">
+                    <div class="panel">
+                        <h3>⬇ Import from eBay</h3>
+                        <p>Pull your active eBay listings into WooCommerce automatically. Filter by store category, set
+                            a sync schedule, and let the plugin handle the rest.</p>
+                    </div>
+                    <div class="panel">
+                        <h3>⬆ Push to eBay</h3>
+                        <p>Create new eBay listings directly from WooCommerce — single products or bulk. Set default
+                            categories, conditions, and Business Policies once and push with one click.</p>
+                    </div>
+                    <div class="panel">
+                        <h3>⇄ Bidirectional stock sync</h3>
+                        <p>When anything sells on eBay or WooCommerce, stock drops on the other side automatically. No
+                            manual updates, no overselling.</p>
+                    </div>
+                    <div class="panel">
+                        <h3>🎯 TCG category presets</h3>
+                        <p>Built-in dropdown of common TCG eBay categories — Pokémon, MTG, Yu-Gi-Oh!, Lorcana, One
+                            Piece, Dragon Ball Super, and more. Plus a custom ID option for anything else.</p>
+                    </div>
+                    <div class="panel">
+                        <h3>⚙ Smart update detection</h3>
+                        <p>Re-pushing a product that already has an eBay listing? The plugin automatically updates the
+                            existing listing instead of creating a duplicate.</p>
+                    </div>
+                    <div class="panel">
+                        <h3>📋 Live dashboard</h3>
+                        <p>Separate pages for Import, Push, and Settings keep everything organised. Health checks, live
+                            sync status, and a full activity log always visible at a glance.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="section">
+            <div class="container">
+                <div class="section-head">
+                    <h2>Simple setup. Works both ways.</h2>
+                    <p>Get syncing in minutes — import from eBay, push to eBay, or run both directions at once.</p>
+                </div>
+
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:32px;">
+                    <div>
+                        <div class="eyebrow" style="margin-bottom:16px;">⬇ Import from eBay</div>
+                        <div class="grid-3 steps" style="grid-template-columns:1fr;">
+                            <div class="panel">
+                                <h3>Install &amp; Connect</h3>
+                                <p>Upload the plugin, activate it, and click <strong>Connect to eBay</strong> in the
+                                    Settings page to authorize via OAuth.</p>
+                            </div>
+                            <div class="panel">
+                                <h3>Choose categories</h3>
+                                <p>Select which eBay store categories to import. Set a sync schedule (every 15 min,
+                                    hourly, daily) or run manually.</p>
+                            </div>
+                            <div class="panel">
+                                <h3>Fetch &amp; stay synced</h3>
+                                <p>Click <strong>Fetch Inventory</strong> to import listings. Stock adjusts
+                                    automatically whenever something sells.</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div>
+                        <div class="eyebrow" style="margin-bottom:16px;">⬆ Push to eBay</div>
+                        <div class="grid-3 steps" style="grid-template-columns:1fr;">
+                            <div class="panel">
+                                <h3>Configure export settings</h3>
+                                <p>In Settings, pick your default eBay category and click <strong>Fetch
+                                        Policies</strong> to load your eBay Business Policies.</p>
+                            </div>
+                            <div class="panel">
+                                <h3>Push single or bulk</h3>
+                                <p>Open any product and click <strong>Push to eBay</strong>, or select multiple products
+                                    and use the bulk action in the WooCommerce Products list.</p>
+                            </div>
+                            <div class="panel">
+                                <h3>Listings go live</h3>
+                                <p>Products are queued and processed in the background. The plugin auto-detects whether
+                                    to create a new listing or update an existing one.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="section" id="pricing">
+            <div class="container">
+                <div class="section-head">
+                    <h2>Simple pricing for growing TCG stores</h2>
+                    <p>Start low, get synced, and scale without paying enterprise-level plugin prices.</p>
+                </div>
+
+                <div class="pricing">
+                    <div class="price-card">
+                        <div class="badge">Try for free</div>
+                        <div class="plan-name">Free</div>
+                        <div class="price">$0 <span>/ forever</span></div>
+                        <p class="price-copy">Test out the sync functionality on a small batch of your inventory.</p>
+                        <ul class="check-list">
+                            <li>Sync up to 50 items</li>
+                            <li>Basic inventory updates</li>
+                            <li class="disabled">Pro scheduling</li>
+                            <li class="disabled">Unlimited imports</li>
+                        </ul>
+                        <a href="https://github.com/SurefireStudios/TCGiant-Sync/releases"
+                            class="btn btn-secondary">Download Free</a>
+                    </div>
+
+                    <div class="price-card">
+                        <div class="badge">No long term commitment</div>
+                        <div class="plan-name">Pro Monthly</div>
+                        <div class="price">$5 <span>/ month</span></div>
+                        <p class="price-copy">A flexible way to keep your store synced without a long-term commitment.
+                        </p>
+                        <ul class="check-list">
+                            <li>Unlimited imports and syncing</li>
+                            <li>Bidirectional stock updates</li>
+                            <li>Automatic background sync</li>
+                        </ul>
+                        <a href="https://tcgiant.lemonsqueezy.com/checkout/buy/d347f926-6534-4f5d-a38b-a2d18befbd4a"
+                            class="btn btn-secondary lemonsqueezy-button">Get Pro Monthly</a>
+                    </div>
+
+                    <div class="price-card">
+                        <div class="badge">Best Value</div>
+                        <div class="plan-name">Pro Annual</div>
+                        <div class="price">$49 <span>/ year</span></div>
+                        <p class="price-copy">A low-friction way to keep your store synced and stop doing manual
+                            updates.</p>
+                        <ul class="check-list">
+                            <li>Unlimited imports and syncing</li>
+                            <li>Bidirectional stock updates</li>
+                            <li>Automatic background sync</li>
+                        </ul>
+                        <a href="https://tcgiant.lemonsqueezy.com/checkout/buy/d347f926-6534-4f5d-a38b-a2d18befbd4a"
+                            class="btn btn-primary lemonsqueezy-button">Get Pro Annual</a>
+                    </div>
+
+                    <div class="price-card featured">
+                        <div class="badge">Limited to 10 spots</div>
+                        <div class="plan-name">Lifetime Access</div>
+                        <div class="price">$99 <span>/ once</span></div>
+                        <p class="price-copy">One payment. Ongoing access. Best for early adopters who want the best
+                            long-term value.</p>
+                        <ul class="check-list">
+                            <li>Everything in Pro Annual</li>
+                            <li>Lifetime updates</li>
+                            <li>No recurring fees</li>
+                            <li>Limited spots available</li>
+                        </ul>
+                        <a href="https://tcgiant.lemonsqueezy.com/checkout/buy/d347f926-6534-4f5d-a38b-a2d18befbd4a"
+                            class="btn btn-primary lemonsqueezy-button">Claim Lifetime Deal</a>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+
+        <section class="section">
+            <div class="container">
+                <div class="quote">
+                    <p>Import from eBay. Push to eBay. Stock synced on both sides — automatically.
+                    </p>
+                    <span>Built for TCG sellers who sell on multiple platforms and can't afford to oversell a
+                        one-of-a-kind card.</span>
+                    <div style="margin-top: 20px;">
+                        <a href="https://github.com/SurefireStudios/TCGiant-Sync/releases"
+                            class="btn btn-primary">Download Plugin</a>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="section">
+            <div class="container">
+                <div class="section-head">
+                    <h2>Questions sellers usually ask</h2>
+                    <p>Everything you need to know before getting started.</p>
+                </div>
+
+                <div class="faq">
+                    <details>
+                        <summary>Does it work for eBay-first or WooCommerce-first setups?</summary>
+                        <p>Both. If you started on eBay, import your listings into WooCommerce. If you built your
+                            catalog in WooCommerce, push products to eBay. You can do both simultaneously — the plugin
+                            handles either direction.</p>
+                    </details>
+                    <details>
+                        <summary>How does Push to eBay work?</summary>
+                        <p>Open any WooCommerce product, go to the eBay Sync tab, and click Push to eBay. You can
+                            override the category and condition per-product. For bulk pushes, select products in your
+                            WooCommerce Products list and use the Bulk Actions dropdown.</p>
+                    </details>
+                    <details>
+                        <summary>What are eBay Business Policies and do I need them?</summary>
+                        <p>Business Policies are eBay's system for reusable Shipping, Return, and Payment settings
+                            across listings. They are required for the Push to eBay feature. Most seller accounts
+                            already have them enabled. If not, you can enroll at no cost directly on eBay.</p>
+                    </details>
+                    <details>
+                        <summary>What happens if a product already has an eBay listing?</summary>
+                        <p>TCGiant Sync automatically detects whether a product already has an eBay Item ID. If it does,
+                            the plugin updates the existing listing using ReviseItem instead of creating a duplicate.
+                        </p>
+                    </details>
+                    <details>
+                        <summary>Does it help prevent overselling?</summary>
+                        <p>Yes. Whenever something sells on eBay or WooCommerce, the plugin adjusts stock on the other
+                            platform automatically, preventing the same item from being sold twice.</p>
+                    </details>
+                    <details>
+                        <summary>How often does it sync?</summary>
+                        <p>You can set a schedule — every 15 minutes, hourly, twice daily, or daily. You can also
+                            trigger syncs manually at any time from the Import page.</p>
+                    </details>
+                    <details>
+                        <summary>Who is this plugin for?</summary>
+                        <p>Trading card sellers and collectibles dealers who sell on both eBay and their own WooCommerce
+                            site. It is built for fast-moving inventory with limited quantities where a single oversell
+                            can mean a refund and a negative review.</p>
+                    </details>
+                </div>
+            </div>
+        </section>
+
+        <section class="contact-cta-wrapper">
+            <div class="container">
+                <div class="contact-cta">
+                    <div>
+                        <div class="eyebrow">QUESTIONS? COMMENTS?</div>
+                        <h2>Email us and we’ll get back to you ASAP.</h2>
+                        <p>Our team regularly monitors emails and typically responds within 24 hours (excluding
+                            weekends).<br>Depending on message volume and timing, you may receive a response in as
+                            little as 1 hour.</p>
+                    </div>
+                    <div class="contact-cta-actions">
+                        <a href="mailto:hello@tcgiant.com" class="btn btn-secondary"
+                            style="border-radius: 99px;">hello@tcgiant.com</a>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="section final-cta" style="padding-top: 0;">
+            <div class="container">
+                <h2>Import from eBay. Push to eBay. Stay in sync — automatically.</h2>
+                <p>TCGiant Sync gives you complete control of your inventory across both platforms. Pull your eBay
+                    catalog into WooCommerce, push new products back to eBay, and let stock updates run in the
+                    background so you can focus on selling.</p>
+                <div class="hero-actions" style="justify-content:center; margin-bottom:0;">
+                    <a href="https://github.com/SurefireStudios/TCGiant-Sync/releases" class="btn btn-primary">Download
+                        Plugin</a>
+                    <a href="#pricing" class="btn btn-secondary">Compare Plans</a>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <div class="container"
+            style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 20px; text-align: left;">
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <img src="footer-logo.png" alt="TCGiant Sync Logo"
+                    style="height: 24px; width: auto; object-fit: contain;">
+                <span style="font-weight: 700; color: #fff; font-size: 1.1rem;">TCGiant Sync</span>
+            </div>
+
+            <div style="display: flex; gap: 24px;">
+                <a href="terms.html" style="color: var(--muted); text-decoration: none;">Terms of Service</a>
+                <a href="privacy.html" style="color: var(--muted); text-decoration: none;">Privacy Policy</a>
+                <a href="refund.html" style="color: var(--muted); text-decoration: none;">Refund Policy</a>
+            </div>
+
+            <div style="text-align: right;">
+                <div style="margin-bottom: 4px;">© 2026 TCGiant Sync. All rights reserved.</div>
+                <div style="font-size: 0.85rem; opacity: 0.8;">
+                    Designed and developed by <a href="https://www.surefirestudios.io" target="_blank"
+                        style="color: #6366f1; text-decoration: none; font-weight: 500;">Surefire Studios</a>
+                </div>
+            </div>
+        </div>
+    </footer>
+</body>
+
+</html>
