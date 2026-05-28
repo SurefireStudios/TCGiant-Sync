@@ -1,6 +1,6 @@
 # TCGiant Sync
 
-[![Version](https://img.shields.io/badge/version-1.1.2-blue.svg)
+[![Version](https://img.shields.io/badge/version-1.1.3-blue.svg)
 ![Tested up to](https://img.shields.io/badge/tested%20up%20to-WP%207.0-brightgreen.svg)](https://www.gnu.org/licenses/gpl-2.0.html)
 [![Requires PHP](https://img.shields.io/badge/PHP-7.4%2B-green.svg)](#)
 [![Tested up to](https://img.shields.io/badge/WordPress-7.0-blue.svg)](#)
@@ -121,6 +121,7 @@ Whether a sale happens on eBay or WooCommerce, stock is adjusted on both platfor
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| **1.1.3** | 2026-05-28 | Added Global Marketplace Support (eBay UK, CA, AU, etc.) |
 | **1.1.2** | 2026-05-26 | Complete UI/UX overhaul. Added global tab navigation, animated progress bars, premium empty states, dark-mode custom scrollbars for logs, input field polish, and "Clear Recent Sales" functionality. |
 | **1.1.1** | 2026-05-26 | Verified WP 7.0 compatibility. Fixed total sync counter in dashboard telemetry. License plan is now tracked securely. |
 | [v1.1.0](../../releases/tag/v1.1.0) | 2026-05-11 | Smart duplicate SKU resolution, Activity Log improvements, and sync feedback UI |
@@ -135,4 +136,4 @@ Whether a sale happens on eBay or WooCommerce, stock is adjusted on both platfor
 
 This project is licensed under the **GPL-2.0-or-later** license — see the [`LICENSE`](LICENSE) file for details.
 
-*Upgrade to Pro at [tcgiant.com/sync](https://tcgiant.com/sync).*
+*Upgrade to Pro at [tcgiant.com/pro](https://tcgiant.com/pro).*

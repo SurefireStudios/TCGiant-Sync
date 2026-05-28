@@ -19,7 +19,7 @@ $auth_url         = TCGiant_Sync_OAuth::instance()->get_authorization_url();
 $license          = TCGiant_Sync_License::instance();
 $license_ui       = $license->get_status_for_ui();
 
-$preserve_keys = array( 'access_token', 'refresh_token', 'token_expiry', 'relay_secret', 'redirect_uri', 'app_id', 'cert_id', 'store_name', 'import_status' );
+$preserve_keys = array( 'access_token', 'refresh_token', 'token_expiry', 'relay_secret', 'redirect_uri', 'app_id', 'cert_id', 'store_name', 'import_status', 'marketplace' );
 
 // TCG-relevant eBay category map (ID => label).
 $tcg_categories = array(
@@ -141,8 +141,26 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 				}
 				?>
 
-				<!-- Category Filter -->
+				<!-- General Settings -->
 				<div class="tc-section" style="padding-top:0;border-top:none;margin-top:0;">
+					<h3 class="tc-section-title"><?php esc_html_e( 'General', 'tcgiant-sync' ); ?></h3>
+					<div class="tc-field">
+						<label class="tc-label" for="ebay_marketplace"><?php esc_html_e( 'Primary eBay Marketplace', 'tcgiant-sync' ); ?></label>
+						<select name="tcgiant_sync_ebay_settings[marketplace]" id="ebay_marketplace" class="tc-select">
+							<?php
+							$supported_marketplaces = TCGiant_Sync_API::MARKETPLACES;
+							$current_marketplace = $settings['marketplace'] ?? 'EBAY_US';
+							foreach ( $supported_marketplaces as $m_id => $m_data ) {
+								printf( '<option value="%s" %s>%s</option>', esc_attr( $m_id ), selected( $current_marketplace, $m_id, false ), esc_html( $m_data['label'] ) );
+							}
+							?>
+						</select>
+						<p class="tc-hint"><?php esc_html_e( 'Select the eBay regional site where your listings are managed.', 'tcgiant-sync' ); ?></p>
+					</div>
+				</div>
+
+				<!-- Category Filter -->
+				<div class="tc-section">
 					<h3 class="tc-section-title"><?php esc_html_e( 'Import Filters', 'tcgiant-sync' ); ?></h3>
 					<div class="tc-field">
 						<label class="tc-label"><?php esc_html_e( 'eBay Store Categories to Import', 'tcgiant-sync' ); ?></label>
@@ -352,7 +370,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						</div>
 						<?php endforeach; ?>
 					</div>
-					<p class="tc-hint" style="margin-top:8px;"><?php esc_html_e( 'Fixed Price listings · Good Till Cancelled · US marketplace.', 'tcgiant-sync' ); ?></p>
+					<p class="tc-hint" style="margin-top:8px;"><?php esc_html_e( 'Fixed Price listings · Good Till Cancelled · Regional marketplace based on settings.', 'tcgiant-sync' ); ?></p>
 				</div>
 
 				<div class="tc-form-footer" style="padding-top:16px;margin-top:16px;border-top:1px solid var(--tc-border);">

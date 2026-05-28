@@ -28,6 +28,20 @@ class TCGiant_Sync_API {
 	const BASE_URL_PRODUCTION = 'https://api.ebay.com/';
 
 	/**
+	 * Supported Marketplaces.
+	 */
+	const MARKETPLACES = array(
+		'EBAY_US' => array( 'label' => 'United States', 'site_id' => '0' ),
+		'EBAY_GB' => array( 'label' => 'United Kingdom', 'site_id' => '3' ),
+		'EBAY_CA' => array( 'label' => 'Canada', 'site_id' => '2' ),
+		'EBAY_AU' => array( 'label' => 'Australia', 'site_id' => '15' ),
+		'EBAY_DE' => array( 'label' => 'Germany', 'site_id' => '77' ),
+		'EBAY_FR' => array( 'label' => 'France', 'site_id' => '71' ),
+		'EBAY_IT' => array( 'label' => 'Italy', 'site_id' => '101' ),
+		'EBAY_ES' => array( 'label' => 'Spain', 'site_id' => '186' ),
+	);
+
+	/**
 	 * Main instance.
 	 */
 	public static function instance() {
@@ -35,6 +49,23 @@ class TCGiant_Sync_API {
 			self::$_instance = new self();
 		}
 		return self::$_instance;
+	}
+
+	/**
+	 * Get configured marketplace settings.
+	 */
+	public function get_marketplace_config() {
+		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
+		$marketplace_id = ! empty( $settings['marketplace'] ) ? $settings['marketplace'] : 'EBAY_US';
+		
+		if ( ! isset( self::MARKETPLACES[ $marketplace_id ] ) ) {
+			$marketplace_id = 'EBAY_US';
+		}
+		
+		return array(
+			'marketplace_id' => $marketplace_id,
+			'site_id'        => self::MARKETPLACES[ $marketplace_id ]['site_id'],
+		);
 	}
 
 	/**
@@ -114,10 +145,12 @@ class TCGiant_Sync_API {
 ' . $xml_body . '
 </' . $call_name . 'Request>';
 
+		$config = $this->get_marketplace_config();
+
 		$args = array(
 			'method'  => 'POST',
 			'headers' => array(
-				'X-EBAY-API-SITEID'              => '0',
+				'X-EBAY-API-SITEID'              => $config['site_id'],
 				'X-EBAY-API-COMPATIBILITY-LEVEL' => '1323',
 				'X-EBAY-API-CALL-NAME'           => $call_name,
 				'X-EBAY-API-IAF-TOKEN'           => $token,
@@ -397,7 +430,11 @@ class TCGiant_Sync_API {
 	 * @param string $marketplace_id eBay marketplace ID, default EBAY_US.
 	 * @return array|WP_Error List of fulfillment policies or error.
 	 */
-	public function get_fulfillment_policies( $marketplace_id = 'EBAY_US' ) {
+	public function get_fulfillment_policies( $marketplace_id = null ) {
+		if ( null === $marketplace_id ) {
+			$config = $this->get_marketplace_config();
+			$marketplace_id = $config['marketplace_id'];
+		}
 		return $this->request( 'sell/account/v1/fulfillment_policy', 'GET', array(), array(
 			'marketplace_id' => $marketplace_id,
 		) );
@@ -409,7 +446,11 @@ class TCGiant_Sync_API {
 	 * @param string $marketplace_id eBay marketplace ID, default EBAY_US.
 	 * @return array|WP_Error List of return policies or error.
 	 */
-	public function get_return_policies( $marketplace_id = 'EBAY_US' ) {
+	public function get_return_policies( $marketplace_id = null ) {
+		if ( null === $marketplace_id ) {
+			$config = $this->get_marketplace_config();
+			$marketplace_id = $config['marketplace_id'];
+		}
 		return $this->request( 'sell/account/v1/return_policy', 'GET', array(), array(
 			'marketplace_id' => $marketplace_id,
 		) );
@@ -421,7 +462,11 @@ class TCGiant_Sync_API {
 	 * @param string $marketplace_id eBay marketplace ID, default EBAY_US.
 	 * @return array|WP_Error List of payment policies or error.
 	 */
-	public function get_payment_policies( $marketplace_id = 'EBAY_US' ) {
+	public function get_payment_policies( $marketplace_id = null ) {
+		if ( null === $marketplace_id ) {
+			$config = $this->get_marketplace_config();
+			$marketplace_id = $config['marketplace_id'];
+		}
 		return $this->request( 'sell/account/v1/payment_policy', 'GET', array(), array(
 			'marketplace_id' => $marketplace_id,
 		) );
