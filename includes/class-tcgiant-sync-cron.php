@@ -41,6 +41,13 @@ class TCGiant_Sync_Cron {
 		add_action( 'tcgiant_sync_poll_ebay_cron', array( $this, 'sync_orders' ) );
 		add_action( 'tcgiant_sync_poll_ebay_cron', array( $this, 'ping_telemetry' ) );
 		
+		add_action( 'init', array( $this, 'schedule_events' ) );
+	}
+
+	/**
+	 * Schedule cron events after init to avoid early translation loading.
+	 */
+	public function schedule_events() {
 		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
 		$interval = $settings['sync_interval'] ?? 'tcgiant_hourly';
 
@@ -62,11 +69,11 @@ class TCGiant_Sync_Cron {
 	public function add_cron_intervals( $schedules ) {
 		$schedules['tcgiant_15mins'] = array(
 			'interval' => 15 * MINUTE_IN_SECONDS,
-			'display'  => esc_html__( 'Every 15 Minutes', 'tcgiant-sync' ),
+			'display'  => did_action( 'wp_loaded' ) ? esc_html__( 'Every 15 Minutes', 'tcgiant-sync' ) : 'Every 15 Minutes',
 		);
 		$schedules['tcgiant_hourly'] = array(
 			'interval' => HOUR_IN_SECONDS,
-			'display'  => esc_html__( 'Hourly', 'tcgiant-sync' ),
+			'display'  => did_action( 'wp_loaded' ) ? esc_html__( 'Hourly', 'tcgiant-sync' ) : 'Hourly',
 		);
 		return $schedules;
 	}
@@ -104,12 +111,11 @@ class TCGiant_Sync_Cron {
 
 		wp_remote_post( 'https://tcgiant.com/syncconnect/telemetry.php', array(
 			'blocking' => false,
-			'body'     => wp_json_encode( array(
+			'body'     => array(
 				'site_url'     => get_site_url(),
 				'synced_total' => TCGiant_Sync_License::instance()->get_active_product_count(),
 				'license_type' => $license_type,
-			) ),
-			'headers'  => array( 'Content-Type' => 'application/json' ),
+			),
 		) );
 	}
 

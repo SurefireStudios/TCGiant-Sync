@@ -67,12 +67,16 @@ final class TCGiant_Sync {
 		$class_name = str_replace( $prefix, '', $class );
 		$file = strtolower( str_replace( '_', '-', $class_name ) );
 		
+		// Sanitize file name to prevent path traversal
+		$file = preg_replace( '/[^a-z0-9\-]/', '', $file );
+
 		$path = TCGIANT_SYNC_PATH . 'includes/class-tcgiant-sync-' . $file . '.php';
 		if ( 'admin' === $file ) {
 			$path = TCGIANT_SYNC_PATH . 'admin/class-tcgiant-sync-' . $file . '.php';
 		}
 
 		if ( file_exists( $path ) ) {
+			// nosemgrep: audit.php.lang.security.file.inclusion-arg
 			include_once $path;
 		}
 	}

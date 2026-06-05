@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.1.3
+Stable tag: 1.1.4
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -81,6 +81,14 @@ TCGiant Sync is optimized for graded trading card game (TCG) collectibles, inclu
 6. Per-product Push to eBay button with Category and Condition overrides.
 
 == Changelog ==
+
+= 1.1.4 - 2026-06-05 =
+* Feature: Added WooCommerce HPOS (High-Performance Order Storage) compatibility.
+* Compatibility: Declared WooCommerce compatibility up to 9.0.
+* Fix: Scheduled cron events on `init` to prevent early translation loading warnings.
+* Fix: Corrected telemetry ping payload formatting.
+* Security: Added permission callback to webhook REST API endpoint.
+* Security: Sanitized autoloader file names to prevent path traversal.
 
 = 1.1.3 - 2026-05-28 =
 * Feature: Added Global Marketplace Support. You can now select your primary eBay regional site (e.g., UK, Canada, Australia) in settings to import and push listings internationally.

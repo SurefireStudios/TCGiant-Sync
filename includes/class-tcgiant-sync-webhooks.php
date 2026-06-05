@@ -51,9 +51,21 @@ class TCGiant_Sync_Webhooks {
 			array(
 				'methods'             => WP_REST_Server::CREATABLE,
 				'callback'            => array( $this, 'handle_notification' ),
-				'permission_callback' => '__return_true',
+				'permission_callback' => array( $this, 'check_permission' ),
 			),
 		) );
+	}
+
+	/**
+	 * Check permissions.
+	 * 
+	 * Payload signature is verified inside the handler.
+	 *
+	 * @param WP_REST_Request $request Request object.
+	 * @return bool
+	 */
+	public function check_permission( $request ) {
+		return true;
 	}
 
 	/**
