@@ -52,9 +52,13 @@ $db = new SQLite3(__DIR__ . '/sync.db');
 $db->exec("CREATE TABLE IF NOT EXISTS sites (id INTEGER PRIMARY KEY, site_url TEXT UNIQUE, last_connected DATETIME, total_synced INTEGER DEFAULT 0, license_type TEXT DEFAULT 'free')");
 @$db->exec("ALTER TABLE sites ADD COLUMN total_synced INTEGER DEFAULT 0"); // Ensure column exists
 @$db->exec("ALTER TABLE sites ADD COLUMN license_type TEXT DEFAULT 'free'"); // Ensure column exists
+@$db->exec("ALTER TABLE sites ADD COLUMN total_pushed INTEGER DEFAULT 0"); // Ensure column exists
+@$db->exec("ALTER TABLE sites ADD COLUMN total_pulled INTEGER DEFAULT 0"); // Ensure column exists
 
 $total_sites = $db->querySingle("SELECT COUNT(*) FROM sites");
 $total_synced_global = $db->querySingle("SELECT SUM(total_synced) FROM sites");
+$total_pushed_global = $db->querySingle("SELECT SUM(total_pushed) FROM sites");
+$total_pulled_global = $db->querySingle("SELECT SUM(total_pulled) FROM sites");
 
 $results = $db->query("SELECT * FROM sites ORDER BY last_connected DESC");
 $sites = [];
@@ -98,8 +102,16 @@ while ($row = $results->fetchArray(SQLITE3_ASSOC)) {
             <div class="value"><?= number_format((int)$total_sites) ?></div>
         </div>
         <div class="stat-card">
-            <h3>Total Products Pushed</h3>
+            <h3>Total Products Synced</h3>
             <div class="value"><?= number_format((int)$total_synced_global) ?></div>
+        </div>
+        <div class="stat-card">
+            <h3>Total Pushed</h3>
+            <div class="value"><?= number_format((int)$total_pushed_global) ?></div>
+        </div>
+        <div class="stat-card">
+            <h3>Total Pulled</h3>
+            <div class="value"><?= number_format((int)$total_pulled_global) ?></div>
         </div>
     </div>
 
@@ -109,6 +121,8 @@ while ($row = $results->fetchArray(SQLITE3_ASSOC)) {
                 <th>Site URL</th>
                 <th>License</th>
                 <th>Total Synced</th>
+                <th>Pushed</th>
+                <th>Pulled</th>
                 <th>Last Active</th>
             </tr>
         </thead>
@@ -129,6 +143,8 @@ while ($row = $results->fetchArray(SQLITE3_ASSOC)) {
                             </span>
                         </td>
                         <td class="count"><?= number_format((int)$site['total_synced']) ?></td>
+                        <td class="count" style="color: #cbd5e1;"><?= number_format((int)$site['total_pushed']) ?></td>
+                        <td class="count" style="color: #cbd5e1;"><?= number_format((int)$site['total_pulled']) ?></td>
                         <td class="date"><?= date('M j, Y g:i A', strtotime($site['last_connected'])) ?></td>
                     </tr>
                 <?php endforeach; ?>

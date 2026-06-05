@@ -152,6 +152,44 @@ class TCGiant_Sync_License
 	}
 
 	/**
+	 * Count products pushed from Woo to eBay.
+	 *
+	 * @return int Number of pushed products.
+	 */
+	public function get_pushed_product_count()
+	{
+		global $wpdb;
+		return (int) $wpdb->get_var(
+			"SELECT COUNT(DISTINCT p.ID) FROM {$wpdb->posts} p
+			 INNER JOIN {$wpdb->postmeta} pm1 ON pm1.post_id = p.ID
+			 INNER JOIN {$wpdb->postmeta} pm2 ON pm2.post_id = p.ID
+			 WHERE p.post_type = 'product'
+			 AND p.post_status IN ('publish','draft')
+			 AND pm1.meta_key = '_ebay_item_id' AND pm1.meta_value != ''
+			 AND pm2.meta_key = '_ebay_export_status' AND pm2.meta_value = 'pushed'"
+		);
+	}
+
+	/**
+	 * Count products pulled from eBay to Woo.
+	 *
+	 * @return int Number of pulled products.
+	 */
+	public function get_pulled_product_count()
+	{
+		global $wpdb;
+		return (int) $wpdb->get_var(
+			"SELECT COUNT(DISTINCT p.ID) FROM {$wpdb->posts} p
+			 INNER JOIN {$wpdb->postmeta} pm1 ON pm1.post_id = p.ID
+			 LEFT JOIN {$wpdb->postmeta} pm2 ON pm2.post_id = p.ID AND pm2.meta_key = '_ebay_export_status'
+			 WHERE p.post_type = 'product'
+			 AND p.post_status IN ('publish','draft')
+			 AND pm1.meta_key = '_ebay_item_id' AND pm1.meta_value != ''
+			 AND (pm2.meta_value IS NULL OR pm2.meta_value != 'pushed')"
+		);
+	}
+
+	/**
 	 * Get the current import limit.
 	 *
 	 * @return int Maximum allowed synced products.

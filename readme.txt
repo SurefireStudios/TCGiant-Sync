@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.1.4
+Stable tag: 1.1.5
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -82,9 +82,13 @@ TCGiant Sync is optimized for graded trading card game (TCG) collectibles, inclu
 
 == Changelog ==
 
+= 1.1.5 - 2026-06-05 =
+* Feature: Added Pushed and Pulled product metrics to the dashboard and telemetry payload to accurately differentiate sync direction.
+* Fix: Addressed an issue where `thecardboardshop.com` and other instances reported as 'free' with '0 synced' by correcting JSON payload formatting and validation logic in the telemetry ping.
+
 = 1.1.4 - 2026-06-05 =
 * Feature: Added WooCommerce HPOS (High-Performance Order Storage) compatibility.
-* Compatibility: Declared WooCommerce compatibility up to 9.0.
+* Compatibility: Declared WooCommerce compatibility up to 10.0.
 * Fix: Scheduled cron events on `init` to prevent early translation loading warnings.
 * Fix: Corrected telemetry ping payload formatting.
 * Security: Added permission callback to webhook REST API endpoint.

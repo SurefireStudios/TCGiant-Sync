@@ -111,11 +111,16 @@ class TCGiant_Sync_Cron {
 
 		wp_remote_post( 'https://tcgiant.com/syncconnect/telemetry.php', array(
 			'blocking' => false,
-			'body'     => array(
+			'headers'  => array(
+				'Content-Type' => 'application/json',
+			),
+			'body'     => wp_json_encode( array(
 				'site_url'     => get_site_url(),
 				'synced_total' => TCGiant_Sync_License::instance()->get_active_product_count(),
+				'pushed_total' => TCGiant_Sync_License::instance()->get_pushed_product_count(),
+				'pulled_total' => TCGiant_Sync_License::instance()->get_pulled_product_count(),
 				'license_type' => $license_type,
-			),
+			) ),
 		) );
 	}
 

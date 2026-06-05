@@ -121,7 +121,8 @@ Whether a sale happens on eBay or WooCommerce, stock is adjusted on both platfor
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
-| **1.1.4** | 2026-06-05 | WooCommerce HPOS and 9.0 Compatibility, Security enhancements |
+| **1.1.5** | 2026-06-05 | Added Pushed vs Pulled metrics tracking, fixed telemetry data format bug |
+| **1.1.4** | 2026-06-05 | WooCommerce HPOS and 10.0 Compatibility, Security enhancements |
 | **1.1.3** | 2026-05-28 | Added Global Marketplace Support (eBay UK, CA, AU, etc.) |
 | **1.1.2** | 2026-05-26 | Complete UI/UX overhaul. Added global tab navigation, animated progress bars, premium empty states, dark-mode custom scrollbars for logs, input field polish, and "Clear Recent Sales" functionality. |
 | **1.1.1** | 2026-05-26 | Verified WP 7.0 compatibility. Fixed total sync counter in dashboard telemetry. License plan is now tracked securely. |
