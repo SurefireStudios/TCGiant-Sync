@@ -69,6 +69,15 @@ function tcgiant_sync_init() {
 		return;
 	}
 
+	// Load Plugin Update Checker
+	require_once TCGIANT_SYNC_PATH . 'includes/plugin-update-checker/plugin-update-checker.php';
+	$tcgiant_update_checker = \YahnisElsts\PluginUpdateChecker\v5\PucFactory::buildUpdateChecker(
+		'https://github.com/SurefireStudios/TCGiant-Sync/',
+		TCGIANT_SYNC_FILE,
+		'tcgiant-sync'
+	);
+	$tcgiant_update_checker->setBranch('main');
+
 	// Load core class.
 	require_once TCGIANT_SYNC_PATH . 'includes/class-tcgiant-sync.php';
 

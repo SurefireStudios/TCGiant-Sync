@@ -58,6 +58,15 @@ if ( empty( $settings['redirect_uri'] ) ) {
 	<?php endif; ?>
 	<?php // phpcs:enable WordPress.Security.NonceVerification.Recommended ?>
 
+	<!-- ─── SUPPORT NOTIFICATION ─── -->
+	<div class="notice notice-info" style="border-left-color: #2563eb;">
+		<p>
+			<strong><?php esc_html_e( 'Need Help?', 'tcgiant-sync' ); ?></strong><br>
+			<?php esc_html_e( 'If you are experiencing issues, please ensure you are updated to the most recent version of the plugin via your WordPress Plugins page. If you are still having trouble, we\'re here to help! Contact us at ', 'tcgiant-sync' ); ?>
+			<a href="mailto:hello@tcgiant.com">hello@tcgiant.com</a>.
+		</p>
+	</div>
+
 	<!-- ─── QUICK STATS BAR ─── -->
 	<div class="tc-top-bar" style="margin-bottom:20px;">
 
