@@ -67,24 +67,91 @@ if ( empty( $settings['redirect_uri'] ) ) {
 		</p>
 	</div>
 
+	<!-- ─── ONBOARDING WIDGET ─── -->
+	<?php
+	// Check onboarding status
+	$onboarding_dismissed = get_user_meta( get_current_user_id(), 'tcgiant_sync_onboarding_dismissed', true );
+	$policies_ok = ! empty( $settings['export_fulfillment_policy'] ) && ! empty( $settings['export_return_policy'] ) && ! empty( $settings['export_payment_policy'] );
+	$has_imported = (int) $stats['synced_products'] > 0;
+	$has_exported = (int) ( $export_state['total_pushed'] ?? 0 ) > 0;
+	$has_synced = $has_imported || $has_exported;
+	$onboarding_complete = $is_authenticated && $policies_ok && $has_synced;
+	
+	// Handle dismissal
+	if ( isset( $_GET['dismiss_onboarding'] ) && '1' === $_GET['dismiss_onboarding'] ) {
+		update_user_meta( get_current_user_id(), 'tcgiant_sync_onboarding_dismissed', '1' );
+		$onboarding_dismissed = '1';
+	}
+	?>
+	
+	<?php if ( ! $onboarding_dismissed ) : ?>
+		<div class="tc-card" style="margin-bottom: 20px; border-left: 4px solid var(--tc-accent);">
+			<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+				<h2 style="margin: 0; font-size: 18px;"><span class="dashicons dashicons-clipboard" style="vertical-align: middle;"></span> <?php esc_html_e( 'Getting Started Checklist', 'tcgiant-sync' ); ?></h2>
+				<?php if ( $onboarding_complete ) : ?>
+					<a href="<?php echo esc_url( add_query_arg( 'dismiss_onboarding', '1' ) ); ?>" class="tc-button secondary" style="font-size: 12px;"><?php esc_html_e( 'Dismiss', 'tcgiant-sync' ); ?></a>
+				<?php endif; ?>
+			</div>
+			
+			<?php if ( $onboarding_complete ) : ?>
+				<div class="notice notice-success inline" style="margin: 0 0 15px 0;">
+					<p><strong><?php esc_html_e( 'Awesome! You have completed all setup steps.', 'tcgiant-sync' ); ?></strong></p>
+				</div>
+			<?php else : ?>
+				<p style="margin-bottom: 15px; color: var(--tc-text-muted);"><?php esc_html_e( 'Complete these steps to unlock the full potential of TCGiant Sync.', 'tcgiant-sync' ); ?></p>
+			<?php endif; ?>
+			
+			<ul style="margin: 0; padding: 0; list-style: none;">
+				<li style="margin-bottom: 10px; display: flex; align-items: center; gap: 10px;">
+					<?php if ( $is_authenticated ) : ?>
+						<span class="dashicons dashicons-yes-alt" style="color: #10b981;"></span>
+						<span style="color: var(--tc-text-muted); text-decoration: line-through;"><?php esc_html_e( 'Connect your eBay Account', 'tcgiant-sync' ); ?></span>
+					<?php else : ?>
+						<span class="dashicons dashicons-marker" style="color: #d1d5db;"></span>
+						<strong><a href="<?php echo esc_url( admin_url( 'admin.php?page=tcgiant-settings' ) ); ?>"><?php esc_html_e( 'Connect your eBay Account', 'tcgiant-sync' ); ?></a></strong>
+					<?php endif; ?>
+				</li>
+				<li style="margin-bottom: 10px; display: flex; align-items: center; gap: 10px;">
+					<?php if ( $policies_ok ) : ?>
+						<span class="dashicons dashicons-yes-alt" style="color: #10b981;"></span>
+						<span style="color: var(--tc-text-muted); text-decoration: line-through;"><?php esc_html_e( 'Configure Export Defaults (Business Policies)', 'tcgiant-sync' ); ?></span>
+					<?php else : ?>
+						<span class="dashicons dashicons-marker" style="color: #d1d5db;"></span>
+						<strong><a href="<?php echo esc_url( admin_url( 'admin.php?page=tcgiant-settings' ) ); ?>"><?php esc_html_e( 'Configure Export Defaults (Business Policies)', 'tcgiant-sync' ); ?></a></strong>
+					<?php endif; ?>
+				</li>
+				<li style="display: flex; align-items: center; gap: 10px;">
+					<?php if ( $has_synced ) : ?>
+						<span class="dashicons dashicons-yes-alt" style="color: #10b981;"></span>
+						<span style="color: var(--tc-text-muted); text-decoration: line-through;"><?php esc_html_e( 'Run your first Import or Push', 'tcgiant-sync' ); ?></span>
+					<?php else : ?>
+						<span class="dashicons dashicons-marker" style="color: #d1d5db;"></span>
+						<strong><a href="<?php echo esc_url( admin_url( 'admin.php?page=tcgiant-import' ) ); ?>"><?php esc_html_e( 'Run your first Import or Push', 'tcgiant-sync' ); ?></a></strong>
+					<?php endif; ?>
+				</li>
+			</ul>
+		</div>
+	<?php endif; ?>
+
 	<!-- ─── QUICK STATS BAR ─── -->
-	<div class="tc-top-bar" style="margin-bottom:20px;">
+	<div class="tc-top-bar" style="margin-bottom:20px; display:flex; gap:20px;">
 
 		<!-- Import Status Card -->
-		<div class="tc-top-card">
+		<div class="tc-top-card" style="flex:1;">
 			<div class="tc-top-card-left">
 				<span class="dashicons dashicons-download tc-top-card-icon"></span>
 				<div class="tc-top-card-text">
-					<h3><?php esc_html_e( 'Import Status', 'tcgiant-sync' ); ?></h3>
-					<p>
-						<strong><?php echo esc_html( $stats['synced_products'] ); ?></strong> <?php esc_html_e( 'synced products', 'tcgiant-sync' ); ?>
-						&nbsp;·&nbsp;
+					<h3><?php esc_html_e( 'Total Imported', 'tcgiant-sync' ); ?></h3>
+					<p style="font-size: 24px; font-weight: bold; margin: 5px 0; color: var(--tc-text);">
+						<?php echo esc_html( $stats['synced_products'] ); ?>
+					</p>
+					<p style="font-size: 12px; color: var(--tc-text-muted);">
 						<span class="tc-sync-dot <?php echo esc_attr( $sync_state['status'] ); ?>" style="display:inline-block;width:8px;height:8px;border-radius:50%;vertical-align:middle;"></span>
 						<?php
 						$import_labels = array(
-							'scanning'      => 'Scanning',
-							'importing'     => 'Importing',
-							'complete'      => 'Complete',
+							'scanning'      => 'Scanning...',
+							'importing'     => 'Importing...',
+							'complete'      => 'Idle',
 							'stopped'       => 'Idle',
 							'error'         => 'Error',
 							'limit_reached' => 'Limit Reached',
@@ -94,27 +161,41 @@ if ( empty( $settings['redirect_uri'] ) ) {
 					</p>
 				</div>
 			</div>
-			<div class="tc-top-card-right">
-				<a href="<?php echo esc_url( admin_url( 'admin.php?page=tcgiant-import' ) ); ?>" class="tc-button secondary"><?php esc_html_e( 'Import →', 'tcgiant-sync' ); ?></a>
-			</div>
 		</div>
 
 		<!-- Export Status Card -->
-		<div class="tc-top-card">
+		<div class="tc-top-card" style="flex:1;">
 			<div class="tc-top-card-left">
 				<span class="dashicons dashicons-upload tc-top-card-icon"></span>
 				<div class="tc-top-card-text">
-					<h3><?php esc_html_e( 'Export Status', 'tcgiant-sync' ); ?></h3>
-					<p>
-						<strong><?php echo esc_html( $export_state['total_pushed'] ?? '0' ); ?></strong> <?php esc_html_e( 'pushed to eBay', 'tcgiant-sync' ); ?>
+					<h3><?php esc_html_e( 'Total Exported', 'tcgiant-sync' ); ?></h3>
+					<p style="font-size: 24px; font-weight: bold; margin: 5px 0; color: var(--tc-text);">
+						<?php echo esc_html( $export_state['total_pushed'] ?? '0' ); ?>
+					</p>
+					<p style="font-size: 12px; color: var(--tc-text-muted);">
 						<?php if ( ! empty( $export_state['last_completed'] ) ) : ?>
-							&nbsp;·&nbsp; <?php echo esc_html( 'Last: ' . $export_state['last_completed'] ); ?>
+							<?php echo esc_html( 'Last: ' . $export_state['last_completed'] ); ?>
+						<?php else : ?>
+							<?php esc_html_e( 'No exports yet', 'tcgiant-sync' ); ?>
 						<?php endif; ?>
 					</p>
 				</div>
 			</div>
-			<div class="tc-top-card-right">
-				<a href="<?php echo esc_url( admin_url( 'admin.php?page=tcgiant-export' ) ); ?>" class="tc-button secondary"><?php esc_html_e( 'Push →', 'tcgiant-sync' ); ?></a>
+		</div>
+
+		<!-- Sync Health Card -->
+		<div class="tc-top-card" style="flex:1;">
+			<div class="tc-top-card-left">
+				<span class="dashicons dashicons-heart tc-top-card-icon"></span>
+				<div class="tc-top-card-text">
+					<h3><?php esc_html_e( 'Sync Health', 'tcgiant-sync' ); ?></h3>
+					<p style="font-size: 24px; font-weight: bold; margin: 5px 0; color: <?php echo $is_authenticated ? '#10b981' : '#ef4444'; ?>;">
+						<?php echo $is_authenticated ? esc_html__( 'Healthy', 'tcgiant-sync' ) : esc_html__( 'Action Needed', 'tcgiant-sync' ); ?>
+					</p>
+					<p style="font-size: 12px; color: var(--tc-text-muted);">
+						<?php echo $is_authenticated ? esc_html( $settings['store_name'] ?? 'Connected' ) : esc_html__( 'Not Connected to eBay', 'tcgiant-sync' ); ?>
+					</p>
+				</div>
 			</div>
 		</div>
 	</div>
@@ -156,23 +237,27 @@ if ( empty( $settings['redirect_uri'] ) ) {
 					</span>
 				</div>
 			</div>
-
-			<!-- Quick Links -->
-			<div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--tc-border);display:flex;flex-wrap:wrap;gap:8px;">
-				<a href="<?php echo esc_url( admin_url( 'admin.php?page=tcgiant-import' ) ); ?>" class="tc-button secondary" style="flex:1;text-align:center;font-size:12px;">
-					<span class="dashicons dashicons-download" style="font-size:14px;"></span> <?php esc_html_e( 'Import', 'tcgiant-sync' ); ?>
-				</a>
-				<a href="<?php echo esc_url( admin_url( 'admin.php?page=tcgiant-export' ) ); ?>" class="tc-button secondary" style="flex:1;text-align:center;font-size:12px;">
-					<span class="dashicons dashicons-upload" style="font-size:14px;"></span> <?php esc_html_e( 'Push to eBay', 'tcgiant-sync' ); ?>
-				</a>
-				<a href="<?php echo esc_url( admin_url( 'admin.php?page=tcgiant-settings' ) ); ?>" class="tc-button secondary" style="flex:1;text-align:center;font-size:12px;">
-					<span class="dashicons dashicons-admin-settings" style="font-size:14px;"></span> <?php esc_html_e( 'Settings', 'tcgiant-sync' ); ?>
-				</a>
-			</div>
 		</div>
 
-		<!-- Recent WooCommerce Orders — Push Stock to eBay -->
-		<div class="tc-card" style="margin-top:0;">
+		<div>
+			<!-- Quick Links -->
+			<div class="tc-card" style="margin-top:0; margin-bottom: 20px;">
+				<h2 style="margin-top:0;"><span class="dashicons dashicons-admin-links"></span> <?php esc_html_e( 'Quick Actions', 'tcgiant-sync' ); ?></h2>
+				<div style="display:flex;flex-wrap:wrap;gap:8px;">
+					<a href="<?php echo esc_url( admin_url( 'admin.php?page=tcgiant-import' ) ); ?>" class="tc-button secondary" style="flex:1;text-align:center;font-size:12px;">
+						<span class="dashicons dashicons-download" style="font-size:14px;"></span> <?php esc_html_e( 'Import', 'tcgiant-sync' ); ?>
+					</a>
+					<a href="<?php echo esc_url( admin_url( 'admin.php?page=tcgiant-export' ) ); ?>" class="tc-button secondary" style="flex:1;text-align:center;font-size:12px;">
+						<span class="dashicons dashicons-upload" style="font-size:14px;"></span> <?php esc_html_e( 'Push to eBay', 'tcgiant-sync' ); ?>
+					</a>
+					<a href="<?php echo esc_url( admin_url( 'admin.php?page=tcgiant-settings' ) ); ?>" class="tc-button secondary" style="flex:1;text-align:center;font-size:12px;">
+						<span class="dashicons dashicons-admin-settings" style="font-size:14px;"></span> <?php esc_html_e( 'Settings', 'tcgiant-sync' ); ?>
+					</a>
+				</div>
+			</div>
+
+			<!-- Recent WooCommerce Orders — Push Stock to eBay -->
+			<div class="tc-card" style="margin-top:0;">
 			<div class="tc-log-header">
 				<h2 style="margin-bottom:0;"><span class="dashicons dashicons-cart"></span> <?php esc_html_e( 'Recent Sales — Sync to eBay', 'tcgiant-sync' ); ?></h2>
 				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin:0;">

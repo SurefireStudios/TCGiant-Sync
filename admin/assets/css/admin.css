@@ -450,7 +450,7 @@
     padding: 10px;
     font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
     font-size: 11px;
-    max-height: 300px;
+    max-height: 200px;
     overflow-y: auto;
     line-height: 1.5;
 }
