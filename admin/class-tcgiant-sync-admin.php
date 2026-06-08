@@ -467,6 +467,10 @@ class TCGiant_Sync_Admin {
 	 */
 	public function ajax_sync_status() {
 		check_ajax_referer( 'tcgiant_sync_ajax' );
+
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'Unauthorized.' ) );
+		}
 		
 		$state = TCGiant_Sync_Importer::get_sync_state();
 
@@ -506,6 +510,10 @@ class TCGiant_Sync_Admin {
 	 */
 	public function ajax_get_logs() {
 		check_ajax_referer( 'tcgiant_sync_ajax' );
+
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'Unauthorized.' ) );
+		}
 		
 		$entries = TCGiant_Sync_Logger::get_recent_entries( 20 );
 		
@@ -549,6 +557,10 @@ class TCGiant_Sync_Admin {
 	 */
 	public function ajax_get_store_categories() {
 		check_ajax_referer( 'tcgiant_sync_ajax' );
+
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'Unauthorized.' ) );
+		}
 
 		if ( ! TCGiant_Sync_OAuth::instance()->is_authenticated() ) {
 			wp_send_json_error( array( 'message' => 'Not connected to eBay.' ) );
@@ -817,6 +829,10 @@ class TCGiant_Sync_Admin {
 	 */
 	public function ajax_export_status() {
 		check_ajax_referer( 'tcgiant_sync_ajax' );
+
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'Unauthorized.' ) );
+		}
 		wp_send_json_success( array(
 			'state' => TCGiant_Sync_Exporter::get_export_state(),
 		) );
