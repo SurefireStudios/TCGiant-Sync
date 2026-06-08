@@ -82,6 +82,15 @@ class TCGiant_Sync_Mapper {
 			$product_data['store_categories'][] = $ebay_item['Storefront']['StoreCategory2ID'];
 		}
 
+		// Map Primary Category Fallback
+		$product_data['primary_category_name'] = '';
+		if ( isset( $ebay_item['PrimaryCategory']['CategoryName'] ) ) {
+			// e.g., "Toys & Hobbies:Collectible Card Games:CCG Individual Cards"
+			$cat_string = $ebay_item['PrimaryCategory']['CategoryName'];
+			$parts = explode( ':', $cat_string );
+			$product_data['primary_category_name'] = end( $parts );
+		}
+
 		// Map Attributes (from Item Specifics).
 		$product_data['attributes'] = $this->extract_attributes( $ebay_item );
 
@@ -318,6 +327,15 @@ class TCGiant_Sync_Mapper {
 				$cat_ids = $this->resolve_and_create_categories( $product_data['store_categories'] );
 				if ( ! empty( $cat_ids ) ) {
 					$product->set_category_ids( $cat_ids );
+				}
+			} elseif ( ! empty( $product_data['primary_category_name'] ) ) {
+				// Fallback to Primary Category if no Store Category is found
+				$term = term_exists( $product_data['primary_category_name'], 'product_cat' );
+				if ( ! $term ) {
+					$term = wp_insert_term( $product_data['primary_category_name'], 'product_cat' );
+				}
+				if ( ! is_wp_error( $term ) && isset( $term['term_id'] ) ) {
+					$product->set_category_ids( array( (int) $term['term_id'] ) );
 				}
 			}
 			if ( ! $is_new ) $sync_decisions[] = 'Categories & Tags updated (eBay won)';
