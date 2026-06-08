@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.1.7
+Stable tag: 1.1.8
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -81,6 +81,10 @@ TCGiant Sync is optimized for graded trading card game (TCG) collectibles, inclu
 6. Per-product Push to eBay button with Category and Condition overrides.
 
 == Changelog ==
+
+= 1.1.8 - 2026-06-08 =
+* Feature: Full support for bidirectional Variation syncing! You can now map eBay Variations directly into WooCommerce Variable products. The plugin also properly pushes WooCommerce Variable products natively to eBay.
+* Feature: The Mapper now dynamically extracts and maps *all* available eBay Item Specifics into WooCommerce Attributes (e.g. Brand, Material, Scale), ensuring robust native support for non-TCG categories.
 
 = 1.1.7 - 2026-06-08 =
 * Feature: Added automatic mapping of standard eBay PrimaryCategory to WooCommerce categories (useful for standard/free eBay accounts without Store Categories).
