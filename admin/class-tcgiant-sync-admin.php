@@ -79,6 +79,7 @@ class TCGiant_Sync_Admin {
 			'tcgiant-sync_page_tcgiant-import',
 			'tcgiant-sync_page_tcgiant-export',
 			'tcgiant-sync_page_tcgiant-settings',
+			'tcgiant-sync_page_tcgiant-logs',
 		);
 		if ( ! in_array( $hook, $tc_pages, true ) ) {
 			return;
@@ -352,6 +353,15 @@ class TCGiant_Sync_Admin {
 			'tcgiant-settings',
 			array( $this, 'render_settings_page' )
 		);
+
+		add_submenu_page(
+			'tcgiant-sync',
+			__( 'Logs', 'tcgiant-sync' ),
+			__( 'Logs', 'tcgiant-sync' ),
+			'manage_options',
+			'tcgiant-logs',
+			array( $this, 'render_logs_page' )
+		);
 	}
 
 	/**
@@ -363,6 +373,7 @@ class TCGiant_Sync_Admin {
 			'import'    => array( 'title' => __( 'Import from eBay', 'tcgiant-sync' ), 'icon' => 'dashicons-download', 'page' => 'tcgiant-import' ),
 			'export'    => array( 'title' => __( 'Push to eBay', 'tcgiant-sync' ), 'icon' => 'dashicons-upload', 'page' => 'tcgiant-export' ),
 			'settings'  => array( 'title' => __( 'Settings', 'tcgiant-sync' ), 'icon' => 'dashicons-admin-settings', 'page' => 'tcgiant-settings' ),
+			'logs'      => array( 'title' => __( 'Logs', 'tcgiant-sync' ), 'icon' => 'dashicons-list-view', 'page' => 'tcgiant-logs' ),
 		);
 
 		echo '<div class="tc-nav-tabs">';
@@ -405,7 +416,14 @@ class TCGiant_Sync_Admin {
 	 * Render Settings page.
 	 */
 	public function render_settings_page() {
-		include_once TCGIANT_SYNC_PATH . 'admin/views/settings.php';
+		require_once TCGIANT_SYNC_PATH . 'admin/views/settings.php';
+	}
+
+	/**
+	 * Render logs page.
+	 */
+	public function render_logs_page() {
+		require_once TCGIANT_SYNC_PATH . 'admin/views/logs.php';
 	}
 
 	/**

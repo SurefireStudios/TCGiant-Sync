@@ -1,0 +1,76 @@
+<?php
+/**
+ * Logs Page View
+ *
+ * @package TCGiant_Sync
+ * @license GPL-2.0-or-later
+ */
+
+if ( ! defined( 'ABSPATH' ) ) {
+	exit;
+}
+
+// Fetch up to 1000 logs for the dedicated logs page.
+$log_entries = TCGiant_Sync_Logger::get_recent_entries( 1000 );
+$license_ui  = TCGiant_Sync_License::instance()->get_status_for_ui();
+?>
+
+<div class="wrap tc-dashboard-wrap">
+	<div class="tc-header">
+		<h1>
+			<?php esc_html_e( 'Activity Logs', 'tcgiant-sync' ); ?>
+			<?php if ( $license_ui['is_pro'] ) : ?>
+				<span class="tc-pro-badge">PRO</span>
+			<?php else : ?>
+				<span class="tc-free-badge">FREE</span>
+			<?php endif; ?>
+		</h1>
+		<p class="tc-subtitle">
+			<?php esc_html_e( 'Review your historical sync activity and errors here.', 'tcgiant-sync' ); ?>
+		</p>
+	</div>
+
+	<?php TCGiant_Sync_Admin::instance()->render_tabs( 'logs' ); ?>
+
+	<div class="tc-card">
+		<div class="tc-log-header">
+			<h2 style="margin-bottom:0;"><span class="dashicons dashicons-list-view"></span> <?php esc_html_e( 'Full Activity Log', 'tcgiant-sync' ); ?></h2>
+			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin:0;">
+				<input type="hidden" name="action" value="tcgiant_clear_log">
+				<?php wp_nonce_field( 'tcgiant_clear_log' ); ?>
+				<button type="submit" class="tc-button secondary tc-button-danger" style="font-size:11px;padding:4px 10px;">
+					<span class="dashicons dashicons-trash" style="font-size:14px;vertical-align:text-bottom;"></span> <?php esc_html_e( 'Clear All Logs', 'tcgiant-sync' ); ?>
+				</button>
+			</form>
+		</div>
+		
+		<p style="font-size:12px; color:var(--tc-text-muted); margin-top:-10px; margin-bottom:15px;">
+			<?php esc_html_e( 'Showing up to the last 1,000 recorded events.', 'tcgiant-sync' ); ?>
+		</p>
+
+		<div class="tc-log-viewer" id="tc-log-content" style="max-height: 600px;">
+			<?php if ( empty( $log_entries ) ) : ?>
+				<div class="tc-premium-empty-state" style="margin-top:20px;border-color:rgba(255,255,255,0.1);">
+					<span class="dashicons dashicons-welcome-write-blog" style="color:#64748b;"></span>
+					<p style="color:#64748b;"><?php esc_html_e( 'No activity recorded yet.', 'tcgiant-sync' ); ?></p>
+				</div>
+			<?php else : ?>
+				<?php foreach ( $log_entries as $entry ) :
+					$level_class = '';
+					$icon = '[Log]';
+					switch ( $entry['level'] ) {
+						case 'error':   $level_class = 'tc-is-error';   $icon = '[X]';  break;
+						case 'success': $level_class = 'tc-is-success'; $icon = '[OK]'; break;
+						case 'warning': $level_class = 'tc-is-warning'; $icon = '[!]';  break;
+					}
+				?>
+				<div class="tc-log-entry <?php echo esc_attr( $level_class ); ?>">
+					<span class="tc-log-icon"><?php echo esc_html( $icon ); ?></span>
+					<span class="tc-log-time"><?php echo esc_html( $entry['timestamp'] ); ?></span>
+					<span class="tc-log-msg"><?php echo esc_html( $entry['message'] ); ?></span>
+				</div>
+				<?php endforeach; ?>
+			<?php endif; ?>
+		</div>
+	</div>
+</div>

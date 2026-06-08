@@ -18,7 +18,7 @@ $stats            = $admin->get_sync_stats();
 $sync_state       = TCGiant_Sync_Importer::get_sync_state();
 $is_authenticated = TCGiant_Sync_OAuth::instance()->is_authenticated();
 $settings         = TCGiant_Sync_OAuth::instance()->get_settings();
-$log_entries      = TCGiant_Sync_Logger::get_recent_entries( 20 );
+$log_entries      = TCGiant_Sync_Logger::get_recent_entries( 10 );
 $license          = TCGiant_Sync_License::instance();
 $license_ui       = $license->get_status_for_ui();
 $export_state     = TCGiant_Sync_Exporter::get_export_state();
@@ -343,12 +343,17 @@ if ( empty( $settings['redirect_uri'] ) ) {
 	<!-- Activity Log -->
 	<div class="tc-card" style="margin-top:20px;">
 		<div class="tc-log-header">
-			<h2 style="margin-bottom:0;"><span class="dashicons dashicons-list-view"></span> <?php esc_html_e( 'Activity Log', 'tcgiant-sync' ); ?></h2>
-			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin:0;">
-				<input type="hidden" name="action" value="tcgiant_clear_log">
-				<?php wp_nonce_field( 'tcgiant_clear_log' ); ?>
-				<button type="submit" class="tc-button secondary" style="font-size:11px;padding:4px 10px;"><?php esc_html_e( 'Clear', 'tcgiant-sync' ); ?></button>
-			</form>
+			<h2 style="margin-bottom:0;"><span class="dashicons dashicons-list-view"></span> <?php esc_html_e( 'Recent Activity', 'tcgiant-sync' ); ?></h2>
+			<div style="display:flex;gap:10px;align-items:center;">
+				<a href="<?php echo esc_url( admin_url( 'admin.php?page=tcgiant-logs' ) ); ?>" class="tc-button secondary" style="font-size:11px;padding:4px 10px;">
+					<?php esc_html_e( 'View All Logs', 'tcgiant-sync' ); ?>
+				</a>
+				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin:0;">
+					<input type="hidden" name="action" value="tcgiant_clear_log">
+					<?php wp_nonce_field( 'tcgiant_clear_log' ); ?>
+					<button type="submit" class="tc-button secondary" style="font-size:11px;padding:4px 10px;"><?php esc_html_e( 'Clear', 'tcgiant-sync' ); ?></button>
+				</form>
+			</div>
 		</div>
 		<div class="tc-log-viewer" id="tc-log-content">
 			<?php if ( empty( $log_entries ) ) : ?>
