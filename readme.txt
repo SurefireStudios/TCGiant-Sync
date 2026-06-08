@@ -87,6 +87,7 @@ TCGiant Sync is optimized for graded trading card game (TCG) collectibles, inclu
 * Improvement: Renamed the "eBay Sync Log" product data tab to "TCGiant Sync" to make export category and condition overrides more discoverable.
 * Feature: Added a new setting to "Import Item Specifics as Product Tags", allowing all eBay Item Specifics to be imported as WooCommerce Product Tags in addition to Product Attributes.
 * Improvement: Enhanced pricing sync logic to automatically detect Markdown Manager sales. If an original retail price is detected, WooCommerce will now correctly populate the Regular Price and Sale Price fields, automatically enabling the Sale badge.
+* Fix: Corrected the 3-column layout on the dashboard and removed the hardcoded background color to seamlessly blend with the WordPress admin interface.
 
 = 1.2.1 - 2026-06-08 =
 * Feature: Complete UI/UX overhaul of the admin Dashboard.

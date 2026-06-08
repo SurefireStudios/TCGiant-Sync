@@ -134,7 +134,7 @@ if ( empty( $settings['redirect_uri'] ) ) {
 	<?php endif; ?>
 
 	<!-- ─── QUICK STATS BAR ─── -->
-	<div class="tc-top-bar" style="margin-bottom:20px; display:flex; gap:20px;">
+	<div class="tc-row-3col">
 
 		<!-- Import Status Card -->
 		<div class="tc-top-card" style="flex:1;">
