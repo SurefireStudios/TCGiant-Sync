@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.2.1
+Stable tag: 1.2.2
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -81,6 +81,12 @@ TCGiant Sync is optimized for graded trading card game (TCG) collectibles, inclu
 6. Per-product Push to eBay button with Category and Condition overrides.
 
 == Changelog ==
+
+= 1.2.2 - 2026-06-08 =
+* Fix: Addressed an issue where custom variation attribute keys were incorrectly formatted, causing them to not link to parent product attributes.
+* Improvement: Renamed the "eBay Sync Log" product data tab to "TCGiant Sync" to make export category and condition overrides more discoverable.
+* Feature: Added a new setting to "Import Item Specifics as Product Tags", allowing all eBay Item Specifics to be imported as WooCommerce Product Tags in addition to Product Attributes.
+* Improvement: Enhanced pricing sync logic to automatically detect Markdown Manager sales. If an original retail price is detected, WooCommerce will now correctly populate the Regular Price and Sale Price fields, automatically enabling the Sale badge.
 
 = 1.2.1 - 2026-06-08 =
 * Feature: Complete UI/UX overhaul of the admin Dashboard.

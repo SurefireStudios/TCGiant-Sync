@@ -602,6 +602,178 @@
             }
         }
 
+        /* --- Trust Bar --- */
+        .trust-bar {
+            padding: 40px 0;
+            border-top: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+            background: rgba(255, 255, 255, 0.01);
+            text-align: center;
+        }
+
+        .trust-bar p {
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: var(--muted);
+            font-weight: 600;
+        }
+
+        .trust-logos {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 60px;
+            margin-top: 20px;
+            opacity: 0.5;
+            filter: grayscale(100%);
+            flex-wrap: wrap;
+        }
+
+        .trust-logos span {
+            font-size: 1.3rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+        }
+
+        /* --- Header --- */
+        header {
+            position: sticky;
+            top: 0;
+            z-index: 50;
+            border-bottom: 1px solid var(--border);
+            background: rgba(11, 16, 32, 0.8);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+        }
+
+        .header-inner {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px 0;
+        }
+
+        .logo {
+            font-size: 1.4rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 40px;
+            font-size: 0.95rem;
+            color: var(--muted);
+            font-weight: 500;
+        }
+
+        .nav-links a:hover {
+            color: #fff;
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        /* --- Dashboard Mockup --- */
+        .mockup-wrapper {
+            margin: 60px auto 0;
+            max-width: 1000px;
+            background: #1e293b;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 40px 80px rgba(0, 0, 0, 0.5);
+            position: relative;
+        }
+
+        .mockup-header {
+            background: #0f172a;
+            padding: 12px 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .mockup-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #475569;
+        }
+
+        .mockup-dot:nth-child(1) {
+            background: #ef4444;
+        }
+
+        .mockup-dot:nth-child(2) {
+            background: #f59e0b;
+        }
+
+        .mockup-dot:nth-child(3) {
+            background: #22c55e;
+        }
+
+        .mockup-body {
+            padding: 40px;
+            background: #111827;
+            display: grid;
+            gap: 20px;
+        }
+
+        .mockup-row {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 20px;
+        }
+
+        .mockup-card {
+            background: #1f2937;
+            border: 1px solid #374151;
+            border-radius: 8px;
+            padding: 20px;
+        }
+
+        .mockup-card-title {
+            font-size: 0.85rem;
+            color: #9ca3af;
+            margin-bottom: 8px;
+        }
+
+        .mockup-card-value {
+            font-size: 1.8rem;
+            font-weight: 700;
+            color: #f3f4f6;
+        }
+
+        .mockup-log {
+            background: #1f2937;
+            border: 1px solid #374151;
+            border-radius: 8px;
+            padding: 20px;
+        }
+
+        .mockup-log-item {
+            display: flex;
+            gap: 16px;
+            padding: 12px 0;
+            border-bottom: 1px solid #374151;
+            color: #d1d5db;
+            font-size: 0.9rem;
+        }
+
+        .mockup-log-item:last-child {
+            border: none;
+            padding-bottom: 0;
+        }
+
         @media (max-width: 640px) {
             .container {
                 width: min(var(--max), calc(100% - 20px));
@@ -622,11 +794,147 @@
             .btn {
                 width: 100%;
             }
+
+            .nav-links {
+                display: none;
+            }
+
+            .header-actions .btn-secondary {
+                display: none;
+            }
+
+            .mockup-row {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* --- Comparison Table --- */
+        .compare-wrapper {
+            margin-top: 80px;
+            overflow-x: auto;
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            background: var(--panel);
+        }
+
+        .compare-table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: left;
+            min-width: 800px;
+        }
+
+        .compare-table th,
+        .compare-table td {
+            padding: 24px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .compare-table tr:last-child td {
+            border-bottom: none;
+        }
+
+        .compare-table th {
+            font-size: 1.1rem;
+            color: #fff;
+            background: rgba(0, 0, 0, 0.2);
+            font-weight: 700;
+        }
+
+        .compare-table td.feature-name {
+            font-weight: 500;
+            color: #d1d5db;
+        }
+
+        .compare-table td.check {
+            color: #34d399;
+            font-weight: 700;
+        }
+
+        .compare-table td.cross {
+            color: #ef4444;
+            opacity: 0.5;
+        }
+
+        /* --- Fat Footer --- */
+        .fat-footer {
+            padding: 80px 0 40px;
+            background: rgba(0, 0, 0, 0.2);
+            border-top: 1px solid var(--border);
+        }
+
+        .footer-grid {
+            display: grid;
+            grid-template-columns: 1.5fr 1fr 1fr 1fr;
+            gap: 40px;
+            margin-bottom: 60px;
+        }
+
+        .footer-col h4 {
+            color: #fff;
+            font-size: 1rem;
+            margin-bottom: 20px;
+        }
+
+        .footer-col a {
+            display: block;
+            color: var(--muted);
+            margin-bottom: 12px;
+            font-size: 0.95rem;
+        }
+
+        .footer-col a:hover {
+            color: var(--accent);
+        }
+
+        .footer-bottom {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding-top: 24px;
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
+            font-size: 0.85rem;
+            color: var(--muted);
+        }
+
+        @media (max-width: 640px) {
+            .footer-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .footer-bottom {
+                flex-direction: column;
+                gap: 16px;
+                text-align: center;
+            }
         }
     </style>
 </head>
 
 <body>
+    <header>
+        <div class="container header-inner">
+            <a href="/" class="logo">
+                <img src="../monster-logo.png" alt="TCGiant Mascot"
+                    style="height: 38px; width: auto; object-fit: contain;">
+                TCGiant
+            </a>
+
+            <nav class="nav-links">
+                <a href="#how-it-works">How it Works</a>
+                <a href="#features">Features</a>
+                <a href="#pricing">Pricing</a>
+                <a href="#faq">FAQ</a>
+            </nav>
+
+            <div class="header-actions">
+                <a href="https://github.com/SurefireStudios/TCGiant-Sync/releases" class="btn btn-secondary"
+                    style="padding: 8px 18px; font-size: 0.85rem;">Download</a>
+                <a href="#pricing" class="btn btn-primary" style="padding: 8px 18px; font-size: 0.85rem;">Get Pro</a>
+            </div>
+        </div>
+    </header>
+
     <main>
         <section class="hero">
             <div class="container hero-grid">
@@ -679,6 +987,58 @@
                     </div>
                 </aside>
             </div>
+
+            <div class="container mockup-wrapper">
+                <div class="mockup-header">
+                    <div class="mockup-dot"></div>
+                    <div class="mockup-dot"></div>
+                    <div class="mockup-dot"></div>
+                    <div style="margin-left: 10px; font-size: 0.75rem; color: #9ca3af; font-family: monospace;">WP Admin
+                        › TCGiant Sync</div>
+                </div>
+                <div class="mockup-body">
+                    <div class="mockup-row">
+                        <div class="mockup-card">
+                            <div class="mockup-card-title">Live Listings Detected</div>
+                            <div class="mockup-card-value" style="color: #60a5fa;">8,492</div>
+                        </div>
+                        <div class="mockup-card">
+                            <div class="mockup-card-title">Pending eBay Pushes</div>
+                            <div class="mockup-card-value" style="color: #fbbf24;">14</div>
+                        </div>
+                        <div class="mockup-card">
+                            <div class="mockup-card-title">System Health</div>
+                            <div class="mockup-card-value" style="color: #34d399;">Active</div>
+                        </div>
+                    </div>
+                    <div class="mockup-log">
+                        <div class="mockup-card-title" style="margin-bottom: 16px;">Recent Activity</div>
+                        <div class="mockup-log-item">
+                            <span style="color: #9ca3af; font-family: monospace;">10:42 AM</span>
+                            <span>✅ Synced stock for "Charizard Base Set Holo" (Qty: 0) to eBay.</span>
+                        </div>
+                        <div class="mockup-log-item">
+                            <span style="color: #9ca3af; font-family: monospace;">10:15 AM</span>
+                            <span>🔄 Pulled 43 listing updates from eBay Store.</span>
+                        </div>
+                        <div class="mockup-log-item">
+                            <span style="color: #9ca3af; font-family: monospace;">09:58 AM</span>
+                            <span>✅ Successfully pushed 12 new products to eBay.</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="trust-bar">
+            <div class="container">
+                <p>Trusted Ecosystem Integration</p>
+                <div class="trust-logos">
+                    <span>eBay</span>
+                    <span>WordPress</span>
+                    <span>WooCommerce</span>
+                </div>
+            </div>
         </section>
 
         <section class="section">
@@ -706,7 +1066,7 @@
                     <div class="tcg-scene tcg-active" id="tcg-s1">
                         <div class="tcg-logo-badge">TCGiant Sync</div>
                         <h2 class="tcg-h1">Sell on <span>both platforms.</span><br>Let the plugin handle the rest.</h2>
-                        <p class="tcg-sub">Bidirectional eBay ↔ WooCommerce sync built for trading card sellers.</p>
+                        <p class="tcg-sub">Bidirectional eBay ↔ WooCommerce sync built for multi-channel sellers.</p>
                         <div class="tcg-pill-row">
                             <span class="tcg-pill tcg-pill-accent">Free forever up to 50 items</span>
                             <span class="tcg-pill">No credit card</span>
@@ -761,7 +1121,7 @@
 
                     <!-- Scene 4: Features -->
                     <div class="tcg-scene" id="tcg-s4">
-                        <div class="tcg-feat-title">Built for TCG sellers</div>
+                        <div class="tcg-feat-title">Built for multi-channel retail</div>
                         <div class="tcg-feat-grid">
                             <div class="tcg-feat-card">
                                 <div class="tcg-fi">⬇</div>
@@ -775,8 +1135,8 @@
                             </div>
                             <div class="tcg-feat-card">
                                 <div class="tcg-fi">🎯</div>
-                                <div class="tcg-fn">TCG Presets</div>
-                                <div class="tcg-fd">Pokémon, MTG, Yu-Gi-Oh!, Lorcana &amp; more built-in.</div>
+                                <div class="tcg-fn">Dynamic Mapping</div>
+                                <div class="tcg-fd">Full Variation support &amp; dynamic item specifics.</div>
                             </div>
                             <div class="tcg-feat-card">
                                 <div class="tcg-fi">📋</div>
@@ -1753,9 +2113,9 @@
                             manual updates, no overselling.</p>
                     </div>
                     <div class="panel">
-                        <h3>🎯 TCG category presets</h3>
-                        <p>Built-in dropdown of common TCG eBay categories — Pokémon, MTG, Yu-Gi-Oh!, Lorcana, One
-                            Piece, Dragon Ball Super, and more. Plus a custom ID option for anything else.</p>
+                        <h3>🎯 Variations & Global Markets</h3>
+                        <p>Full bidirectional support for WooCommerce Variable Products and eBay Variations. Sell across
+                            any global eBay marketplace with dynamic item specifics mapped automatically.</p>
                     </div>
                     <div class="panel">
                         <h3>⚙ Smart update detection</h3>
@@ -1877,7 +2237,7 @@
                     </div>
 
                     <div class="price-card featured">
-                        <div class="badge">Limited to 10 spots</div>
+                        <div class="badge">Limited spots available!</div>
                         <div class="plan-name">Lifetime Access</div>
                         <div class="price">$99 <span>/ once</span></div>
                         <p class="price-copy">One payment. Ongoing access. Best for early adopters who want the best
@@ -1892,6 +2252,69 @@
                             class="btn btn-primary lemonsqueezy-button">Claim Lifetime Deal</a>
                     </div>
                 </div>
+
+                <div class="compare-wrapper">
+                    <table class="compare-table">
+                        <thead>
+                            <tr>
+                                <th style="width: 40%;">Feature Comparison</th>
+                                <th style="width: 20%;">Free</th>
+                                <th style="width: 20%;">Pro Monthly / Annual</th>
+                                <th style="width: 20%;">Lifetime Access</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td class="feature-name">Import eBay to WooCommerce</td>
+                                <td class="check">Up to 50 items</td>
+                                <td class="check">Unlimited</td>
+                                <td class="check">Unlimited</td>
+                            </tr>
+                            <tr>
+                                <td class="feature-name">Push WooCommerce to eBay</td>
+                                <td class="check">Up to 50 items</td>
+                                <td class="check">Unlimited</td>
+                                <td class="check">Unlimited</td>
+                            </tr>
+                            <tr>
+                                <td class="feature-name">Bidirectional Stock Sync</td>
+                                <td class="check">✔</td>
+                                <td class="check">✔</td>
+                                <td class="check">✔</td>
+                            </tr>
+                            <tr>
+                                <td class="feature-name">Automated Background Sync</td>
+                                <td class="cross">Manual Only</td>
+                                <td class="check">✔</td>
+                                <td class="check">✔</td>
+                            </tr>
+                            <tr>
+                                <td class="feature-name">Custom Cron Intervals (15m, Hourly, Daily)</td>
+                                <td class="cross">✖</td>
+                                <td class="check">✔</td>
+                                <td class="check">✔</td>
+                            </tr>
+                            <tr>
+                                <td class="feature-name">Variable Product / Variation Support</td>
+                                <td class="check">✔</td>
+                                <td class="check">✔</td>
+                                <td class="check">✔</td>
+                            </tr>
+                            <tr>
+                                <td class="feature-name">Plugin Updates</td>
+                                <td class="check">Free Updates</td>
+                                <td class="check">While Subscribed</td>
+                                <td class="check">Lifetime Updates</td>
+                            </tr>
+                            <tr>
+                                <td class="feature-name">Premium Email Support</td>
+                                <td class="cross">24-48 hours</td>
+                                <td class="check">Priority</td>
+                                <td class="check">Priority</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </section>
 
@@ -1901,8 +2324,8 @@
                 <div class="quote">
                     <p>Import from eBay. Push to eBay. Stock synced on both sides — automatically.
                     </p>
-                    <span>Built for TCG sellers who sell on multiple platforms and can't afford to oversell a
-                        one-of-a-kind card.</span>
+                    <span>Built for online retailers who sell on multiple platforms and can't afford to oversell their
+                        limited stock.</span>
                     <div style="margin-top: 20px;">
                         <a href="https://github.com/SurefireStudios/TCGiant-Sync/releases"
                             class="btn btn-primary">Download Plugin</a>
@@ -1955,7 +2378,8 @@
                     </details>
                     <details>
                         <summary>Who is this plugin for?</summary>
-                        <p>Trading card sellers and collectibles dealers who sell on both eBay and their own WooCommerce
+                        <p>Trading card sellers, collectibles dealers, and any online business (toys, tools, homeware)
+                            that sells on both eBay and their own WooCommerce
                             site. It is built for fast-moving inventory with limited quantities where a single oversell
                             can mean a refund and a negative review.</p>
                     </details>
@@ -1996,27 +2420,41 @@
         </section>
     </main>
 
-    <footer>
-        <div class="container"
-            style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 20px; text-align: left;">
-            <div style="display: flex; align-items: center; gap: 12px;">
-                <img src="footer-logo.png" alt="TCGiant Sync Logo"
-                    style="height: 24px; width: auto; object-fit: contain;">
-                <span style="font-weight: 700; color: #fff; font-size: 1.1rem;">TCGiant Sync</span>
-            </div>
-
-            <div style="display: flex; gap: 24px;">
-                <a href="terms.html" style="color: var(--muted); text-decoration: none;">Terms of Service</a>
-                <a href="privacy.html" style="color: var(--muted); text-decoration: none;">Privacy Policy</a>
-                <a href="refund.html" style="color: var(--muted); text-decoration: none;">Refund Policy</a>
-            </div>
-
-            <div style="text-align: right;">
-                <div style="margin-bottom: 4px;">© 2026 TCGiant Sync. All rights reserved.</div>
-                <div style="font-size: 0.85rem; opacity: 0.8;">
-                    Designed and developed by <a href="https://www.surefirestudios.io" target="_blank"
-                        style="color: #6366f1; text-decoration: none; font-weight: 500;">Surefire Studios</a>
+    <footer class="fat-footer">
+        <div class="container">
+            <div class="footer-grid">
+                <div class="footer-col">
+                    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 20px;">
+                        <img src="../monster-logo.png" alt="TCGiant Mascot" style="height: 32px; width: auto;">
+                        <span style="font-size: 1.2rem; font-weight: 700; color: #fff;">TCGiant Sync</span>
+                    </div>
+                    <p style="color: var(--muted); font-size: 0.95rem; line-height: 1.6; max-width: 280px;">
+                        The most reliable, bidirectional eBay and WooCommerce integration for modern e-commerce sellers.
+                    </p>
                 </div>
+                <div class="footer-col">
+                    <h4>Product</h4>
+                    <a href="/pro">TCGiant Sync</a>
+                    <a href="#pricing">Pricing</a>
+                    <a href="https://github.com/SurefireStudios/TCGiant-Sync/releases">Download Free Version</a>
+                </div>
+                <div class="footer-col">
+                    <h4>Resources</h4>
+                    <a href="https://github.com/SurefireStudios/TCGiant-Sync/wiki">Documentation</a>
+                    <a href="mailto:hello@tcgiant.com">Support</a>
+                    <a href="https://github.com/SurefireStudios/TCGiant-Sync/blob/main/changelog.txt">Changelog</a>
+                </div>
+                <div class="footer-col">
+                    <h4>Legal</h4>
+                    <a href="privacy.html">Privacy Policy</a>
+                    <a href="terms.html">Terms of Service</a>
+                    <a href="refund.html">Refund Policy</a>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <div>© 2026 TCGiant Sync. All rights reserved.</div>
+                <div>Designed and developed by <a href="https://www.surefirestudios.io" target="_blank"
+                        style="color: var(--accent);">Surefire Studios</a></div>
             </div>
         </div>
     </footer>

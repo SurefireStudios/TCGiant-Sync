@@ -3,7 +3,7 @@
  * Plugin Name: TCGiant Sync
  * Plugin URI:  https://github.com/SurefireStudios/TCGiant-Sync
  * Description: Production-ready eBay to WooCommerce synchronization for TCG products.
- * Version:     1.2.1
+ * Version:     1.2.2
  * Author:      TCGiant Team
  * Author URI:  https://surefirestudios.io
  * Text Domain: tcgiant-sync
@@ -24,7 +24,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 // Define constants.
-define( 'TCGIANT_SYNC_VERSION', '1.2.1' );
+define( 'TCGIANT_SYNC_VERSION', '1.2.2' );
 define( 'TCGIANT_SYNC_FILE', __FILE__ );
 define( 'TCGIANT_SYNC_PATH', plugin_dir_path( __FILE__ ) );
 define( 'TCGIANT_SYNC_URL', plugin_dir_url( __FILE__ ) );

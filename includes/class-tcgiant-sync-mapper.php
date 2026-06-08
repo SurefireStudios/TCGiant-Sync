@@ -101,7 +101,10 @@ class TCGiant_Sync_Mapper {
 		$product_data['manage_stock'] = true;
 
 		// Map Price - handle all eBay XML->JSON price structures.
-		$product_data['price'] = $this->extract_price( $ebay_item );
+		$prices = $this->extract_prices( $ebay_item );
+		$product_data['price'] = $prices['regular_price']; // fallback for other usages
+		$product_data['regular_price'] = $prices['regular_price'];
+		$product_data['sale_price']    = $prices['sale_price'];
 
 		// Map Store Categories.
 		$product_data['store_categories'] = array();
@@ -127,8 +130,12 @@ class TCGiant_Sync_Mapper {
 		// Map Tags from Specifics.
 		$tags = array();
 		$tag_keys = array( self::ATTR_SET, self::ATTR_GRADE, self::ATTR_GRADING_COMPANY, 'Character', 'Franchise' );
+		
+		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
+		$import_specs_as_tags = isset( $settings['import_specs_as_tags'] ) && '1' === $settings['import_specs_as_tags'];
+
 		foreach ( $product_data['attributes'] as $name => $val ) {
-			if ( in_array( $name, $tag_keys, true ) ) {
+			if ( $import_specs_as_tags || in_array( $name, $tag_keys, true ) ) {
 				$tags[] = $val;
 			}
 		}
@@ -161,9 +168,11 @@ class TCGiant_Sync_Mapper {
 			}
 			
 			foreach ( $variations as $var ) {
+				$var_prices = $this->extract_prices( $var );
 				$var_data = array(
 					'sku' => $var['SKU'] ?? '',
-					'price' => $this->parse_price_value( $var['StartPrice'] ?? '' ),
+					'regular_price' => $var_prices['regular_price'],
+					'sale_price' => $var_prices['sale_price'],
 					'stock_quantity' => max( 0, (int) ($var['Quantity'] ?? 0) - (int) ($var['SellingStatus']['QuantitySold'] ?? 0) ),
 					'attributes' => array(),
 				);
@@ -199,8 +208,14 @@ class TCGiant_Sync_Mapper {
 	 * @param array $ebay_item The full eBay item array.
 	 * @return string The clean numeric price or empty string.
 	 */
-	private function extract_price( $ebay_item ) {
-		// Try CurrentPrice first (actual selling price), then StartPrice.
+	private function extract_prices( $ebay_item ) {
+		$prices = array(
+			'regular_price' => '',
+			'sale_price'    => '',
+		);
+
+		// Current selling price
+		$current_price = '';
 		$price_candidates = array(
 			$ebay_item['SellingStatus']['CurrentPrice'] ?? null,
 			$ebay_item['SellingStatus']['ConvertedCurrentPrice'] ?? null,
@@ -209,17 +224,32 @@ class TCGiant_Sync_Mapper {
 		);
 
 		foreach ( $price_candidates as $raw ) {
-			if ( null === $raw ) {
-				continue;
-			}
-
-			$value = $this->parse_price_value( $raw );
-			if ( '' !== $value && (float) $value > 0 ) {
-				return $value;
+			if ( null !== $raw ) {
+				$val = $this->parse_price_value( $raw );
+				if ( '' !== $val && (float) $val > 0 ) {
+					$current_price = $val;
+					break;
+				}
 			}
 		}
 
-		return '';
+		// Original Retail Price
+		$original_price = '';
+		if ( isset( $ebay_item['DiscountPriceInfo']['OriginalRetailPrice'] ) ) {
+			$val = $this->parse_price_value( $ebay_item['DiscountPriceInfo']['OriginalRetailPrice'] );
+			if ( '' !== $val && (float) $val > 0 ) {
+				$original_price = $val;
+			}
+		}
+
+		if ( '' !== $original_price && (float) $original_price > (float) $current_price ) {
+			$prices['regular_price'] = $original_price;
+			$prices['sale_price']    = $current_price;
+		} else {
+			$prices['regular_price'] = $current_price;
+		}
+
+		return $prices;
 	}
 
 	/**
@@ -395,10 +425,23 @@ class TCGiant_Sync_Mapper {
 		// By default setting empty('overwrite_price') means DO NOT overwrite if exists.
 		// However, in settings we defaulted it to 1.
 		$overwrite_price = isset( $settings['overwrite_price'] ) ? $settings['overwrite_price'] : '1';
-		if ( ! empty( $product_data['price'] ) && ( $is_new || '1' === $overwrite_price ) ) {
-			$product->set_regular_price( $product_data['price'] );
-			if ( ! $is_new ) $sync_decisions[] = 'Price updated (eBay won)';
-		} elseif ( ! $is_new && ! empty( $product_data['price'] ) ) {
+		if ( ( $is_new || '1' === $overwrite_price ) ) {
+			$has_price = false;
+			if ( ! empty( $product_data['regular_price'] ) ) {
+				$product->set_regular_price( $product_data['regular_price'] );
+				$has_price = true;
+			}
+			if ( ! empty( $product_data['sale_price'] ) ) {
+				$product->set_sale_price( $product_data['sale_price'] );
+				$has_price = true;
+			} else {
+				$product->set_sale_price( '' ); // Clear sale price if no longer on sale
+			}
+
+			if ( $has_price && ! $is_new ) {
+				$sync_decisions[] = 'Price updated (eBay won)';
+			}
+		} elseif ( ! $is_new && ! empty( $product_data['regular_price'] ) ) {
 			$sync_decisions[] = 'Price skipped (WooCommerce won)';
 		}
 		
@@ -465,7 +508,7 @@ class TCGiant_Sync_Mapper {
 			$attribute->set_options( array( $value ) );
 			$attribute->set_visible( true );
 			$attribute->set_variation( false );
-			$woo_attributes[ strtolower( $name ) ] = $attribute;
+			$woo_attributes[ sanitize_title( $name ) ] = $attribute;
 		}
 
 		// Map variation specifics
@@ -475,7 +518,7 @@ class TCGiant_Sync_Mapper {
 			$attribute->set_options( array_unique( $values ) );
 			$attribute->set_visible( true );
 			$attribute->set_variation( true );
-			$woo_attributes[ strtolower( $name ) ] = $attribute;
+			$woo_attributes[ sanitize_title( $name ) ] = $attribute;
 		}
 		
 		$product->set_attributes( array_values( $woo_attributes ) );
@@ -541,7 +584,12 @@ class TCGiant_Sync_Mapper {
 			$variation->set_parent_id( $parent_id );
 			
 			$variation->set_sku( $var_data['sku'] );
-			$variation->set_regular_price( $var_data['price'] );
+			$variation->set_regular_price( $var_data['regular_price'] );
+			if ( ! empty( $var_data['sale_price'] ) ) {
+				$variation->set_sale_price( $var_data['sale_price'] );
+			} else {
+				$variation->set_sale_price( '' );
+			}
 			$variation->set_manage_stock( true );
 			$variation->set_stock_quantity( $var_data['stock_quantity'] );
 			$variation->set_status( 'publish' );
@@ -549,7 +597,7 @@ class TCGiant_Sync_Mapper {
 			// Set attributes (WC requires keys to be taxonomy slugs or lowercase attribute names)
 			$var_attrs = array();
 			foreach ( $var_data['attributes'] as $name => $val ) {
-				$var_attrs[ strtolower( $name ) ] = $val;
+				$var_attrs[ sanitize_title( $name ) ] = $val;
 			}
 			$variation->set_attributes( $var_attrs );
 			

@@ -938,7 +938,7 @@ class TCGiant_Sync_Admin {
 	 */
 	public function add_sync_log_tab( $tabs ) {
 		$tabs['tcgiant_sync_log'] = array(
-			'label'    => __( 'eBay Sync Log', 'tcgiant-sync' ),
+			'label'    => __( 'TCGiant Sync', 'tcgiant-sync' ),
 			'target'   => 'tcgiant_sync_log_data',
 			'class'    => array( 'show_if_simple', 'show_if_variable' ),
 			'priority' => 90,

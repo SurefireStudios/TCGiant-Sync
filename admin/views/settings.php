@@ -197,6 +197,15 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 					</div>
 
 					<div class="tc-field" style="margin-top:24px;">
+						<label class="tc-label"><?php esc_html_e( 'Import Item Specifics as Product Tags', 'tcgiant-sync' ); ?></label>
+						<div class="tc-radio-group">
+							<label><input type="radio" name="tcgiant_sync_ebay_settings[import_specs_as_tags]" value="1" <?php checked( $settings['import_specs_as_tags'] ?? '0', '1' ); ?>> Yes</label>
+							<label><input type="radio" name="tcgiant_sync_ebay_settings[import_specs_as_tags]" value="0" <?php checked( $settings['import_specs_as_tags'] ?? '0', '0' ); ?>> No</label>
+						</div>
+						<p class="tc-hint"><?php esc_html_e( 'If enabled, all eBay Item Specifics will be added as WooCommerce Product Tags in addition to Product Attributes.', 'tcgiant-sync' ); ?></p>
+					</div>
+
+					<div class="tc-field" style="margin-top:24px;">
 						<label class="tc-label"><?php esc_html_e( 'Preserve Categories (Do Not Trash)', 'tcgiant-sync' ); ?></label>
 						<?php
 						$selected_preserve_cats = isset( $settings['preserve_woo_category_ids'] ) && is_array( $settings['preserve_woo_category_ids'] ) ? $settings['preserve_woo_category_ids'] : array();
@@ -308,7 +317,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 				<?php settings_fields( 'tcgiant_sync_ebay_group' ); ?>
 				<?php
 				// Preserve all non-export fields.
-				$all_preserve = array_merge( $preserve_keys, array( 'category_ids', 'woo_category_ids', 'preserve_woo_category_ids', 'sync_interval', 'enable_order_sync', 'overwrite_title', 'overwrite_desc', 'overwrite_price', 'overwrite_images', 'overwrite_taxonomy' ) );
+				$all_preserve = array_merge( $preserve_keys, array( 'category_ids', 'woo_category_ids', 'preserve_woo_category_ids', 'import_specs_as_tags', 'sync_interval', 'enable_order_sync', 'overwrite_title', 'overwrite_desc', 'overwrite_price', 'overwrite_images', 'overwrite_taxonomy' ) );
 				foreach ( $all_preserve as $key ) {
 					$val = $settings[ $key ] ?? null;
 					if ( null !== $val ) {

@@ -4,10 +4,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TCGiant - Building Modern Tools for the TCG Community</title>
+    <title>TCGiant Sync — Bidirectional eBay ↔ WooCommerce Sync</title>
     <link rel="icon" type="image/png" href="favicon.png">
     <meta name="description"
-        content="TCGiant is building a growing suite of software for trading card sellers, collectors, and shops.">
+        content="TCGiant is building a growing suite of software for e-commerce sellers, collectors, and shops.">
     <link rel="canonical" href="https://tcgiant.com/" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -534,29 +534,71 @@
             flex-wrap: wrap;
         }
 
-        /* --- Footer --- */
-        footer {
-            border-top: 1px solid var(--border);
+        /* --- Trust Bar --- */
+        .trust-bar {
             padding: 40px 0;
+            border-top: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+            background: rgba(255, 255, 255, 0.01);
+            text-align: center;
+        }
+        .trust-bar p {
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
             color: var(--muted);
-            font-size: 0.9rem;
+            font-weight: 600;
+        }
+        .trust-logos {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 60px;
+            margin-top: 20px;
+            opacity: 0.5;
+            filter: grayscale(100%);
+            flex-wrap: wrap;
+        }
+        .trust-logos span {
+            font-size: 1.3rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
         }
 
-        .footer-inner {
+        /* --- Footer --- */
+        .fat-footer {
+            padding: 80px 0 40px;
+            background: rgba(0, 0, 0, 0.2);
+            border-top: 1px solid var(--border);
+        }
+        .footer-grid {
+            display: grid;
+            grid-template-columns: 1.5fr 1fr 1fr 1fr;
+            gap: 40px;
+            margin-bottom: 60px;
+        }
+        .footer-col h4 {
+            color: #fff;
+            font-size: 1rem;
+            margin-bottom: 20px;
+        }
+        .footer-col a {
+            display: block;
+            color: var(--muted);
+            margin-bottom: 12px;
+            font-size: 0.95rem;
+        }
+        .footer-col a:hover {
+            color: var(--accent);
+        }
+        .footer-bottom {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            flex-wrap: wrap;
-            gap: 20px;
-        }
-
-        .footer-links {
-            display: flex;
-            gap: 24px;
-        }
-
-        .footer-links a:hover {
-            color: #fff;
+            padding-top: 24px;
+            border-top: 1px solid rgba(255,255,255,0.05);
+            font-size: 0.85rem;
+            color: var(--muted);
         }
 
         /* --- Mobile Responsive --- */
@@ -625,11 +667,9 @@
         <section class="hero">
             <div class="container hero-grid">
                 <div>
-                    <div class="pill pill-emerald">Building modern tools for the trading card community</div>
-                    <h1>TCG tools that help sellers work smarter, not harder.</h1>
-                    <p class="lead">TCGiant is building a growing suite of software for trading card sellers,
-                        collectors, and shops. Our mission is simple: make it easier to manage inventory, sync listings,
-                        and run a better card business online.</p>
+                    <div class="pill pill-emerald">Building modern tools for multi-channel e-commerce</div>
+                    <h1>Sync your inventory. <span class="gradient-text">Scale your business.</span></h1>
+                    <p class="lead">TCGiant is building a growing suite of software for e-commerce sellers, collectors, and shops. Our mission is simple: make it easier to manage inventory, sync listings, and run a better business online.</p>
 
                     <div class="hero-actions">
                         <a href="/pro" class="btn btn-primary">View TCGiant Sync</a>
@@ -637,7 +677,7 @@
                     </div>
 
                     <div class="hero-tags">
-                        <span>Built for TCG sellers</span>
+                        <span>Built for Multi-Channel Retail</span>
                         <span>eBay ↔ WooCommerce bidirectional sync</span>
                         <span>More tools launching soon</span>
                     </div>
@@ -670,12 +710,12 @@
                                     <p>Stock updates instantly on both platforms when anything sells.</p>
                                 </div>
                                 <div class="feature-item">
-                                    <h4>v1.0.2 — Live Now</h4>
+                                    <h4>v1.2.1 — Live Now</h4>
                                     <p>Free for up to 50 products. Pro for unlimited imports.</p>
                                 </div>
                             </div>
 
-                            <a href="/pro" class="btn btn-secondary">Learn More About Sync</a>
+                            <a href="/pro" class="btn btn-primary" style="width: 100%; margin-top: 24px;">Explore TCGiant Sync</a>
                         </div>
                     </div>
                 </div>
@@ -700,8 +740,9 @@
                             <p class="desc">Bidirectional eBay ↔ WooCommerce sync. Import listings from eBay, push WooCommerce products to eBay, and keep stock aligned across both platforms automatically.</p>
                             <ul class="check-list">
                                 <li>Import eBay → WooCommerce</li>
-                                <li>Push WooCommerce → eBay (new in v1.0.2)</li>
+                                <li>Push WooCommerce → eBay (with Variable Products)</li>
                                 <li>Real-time bidirectional stock sync</li>
+                                <li>Global eBay marketplace support</li>
                             </ul>
                         </div>
                         <a href="/pro" class="product-link">Visit product →</a>
@@ -744,9 +785,9 @@
             <div class="container two-col-layout align-start">
                 <div>
                     <span class="kicker">Roadmap</span>
-                    <h2>Built for where the TCG market is headed.</h2>
+                    <h2>Built for where e-commerce is headed.</h2>
                     <p style="color: var(--muted); font-size: 1.1rem; margin-top: 20px;">TCGiant is not just one plugin.
-                        It’s the start of a cleaner, smarter software stack for the trading card world.</p>
+                        It’s the start of a cleaner, smarter software stack for multi-channel sellers.</p>
                 </div>
 
                 <div class="timeline-grid">
@@ -757,7 +798,7 @@
                     </div>
                     <div class="timeline-card">
                         <h3>Inventory workflows</h3>
-                        <p>Tools to simplify the day-to-day work of managing large card inventories.</p>
+                        <p>Tools to simplify the day-to-day work of managing large retail inventories.</p>
                     </div>
                     <div class="timeline-card">
                         <h3>Seller insights</h3>
@@ -771,16 +812,16 @@
             <div class="container two-col-layout">
                 <div>
                     <span class="kicker">About TCGiant</span>
-                    <h2>Software made for people who actually sell cards.</h2>
+                    <h2>Software made for people who actually sell online.</h2>
                     <p style="color: var(--muted); font-size: 1.1rem; margin-top: 20px;">We’re building practical tools
-                        for the TCG community with a focus on clean workflows, modern design, and features that solve
+                        for the e-commerce community with a focus on clean workflows, modern design, and features that solve
                         real seller pain points.</p>
                 </div>
 
                 <div class="about-card">
                     <h3>Why it matters</h3>
                     <p>Managing inventory across eBay and WooCommerce is messy. Oversells, manual listing creation, and scattered workflows slow sellers down.</p>
-                    <p>TCGiant Sync solves it in both directions — import your eBay catalog into WooCommerce, or push WooCommerce products live to eBay. Stock stays accurate on both sides automatically.</p>
+                    <p>TCGiant Sync solves it in both directions — import your eBay catalog into WooCommerce, or push WooCommerce products live to eBay. Stock stays accurate on both sides automatically, whether you sell trading cards, toys, tools, or variable products across any global eBay marketplace.</p>
                 </div>
             </div>
         </section>
@@ -804,23 +845,39 @@
         </section>
     </main>
 
-    <footer>
-        <div class="container footer-inner">
-            <div style="display: flex; align-items: center; gap: 12px;">
-                <img src="monster-logo.png" alt="TCGiant Footer Logo" style="height: 24px; width: auto; object-fit: contain;">
-                <span style="font-weight: 700; color: #fff;">TCGiant</span>
-            </div>
-            
-            <div class="footer-links" style="margin: 0;">
-                <a href="/pro">TCGiant Sync</a>
-                <a href="mailto:hello@tcgiant.com">Contact</a>
-            </div>
-
-            <div style="text-align: right;">
-                <div style="margin-bottom: 4px;">© 2026 TCGiant. All rights reserved.</div>
-                <div style="font-size: 0.85rem; opacity: 0.8;">
-                    Designed and developed by <a href="https://www.surefirestudios.io" target="_blank" style="color: var(--accent); text-decoration: none; font-weight: 500;">Surefire Studios</a>
+    <footer class="fat-footer">
+        <div class="container">
+            <div class="footer-grid">
+                <div class="footer-col">
+                    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 20px;">
+                        <img src="monster-logo.png" alt="TCGiant Mascot" style="height: 32px; width: auto;">
+                        <span style="font-size: 1.2rem; font-weight: 700; color: #fff;">TCGiant</span>
+                    </div>
+                    <p style="color: var(--muted); font-size: 0.95rem; line-height: 1.6; max-width: 280px;">
+                        Building a cleaner, smarter software stack for multi-channel e-commerce sellers.
+                    </p>
                 </div>
+                <div class="footer-col">
+                    <h4>Product</h4>
+                    <a href="/pro">TCGiant Sync</a>
+                    <a href="/pro#pricing">Pricing</a>
+                    <a href="https://github.com/SurefireStudios/TCGiant-Sync/releases">Download</a>
+                </div>
+                <div class="footer-col">
+                    <h4>Resources</h4>
+                    <a href="https://github.com/SurefireStudios/TCGiant-Sync/wiki">Documentation</a>
+                    <a href="mailto:hello@tcgiant.com">Support</a>
+                    <a href="https://github.com/SurefireStudios/TCGiant-Sync/blob/main/changelog.txt">Changelog</a>
+                </div>
+                <div class="footer-col">
+                    <h4>Legal</h4>
+                    <a href="#">Privacy Policy</a>
+                    <a href="#">Terms of Service</a>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <div>© 2026 TCGiant. All rights reserved.</div>
+                <div>Designed and developed by <a href="https://www.surefirestudios.io" target="_blank" style="color: var(--accent);">Surefire Studios</a></div>
             </div>
         </div>
     </footer>
