@@ -1,6 +1,6 @@
 # TCGiant Sync
 
-[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](https://wordpress.org/plugins/tcgiant-sync/)
+[![Version](https://img.shields.io/badge/version-1.2.1-blue.svg)](https://wordpress.org/plugins/tcgiant-sync/)
 [![License](https://img.shields.io/badge/License-GPL_v2-blue.svg)](https://www.gnu.org/licenses/gpl-2.0.html)
 [![Requires PHP](https://img.shields.io/badge/PHP-7.4%2B-green.svg)](#)
 [![Tested up to](https://img.shields.io/badge/WordPress-7.0-blue.svg)](#)

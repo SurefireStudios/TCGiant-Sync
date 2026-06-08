@@ -1,5 +1,12 @@
 *** TCGiant Sync Changelog ***
 
+2026-06-08 - version 1.2.1
+- Feature: Complete UI/UX overhaul of the admin Dashboard.
+- Feature: Added a persistent "Getting Started Checklist" onboarding widget for new users.
+- Feature: Implemented a dedicated "Activity Logs" submenu page to view up to 1,000 historical events without dashboard clutter.
+- Improvement: Truncated the Dashboard Activity Log to only display the 10 most recent events with a "View All" link to the new Logs page.
+- Improvement: Reorganized dashboard layout into a clean 3-column "At a Glance" metrics row and a dedicated "Quick Actions" hub.
+
 2026-06-08 - version 1.2.0
 - Feature: Full support for bidirectional Variation syncing! You can now map eBay Variations directly into WooCommerce Variable products. The plugin also properly pushes WooCommerce Variable products natively to eBay.
 - Feature: The Mapper now dynamically extracts and maps *all* available eBay Item Specifics into WooCommerce Attributes (e.g. Brand, Material, Scale), ensuring robust native support for non-TCG categories.
