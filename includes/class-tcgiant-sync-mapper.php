@@ -59,7 +59,37 @@ class TCGiant_Sync_Mapper {
 		$product_data['description'] = $ebay_item['Description'] ?? '';
 		$product_data['sku'] = $ebay_item['SKU'] ?? '';
 
-		// Fallback SKU: use EBAY-{ItemID} if no SKU exists.
+		$product_data['sku'] = $ebay_item['SKU'] ?? '';
+
+		// Fallback 1: Try Product Identifiers (ISBN/UPC/EAN) if SKU is missing
+		if ( empty( $product_data['sku'] ) && isset( $ebay_item['ProductListingDetails'] ) ) {
+			$product_data['sku'] = $ebay_item['ProductListingDetails']['ISBN'] ?? 
+								   $ebay_item['ProductListingDetails']['UPC'] ?? 
+								   $ebay_item['ProductListingDetails']['EAN'] ?? '';
+			
+			// eBay sometimes returns 'Does not apply' or 'Does Not Apply' for missing identifiers
+			if ( strtolower( $product_data['sku'] ) === 'does not apply' ) {
+				$product_data['sku'] = '';
+			}
+		}
+
+		// Fallback 2: Check Item Specifics for ISBN/UPC
+		if ( empty( $product_data['sku'] ) && isset( $ebay_item['ItemSpecifics']['NameValueList'] ) ) {
+			$nvl = $ebay_item['ItemSpecifics']['NameValueList'];
+			if ( isset( $nvl['Name'] ) ) $nvl = array( $nvl );
+			foreach ( $nvl as $spec ) {
+				$name = strtolower( $spec['Name'] ?? '' );
+				if ( in_array( $name, array( 'isbn', 'upc', 'ean' ), true ) ) {
+					$val = is_array( $spec['Value'] ) ? reset( $spec['Value'] ) : $spec['Value'];
+					if ( strtolower( $val ) !== 'does not apply' ) {
+						$product_data['sku'] = $val;
+						break;
+					}
+				}
+			}
+		}
+
+		// Fallback 3: use EBAY-{ItemID} if no other identifier exists.
 		if ( empty( $product_data['sku'] ) && ! empty( $item_id ) ) {
 			$product_data['sku'] = 'EBAY-' . $item_id;
 		}
