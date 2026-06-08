@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.1.6
+Stable tag: 1.1.7
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -81,6 +81,11 @@ TCGiant Sync is optimized for graded trading card game (TCG) collectibles, inclu
 6. Per-product Push to eBay button with Category and Condition overrides.
 
 == Changelog ==
+
+= 1.1.7 - 2026-06-08 =
+* Feature: Added automatic mapping of standard eBay PrimaryCategory to WooCommerce categories (useful for standard/free eBay accounts without Store Categories).
+* Feature: eBay SKUs now accurately map from ISBN, UPC, or EAN values found in Product Listing Details or Item Specifics if the custom label is blank.
+* Security: Implemented stricter capability checks for several informational admin AJAX endpoints.
 
 = 1.1.6 - 2026-06-08 =
 * Feature: Added an option to "Preserve Categories" in settings. Items in these WooCommerce categories will no longer be sent to the trash when they sell out on eBay; instead, their stock will be set to 0 and they will be unlinked from the old eBay listing.
