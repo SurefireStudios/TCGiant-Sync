@@ -1,6 +1,6 @@
 *** TCGiant Sync Changelog ***
 
-2026-06-08 - version 1.1.8
+2026-06-08 - version 1.2.0
 - Feature: Full support for bidirectional Variation syncing! You can now map eBay Variations directly into WooCommerce Variable products. The plugin also properly pushes WooCommerce Variable products natively to eBay.
 - Feature: The Mapper now dynamically extracts and maps *all* available eBay Item Specifics into WooCommerce Attributes (e.g. Brand, Material, Scale), ensuring robust native support for non-TCG categories.
 
