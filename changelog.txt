@@ -1,5 +1,8 @@
 *** TCGiant Sync Changelog ***
 
+2026-06-08 - version 1.1.6
+- Feature: Added an option to "Preserve Categories" in settings. Items in these WooCommerce categories will no longer be sent to the trash when they sell out on eBay; instead, their stock will be set to 0 and they will be unlinked from the old eBay listing.
+
 2026-06-05 - version 1.1.5
 - Feature: Added Pushed and Pulled product metrics to the dashboard and telemetry payload to accurately differentiate sync direction.
 - Fix: Addressed an issue where `thecardboardshop.com` and other instances reported as 'free' with '0 synced' by correcting JSON payload formatting and validation logic in the telemetry ping.

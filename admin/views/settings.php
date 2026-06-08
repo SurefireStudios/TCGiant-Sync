@@ -195,6 +195,26 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						</div>
 						<p class="tc-hint" style="margin-top:8px;"><?php esc_html_e( 'Select which WooCommerce categories trigger eBay stock updates when sold. Leave empty to sync all.', 'tcgiant-sync' ); ?></p>
 					</div>
+
+					<div class="tc-field" style="margin-top:24px;">
+						<label class="tc-label"><?php esc_html_e( 'Preserve Categories (Do Not Trash)', 'tcgiant-sync' ); ?></label>
+						<?php
+						$selected_preserve_cats = isset( $settings['preserve_woo_category_ids'] ) && is_array( $settings['preserve_woo_category_ids'] ) ? $settings['preserve_woo_category_ids'] : array();
+						?>
+						<div class="tc-checkbox-group" style="max-height:160px;overflow-y:auto;border:1px solid var(--tc-border);padding:12px;border-radius:4px;background:#fff;">
+							<?php if ( ! empty( $woo_cats ) && ! is_wp_error( $woo_cats ) ) : ?>
+								<?php foreach ( $woo_cats as $cat ) : ?>
+									<label style="display:block;margin-bottom:6px;font-weight:normal;cursor:pointer;">
+										<input type="checkbox" name="tcgiant_sync_ebay_settings[preserve_woo_category_ids][]" value="<?php echo esc_attr( $cat->term_id ); ?>" <?php checked( in_array( $cat->term_id, $selected_preserve_cats ) ); ?>>
+										<?php echo esc_html( $cat->name ); ?>
+									</label>
+								<?php endforeach; ?>
+							<?php else : ?>
+								<p style="margin:0;font-size:13px;color:#666;"><?php esc_html_e( 'No WooCommerce categories found.', 'tcgiant-sync' ); ?></p>
+							<?php endif; ?>
+						</div>
+						<p class="tc-hint" style="margin-top:8px;"><?php esc_html_e( 'Items in these categories will not be trashed when they end on eBay. Instead, their stock will be set to 0 and they will be unlinked from the old eBay listing.', 'tcgiant-sync' ); ?></p>
+					</div>
 				</div>
 
 				<!-- Scheduling -->
@@ -288,7 +308,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 				<?php settings_fields( 'tcgiant_sync_ebay_group' ); ?>
 				<?php
 				// Preserve all non-export fields.
-				$all_preserve = array_merge( $preserve_keys, array( 'category_ids', 'woo_category_ids', 'sync_interval', 'enable_order_sync', 'overwrite_title', 'overwrite_desc', 'overwrite_price', 'overwrite_images', 'overwrite_taxonomy' ) );
+				$all_preserve = array_merge( $preserve_keys, array( 'category_ids', 'woo_category_ids', 'preserve_woo_category_ids', 'sync_interval', 'enable_order_sync', 'overwrite_title', 'overwrite_desc', 'overwrite_price', 'overwrite_images', 'overwrite_taxonomy' ) );
 				foreach ( $all_preserve as $key ) {
 					$val = $settings[ $key ] ?? null;
 					if ( null !== $val ) {

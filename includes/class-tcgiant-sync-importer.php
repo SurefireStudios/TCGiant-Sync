@@ -561,6 +561,8 @@ class TCGiant_Sync_Importer {
 		}
 
 		global $wpdb;
+		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
+		$preserve_cats = isset( $settings['preserve_woo_category_ids'] ) && is_array( $settings['preserve_woo_category_ids'] ) ? $settings['preserve_woo_category_ids'] : array();
 
 		// Get all products that have an _ebay_item_id.
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
@@ -572,15 +574,16 @@ class TCGiant_Sync_Importer {
 		);
 
 		$trashed_count = 0;
+		$preserved_count = 0;
 
 		foreach ( $ebay_linked_products as $row ) {
 			$ebay_id = $row->ebay_id;
 			$product_id = $row->post_id;
+			$should_prune = false;
 
 			if ( ! in_array( $ebay_id, $active_ids, true ) && ! empty( $active_ids ) ) {
 				// The item is no longer on eBay.
-				wp_trash_post( $product_id );
-				$trashed_count++;
+				$should_prune = true;
 			} elseif ( empty( $active_ids ) ) {
 				// Safety check: if active_ids is entirely empty, maybe the scan failed or they have 0 items.
 				// Wait, if they truly have 0 items on eBay, active_ids IS empty.
@@ -591,15 +594,31 @@ class TCGiant_Sync_Importer {
 				if ( ! is_wp_error( $ebay_response ) && isset( $ebay_response['Item']['SellingStatus']['ListingStatus'] ) ) {
 					$status = $ebay_response['Item']['SellingStatus']['ListingStatus'];
 					if ( 'Active' !== $status ) {
-						wp_trash_post( $product_id );
-						$trashed_count++;
+						$should_prune = true;
 					}
+				}
+			}
+
+			if ( $should_prune ) {
+				$is_preserved = false;
+				if ( ! empty( $preserve_cats ) && has_term( $preserve_cats, 'product_cat', $product_id ) ) {
+					$is_preserved = true;
+				}
+
+				if ( $is_preserved ) {
+					wc_update_product_stock( $product_id, 0, 'set' );
+					wc_update_product_stock_status( $product_id, 'outofstock' );
+					delete_post_meta( $product_id, '_ebay_item_id' );
+					$preserved_count++;
+				} else {
+					wp_trash_post( $product_id );
+					$trashed_count++;
 				}
 			}
 		}
 
-		if ( $trashed_count > 0 ) {
-			TCGiant_Sync_Logger::log( sprintf( 'Inventory Pruning: Trashed %d products that are no longer active on eBay.', $trashed_count ), 'success' );
+		if ( $trashed_count > 0 || $preserved_count > 0 ) {
+			TCGiant_Sync_Logger::log( sprintf( 'Inventory Pruning: Trashed %d products, preserved %d products (set to out of stock).', $trashed_count, $preserved_count ), 'success' );
 		} else {
 			TCGiant_Sync_Logger::log( 'Inventory Pruning: No orphaned products found.' );
 		}
