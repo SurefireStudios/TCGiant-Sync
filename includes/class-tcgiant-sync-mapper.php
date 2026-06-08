@@ -152,6 +152,38 @@ class TCGiant_Sync_Mapper {
 			'_sync_last_updated' => current_time( 'mysql' ),
 		);
 
+		// Map Variations.
+		$product_data['variations'] = array();
+		if ( isset( $ebay_item['Variations']['Variation'] ) ) {
+			$variations = $ebay_item['Variations']['Variation'];
+			if ( isset( $variations['SKU'] ) || isset( $variations['StartPrice'] ) ) {
+				$variations = array( $variations );
+			}
+			
+			foreach ( $variations as $var ) {
+				$var_data = array(
+					'sku' => $var['SKU'] ?? '',
+					'price' => $this->parse_price_value( $var['StartPrice'] ?? '' ),
+					'stock_quantity' => max( 0, (int) ($var['Quantity'] ?? 0) - (int) ($var['SellingStatus']['QuantitySold'] ?? 0) ),
+					'attributes' => array(),
+				);
+				
+				if ( isset( $var['VariationSpecifics']['NameValueList'] ) ) {
+					$nvl = $var['VariationSpecifics']['NameValueList'];
+					if ( isset( $nvl['Name'] ) ) $nvl = array( $nvl );
+					foreach ( $nvl as $spec ) {
+						$name = $spec['Name'] ?? '';
+						$val = is_array( $spec['Value'] ) ? implode( ', ', $spec['Value'] ) : ( $spec['Value'] ?? '' );
+						if ( $name ) {
+							$var_data['attributes'][ $name ] = $val;
+						}
+					}
+				}
+				
+				$product_data['variations'][] = $var_data;
+			}
+		}
+
 		return $product_data;
 	}
 
@@ -257,10 +289,21 @@ class TCGiant_Sync_Mapper {
 			'Condition'         => self::ATTR_CONDITION,
 		);
 
+		// First, apply specific mappings
 		foreach ( $mapping as $ebay_key => $woo_key ) {
 			if ( isset( $specifics[ $ebay_key ] ) ) {
 				$attributes[ $woo_key ] = $specifics[ $ebay_key ];
+				unset( $specifics[ $ebay_key ] ); // Remove to avoid duplication
 			}
+		}
+
+		// Then, map all remaining specifics directly
+		foreach ( $specifics as $name => $val ) {
+			// Skip internal identifiers that are already handled as SKUs
+			if ( in_array( strtolower( $name ), array( 'isbn', 'upc', 'ean' ), true ) ) {
+				continue;
+			}
+			$attributes[ $name ] = $val;
 		}
 
 		return $attributes;
@@ -306,7 +349,17 @@ class TCGiant_Sync_Mapper {
 			}
 		}
 		
-		$product = $product_id ? wc_get_product( $product_id ) : new WC_Product_Simple();
+		$is_variable = ! empty( $product_data['variations'] );
+		
+		if ( $product_id ) {
+			$product = wc_get_product( $product_id );
+			if ( $product && $is_variable && ! $product->is_type( 'variable' ) ) {
+				wp_set_object_terms( $product_id, 'variable', 'product_type' );
+				$product = wc_get_product( $product_id );
+			}
+		} else {
+			$product = $is_variable ? new WC_Product_Variable() : new WC_Product_Simple();
+		}
 
 		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
 		$is_new = ! $product_id;
@@ -392,15 +445,40 @@ class TCGiant_Sync_Mapper {
 		
 		// Set Attributes as visible product data.
 		$woo_attributes = array();
+		
+		// Gather all possible values for variation attributes to set at parent level
+		$parent_attr_values = array();
+		if ( $is_variable ) {
+			foreach ( $product_data['variations'] as $var ) {
+				if ( ! empty( $var['attributes'] ) ) {
+					foreach ( $var['attributes'] as $name => $val ) {
+						$parent_attr_values[ $name ][] = $val;
+					}
+				}
+			}
+		}
+		
+		// Map normal item specifics
 		foreach ( $product_data['attributes'] as $name => $value ) {
 			$attribute = new WC_Product_Attribute();
 			$attribute->set_name( $name );
 			$attribute->set_options( array( $value ) );
 			$attribute->set_visible( true );
 			$attribute->set_variation( false );
-			$woo_attributes[] = $attribute;
+			$woo_attributes[ strtolower( $name ) ] = $attribute;
 		}
-		$product->set_attributes( $woo_attributes );
+
+		// Map variation specifics
+		foreach ( $parent_attr_values as $name => $values ) {
+			$attribute = new WC_Product_Attribute();
+			$attribute->set_name( $name );
+			$attribute->set_options( array_unique( $values ) );
+			$attribute->set_visible( true );
+			$attribute->set_variation( true );
+			$woo_attributes[ strtolower( $name ) ] = $attribute;
+		}
+		
+		$product->set_attributes( array_values( $woo_attributes ) );
 
 		// Set Custom Meta (including _ebay_item_id for tracking).
 		foreach ( $product_data['meta'] as $key => $val ) {
@@ -423,7 +501,73 @@ class TCGiant_Sync_Mapper {
 			$product->update_meta_data( '_tcgiant_sync_log', $existing_logs );
 		}
 
-		return $product->save();
+		$saved_id = $product->save();
+		
+		if ( $is_variable && $saved_id ) {
+			$this->save_variations( $saved_id, $product_data['variations'] );
+		}
+
+		return $saved_id;
+	}
+
+	/**
+	 * Save child variations for a variable product.
+	 *
+	 * @param int $parent_id WooCommerce Parent Product ID.
+	 * @param array $variations_data Array of variation data from map_ebay_to_woo.
+	 */
+	private function save_variations( $parent_id, $variations_data ) {
+		$product = wc_get_product( $parent_id );
+		$existing_variations = $product->get_children();
+		$processed_ids = array();
+		
+		foreach ( $variations_data as $var_data ) {
+			$variation_id = 0;
+			
+			// Try to match by SKU
+			if ( ! empty( $var_data['sku'] ) ) {
+				$conflict_id = wc_get_product_id_by_sku( $var_data['sku'] );
+				if ( $conflict_id ) {
+					$conflict_product = wc_get_product( $conflict_id );
+					if ( $conflict_product && $conflict_product->get_parent_id() === $parent_id ) {
+						$variation_id = $conflict_id;
+					} else {
+						$var_data['sku'] .= '-' . $parent_id; // prevent conflict
+					}
+				}
+			}
+			
+			$variation = $variation_id ? wc_get_product( $variation_id ) : new WC_Product_Variation();
+			$variation->set_parent_id( $parent_id );
+			
+			$variation->set_sku( $var_data['sku'] );
+			$variation->set_regular_price( $var_data['price'] );
+			$variation->set_manage_stock( true );
+			$variation->set_stock_quantity( $var_data['stock_quantity'] );
+			$variation->set_status( 'publish' );
+			
+			// Set attributes (WC requires keys to be taxonomy slugs or lowercase attribute names)
+			$var_attrs = array();
+			foreach ( $var_data['attributes'] as $name => $val ) {
+				$var_attrs[ strtolower( $name ) ] = $val;
+			}
+			$variation->set_attributes( $var_attrs );
+			
+			$saved_var_id = $variation->save();
+			if ( $saved_var_id ) {
+				$processed_ids[] = $saved_var_id;
+			}
+		}
+		
+		// Delete any existing variations that are no longer present
+		foreach ( $existing_variations as $existing_id ) {
+			if ( ! in_array( $existing_id, $processed_ids ) ) {
+				$var_to_delete = wc_get_product( $existing_id );
+				if ( $var_to_delete ) {
+					$var_to_delete->delete( true );
+				}
+			}
+		}
 	}
 
 	/**

@@ -371,7 +371,15 @@ class TCGiant_Sync_Exporter {
 		$xml  = '<Title>' . esc_xml( $title ) . '</Title>' . "\n";
 		$xml .= '<Description><![CDATA[' . $description . ']]></Description>' . "\n";
 		$xml .= '<PrimaryCategory><CategoryID>' . esc_attr( $settings['category_id'] ) . '</CategoryID></PrimaryCategory>' . "\n";
-		$xml .= '<StartPrice>' . esc_attr( $price ) . '</StartPrice>' . "\n";
+		
+		if ( ! $product->is_type( 'variable' ) ) {
+			$xml .= '<StartPrice>' . esc_attr( $price ) . '</StartPrice>' . "\n";
+			$xml .= '<Quantity>' . (int) $quantity . '</Quantity>' . "\n";
+			if ( ! empty( $sku ) ) {
+				$xml .= '<SKU>' . esc_xml( $sku ) . '</SKU>' . "\n";
+			}
+		}
+
 		$xml .= '<CategoryMappingAllowed>true</CategoryMappingAllowed>' . "\n";
 		$xml .= '<ConditionID>' . esc_attr( $settings['condition_id'] ) . '</ConditionID>' . "\n";
 		$xml .= '<Country>US</Country>' . "\n";
@@ -379,11 +387,52 @@ class TCGiant_Sync_Exporter {
 		$xml .= '<DispatchTimeMax>3</DispatchTimeMax>' . "\n";
 		$xml .= '<ListingDuration>GTC</ListingDuration>' . "\n";
 		$xml .= '<ListingType>FixedPriceItem</ListingType>' . "\n";
-		$xml .= '<Quantity>' . (int) $quantity . '</Quantity>' . "\n";
 		$xml .= '<Site>US</Site>' . "\n";
 
-		if ( ! empty( $sku ) ) {
-			$xml .= '<SKU>' . esc_xml( $sku ) . '</SKU>' . "\n";
+		if ( $product->is_type( 'variable' ) ) {
+			$xml .= '<Variations>' . "\n";
+			$xml .= "\t<VariationSpecificsSet>\n";
+			$attributes = $product->get_variation_attributes();
+			foreach ( $attributes as $attr_name => $options ) {
+				$label = wc_attribute_label( $attr_name );
+				$xml .= "\t\t<NameValueList>\n";
+				$xml .= "\t\t\t<Name>" . esc_xml( $label ) . "</Name>\n";
+				foreach ( $options as $opt ) {
+					$term = get_term_by( 'slug', $opt, $attr_name );
+					$val = $term ? $term->name : $opt;
+					$xml .= "\t\t\t<Value>" . esc_xml( $val ) . "</Value>\n";
+				}
+				$xml .= "\t\t</NameValueList>\n";
+			}
+			$xml .= "\t</VariationSpecificsSet>\n";
+			
+			$children_ids = $product->get_children();
+			foreach ( $children_ids as $child_id ) {
+				$child = wc_get_product( $child_id );
+				if ( ! $child || 'publish' !== $child->get_status() ) continue;
+				
+				$xml .= "\t<Variation>\n";
+				$xml .= "\t\t<SKU>" . esc_xml( $child->get_sku() ) . "</SKU>\n";
+				$xml .= "\t\t<StartPrice>" . esc_attr( wc_format_decimal( $child->get_regular_price(), 2 ) ) . "</StartPrice>\n";
+				$xml .= "\t\t<Quantity>" . max( 0, (int) $child->get_stock_quantity() ) . "</Quantity>\n";
+				
+				$xml .= "\t\t<VariationSpecifics>\n";
+				$child_attrs = $child->get_variation_attributes();
+				foreach ( $child_attrs as $key => $val ) {
+					$attr_name = str_replace( 'attribute_', '', $key );
+					$label = wc_attribute_label( $attr_name );
+					$term = get_term_by( 'slug', $val, $attr_name );
+					$val_name = $term ? $term->name : $val;
+					
+					$xml .= "\t\t\t<NameValueList>\n";
+					$xml .= "\t\t\t\t<Name>" . esc_xml( $label ) . "</Name>\n";
+					$xml .= "\t\t\t\t<Value>" . esc_xml( $val_name ) . "</Value>\n";
+					$xml .= "\t\t\t</NameValueList>\n";
+				}
+				$xml .= "\t\t</VariationSpecifics>\n";
+				$xml .= "\t</Variation>\n";
+			}
+			$xml .= "</Variations>\n";
 		}
 
 		if ( $picture_xml ) {
