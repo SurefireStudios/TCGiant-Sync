@@ -488,6 +488,7 @@ class TCGiant_Sync_Mapper {
 		
 		// Set Attributes as visible product data.
 		$woo_attributes = array();
+		$attr_position = 0;
 		
 		// Gather all possible values for variation attributes to set at parent level
 		$parent_attr_values = array();
@@ -504,8 +505,10 @@ class TCGiant_Sync_Mapper {
 		// Map normal item specifics
 		foreach ( $product_data['attributes'] as $name => $value ) {
 			$attribute = new WC_Product_Attribute();
+			$attribute->set_id( 0 ); // 0 = custom (non-taxonomy) attribute
 			$attribute->set_name( $name );
 			$attribute->set_options( array( $value ) );
+			$attribute->set_position( $attr_position++ );
 			$attribute->set_visible( true );
 			$attribute->set_variation( false );
 			$woo_attributes[ sanitize_title( $name ) ] = $attribute;
@@ -514,8 +517,10 @@ class TCGiant_Sync_Mapper {
 		// Map variation specifics
 		foreach ( $parent_attr_values as $name => $values ) {
 			$attribute = new WC_Product_Attribute();
+			$attribute->set_id( 0 ); // 0 = custom (non-taxonomy) attribute
 			$attribute->set_name( $name );
 			$attribute->set_options( array_unique( $values ) );
+			$attribute->set_position( $attr_position++ );
 			$attribute->set_visible( true );
 			$attribute->set_variation( true );
 			$woo_attributes[ sanitize_title( $name ) ] = $attribute;

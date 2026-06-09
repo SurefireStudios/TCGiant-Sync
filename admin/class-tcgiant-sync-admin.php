@@ -39,6 +39,7 @@ class TCGiant_Sync_Admin {
 		add_action( 'admin_init', array( $this, 'register_settings' ) );
 		add_action( 'admin_post_tcgiant_sync_now', array( $this, 'handle_manual_sync' ) );
 		add_action( 'admin_post_tcgiant_force_queue', array( $this, 'handle_force_queue' ) );
+		add_action( 'admin_post_tcgiant_resume_sync', array( $this, 'handle_resume_sync' ) );
 		add_action( 'wp_ajax_tcgiant_sync_order_to_ebay', array( $this, 'ajax_sync_order_to_ebay' ) );
 		add_action( 'admin_post_tcgiant_stop_sync', array( $this, 'handle_stop_sync' ) );
 		add_action( 'admin_post_tcgiant_clear_log', array( $this, 'handle_clear_log' ) );
@@ -126,6 +127,20 @@ class TCGiant_Sync_Admin {
 		}
 
 		wp_safe_redirect( admin_url( 'admin.php?page=tcgiant-sync&queue_processed=1' ) );
+		exit;
+	}
+
+	/**
+	 * Handle resuming a paused/rate-limited sync.
+	 */
+	public function handle_resume_sync() {
+		check_admin_referer( 'tcgiant_resume_sync' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'Unauthorized.', 'tcgiant-sync' ) );
+		}
+
+		TCGiant_Sync_Importer::instance()->resume_sync();
+		wp_safe_redirect( admin_url( 'admin.php?page=tcgiant-import&sync_resumed=1' ) );
 		exit;
 	}
 

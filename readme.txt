@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.2.2
+Stable tag: 1.2.3
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -81,6 +81,12 @@ TCGiant Sync is optimized for graded trading card game (TCG) collectibles, inclu
 6. Per-product Push to eBay button with Category and Condition overrides.
 
 == Changelog ==
+
+= 1.2.3 - 2026-06-09 =
+* Fix: eBay Item Specifics (specs) are now correctly saved as WooCommerce Product Attributes. Fixed a WooCommerce compatibility issue where custom attributes were silently discarded during save.
+* Fix: Import now survives eBay API rate limits. When the daily API call limit is reached during a large import (6,000+ items), the sync pauses and auto-retries instead of restarting from scratch.
+* Feature: Added "Resume Import" button for manual recovery after rate limiting. Progress is fully preserved across pauses.
+* Improvement: Import log now shows the number of attributes detected per product.
 
 = 1.2.2 - 2026-06-08 =
 * Fix: Addressed an issue where custom variation attribute keys were incorrectly formatted, causing them to not link to parent product attributes.
@@ -175,6 +181,9 @@ TCGiant Sync is optimized for graded trading card game (TCG) collectibles, inclu
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 1.2.3 =
+Critical fix for large eBay stores (6,000+ listings): imports now survive API rate limits and resume from where they left off instead of restarting from scratch. Also fixes Product Attributes not saving after import.
 
 = 1.1.0 =
 Major reliability improvement for eBay stores with duplicate SKUs. The importer now gracefully detects duplicate SKUs and auto-appends eBay Item IDs to ensure all products are successfully imported without overwriting each other. Also includes UI improvements for manual sync feedback and a fully responsive Activity Log across all views.

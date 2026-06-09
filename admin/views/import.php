@@ -27,6 +27,28 @@ if ( 'limit_reached' === $sync_state['status'] && $license_ui['can_import'] ) {
 	TCGiant_Sync_Importer::update_sync_state( array( 'status' => 'stopped' ) );
 }
 
+// Auto-clear rate_limited state when auto-retry already handled it.
+if ( 'rate_limited' === $sync_state['status'] && function_exists( 'as_get_scheduled_actions' ) ) {
+	$pending_scans = as_get_scheduled_actions( array(
+		'hook'   => 'tcgiant_sync_fetch_listings',
+		'group'  => 'tcgiant_sync_group',
+		'status' => ActionScheduler_Store::STATUS_PENDING,
+		'per_page' => 1,
+	) );
+	$pending_imports = as_get_scheduled_actions( array(
+		'hook'   => 'tcgiant_sync_process_item_import',
+		'group'  => 'tcgiant_sync_group',
+		'status' => ActionScheduler_Store::STATUS_PENDING,
+		'per_page' => 1,
+	) );
+	// If auto-retry actions exist, show scanning/importing state instead.
+	if ( ! empty( $pending_scans ) ) {
+		$sync_state['status'] = 'scanning';
+	} elseif ( ! empty( $pending_imports ) ) {
+		$sync_state['status'] = 'importing';
+	}
+}
+
 $progress_pct = 0;
 if ( $sync_state['total_queued'] > 0 ) {
 	$progress_pct = round( ( ( $sync_state['total_processed'] + $sync_state['total_errors'] ) / $sync_state['total_queued'] ) * 100 );
@@ -44,6 +66,9 @@ if ( $sync_state['total_queued'] > 0 ) {
 	<?php // phpcs:disable WordPress.Security.NonceVerification.Recommended ?>
 	<?php if ( isset( $_GET['sync_started'] ) && '1' === $_GET['sync_started'] ) : ?>
 		<div class="notice notice-success is-dismissible"><p><?php esc_html_e( 'Full catalog sync has been queued in the background.', 'tcgiant-sync' ); ?></p></div>
+	<?php endif; ?>
+	<?php if ( isset( $_GET['sync_resumed'] ) && '1' === $_GET['sync_resumed'] ) : ?>
+		<div class="notice notice-success is-dismissible"><p><?php esc_html_e( 'Sync resumed from where it left off. Check progress below.', 'tcgiant-sync' ); ?></p></div>
 	<?php endif; ?>
 	<?php if ( isset( $_GET['queue_processed'] ) && '1' === $_GET['queue_processed'] ) : ?>
 		<div class="notice notice-success is-dismissible"><p><?php esc_html_e( 'Queue runner executed manually.', 'tcgiant-sync' ); ?></p></div>
@@ -78,6 +103,7 @@ if ( $sync_state['total_queued'] > 0 ) {
 							'complete'      => 'Complete',
 							'stopped'       => 'Stopped',
 							'error'         => 'Error',
+							'rate_limited'  => 'Rate Limited — Paused',
 							'limit_reached' => 'Import Limit Reached',
 						);
 						echo esc_html( $status_labels[ $sync_state['status'] ] ?? 'Idle' );
@@ -91,6 +117,13 @@ if ( $sync_state['total_queued'] > 0 ) {
 							echo esc_html( $sync_state['total_processed'] ) . '/' . esc_html( $sync_state['total_queued'] ) . ' items';
 						} elseif ( 'complete' === $sync_state['status'] ) {
 							echo esc_html( $sync_state['total_processed'] ) . ' imported, ' . esc_html( $sync_state['total_errors'] ) . ' errors';
+						} elseif ( 'rate_limited' === $sync_state['status'] ) {
+							printf(
+								'Page %d%s — %d imported so far. Auto-retry scheduled.',
+								absint( $sync_state['current_page'] ),
+								$sync_state['total_pages'] ? '/' . absint( $sync_state['total_pages'] ) : '',
+								absint( $sync_state['total_processed'] )
+							);
 						} elseif ( 'limit_reached' === $sync_state['status'] ) {
 							printf( esc_html__( '%1$d/%2$d products — Upgrade to Pro for unlimited', 'tcgiant-sync' ), absint( $license_ui['active_count'] ), absint( $license_ui['free_limit'] ) );
 						} elseif ( ! empty( $sync_state['last_completed'] ) ) {
@@ -110,6 +143,28 @@ if ( $sync_state['total_queued'] > 0 ) {
 						<span class="dashicons dashicons-superhero-alt" style="font-size:16px;"></span>
 						<?php esc_html_e( 'Upgrade to Pro — $49/year', 'tcgiant-sync' ); ?>
 					</a>
+				</div>
+			<?php endif; ?>
+
+			<?php if ( 'rate_limited' === $sync_state['status'] ) : ?>
+				<div class="tc-limit-reached-card" style="border-left:4px solid var(--tc-warning);background:#fff8e1;">
+					<p style="margin:0 0 8px;"><strong><?php esc_html_e( '⏸ eBay API Rate Limit Reached', 'tcgiant-sync' ); ?></strong></p>
+					<p style="margin:0 0 12px;font-size:13px;color:#555;"><?php
+						printf(
+							esc_html__( 'The import paused at page %1$d (of %2$d) after importing %3$d products. eBay limits how many API calls can be made per day. An automatic retry has been scheduled in 5 minutes, or you can resume manually below.', 'tcgiant-sync' ),
+							absint( $sync_state['current_page'] ),
+							absint( $sync_state['total_pages'] ?: '?' ),
+							absint( $sync_state['total_processed'] )
+						);
+					?></p>
+					<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+						<input type="hidden" name="action" value="tcgiant_resume_sync">
+						<?php wp_nonce_field( 'tcgiant_resume_sync' ); ?>
+						<button type="submit" class="tc-button full-width" style="background:var(--tc-warning);border-color:var(--tc-warning);">
+							<span class="dashicons dashicons-controls-play" style="font-size:16px;"></span>
+							<?php esc_html_e( 'Resume Import Now', 'tcgiant-sync' ); ?>
+						</button>
+					</form>
 				</div>
 			<?php endif; ?>
 

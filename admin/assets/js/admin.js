@@ -37,7 +37,7 @@
 
             // Dot class.
             $('.tc-sync-dot')
-                .removeClass('idle scanning importing complete stopped error limit_reached')
+                .removeClass('idle scanning importing complete stopped error rate_limited limit_reached')
                 .addClass(s.status);
 
             // Status label.
@@ -63,6 +63,10 @@
                 case 'error':
                     label = 'Error';
                     detail = 'Check logs for details.';
+                    break;
+                case 'rate_limited':
+                    label = 'Rate Limited — Paused';
+                    detail = 'Page ' + s.current_page + (s.total_pages ? '/' + s.total_pages : '') + ' — ' + s.total_processed + ' imported. Auto-retry scheduled.';
                     break;
                 case 'limit_reached':
                     label = 'Import Limit Reached';

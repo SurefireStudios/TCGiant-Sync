@@ -1,5 +1,11 @@
 *** TCGiant Sync Changelog ***
 
+2026-06-09 - version 1.2.3
+- Fix: eBay Item Specifics (specs) are now correctly saved as WooCommerce Product Attributes. Fixed a WooCommerce compatibility issue where custom attributes were silently discarded due to missing position and ID metadata.
+- Fix: Import now survives eBay API rate limits. When the daily API call limit is reached during a large import (6,000+ items), the sync automatically pauses and schedules a retry in 5 minutes instead of restarting from scratch. A new "Resume Import" button is also available for manual recovery.
+- Feature: Added `rate_limited` sync state with visual indicator (amber pulsing dot), progress preservation, and auto-retry scheduling.
+- Improvement: Import log now shows the number of attributes detected per product (e.g., "8 attrs") to help verify spec extraction.
+
 2026-06-08 - version 1.2.2
 - Fix: Addressed an issue where custom variation attribute keys were incorrectly formatted, causing them to not link to parent product attributes.
 - Improvement: Renamed the "eBay Sync Log" product data tab to "TCGiant Sync" to make export category and condition overrides more discoverable.

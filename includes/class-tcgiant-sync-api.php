@@ -180,6 +180,41 @@ class TCGiant_Sync_API {
 
 		if ( isset( $array['Ack'] ) && 'Failure' === $array['Ack'] ) {
 			$error_msg = isset( $array['Errors']['ShortMessage'] ) ? $array['Errors']['ShortMessage'] : 'Unknown Trading API Error';
+			$error_code = isset( $array['Errors']['ErrorCode'] ) ? (string) $array['Errors']['ErrorCode'] : '';
+
+			// eBay rate limit error codes:
+			// 518  = "Calls to this call have exceeded the call limit."
+			// 10007 = "Internal error to the application." (daily limit)
+			// Also check for multiple errors returned as an array.
+			$rate_limit_codes = array( '518', '10007' );
+			$is_rate_limited = false;
+
+			if ( in_array( $error_code, $rate_limit_codes, true ) ) {
+				$is_rate_limited = true;
+			} elseif ( isset( $array['Errors'][0] ) ) {
+				// Multiple errors returned as indexed array.
+				foreach ( $array['Errors'] as $err ) {
+					if ( isset( $err['ErrorCode'] ) && in_array( (string) $err['ErrorCode'], $rate_limit_codes, true ) ) {
+						$is_rate_limited = true;
+						$error_msg = $err['ShortMessage'] ?? $error_msg;
+						break;
+					}
+				}
+			}
+
+			// Also detect rate limiting from HTTP 429 or known error messages.
+			if ( ! $is_rate_limited ) {
+				$error_str = is_string( $error_msg ) ? strtolower( $error_msg ) : '';
+				if ( false !== strpos( $error_str, 'call limit' ) || false !== strpos( $error_str, 'rate limit' ) || false !== strpos( $error_str, 'exceeded' ) ) {
+					$is_rate_limited = true;
+				}
+			}
+
+			if ( $is_rate_limited ) {
+				TCGiant_Sync_Logger::log( sprintf( 'eBay API rate limit reached during %s. Will retry later.', $call_name ), 'warning' );
+				return new WP_Error( 'rate_limited', is_string( $error_msg ) ? $error_msg : 'API call limit exceeded', $array );
+			}
+
 			TCGiant_Sync_Logger::error( sprintf( 'eBay Trading API Error (%s): %s', $call_name, is_string( $error_msg ) ? $error_msg : wp_json_encode( $error_msg ) ) );
 			return new WP_Error( 'api_error', is_string( $error_msg ) ? $error_msg : 'API Error', $array );
 		}

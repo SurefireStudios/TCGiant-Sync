@@ -54,7 +54,7 @@ class TCGiant_Sync_Importer {
 	 */
 	public static function get_sync_state() {
 		return get_option( self::STATE_OPTION, array(
-			'status'          => 'idle',       // idle, scanning, importing, complete, stopped, error
+			'status'          => 'idle',       // idle, scanning, importing, complete, stopped, error, rate_limited
 			'total_found'     => 0,
 			'total_queued'    => 0,
 			'total_processed' => 0,
@@ -147,6 +147,69 @@ class TCGiant_Sync_Importer {
 	}
 
 	/**
+	 * Resume a sync that was paused due to API rate limiting.
+	 *
+	 * Unlike start_full_sync(), this preserves existing totals and continues
+	 * from the last scanned page or re-queues pending item imports.
+	 */
+	public function resume_sync() {
+		$state = self::get_sync_state();
+
+		// Only resume from rate_limited or stopped states.
+		if ( ! in_array( $state['status'], array( 'rate_limited', 'stopped', 'error' ), true ) ) {
+			TCGiant_Sync_Logger::log( 'Cannot resume: sync is not in a paused/limited state.', 'warning' );
+			return;
+		}
+
+		// License check.
+		$license = TCGiant_Sync_License::instance();
+		if ( ! $license->can_import() ) {
+			self::update_sync_state( array( 'status' => 'limit_reached' ) );
+			return;
+		}
+
+		// Clear any stale scheduled actions.
+		if ( function_exists( 'as_unschedule_all_actions' ) ) {
+			as_unschedule_all_actions( 'tcgiant_sync_fetch_listings', null, 'tcgiant_sync_group' );
+			as_unschedule_all_actions( 'tcgiant_sync_process_item_import', null, 'tcgiant_sync_group' );
+		}
+
+		$resume_page = max( 1, (int) $state['current_page'] );
+		$total_pages = (int) $state['total_pages'];
+
+		// If we still have pages to scan, resume scanning.
+		if ( $total_pages === 0 || $resume_page <= $total_pages ) {
+			self::update_sync_state( array( 'status' => 'scanning' ) );
+			TCGiant_Sync_Logger::log( sprintf(
+				'Resuming sync from page %d%s. Progress so far: %d found, %d queued, %d imported.',
+				$resume_page,
+				$total_pages ? '/' . $total_pages : '',
+				$state['total_found'],
+				$state['total_queued'],
+				$state['total_processed']
+			), 'success' );
+			as_enqueue_async_action( 'tcgiant_sync_fetch_listings', array( 'page_number' => $resume_page ), 'tcgiant_sync_group' );
+		} else {
+			// All pages were scanned but import phase was interrupted.
+			// Transition to importing — any pending item imports will be re-processed.
+			if ( $state['total_queued'] > ( $state['total_processed'] + $state['total_errors'] ) ) {
+				self::update_sync_state( array( 'status' => 'importing' ) );
+				TCGiant_Sync_Logger::log( sprintf(
+					'Resuming import phase. %d/%d items still pending.',
+					$state['total_queued'] - $state['total_processed'] - $state['total_errors'],
+					$state['total_queued']
+				), 'success' );
+			} else {
+				self::update_sync_state( array(
+					'status'         => 'complete',
+					'last_completed' => current_time( 'mysql' ),
+				) );
+				TCGiant_Sync_Logger::log( 'Resume check: all items were already processed. Sync complete.', 'success' );
+			}
+		}
+	}
+
+	/**
 	 * Fetch a single page of listings via Trading API.
 	 *
 	 * @param int $page_number Page number to fetch.
@@ -159,6 +222,22 @@ class TCGiant_Sync_Importer {
 
 		$api = TCGiant_Sync_API::instance();
 		$response = $api->get_active_listings( $page_number, 100 );
+
+		// Handle rate limiting: pause and schedule retry instead of aborting.
+		if ( is_wp_error( $response ) && 'rate_limited' === $response->get_error_code() ) {
+			$retry_delay = 300; // 5 minutes
+			self::update_sync_state( array(
+				'status'       => 'rate_limited',
+				'current_page' => $page_number, // preserve the page we failed on
+			) );
+			TCGiant_Sync_Logger::log( sprintf(
+				'eBay API rate limit hit on page %d. Pausing scan. Auto-retry scheduled in %d minutes. You can also click "Resume Import" later.',
+				$page_number,
+				$retry_delay / 60
+			), 'warning' );
+			as_schedule_single_action( time() + $retry_delay, 'tcgiant_sync_fetch_listings', array( 'page_number' => $page_number ), 'tcgiant_sync_group' );
+			return;
+		}
 
 		if ( is_wp_error( $response ) || ! isset( $response['ItemArray']['Item'] ) ) {
 			$state = self::get_sync_state();
@@ -451,6 +530,19 @@ class TCGiant_Sync_Importer {
 			$api = TCGiant_Sync_API::instance();
 			$ebay_response = $api->get_item( $item_id );
 
+			// Handle rate limiting: reschedule this item for later instead of counting as error.
+			if ( is_wp_error( $ebay_response ) && 'rate_limited' === $ebay_response->get_error_code() ) {
+				$retry_delay = 300; // 5 minutes
+				self::update_sync_state( array( 'status' => 'rate_limited' ) );
+				TCGiant_Sync_Logger::log( sprintf(
+					'eBay API rate limit hit while importing item %s. Rescheduled for %d minutes later.',
+					$item_id,
+					$retry_delay / 60
+				), 'warning' );
+				as_schedule_single_action( time() + $retry_delay, 'tcgiant_sync_process_item_import', array( 'item_id' => $item_id ), 'tcgiant_sync_group' );
+				return;
+			}
+
 			if ( is_wp_error( $ebay_response ) || ! isset( $ebay_response['Item'] ) ) {
 				self::update_sync_state( array(
 					'total_errors' => self::get_sync_state()['total_errors'] + 1,
@@ -481,9 +573,10 @@ class TCGiant_Sync_Importer {
 				) );
 
 				$price_display = ! empty( $product_data['price'] ) ? '$' . $product_data['price'] : 'No price';
+				$attr_count = count( $product_data['attributes'] );
 				TCGiant_Sync_Logger::log( sprintf(
-					'Imported: "%s" -> WC #%d (%s, Qty: %d)',
-					$title, $product_id, $price_display, $product_data['stock_quantity']
+					'Imported: "%s" -> WC #%d (%s, Qty: %d, %d attrs)',
+					$title, $product_id, $price_display, $product_data['stock_quantity'], $attr_count
 				), 'success' );
 			} else {
 				self::update_sync_state( array(
