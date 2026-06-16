@@ -1,5 +1,9 @@
 *** TCGiant Sync Changelog ***
 
+2026-06-16 - version 1.3.1
+- Security: Replaced the hardcoded webhook signing key with a unique, cryptographically random per-installation key. Each site now receives its own signing key from the relay server during OAuth connection, preventing forged Marketplace Account Deletion requests.
+- Improvement: Legacy installations that haven't reconnected will continue to work using the previous key until they re-authenticate.
+
 2026-06-16 - version 1.3.0
 - Feature: Import product weight and package dimensions (length, width, height) from eBay listings into WooCommerce. Values are automatically converted to match your store's configured weight and dimension units.
 - Feature: Added "Overwrite Weight & Dimensions" toggle in the Data Mapping settings section, allowing users to control whether weight/dimensions are updated on re-imports (defaults to Yes).

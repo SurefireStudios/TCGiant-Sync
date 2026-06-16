@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.3.0
+Stable tag: 1.3.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -81,6 +81,10 @@ TCGiant Sync is optimized for graded trading card game (TCG) collectibles, inclu
 6. Per-product Push to eBay button with Category and Condition overrides.
 
 == Changelog ==
+
+= 1.3.1 - 2026-06-16 =
+* Security: Replaced the hardcoded webhook signing key with a unique, cryptographically random per-installation key. Each site now receives its own signing key during OAuth connection, preventing forged Marketplace Account Deletion requests.
+* Improvement: Legacy installations continue to work using the previous key until they re-authenticate.
 
 = 1.3.0 - 2026-06-16 =
 * Feature: Import product weight and package dimensions (length, width, height) from eBay listings into WooCommerce. Values are automatically converted to match your store's configured weight and dimension units.
@@ -186,6 +190,9 @@ TCGiant Sync is optimized for graded trading card game (TCG) collectibles, inclu
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 1.3.1 =
+Security fix: the webhook signing key used for Marketplace Account Deletion notifications is now unique per installation. We recommend reconnecting to eBay via Settings to activate the new per-site key.
 
 = 1.3.0 =
 New feature: product weight and package dimensions (length × width × height) are now automatically imported from eBay and saved to your WooCommerce products. Values auto-convert to match your store's units. A new "Overwrite Weight & Dimensions" data mapping toggle controls re-import behavior.

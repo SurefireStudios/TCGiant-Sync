@@ -1,6 +1,6 @@
 # TCGiant Sync
 
-[![Version](https://img.shields.io/badge/version-1.3.0-blue.svg)](https://wordpress.org/plugins/tcgiant-sync/)
+[![Version](https://img.shields.io/badge/version-1.3.1-blue.svg)](https://wordpress.org/plugins/tcgiant-sync/)
 [![License](https://img.shields.io/badge/License-GPL_v2-blue.svg)](https://www.gnu.org/licenses/gpl-2.0.html)
 [![Requires PHP](https://img.shields.io/badge/PHP-7.4%2B-green.svg)](#)
 [![Tested up to](https://img.shields.io/badge/WordPress-7.0-blue.svg)](#)
@@ -122,6 +122,7 @@ Whether a sale happens on eBay or WooCommerce, stock is adjusted on both platfor
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| **1.3.1** | 2026-06-16 | Security: per-installation unique webhook signing keys |
 | **1.3.0** | 2026-06-16 | Import product weight & dimensions from eBay, new Data Mapping toggle |
 | **1.2.3** | 2026-06-09 | Fixed Item Specifics/Attributes saving, rate limit auto-retry for large imports |
 | **1.1.6** | 2026-06-08 | Added an option to "Preserve Categories" in settings |

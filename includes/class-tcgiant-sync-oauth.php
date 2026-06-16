@@ -77,9 +77,13 @@ class TCGiant_Sync_OAuth {
 			$settings['refresh_token'] = sanitize_text_field( $data['refresh_token'] );
 			$settings['token_expiry']  = time() + (int) $data['expires_in'];
 			
-			// Generate a unique secret for this site provided by the relay if any, 
-			// or just use a site-specific salt for MAD verification.
-			if ( empty( $settings['relay_secret'] ) ) {
+			// Use the per-site signing key provided by the relay server.
+			// This key is unique to this installation and used to verify
+			// Marketplace Account Deletion notifications from the relay.
+			if ( ! empty( $data['relay_key'] ) ) {
+				$settings['relay_secret'] = sanitize_text_field( $data['relay_key'] );
+			} elseif ( empty( $settings['relay_secret'] ) ) {
+				// Fallback: generate locally if relay didn't provide one (legacy relay).
 				$settings['relay_secret'] = wp_generate_password( 32, false );
 			}
 

@@ -458,6 +458,7 @@ class TCGiant_Sync_Admin {
 				'access_token'  => sanitize_text_field( wp_unslash( $_GET['ebay_access_token'] ) ),
 				'refresh_token' => sanitize_text_field( wp_unslash( $_GET['ebay_refresh_token'] ) ),
 				'expires_in'    => sanitize_text_field( wp_unslash( $_GET['ebay_expires_in'] ) ),
+				'relay_key'     => isset( $_GET['ebay_relay_key'] ) ? sanitize_text_field( wp_unslash( $_GET['ebay_relay_key'] ) ) : '',
 			);
 			// phpcs:enable WordPress.Security.NonceVerification.Recommended
 

@@ -16,8 +16,13 @@ if ( ! defined( 'ABSPATH' ) ) {
 class TCGiant_Sync_Webhooks {
 
 	/**
-	 * Shared HMAC signing key used to verify webhook payloads
-	 * forwarded by the TCGiant relay server.
+	 * Legacy HMAC signing key — used ONLY as a fallback for installations
+	 * that connected before per-site keys were introduced (v1.3.1+).
+	 *
+	 * New connections receive a unique, cryptographically random key from the
+	 * relay server, stored in the site's tcgiant_sync_ebay_settings['relay_secret'].
+	 *
+	 * @deprecated Use get_signing_key() instead of referencing this constant directly.
 	 */
 	const RELAY_SIGNING_KEY = 'tcgiant_relay_secret_key_500';
 
@@ -69,6 +74,22 @@ class TCGiant_Sync_Webhooks {
 	}
 
 	/**
+	 * Get the signing key for this installation.
+	 *
+	 * Returns the per-site relay_secret if available (set during OAuth connection
+	 * in v1.3.1+), otherwise falls back to the legacy hardcoded constant.
+	 *
+	 * @return string The HMAC signing key.
+	 */
+	private function get_signing_key() {
+		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
+		if ( ! empty( $settings['relay_secret'] ) ) {
+			return $settings['relay_secret'];
+		}
+		return self::RELAY_SIGNING_KEY;
+	}
+
+	/**
 	 * Handle actual Deletion Notification (POST) from Relay.
 	 *
 	 * @param WP_REST_Request $request Request object.
@@ -78,8 +99,8 @@ class TCGiant_Sync_Webhooks {
 		$timestamp = $request->get_header( 'x-tcgiant-timestamp' );
 		$body      = $request->get_body();
 		
-		// Verify signature from TCGiant Relay.
-		$relay_secret = self::RELAY_SIGNING_KEY;
+		// Verify signature from TCGiant Relay using per-site key.
+		$relay_secret = $this->get_signing_key();
 		$expected_signature = hash_hmac( 'sha256', $body . $timestamp, $relay_secret );
 
 		if ( ! hash_equals( $expected_signature, (string) $signature ) ) {
