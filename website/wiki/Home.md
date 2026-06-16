@@ -1,31 +1,64 @@
 # Welcome to the TCGiant Sync Wiki
 
-**TCGiant Sync** is the premier bidirectional integration bridging your eBay store and WooCommerce site. Built specifically for multi-channel e-commerce retailers who move fast-selling inventory (like trading cards, collectibles, toys, and tools) and cannot afford to oversell their limited stock.
+**TCGiant Sync** is a bidirectional eBay ↔ WooCommerce sync plugin built for multi-channel e-commerce sellers. Import your entire eBay inventory into WooCommerce, push WooCommerce products back to eBay as live listings, and keep stock perfectly synced across both platforms — all from one dashboard.
 
-Whether you're pulling existing eBay listings into your site, pushing new WooCommerce products live to eBay, or just relying on the automated bidirectional stock sync, TCGiant Sync has you covered.
+Whether you sell trading cards, collectibles, toys, tools, or anything else on eBay, TCGiant Sync keeps both storefronts in lockstep so you never oversell.
 
 ---
 
-## 📖 Documentation Index
+## 🚀 Quick Start (5 Minutes)
+
+1. **Install the plugin** → [Installation and Setup](Installation-and-Setup)
+2. **Connect your eBay account** → Click "Connect to eBay" in Settings
+3. **Import your listings** → [Import from eBay](Import-from-eBay)
+4. **Optional: Push products to eBay** → [Push to eBay](Push-to-eBay)
+
+That's it — stock syncs automatically from there.
+
+---
+
+## 📖 Documentation
 
 ### Getting Started
 - **[Installation and Setup](Installation-and-Setup)**
-  *Requirements, installing the plugin, and connecting to your eBay account via OAuth.*
+  *Requirements, installing the plugin, connecting to eBay, and configuring your first import.*
 
 ### Core Workflows
-- **[Import from eBay (⬇)](Import-from-eBay)**
-  *How to fetch active eBay listings into WooCommerce manually or via automated scheduling.*
-- **[Push to eBay (⬆)](Push-to-eBay)**
-  *How to configure Business Policies and push WooCommerce products live to eBay individually or in bulk.*
+- **[Import from eBay ⬇](Import-from-eBay)**
+  *Pulling eBay listings into WooCommerce — manual imports, scheduled automation, data mapping, large inventory tips, and what to expect with 5,000+ items.*
+- **[Push to eBay ⬆](Push-to-eBay)**
+  *Configuring Business Policies, pushing single products or in bulk, Variable Products, and smart revision detection.*
 
-### Troubleshooting
+### Reference
+- **[Settings and Data Mapping](Settings-and-Data-Mapping)**
+  *Complete guide to every setting — sync schedules, overwrite rules, category mapping, preserve categories, Item Specifics as tags, weight/dimensions, and more.*
+
+### Support
 - **[Troubleshooting and Logs](Troubleshooting-and-Logs)**
-  *How to read the Activity Logs, check System Health, and resolve common sync issues.*
+  *Reading the Activity Log, diagnosing common errors, rate limit recovery, and contacting support.*
 
 ---
 
-## What's New in v1.2.1?
-- **Bidirectional Variable Product Support:** Full support for syncing WooCommerce Variable Products with eBay Variations.
-- **Global eBay Marketplace Support:** Dynamic mapping for Item Specifics depending on your chosen eBay region.
-- **Improved Dashboard UI:** A cleaner, 3-column layout with metrics cards and an interactive checklist.
-- **Log Management:** Dedicated Logs page with robust rotation and filtering.
+## ✨ What's New in v1.3.1
+
+- **📦 Weight & Dimensions Import** — Product weight, length, width, and height are now automatically imported from eBay and saved to WooCommerce's shipping fields. Units are auto-converted to match your store's settings.
+- **🔒 Security Hardening** — Each installation now receives a unique, cryptographically random webhook signing key for Marketplace Account Deletion notifications.
+- **⚡ Rate Limit Recovery** — Large imports (5,000+ items) automatically pause and resume when eBay's daily API limit is reached. No progress is lost.
+- **🏷️ Item Specifics as Tags** — Optionally import all eBay Item Specifics as WooCommerce Product Tags for SEO and filtering.
+- **🔄 Variable Product Support** — Full bidirectional sync for eBay Variations ↔ WooCommerce Variable Products.
+- **🌍 Global Marketplace Support** — Connect to any eBay regional site (US, UK, Canada, Australia, Germany, etc.).
+- **💰 Sale Price Detection** — Automatically detects eBay Markdown Manager sales and maps to WooCommerce Regular/Sale price fields.
+
+---
+
+## Free vs Pro
+
+| | Free | Pro |
+|---|---|---|
+| Import from eBay | Up to 50 products | ✅ Unlimited |
+| Push to eBay | ✅ Unlimited | ✅ Unlimited |
+| Automated sync schedule | ❌ Manual only | ✅ 15min / Hourly / Daily |
+| Stock sync | ✅ | ✅ |
+| Priority support | ❌ | ✅ |
+
+Upgrade to Pro at [tcgiant.com/pro](https://tcgiant.com/pro).
