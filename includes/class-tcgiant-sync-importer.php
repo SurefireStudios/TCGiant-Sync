@@ -574,9 +574,10 @@ class TCGiant_Sync_Importer {
 
 				$price_display = ! empty( $product_data['price'] ) ? '$' . $product_data['price'] : 'No price';
 				$attr_count = count( $product_data['attributes'] );
+				$weight_display = ! empty( $product_data['weight'] ) ? ', ' . $product_data['weight'] . get_option( 'woocommerce_weight_unit', 'lbs' ) : '';
 				TCGiant_Sync_Logger::log( sprintf(
-					'Imported: "%s" -> WC #%d (%s, Qty: %d, %d attrs)',
-					$title, $product_id, $price_display, $product_data['stock_quantity'], $attr_count
+					'Imported: "%s" -> WC #%d (%s, Qty: %d, %d attrs%s)',
+					$title, $product_id, $price_display, $product_data['stock_quantity'], $attr_count, $weight_display
 				), 'success' );
 			} else {
 				self::update_sync_state( array(

@@ -1,5 +1,10 @@
 *** TCGiant Sync Changelog ***
 
+2026-06-16 - version 1.3.0
+- Feature: Import product weight and package dimensions (length, width, height) from eBay listings into WooCommerce. Values are automatically converted to match your store's configured weight and dimension units.
+- Feature: Added "Overwrite Weight & Dimensions" toggle in the Data Mapping settings section, allowing users to control whether weight/dimensions are updated on re-imports (defaults to Yes).
+- Improvement: Import activity log now shows imported weight alongside existing product details (e.g., "0.50lbs") for verification.
+
 2026-06-09 - version 1.2.3
 - Fix: eBay Item Specifics (specs) are now correctly saved as WooCommerce Product Attributes. Fixed a WooCommerce compatibility issue where custom attributes were silently discarded due to missing position and ID metadata.
 - Fix: Import now survives eBay API rate limits. When the daily API call limit is reached during a large import (6,000+ items), the sync automatically pauses and schedules a retry in 5 minutes instead of restarting from scratch. A new "Resume Import" button is also available for manual recovery.

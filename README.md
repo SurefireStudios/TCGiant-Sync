@@ -1,6 +1,6 @@
 # TCGiant Sync
 
-[![Version](https://img.shields.io/badge/version-1.2.1-blue.svg)](https://wordpress.org/plugins/tcgiant-sync/)
+[![Version](https://img.shields.io/badge/version-1.3.0-blue.svg)](https://wordpress.org/plugins/tcgiant-sync/)
 [![License](https://img.shields.io/badge/License-GPL_v2-blue.svg)](https://www.gnu.org/licenses/gpl-2.0.html)
 [![Requires PHP](https://img.shields.io/badge/PHP-7.4%2B-green.svg)](#)
 [![Tested up to](https://img.shields.io/badge/WordPress-7.0-blue.svg)](#)
@@ -33,6 +33,7 @@ No matter which platform you start from, TCGiant Sync keeps both sides in sync. 
 | Auto-sync on a schedule (15min / hourly / daily) | ✅ | ✅ |
 | Real-time stock reduction when sold on eBay | ✅ | ✅ |
 | Data mapping rules (overwrite title, price, images, etc.) | ✅ | ✅ |
+| Import weight & package dimensions from eBay | ✅ | ✅ |
 | Prune sold/ended listings from WooCommerce | ✅ | ✅ |
 
 ### Push: WooCommerce → eBay *(New in v1.0.2)*
@@ -121,7 +122,8 @@ Whether a sale happens on eBay or WooCommerce, stock is adjusted on both platfor
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
-| **1.1.7** | 2026-06-08 | Added PrimaryCategory fallback mapping, ISBN/UPC mapping, and Security Patches |
+| **1.3.0** | 2026-06-16 | Import product weight & dimensions from eBay, new Data Mapping toggle |
+| **1.2.3** | 2026-06-09 | Fixed Item Specifics/Attributes saving, rate limit auto-retry for large imports |
 | **1.1.6** | 2026-06-08 | Added an option to "Preserve Categories" in settings |
 | **1.1.5** | 2026-06-05 | Added Pushed vs Pulled metrics tracking, fixed telemetry data format bug |
 | **1.1.4** | 2026-06-05 | WooCommerce HPOS and 10.0 Compatibility, Security enhancements |

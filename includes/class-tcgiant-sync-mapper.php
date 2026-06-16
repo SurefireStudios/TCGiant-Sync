@@ -152,6 +152,57 @@ class TCGiant_Sync_Mapper {
 		}
 		$product_data['images'] = $images;
 
+		// Weight & Dimensions from ShippingPackageDetails.
+		$product_data['weight']     = '';
+		$product_data['length']     = '';
+		$product_data['width']      = '';
+		$product_data['height']     = '';
+
+		if ( isset( $ebay_item['ShippingPackageDetails'] ) ) {
+			$pkg = $ebay_item['ShippingPackageDetails'];
+
+			// Weight: eBay returns WeightMajor (lbs/kg) + WeightMinor (oz/g).
+			// WooCommerce uses a single weight field in the store's configured unit.
+			$weight_major = $this->parse_measurement_value( $pkg['WeightMajor'] ?? null );
+			$weight_minor = $this->parse_measurement_value( $pkg['WeightMinor'] ?? null );
+
+			if ( '' !== $weight_major || '' !== $weight_minor ) {
+				$major = (float) $weight_major;
+				$minor = (float) $weight_minor;
+
+				// Determine unit system from eBay data.
+				$major_unit = $this->parse_measurement_unit( $pkg['WeightMajor'] ?? null );
+				$is_metric  = ( 'kg' === strtolower( $major_unit ) );
+
+				if ( $is_metric ) {
+					// kg + g → kg
+					$total_kg = $major + ( $minor / 1000 );
+					$product_data['weight'] = $this->convert_weight_to_store_unit( $total_kg, 'kg' );
+				} else {
+					// lbs + oz → lbs
+					$total_lbs = $major + ( $minor / 16 );
+					$product_data['weight'] = $this->convert_weight_to_store_unit( $total_lbs, 'lbs' );
+				}
+			}
+
+			// Dimensions: PackageLength, PackageWidth, PackageDepth.
+			$length_val = $this->parse_measurement_value( $pkg['PackageLength'] ?? null );
+			$width_val  = $this->parse_measurement_value( $pkg['PackageWidth'] ?? null );
+			$depth_val  = $this->parse_measurement_value( $pkg['PackageDepth'] ?? null );
+
+			$dim_unit = $this->parse_measurement_unit( $pkg['PackageLength'] ?? $pkg['PackageWidth'] ?? null );
+
+			if ( '' !== $length_val ) {
+				$product_data['length'] = $this->convert_dimension_to_store_unit( (float) $length_val, $dim_unit );
+			}
+			if ( '' !== $width_val ) {
+				$product_data['width'] = $this->convert_dimension_to_store_unit( (float) $width_val, $dim_unit );
+			}
+			if ( '' !== $depth_val ) {
+				$product_data['height'] = $this->convert_dimension_to_store_unit( (float) $depth_val, $dim_unit );
+			}
+		}
+
 		// Product Meta.
 		$product_data['meta'] = array(
 			'_ebay_sku'          => $product_data['sku'],
@@ -419,6 +470,33 @@ class TCGiant_Sync_Mapper {
 		// Stock is ALWAYS managed by eBay.
 		$product->set_manage_stock( true );
 		$product->set_stock_quantity( $product_data['stock_quantity'] );
+
+		// Weight & Dimensions.
+		$overwrite_weight_dims = isset( $settings['overwrite_weight_dims'] ) ? $settings['overwrite_weight_dims'] : '1';
+		if ( $is_new || '1' === $overwrite_weight_dims ) {
+			$has_weight_dims = false;
+			if ( '' !== $product_data['weight'] ) {
+				$product->set_weight( $product_data['weight'] );
+				$has_weight_dims = true;
+			}
+			if ( '' !== $product_data['length'] ) {
+				$product->set_length( $product_data['length'] );
+				$has_weight_dims = true;
+			}
+			if ( '' !== $product_data['width'] ) {
+				$product->set_width( $product_data['width'] );
+				$has_weight_dims = true;
+			}
+			if ( '' !== $product_data['height'] ) {
+				$product->set_height( $product_data['height'] );
+				$has_weight_dims = true;
+			}
+			if ( $has_weight_dims && ! $is_new ) {
+				$sync_decisions[] = 'Weight/Dimensions updated (eBay won)';
+			}
+		} elseif ( ! $is_new ) {
+			$sync_decisions[] = 'Weight/Dimensions skipped (WooCommerce won)';
+		}
 		$sync_decisions[] = 'Stock synced to ' . $product_data['stock_quantity'] . ' (eBay won)';
 		
 		// Set price (already extracted as clean numeric string).
@@ -698,5 +776,120 @@ class TCGiant_Sync_Mapper {
 			}
 		}
 		return $names;
+	}
+
+	/**
+	 * Parse a measurement value from eBay's XML→JSON format.
+	 *
+	 * eBay can return measurements as:
+	 * - A plain string/number: "5"
+	 * - An array: {"@attributes": {"unit": "lbs", "measurementSystem": "English"}, "#text": "5"}
+	 *
+	 * @param mixed $raw Raw measurement value.
+	 * @return string Numeric string or empty string.
+	 */
+	private function parse_measurement_value( $raw ) {
+		if ( null === $raw ) {
+			return '';
+		}
+		if ( is_string( $raw ) || is_numeric( $raw ) ) {
+			return (string) $raw;
+		}
+		if ( is_array( $raw ) ) {
+			if ( isset( $raw['#text'] ) ) {
+				return (string) $raw['#text'];
+			}
+			if ( isset( $raw['__text'] ) ) {
+				return (string) $raw['__text'];
+			}
+			if ( isset( $raw['value'] ) ) {
+				return (string) $raw['value'];
+			}
+		}
+		return '';
+	}
+
+	/**
+	 * Parse the unit string from an eBay measurement field.
+	 *
+	 * @param mixed $raw Raw measurement value (may contain @attributes with unit).
+	 * @return string Unit string (e.g., 'lbs', 'kg', 'in', 'cm') or empty string.
+	 */
+	private function parse_measurement_unit( $raw ) {
+		if ( is_array( $raw ) && isset( $raw['@attributes']['unit'] ) ) {
+			return (string) $raw['@attributes']['unit'];
+		}
+		if ( is_array( $raw ) && isset( $raw['@attributes']['measurementSystem'] ) ) {
+			return 'English' === $raw['@attributes']['measurementSystem'] ? 'lbs' : 'kg';
+		}
+		return '';
+	}
+
+	/**
+	 * Convert a weight value to the WooCommerce store's configured weight unit.
+	 *
+	 * @param float  $value     The weight value.
+	 * @param string $from_unit Source unit ('lbs' or 'kg').
+	 * @return string Formatted weight for WooCommerce.
+	 */
+	private function convert_weight_to_store_unit( $value, $from_unit ) {
+		if ( $value <= 0 ) {
+			return '';
+		}
+
+		$store_unit = get_option( 'woocommerce_weight_unit', 'lbs' );
+
+		// Convert to store unit if different.
+		if ( 'lbs' === $from_unit && 'kg' === $store_unit ) {
+			$value = $value * 0.453592;
+		} elseif ( 'lbs' === $from_unit && 'oz' === $store_unit ) {
+			$value = $value * 16;
+		} elseif ( 'lbs' === $from_unit && 'g' === $store_unit ) {
+			$value = $value * 453.592;
+		} elseif ( 'kg' === $from_unit && 'lbs' === $store_unit ) {
+			$value = $value * 2.20462;
+		} elseif ( 'kg' === $from_unit && 'oz' === $store_unit ) {
+			$value = $value * 35.274;
+		} elseif ( 'kg' === $from_unit && 'g' === $store_unit ) {
+			$value = $value * 1000;
+		}
+
+		return wc_format_decimal( $value, 2 );
+	}
+
+	/**
+	 * Convert a dimension value to the WooCommerce store's configured dimension unit.
+	 *
+	 * @param float  $value     The dimension value.
+	 * @param string $from_unit Source unit ('in', 'cm', etc.).
+	 * @return string Formatted dimension for WooCommerce.
+	 */
+	private function convert_dimension_to_store_unit( $value, $from_unit ) {
+		if ( $value <= 0 ) {
+			return '';
+		}
+
+		$store_unit = get_option( 'woocommerce_dimension_unit', 'in' );
+		$from_unit  = strtolower( $from_unit );
+
+		// Normalize eBay unit names.
+		if ( 'inches' === $from_unit ) $from_unit = 'in';
+		if ( empty( $from_unit ) ) $from_unit = 'in'; // eBay US default
+
+		if ( 'in' === $from_unit && 'cm' === $store_unit ) {
+			$value = $value * 2.54;
+		} elseif ( 'in' === $from_unit && 'mm' === $store_unit ) {
+			$value = $value * 25.4;
+		} elseif ( 'in' === $from_unit && 'm' === $store_unit ) {
+			$value = $value * 0.0254;
+		} elseif ( 'cm' === $from_unit && 'in' === $store_unit ) {
+			$value = $value / 2.54;
+		} elseif ( 'cm' === $from_unit && 'mm' === $store_unit ) {
+			$value = $value * 10;
+		} elseif ( 'cm' === $from_unit && 'm' === $store_unit ) {
+			$value = $value / 100;
+		}
+
+		return wc_format_decimal( $value, 2 );
 	}
 }

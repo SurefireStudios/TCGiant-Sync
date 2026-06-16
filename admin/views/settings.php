@@ -254,11 +254,12 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 					<p class="tc-hint" style="margin-bottom:12px;"><?php esc_html_e( 'When an existing product is re-synced, which platform wins? Stock is always updated from eBay.', 'tcgiant-sync' ); ?></p>
 					<?php
 					$mapping_fields = array(
-						'overwrite_title'    => array( 'label' => __( 'Overwrite Title', 'tcgiant-sync' ), 'default' => '0' ),
-						'overwrite_desc'     => array( 'label' => __( 'Overwrite Description', 'tcgiant-sync' ), 'default' => '0' ),
-						'overwrite_price'    => array( 'label' => __( 'Overwrite Price', 'tcgiant-sync' ), 'default' => '1' ),
-						'overwrite_images'   => array( 'label' => __( 'Overwrite Images', 'tcgiant-sync' ), 'default' => '0' ),
-						'overwrite_taxonomy' => array( 'label' => __( 'Overwrite Categories &amp; Tags', 'tcgiant-sync' ), 'default' => '0' ),
+						'overwrite_title'       => array( 'label' => __( 'Overwrite Title', 'tcgiant-sync' ), 'default' => '0' ),
+						'overwrite_desc'        => array( 'label' => __( 'Overwrite Description', 'tcgiant-sync' ), 'default' => '0' ),
+						'overwrite_price'       => array( 'label' => __( 'Overwrite Price', 'tcgiant-sync' ), 'default' => '1' ),
+						'overwrite_images'      => array( 'label' => __( 'Overwrite Images', 'tcgiant-sync' ), 'default' => '0' ),
+						'overwrite_taxonomy'    => array( 'label' => __( 'Overwrite Categories &amp; Tags', 'tcgiant-sync' ), 'default' => '0' ),
+						'overwrite_weight_dims' => array( 'label' => __( 'Overwrite Weight &amp; Dimensions', 'tcgiant-sync' ), 'default' => '1' ),
 					);
 					foreach ( $mapping_fields as $field_key => $field ) :
 					?>
@@ -317,7 +318,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 				<?php settings_fields( 'tcgiant_sync_ebay_group' ); ?>
 				<?php
 				// Preserve all non-export fields.
-				$all_preserve = array_merge( $preserve_keys, array( 'category_ids', 'woo_category_ids', 'preserve_woo_category_ids', 'import_specs_as_tags', 'sync_interval', 'enable_order_sync', 'overwrite_title', 'overwrite_desc', 'overwrite_price', 'overwrite_images', 'overwrite_taxonomy' ) );
+				$all_preserve = array_merge( $preserve_keys, array( 'category_ids', 'woo_category_ids', 'preserve_woo_category_ids', 'import_specs_as_tags', 'sync_interval', 'enable_order_sync', 'overwrite_title', 'overwrite_desc', 'overwrite_price', 'overwrite_images', 'overwrite_taxonomy', 'overwrite_weight_dims' ) );
 				foreach ( $all_preserve as $key ) {
 					$val = $settings[ $key ] ?? null;
 					if ( null !== $val ) {
