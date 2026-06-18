@@ -2,3 +2,5 @@
 sync-page-export/
 relay.php
 zips/
+.env
+*.db

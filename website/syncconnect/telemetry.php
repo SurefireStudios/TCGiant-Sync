@@ -46,7 +46,10 @@ $synced_total = isset($data['synced_total']) ? (int) $data['synced_total'] : -1;
 $pushed_total = isset($data['pushed_total']) ? (int) $data['pushed_total'] : -1;
 $pulled_total = isset($data['pulled_total']) ? (int) $data['pulled_total'] : -1;
 $pushed_count = isset($data['pushed_count']) ? (int) $data['pushed_count'] : 0;
-$license_type = isset($data['license_type']) ? sanitize_text_field($data['license_type']) : 'free';
+$license_type = isset($data['license_type']) ? trim(strip_tags($data['license_type'])) : 'free';
+if ( empty($license_type) ) {
+	$license_type = 'free';
+}
 
 // If synced_total is provided (cron ping)
 if ( $synced_total >= 0 || $pushed_total >= 0 || $pulled_total >= 0 ) {
