@@ -225,18 +225,33 @@ class TCGiant_Sync_API {
 	/**
 	 * Get all active listings via Trading API.
 	 *
-	 * @param int $page_number Page number (1-indexed).
-	 * @param int $entries_per_page Limit per page.
+	 * @param int    $page_number     Page number (1-indexed).
+	 * @param int    $entries_per_page Limit per page.
+	 * @param string $mod_time_from   Optional ISO 8601 timestamp. When provided, uses
+	 *                                ModTimeFrom/ModTimeTo to only return items modified
+	 *                                since this time (delta sync mode). When omitted,
+	 *                                uses EndTimeFrom/EndTimeTo for a full scan.
 	 */
-	public function get_active_listings( $page_number = 1, $entries_per_page = 200 ) {
+	public function get_active_listings( $page_number = 1, $entries_per_page = 200, $mod_time_from = '' ) {
 		// Use GetSellerList instead of GetMyeBaySelling because only GetSellerList
 		// returns Storefront (StoreCategoryID) data needed for store category filtering.
-		$end_from = gmdate( 'Y-m-d\TH:i:s.000\Z' );
-		$end_to   = gmdate( 'Y-m-d\TH:i:s.000\Z', strtotime( '+120 days' ) );
 
-		$xml = '
+		// GetSellerList requires either EndTime or ModTime range — they are mutually exclusive.
+		if ( ! empty( $mod_time_from ) ) {
+			// Delta sync mode: only items modified since the given timestamp.
+			$xml = '
+<ModTimeFrom>' . $mod_time_from . '</ModTimeFrom>
+<ModTimeTo>' . gmdate( 'Y-m-d\TH:i:s.000\Z' ) . '</ModTimeTo>';
+		} else {
+			// Full scan mode: all active listings.
+			$end_from = gmdate( 'Y-m-d\TH:i:s.000\Z' );
+			$end_to   = gmdate( 'Y-m-d\TH:i:s.000\Z', strtotime( '+120 days' ) );
+			$xml = '
 <EndTimeFrom>' . $end_from . '</EndTimeFrom>
-<EndTimeTo>' . $end_to . '</EndTimeTo>
+<EndTimeTo>' . $end_to . '</EndTimeTo>';
+		}
+
+		$xml .= '
 <GranularityLevel>Fine</GranularityLevel>
 <Pagination>
 	<EntriesPerPage>' . (int) $entries_per_page . '</EntriesPerPage>

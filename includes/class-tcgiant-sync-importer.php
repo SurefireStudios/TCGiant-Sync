@@ -54,18 +54,21 @@ class TCGiant_Sync_Importer {
 	 */
 	public static function get_sync_state() {
 		return get_option( self::STATE_OPTION, array(
-			'status'          => 'idle',       // idle, scanning, importing, complete, stopped, error, rate_limited
-			'total_found'     => 0,
-			'total_queued'    => 0,
-			'total_processed' => 0,
-			'total_errors'    => 0,
-			'current_page'    => 0,
-			'total_pages'     => 0,
-			'filter_name'     => '',
-			'started_at'      => '',
-			'last_activity'   => '',
-			'last_completed'  => '',
-			'last_item_title' => '',
+			'status'                  => 'idle',       // idle, scanning, importing, complete, stopped, error, rate_limited
+			'sync_mode'               => 'full',       // full or delta
+			'delta_mod_from'          => '',           // ISO 8601 timestamp for delta sync ModTimeFrom
+			'total_found'             => 0,
+			'total_queued'            => 0,
+			'total_processed'         => 0,
+			'total_errors'            => 0,
+			'current_page'            => 0,
+			'total_pages'             => 0,
+			'filter_name'             => '',
+			'started_at'              => '',
+			'last_activity'           => '',
+			'last_completed'          => '',
+			'last_item_title'         => '',
+			'last_successful_sync_at' => '',           // ISO 8601 UTC timestamp of last successful sync (used as ModTimeFrom for next delta)
 		) );
 	}
 
@@ -128,6 +131,8 @@ class TCGiant_Sync_Importer {
 		// Reset sync state.
 		self::update_sync_state( array(
 			'status'          => 'scanning',
+			'sync_mode'       => 'full',
+			'delta_mod_from'  => '',
 			'total_found'     => 0,
 			'total_queued'    => 0,
 			'total_processed' => 0,
@@ -142,7 +147,73 @@ class TCGiant_Sync_Importer {
 		// Clear active IDs list for pruning orphaned items.
 		delete_option( 'tcgiant_sync_active_ids' );
 
-		TCGiant_Sync_Logger::log( sprintf( 'Starting sync for: %s', $filter_name ) );
+		TCGiant_Sync_Logger::log( sprintf( 'Starting full sync for: %s', $filter_name ) );
+		as_enqueue_async_action( 'tcgiant_sync_fetch_listings', array( 'page_number' => 1 ), 'tcgiant_sync_group' );
+	}
+
+	/**
+	 * Start a delta sync — only import items modified since the last successful sync.
+	 *
+	 * Falls back to a full sync if there is no previous sync timestamp (e.g., first run).
+	 */
+	public function start_delta_sync() {
+		$state = self::get_sync_state();
+		$last_sync = ! empty( $state['last_successful_sync_at'] ) ? $state['last_successful_sync_at'] : '';
+
+		// No previous sync? Fall back to full sync.
+		if ( empty( $last_sync ) ) {
+			TCGiant_Sync_Logger::log( 'No previous sync timestamp found — falling back to full sync.' );
+			$this->start_full_sync();
+			return;
+		}
+
+		// License check.
+		$license = TCGiant_Sync_License::instance();
+		if ( ! $license->can_import() ) {
+			self::update_sync_state( array( 'status' => 'limit_reached' ) );
+			return;
+		}
+
+		// Guard: don't restart if a sync is already in progress.
+		if ( in_array( $state['status'], array( 'scanning', 'importing' ), true ) ) {
+			TCGiant_Sync_Logger::log( 'Sync already in progress — skipping delta sync request.' );
+			return;
+		}
+
+		// Clear any previous pending sync jobs.
+		if ( function_exists( 'as_unschedule_all_actions' ) ) {
+			as_unschedule_all_actions( 'tcgiant_sync_fetch_listings', null, 'tcgiant_sync_group' );
+			as_unschedule_all_actions( 'tcgiant_sync_process_item_import', null, 'tcgiant_sync_group' );
+		}
+
+		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
+		$filter_name = ! empty( $settings['category_ids'] ) ? $settings['category_ids'] : 'All Categories';
+
+		// Add a small overlap buffer (5 min) to avoid missing items due to clock skew.
+		$buffer_seconds = 300;
+		$mod_from_ts = strtotime( $last_sync ) - $buffer_seconds;
+		$mod_from_iso = gmdate( 'Y-m-d\TH:i:s.000\Z', $mod_from_ts );
+
+		self::update_sync_state( array(
+			'status'          => 'scanning',
+			'sync_mode'       => 'delta',
+			'delta_mod_from'  => $mod_from_iso,
+			'total_found'     => 0,
+			'total_queued'    => 0,
+			'total_processed' => 0,
+			'total_errors'    => 0,
+			'current_page'    => 1,
+			'total_pages'     => 0,
+			'filter_name'     => $filter_name,
+			'started_at'      => current_time( 'mysql' ),
+			'last_item_title' => '',
+		) );
+
+		TCGiant_Sync_Logger::log( sprintf(
+			'Starting delta sync for: %s (changes since %s)',
+			$filter_name,
+			$mod_from_iso
+		) );
 		as_enqueue_async_action( 'tcgiant_sync_fetch_listings', array( 'page_number' => 1 ), 'tcgiant_sync_group' );
 	}
 
@@ -221,7 +292,9 @@ class TCGiant_Sync_Importer {
 		) );
 
 		$api = TCGiant_Sync_API::instance();
-		$response = $api->get_active_listings( $page_number, 100 );
+		$state_for_mode = self::get_sync_state();
+		$mod_time_from = ( 'delta' === ( $state_for_mode['sync_mode'] ?? 'full' ) ) ? ( $state_for_mode['delta_mod_from'] ?? '' ) : '';
+		$response = $api->get_active_listings( $page_number, 100, $mod_time_from );
 
 		// Handle rate limiting: pause and schedule retry instead of aborting.
 		if ( is_wp_error( $response ) && 'rate_limited' === $response->get_error_code() ) {
@@ -246,8 +319,9 @@ class TCGiant_Sync_Importer {
 				TCGiant_Sync_Logger::log( sprintf( 'Scan complete. %d items queued for import.', $state['total_queued'] ) );
 			} else {
 				self::update_sync_state( array(
-					'status'         => 'complete',
-					'last_completed' => current_time( 'mysql' ),
+					'status'                  => 'complete',
+					'last_completed'          => current_time( 'mysql' ),
+					'last_successful_sync_at' => gmdate( 'Y-m-d\TH:i:s.000\Z' ),
 				) );
 				TCGiant_Sync_Logger::log( 'Scan complete. No matching items found.' );
 			}
@@ -343,9 +417,10 @@ class TCGiant_Sync_Importer {
 		$should_log = ( $page_number === 1 || $page_number === $total_pages || $page_number % 5 === 0 || $queued_count > 0 );
 		if ( $should_log ) {
 			$filter_label = $is_filtering ? sprintf( ' matching "%s"', $settings['category_ids'] ) : '';
+			$mode_label = ( 'delta' === ( self::get_sync_state()['sync_mode'] ?? 'full' ) ) ? ' [delta]' : '';
 			TCGiant_Sync_Logger::log( sprintf(
-				'Page %d/%d: Scanned %d items, queued %d%s.',
-				$page_number, $total_pages, count( $items ), $queued_count, $filter_label
+				'Page %d/%d: Scanned %d items, queued %d%s%s.',
+				$page_number, $total_pages, count( $items ), $queued_count, $filter_label, $mode_label
 			) );
 		}
 
@@ -359,8 +434,9 @@ class TCGiant_Sync_Importer {
 				TCGiant_Sync_Logger::log( sprintf( 'Scan complete. %d total items queued for import across %d pages.', $new_total_queued, $total_pages ) );
 			} else {
 				self::update_sync_state( array(
-					'status'         => 'complete',
-					'last_completed' => current_time( 'mysql' ),
+					'status'                  => 'complete',
+					'last_completed'          => current_time( 'mysql' ),
+					'last_successful_sync_at' => gmdate( 'Y-m-d\TH:i:s.000\Z' ),
 				) );
 				TCGiant_Sync_Logger::log( 'Scan complete. No matching items found.' );
 				
@@ -631,13 +707,15 @@ class TCGiant_Sync_Importer {
 		}
 
 		if ( $is_done ) {
+			$mode_label = ( 'delta' === ( $state['sync_mode'] ?? 'full' ) ) ? 'Delta sync' : 'Sync';
 			self::update_sync_state( array(
-				'status'         => 'complete',
-				'last_completed' => current_time( 'mysql' ),
+				'status'                  => 'complete',
+				'last_completed'          => current_time( 'mysql' ),
+				'last_successful_sync_at' => gmdate( 'Y-m-d\TH:i:s.000\Z' ),
 			) );
 			TCGiant_Sync_Logger::log( sprintf(
-				'Sync complete! %d imported, %d errors out of %d total.',
-				$state['total_processed'], $state['total_errors'], $state['total_queued']
+				'%s complete! %d imported, %d errors out of %d total.',
+				$mode_label, $state['total_processed'], $state['total_errors'], $state['total_queued']
 			), 'success' );
 
 			// Trigger cleanup of sold/ended items.

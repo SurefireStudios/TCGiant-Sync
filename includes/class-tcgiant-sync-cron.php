@@ -80,10 +80,13 @@ class TCGiant_Sync_Cron {
 
 	/**
 	 * Run the polling task.
+	 *
+	 * Uses delta sync to only fetch items modified since the last successful sync.
+	 * If no previous sync exists, it automatically falls back to a full sync.
 	 */
 	public function poll_ebay() {
-		TCGiant_Sync_Logger::log( 'WP-Cron: Starting scheduled eBay poll...' );
-		TCGiant_Sync_Importer::instance()->start_full_sync();
+		TCGiant_Sync_Logger::log( 'WP-Cron: Starting scheduled eBay poll (delta sync)...' );
+		TCGiant_Sync_Importer::instance()->start_delta_sync();
 	}
 
 	/**
