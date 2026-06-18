@@ -252,16 +252,28 @@ class TCGiant_Sync_API {
 		}
 
 		$xml .= '
-<GranularityLevel>Fine</GranularityLevel>
 <Pagination>
 	<EntriesPerPage>' . (int) $entries_per_page . '</EntriesPerPage>
 	<PageNumber>' . (int) $page_number . '</PageNumber>
 </Pagination>
+<IncludeItemSpecifics>true</IncludeItemSpecifics>
 <OutputSelector>ItemID</OutputSelector>
 <OutputSelector>Title</OutputSelector>
+<OutputSelector>Description</OutputSelector>
+<OutputSelector>SKU</OutputSelector>
 <OutputSelector>PrimaryCategory</OutputSelector>
 <OutputSelector>Storefront</OutputSelector>
+<OutputSelector>Quantity</OutputSelector>
 <OutputSelector>QuantityAvailable</OutputSelector>
+<OutputSelector>SellingStatus</OutputSelector>
+<OutputSelector>StartPrice</OutputSelector>
+<OutputSelector>BuyItNowPrice</OutputSelector>
+<OutputSelector>DiscountPriceInfo</OutputSelector>
+<OutputSelector>PictureDetails</OutputSelector>
+<OutputSelector>ItemSpecifics</OutputSelector>
+<OutputSelector>ProductListingDetails</OutputSelector>
+<OutputSelector>ShippingPackageDetails</OutputSelector>
+<OutputSelector>Variations</OutputSelector>
 <OutputSelector>PaginationResult</OutputSelector>';
 
 		return $this->trading_api_request( 'GetSellerList', $xml );

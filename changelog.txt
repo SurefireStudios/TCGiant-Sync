@@ -1,5 +1,12 @@
 *** TCGiant Sync Changelog ***
 
+2026-06-18 - version 1.4.2
+- Performance: Initial full imports now process simple products inline from enriched GetSellerList data, eliminating per-item GetItem calls for non-variation products. A 15,000-item store with 5% variations drops from ~15,150 API calls to ~900 calls (~94% reduction).
+- Improvement: GetSellerList now requests full item data (Description, SKU, Prices, PictureDetails, ItemSpecifics, ShippingPackageDetails) via expanded OutputSelectors and IncludeItemSpecifics.
+- Improvement: Variation products are automatically detected and routed to the proven GetItem fallback path for reliable full data retrieval.
+- Improvement: Image downloads for inline-processed items are now scheduled as separate async jobs to prevent page processing timeouts.
+- Improvement: Activity log now shows "[inline]" tag for products imported directly from GetSellerList data, and reports both inline and GetItem counts per page.
+
 2026-06-18 - version 1.4.1
 - Performance: Delta syncs now use eBay's GetSellerEvents API with DetailLevel=ReturnAll, returning full item data inline. This eliminates all per-item GetItem API calls during scheduled syncs. A 15,000-item store on hourly sync now uses ~24-72 API calls/day instead of ~1,200-4,800.
 - Improvement: GetSellerEvents returns complete item data (Description, ItemSpecifics, Variations, PictureDetails, ShippingPackageDetails) in a single API call per sync cycle.

@@ -568,6 +568,10 @@ class TCGiant_Sync_Importer {
 		}
 
 		$active_ids_batch = array();
+		$mapper = TCGiant_Sync_Mapper::instance();
+		$license = TCGiant_Sync_License::instance();
+		$inline_processed = 0;
+		$inline_errors = 0;
 
 		foreach ( $items as $item ) {
 			$item_id = $item['ItemID'] ?? '';
@@ -597,10 +601,58 @@ class TCGiant_Sync_Importer {
 				}
 			}
 
-			// Schedule item with staggered delay (3s per item).
-			$delay = 3 * $queued_count;
-			as_schedule_single_action( time() + $delay, 'tcgiant_sync_process_item_import', array( 'item_id' => $item_id ), 'tcgiant_sync_group' );
-			$queued_count++;
+			// License check per item.
+			if ( ! $license->can_import() ) {
+				self::update_sync_state( array( 'status' => 'limit_reached' ) );
+				TCGiant_Sync_Logger::log( 'Import limit reached. Remaining items skipped.', 'warning' );
+				break;
+			}
+
+			// Determine if this item needs a GetItem fallback (variations or missing data).
+			$has_variations = isset( $item['Variations'] );
+			$missing_critical = ! isset( $item['Title'] ) || ! isset( $item['SellingStatus'] );
+
+			if ( $has_variations || $missing_critical ) {
+				// Queue for GetItem — variation items need reliable full data.
+				$delay = 3 * $queued_count;
+				as_schedule_single_action( time() + $delay, 'tcgiant_sync_process_item_import', array( 'item_id' => $item_id ), 'tcgiant_sync_group' );
+				$queued_count++;
+			} else {
+				// Process inline — simple item with full data from GetSellerList.
+				try {
+					$title = $item['Title'] ?? 'Unknown';
+					$product_data = $mapper->map_ebay_to_woo( $item );
+					$product_id = $mapper->save_as_product( $product_data );
+
+					if ( $product_id ) {
+						// Schedule image downloads as async to avoid timeout.
+						if ( ! empty( $product_data['images'] ) ) {
+							as_enqueue_async_action( 'tcgiant_sync_download_images', array(
+								'product_id' => $product_id,
+								'image_urls' => $product_data['images'],
+							), 'tcgiant_sync_group' );
+						}
+
+						$inline_processed++;
+						$price_display = ! empty( $product_data['price'] ) ? '$' . $product_data['price'] : 'No price';
+						$attr_count = count( $product_data['attributes'] );
+						$weight_display = ! empty( $product_data['weight'] ) ? ', ' . $product_data['weight'] . get_option( 'woocommerce_weight_unit', 'lbs' ) : '';
+						TCGiant_Sync_Logger::log( sprintf(
+							'Imported: "%s" -> WC #%d (%s, Qty: %d, %d attrs%s) [inline]',
+							$title, $product_id, $price_display, $product_data['stock_quantity'], $attr_count, $weight_display
+						), 'success' );
+					} else {
+						$inline_errors++;
+						TCGiant_Sync_Logger::error( sprintf( 'Failed to save product for eBay Item: %s [inline]', $item_id ) );
+					}
+				} catch ( Exception $e ) {
+					$inline_errors++;
+					TCGiant_Sync_Logger::error( 'Inline import exception for ' . $item_id . ': ' . $e->getMessage() );
+				} catch ( Error $e ) {
+					$inline_errors++;
+					TCGiant_Sync_Logger::error( 'Inline import fatal for ' . $item_id . ': ' . $e->getMessage() );
+				}
+			}
 		}
 
 		if ( ! empty( $active_ids_batch ) ) {
@@ -609,30 +661,36 @@ class TCGiant_Sync_Importer {
 			update_option( 'tcgiant_sync_active_ids', array_unique( array_merge( $existing_active, $active_ids_batch ) ) );
 		}
 
-		// Update state with running totals.
+		// Update state with running totals (inline items are already processed).
 		$state = self::get_sync_state();
 		$new_total_found = $state['total_found'] + count( $items );
-		$new_total_queued = $state['total_queued'] + $queued_count;
+		$new_total_queued = $state['total_queued'] + $queued_count + $inline_processed + $inline_errors;
+		$new_total_processed = $state['total_processed'] + $inline_processed;
+		$new_total_errors = $state['total_errors'] + $inline_errors;
 
 		self::update_sync_state( array(
-			'total_found'  => $new_total_found,
-			'total_queued' => $new_total_queued,
+			'total_found'     => $new_total_found,
+			'total_queued'    => $new_total_queued,
+			'total_processed' => $new_total_processed,
+			'total_errors'    => $new_total_errors,
 		) );
 
-		// Only log every 5 pages to reduce noise (always log first and last page).
-		$should_log = ( $page_number === 1 || $page_number === $total_pages || $page_number % 5 === 0 || $queued_count > 0 );
+		// Log page summary (always log first/last page, or when items were processed).
+		$has_activity = ( $queued_count > 0 || $inline_processed > 0 );
+		$should_log = ( $page_number === 1 || $page_number === $total_pages || $page_number % 5 === 0 || $has_activity );
 		if ( $should_log ) {
 			$filter_label = $is_filtering ? sprintf( ' matching "%s"', $settings['category_ids'] ) : '';
-			$mode_label = ( 'delta' === ( self::get_sync_state()['sync_mode'] ?? 'full' ) ) ? ' [delta]' : '';
+			$inline_label = $inline_processed > 0 ? sprintf( ', %d imported inline', $inline_processed ) : '';
+			$queued_label = $queued_count > 0 ? sprintf( ', %d queued for GetItem (variations)', $queued_count ) : '';
 			TCGiant_Sync_Logger::log( sprintf(
-				'Page %d/%d: Scanned %d items, queued %d%s%s.',
-				$page_number, $total_pages, count( $items ), $queued_count, $filter_label, $mode_label
+				'Page %d/%d: Scanned %d items%s%s%s.',
+				$page_number, $total_pages, count( $items ), $inline_label, $queued_label, $filter_label
 			) );
 		}
 
-		// Schedule next page - fast (2s) when no matches, slower when items are queued.
+		// Schedule next page — minimal delay since inline processing is done, only wait for queued items.
 		if ( $page_number < $total_pages ) {
-			$delay_next_page = $queued_count > 0 ? ( $queued_count * 3 ) + 5 : 2;
+			$delay_next_page = $queued_count > 0 ? ( $queued_count * 3 ) + 5 : 5;
 			as_schedule_single_action( time() + $delay_next_page, 'tcgiant_sync_fetch_listings', array( 'page_number' => $page_number + 1 ), 'tcgiant_sync_group' );
 		} else {
 			if ( $new_total_queued > 0 ) {
