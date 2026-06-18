@@ -43,6 +43,7 @@ class TCGiant_Sync_Importer {
 	public function __construct() {
 		add_action( 'tcgiant_sync_process_item_import', array( $this, 'process_item_import' ), 10, 1 );
 		add_action( 'tcgiant_sync_fetch_listings', array( $this, 'fetch_listings_page' ), 10, 1 );
+		add_action( 'tcgiant_sync_fetch_delta_events', array( $this, 'fetch_delta_events' ) );
 		add_action( 'tcgiant_sync_download_images', array( $this, 'download_product_images' ), 10, 2 );
 		add_action( 'tcgiant_sync_prune_orphans', array( $this, 'prune_orphaned_items' ) );
 	}
@@ -117,6 +118,7 @@ class TCGiant_Sync_Importer {
 		// Clear any previous pending sync jobs to prevent stacking.
 		if ( function_exists( 'as_unschedule_all_actions' ) ) {
 			as_unschedule_all_actions( 'tcgiant_sync_fetch_listings', null, 'tcgiant_sync_group' );
+			as_unschedule_all_actions( 'tcgiant_sync_fetch_delta_events', null, 'tcgiant_sync_group' );
 			as_unschedule_all_actions( 'tcgiant_sync_process_item_import', null, 'tcgiant_sync_group' );
 		}
 
@@ -183,6 +185,7 @@ class TCGiant_Sync_Importer {
 		// Clear any previous pending sync jobs.
 		if ( function_exists( 'as_unschedule_all_actions' ) ) {
 			as_unschedule_all_actions( 'tcgiant_sync_fetch_listings', null, 'tcgiant_sync_group' );
+			as_unschedule_all_actions( 'tcgiant_sync_fetch_delta_events', null, 'tcgiant_sync_group' );
 			as_unschedule_all_actions( 'tcgiant_sync_process_item_import', null, 'tcgiant_sync_group' );
 		}
 
@@ -214,7 +217,210 @@ class TCGiant_Sync_Importer {
 			$filter_name,
 			$mod_from_iso
 		) );
-		as_enqueue_async_action( 'tcgiant_sync_fetch_listings', array( 'page_number' => 1 ), 'tcgiant_sync_group' );
+		as_enqueue_async_action( 'tcgiant_sync_fetch_delta_events', array(), 'tcgiant_sync_group' );
+	}
+
+	/**
+	 * Fetch modified items via GetSellerEvents and process them directly.
+	 *
+	 * This replaces the GetSellerList + per-item GetItem flow for delta syncs.
+	 * GetSellerEvents returns full item data inline, so no individual GetItem calls are needed.
+	 * Max time window is 48 hours per eBay API rules.
+	 */
+	public function fetch_delta_events() {
+		$state = self::get_sync_state();
+		$mod_from = $state['delta_mod_from'] ?? '';
+
+		if ( empty( $mod_from ) ) {
+			TCGiant_Sync_Logger::error( 'Delta events: No delta_mod_from timestamp in state.' );
+			self::update_sync_state( array(
+				'status'                  => 'complete',
+				'last_completed'          => current_time( 'mysql' ),
+				'last_successful_sync_at' => gmdate( 'Y-m-d\TH:i:s.000\Z' ),
+			) );
+			return;
+		}
+
+		$mod_to = gmdate( 'Y-m-d\TH:i:s.000\Z' );
+
+		// GetSellerEvents has a max 48-hour window. Chunk if needed.
+		$from_ts = strtotime( $mod_from );
+		$to_ts   = strtotime( $mod_to );
+		$max_window = 48 * 3600; // 48 hours in seconds
+
+		if ( ( $to_ts - $from_ts ) > $max_window ) {
+			// Clamp to 48hr window and log a note. Next delta sync will pick up the rest.
+			$mod_to = gmdate( 'Y-m-d\TH:i:s.000\Z', $from_ts + $max_window );
+			TCGiant_Sync_Logger::log( sprintf(
+				'Delta window exceeds 48hr max. Clamped to %s → %s. Next sync will continue.',
+				$mod_from, $mod_to
+			), 'warning' );
+		}
+
+		$api = TCGiant_Sync_API::instance();
+		$response = $api->get_seller_events( $mod_from, $mod_to );
+
+		// Handle rate limiting.
+		if ( is_wp_error( $response ) && 'rate_limited' === $response->get_error_code() ) {
+			self::update_sync_state( array( 'status' => 'rate_limited' ) );
+			TCGiant_Sync_Logger::log( 'eBay API rate limit hit during delta events fetch. Auto-retry in 5 min.', 'warning' );
+			as_schedule_single_action( time() + 300, 'tcgiant_sync_fetch_delta_events', array(), 'tcgiant_sync_group' );
+			return;
+		}
+
+		if ( is_wp_error( $response ) ) {
+			TCGiant_Sync_Logger::error( 'Delta events API error: ' . $response->get_error_message() );
+			self::update_sync_state( array(
+				'status'                  => 'complete',
+				'last_completed'          => current_time( 'mysql' ),
+				'last_successful_sync_at' => gmdate( 'Y-m-d\TH:i:s.000\Z' ),
+			) );
+			return;
+		}
+
+		// Parse items from response.
+		$items = array();
+		if ( isset( $response['ItemArray']['Item'] ) ) {
+			$items = $response['ItemArray']['Item'];
+			if ( isset( $items['ItemID'] ) ) {
+				$items = array( $items ); // Single item — normalize to array.
+			}
+		}
+
+		if ( empty( $items ) ) {
+			TCGiant_Sync_Logger::log( 'Delta sync complete. No items modified since last sync.' );
+			self::update_sync_state( array(
+				'status'                  => 'complete',
+				'last_completed'          => current_time( 'mysql' ),
+				'last_successful_sync_at' => gmdate( 'Y-m-d\TH:i:s.000\Z' ),
+			) );
+			return;
+		}
+
+		// Category filtering (same logic as fetch_listings_page).
+		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
+		$is_filtering = ! empty( $settings['category_ids'] );
+		$valid_ids = $is_filtering ? $this->get_allowed_category_ids() : array();
+
+		$mapper = TCGiant_Sync_Mapper::instance();
+		$license = TCGiant_Sync_License::instance();
+		$processed = 0;
+		$errors = 0;
+		$skipped = 0;
+		$fallback_count = 0;
+
+		self::update_sync_state( array(
+			'status'      => 'importing',
+			'total_found' => count( $items ),
+		) );
+
+		TCGiant_Sync_Logger::log( sprintf(
+			'Delta events: %d modified items found. Processing inline [delta].',
+			count( $items )
+		) );
+
+		foreach ( $items as $ebay_item ) {
+			try {
+				// License check.
+				if ( ! $license->can_import() ) {
+					self::update_sync_state( array( 'status' => 'limit_reached' ) );
+					TCGiant_Sync_Logger::log( 'Import limit reached during delta sync. Remaining items skipped.', 'warning' );
+					break;
+				}
+
+				$item_id = $ebay_item['ItemID'] ?? '';
+				if ( empty( $item_id ) ) {
+					continue;
+				}
+
+				// Category pre-filter.
+				if ( $is_filtering && ! empty( $valid_ids ) ) {
+					$primary_cat = $ebay_item['PrimaryCategory']['CategoryID'] ?? '';
+					$store_cat1  = $ebay_item['Storefront']['StoreCategoryID'] ?? '';
+					$store_cat2  = $ebay_item['Storefront']['StoreCategory2ID'] ?? '';
+
+					$match = in_array( (string) $primary_cat, $valid_ids, true )
+					      || in_array( (string) $store_cat1, $valid_ids, true )
+					      || in_array( (string) $store_cat2, $valid_ids, true );
+
+					if ( ! $match ) {
+						$skipped++;
+						continue;
+					}
+				}
+
+				// Fallback: if critical data is missing, fetch via GetItem.
+				$needs_fallback = false;
+				if ( ! isset( $ebay_item['Title'] ) || ! isset( $ebay_item['SellingStatus'] ) ) {
+					$needs_fallback = true;
+				}
+				// Check for variations that should exist but are missing.
+				if ( isset( $ebay_item['Variations'] ) && empty( $ebay_item['Variations']['Variation'] ) ) {
+					$needs_fallback = true;
+				}
+
+				if ( $needs_fallback ) {
+					$fallback_count++;
+					$api = TCGiant_Sync_API::instance();
+					$full_response = $api->get_item( $item_id );
+					if ( ! is_wp_error( $full_response ) && isset( $full_response['Item'] ) ) {
+						$ebay_item = $full_response['Item'];
+						TCGiant_Sync_Logger::log( sprintf( 'Delta fallback: Used GetItem for %s (missing data in events response).', $item_id ) );
+					} else {
+						$errors++;
+						TCGiant_Sync_Logger::error( sprintf( 'Delta fallback failed for item %s. Skipping.', $item_id ) );
+						continue;
+					}
+				}
+
+				// Map and save — same flow as process_item_import but without the GetItem call.
+				$title = $ebay_item['Title'] ?? 'Unknown';
+				$product_data = $mapper->map_ebay_to_woo( $ebay_item );
+				$product_id = $mapper->save_as_product( $product_data );
+
+				if ( $product_id ) {
+					if ( ! empty( $product_data['images'] ) ) {
+						$this->download_product_images( $product_id, $product_data['images'] );
+					}
+					$processed++;
+
+					$price_display = ! empty( $product_data['price'] ) ? '$' . $product_data['price'] : 'No price';
+					$attr_count = count( $product_data['attributes'] );
+					TCGiant_Sync_Logger::log( sprintf(
+						'Delta imported: "%s" → WC #%d (%s, Qty: %d, %d attrs)',
+						$title, $product_id, $price_display, $product_data['stock_quantity'], $attr_count
+					), 'success' );
+				} else {
+					$errors++;
+					TCGiant_Sync_Logger::error( sprintf( 'Delta: Failed to save product for eBay Item: %s (%s)', $item_id, $title ) );
+				}
+
+			} catch ( Exception $e ) {
+				$errors++;
+				TCGiant_Sync_Logger::error( 'Delta import exception: ' . $e->getMessage() );
+			} catch ( Error $e ) {
+				$errors++;
+				TCGiant_Sync_Logger::error( 'Delta import fatal: ' . $e->getMessage() );
+			}
+		}
+
+		// Log summary.
+		$filter_label = $skipped > 0 ? sprintf( ', %d skipped (category filter)', $skipped ) : '';
+		$fallback_label = $fallback_count > 0 ? sprintf( ', %d GetItem fallbacks', $fallback_count ) : '';
+		TCGiant_Sync_Logger::log( sprintf(
+			'Delta sync complete! %d imported, %d errors out of %d modified items%s%s.',
+			$processed, $errors, count( $items ), $filter_label, $fallback_label
+		), 'success' );
+
+		self::update_sync_state( array(
+			'status'                  => 'complete',
+			'total_found'             => count( $items ),
+			'total_queued'            => $processed + $errors,
+			'total_processed'         => $processed,
+			'total_errors'            => $errors,
+			'last_completed'          => current_time( 'mysql' ),
+			'last_successful_sync_at' => gmdate( 'Y-m-d\TH:i:s.000\Z' ),
+		) );
 	}
 
 	/**

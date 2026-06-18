@@ -268,6 +268,28 @@ class TCGiant_Sync_API {
 	}
 
 	/**
+	 * Get modified items with full detail via GetSellerEvents (Trading API).
+	 *
+	 * Unlike GetSellerList, GetSellerEvents returns complete item data inline
+	 * (Description, ItemSpecifics, Variations, PictureDetails, ShippingPackageDetails, etc.)
+	 * so individual GetItem calls are not needed.
+	 *
+	 * @param string $mod_time_from ISO 8601 UTC timestamp (start of window).
+	 * @param string $mod_time_to   ISO 8601 UTC timestamp (end of window). Max 48hr span.
+	 * @return array|WP_Error Parsed response or error.
+	 */
+	public function get_seller_events( $mod_time_from, $mod_time_to ) {
+		$xml = '
+<ModTimeFrom>' . $mod_time_from . '</ModTimeFrom>
+<ModTimeTo>' . $mod_time_to . '</ModTimeTo>
+<DetailLevel>ReturnAll</DetailLevel>
+<IncludeVariationSpecifics>true</IncludeVariationSpecifics>
+<HideVariations>false</HideVariations>';
+
+		return $this->trading_api_request( 'GetSellerEvents', $xml );
+	}
+
+	/**
 	 * Get full item details via Trading API.
 	 *
 	 * @param string $item_id The Item ID.

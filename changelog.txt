@@ -1,5 +1,12 @@
 *** TCGiant Sync Changelog ***
 
+2026-06-18 - version 1.4.1
+- Performance: Delta syncs now use eBay's GetSellerEvents API with DetailLevel=ReturnAll, returning full item data inline. This eliminates all per-item GetItem API calls during scheduled syncs. A 15,000-item store on hourly sync now uses ~24-72 API calls/day instead of ~1,200-4,800.
+- Improvement: GetSellerEvents returns complete item data (Description, ItemSpecifics, Variations, PictureDetails, ShippingPackageDetails) in a single API call per sync cycle.
+- Improvement: Automatic fallback to GetItem for individual items if critical data (Title, SellingStatus, Variations) is missing from the events response.
+- Improvement: 48-hour window auto-chunking for stores that haven't synced in days. Each sync processes up to 48hrs of changes, with subsequent syncs continuing from where it left off.
+- Note: Full imports (manual "Fetch Inventory" button) are unchanged and still use the proven GetSellerList + GetItem flow.
+
 2026-06-18 - version 1.4.0
 - Performance: Implemented Delta Sync for scheduled imports. Cron-triggered syncs now only fetch eBay listings modified since the last successful sync, dramatically reducing API usage. A 10,000-item store on hourly sync drops from ~242,000 API calls/day to ~1,200-4,800/day.
 - Improvement: GetSellerList API call now supports ModTimeFrom/ModTimeTo filtering for delta mode, while maintaining full EndTimeFrom/EndTimeTo scan for manual imports.
