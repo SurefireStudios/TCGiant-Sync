@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.4.3
+Stable tag: 1.4.4
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -81,6 +81,9 @@ TCGiant Sync is optimized for graded trading card game (TCG) collectibles, inclu
 6. Per-product Push to eBay button with Category and Condition overrides.
 
 == Changelog ==
+
+= 1.4.4 - 2026-06-22 =
+* Feature: New "Add eBay Shipping Cost to Product Price" setting in Import Settings. When enabled, the eBay flat-rate shipping cost is automatically added to the WooCommerce product price on import (e.g., $10 item + $5 shipping = $15). Free shipping and calculated shipping items are unaffected.
 
 = 1.4.3 - 2026-06-22 =
 * Fix: Resolved category filter not matching any items during full sync. The eBay GetSellerList API was not returning Storefront and PrimaryCategory data because OutputSelector tags were overriding DetailLevel. Switched to DetailLevel=ReturnAll to guarantee all item fields are returned.
@@ -196,6 +199,9 @@ TCGiant Sync is optimized for graded trading card game (TCG) collectibles, inclu
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 1.4.4 =
+New feature: "Add eBay Shipping Cost to Product Price" setting. Enable it in Import Settings to automatically combine eBay item price + flat-rate shipping into a single WooCommerce price on import.
 
 = 1.4.3 =
 Critical fix for stores using category filters: imports were scanning all pages but matching zero items because eBay's API was not returning category data. This release also adds a contextual settings summary bar on the Import page and fixes the dashboard activity log width.

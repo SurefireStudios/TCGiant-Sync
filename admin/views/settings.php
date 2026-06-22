@@ -206,6 +206,15 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 					</div>
 
 					<div class="tc-field" style="margin-top:24px;">
+						<label class="tc-label"><?php esc_html_e( 'Add eBay Shipping Cost to Product Price', 'tcgiant-sync' ); ?></label>
+						<div class="tc-radio-group">
+							<label><input type="radio" name="tcgiant_sync_ebay_settings[bake_shipping_into_price]" value="1" <?php checked( $settings['bake_shipping_into_price'] ?? '0', '1' ); ?>> Yes</label>
+							<label><input type="radio" name="tcgiant_sync_ebay_settings[bake_shipping_into_price]" value="0" <?php checked( $settings['bake_shipping_into_price'] ?? '0', '0' ); ?>> No</label>
+						</div>
+						<p class="tc-hint"><?php esc_html_e( 'If enabled, the eBay flat-rate shipping cost will be added to the product price on import. For example, a $10 item with $5 shipping becomes $15 in WooCommerce. Only applies to flat-rate shipping — calculated/free shipping items are unaffected.', 'tcgiant-sync' ); ?></p>
+					</div>
+
+					<div class="tc-field" style="margin-top:24px;">
 						<label class="tc-label"><?php esc_html_e( 'Preserve Categories (Do Not Trash)', 'tcgiant-sync' ); ?></label>
 						<?php
 						$selected_preserve_cats = isset( $settings['preserve_woo_category_ids'] ) && is_array( $settings['preserve_woo_category_ids'] ) ? $settings['preserve_woo_category_ids'] : array();
@@ -318,7 +327,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 				<?php settings_fields( 'tcgiant_sync_ebay_group' ); ?>
 				<?php
 				// Preserve all non-export fields.
-				$all_preserve = array_merge( $preserve_keys, array( 'category_ids', 'woo_category_ids', 'preserve_woo_category_ids', 'import_specs_as_tags', 'sync_interval', 'enable_order_sync', 'overwrite_title', 'overwrite_desc', 'overwrite_price', 'overwrite_images', 'overwrite_taxonomy', 'overwrite_weight_dims' ) );
+				$all_preserve = array_merge( $preserve_keys, array( 'category_ids', 'woo_category_ids', 'preserve_woo_category_ids', 'import_specs_as_tags', 'bake_shipping_into_price', 'sync_interval', 'enable_order_sync', 'overwrite_title', 'overwrite_desc', 'overwrite_price', 'overwrite_images', 'overwrite_taxonomy', 'overwrite_weight_dims' ) );
 				foreach ( $all_preserve as $key ) {
 					$val = $settings[ $key ] ?? null;
 					if ( null !== $val ) {

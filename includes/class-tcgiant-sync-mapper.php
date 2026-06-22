@@ -300,6 +300,20 @@ class TCGiant_Sync_Mapper {
 			$prices['regular_price'] = $current_price;
 		}
 
+		// Bake flat-rate shipping cost into price if setting is enabled.
+		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
+		if ( ! empty( $settings['bake_shipping_into_price'] ) && '1' === $settings['bake_shipping_into_price'] ) {
+			$shipping_cost = $this->extract_shipping_cost( $ebay_item );
+			if ( $shipping_cost > 0 ) {
+				if ( '' !== $prices['regular_price'] ) {
+					$prices['regular_price'] = wc_format_decimal( (float) $prices['regular_price'] + $shipping_cost, 2 );
+				}
+				if ( '' !== $prices['sale_price'] ) {
+					$prices['sale_price'] = wc_format_decimal( (float) $prices['sale_price'] + $shipping_cost, 2 );
+				}
+			}
+		}
+
 		return $prices;
 	}
 
@@ -330,6 +344,38 @@ class TCGiant_Sync_Mapper {
 		}
 
 		return '';
+	}
+
+	/**
+	 * Extract flat-rate shipping cost from an eBay item.
+	 *
+	 * Returns the first domestic ShippingServiceCost as a float.
+	 * Returns 0.0 for free shipping, calculated shipping, or missing data.
+	 *
+	 * @param array $ebay_item Raw data from eBay Trading API.
+	 * @return float Shipping cost in listing currency.
+	 */
+	private function extract_shipping_cost( $ebay_item ) {
+		$options = $ebay_item['ShippingDetails']['ShippingServiceOptions'] ?? null;
+		if ( empty( $options ) ) {
+			return 0.0;
+		}
+
+		// Normalize: single service is an assoc array, multiple is indexed array.
+		if ( isset( $options['ShippingService'] ) ) {
+			// Single shipping service — $options is the service itself.
+			$first = $options;
+		} else {
+			// Multiple services — grab the first one.
+			$first = $options[0] ?? null;
+		}
+
+		if ( empty( $first ) || ! isset( $first['ShippingServiceCost'] ) ) {
+			return 0.0;
+		}
+
+		$cost = $this->parse_price_value( $first['ShippingServiceCost'] );
+		return ( '' !== $cost ) ? (float) $cost : 0.0;
 	}
 
 	/**
