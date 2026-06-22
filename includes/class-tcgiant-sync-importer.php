@@ -679,12 +679,15 @@ class TCGiant_Sync_Importer {
 		$has_activity = ( $queued_count > 0 || $inline_processed > 0 );
 		$should_log = ( $page_number === 1 || $page_number === $total_pages || $page_number % 5 === 0 || $has_activity );
 		if ( $should_log ) {
-			$filter_label = $is_filtering ? sprintf( ' matching "%s"', $settings['category_ids'] ) : '';
+			$filter_label = $is_filtering ? sprintf( ' [filter: %s]', $settings['category_ids'] ) : '';
+			$matched_label = ( $inline_processed + $queued_count ) > 0
+				? sprintf( ', %d matched', $inline_processed + $queued_count )
+				: ', 0 matched';
 			$inline_label = $inline_processed > 0 ? sprintf( ', %d imported inline', $inline_processed ) : '';
 			$queued_label = $queued_count > 0 ? sprintf( ', %d queued for GetItem (variations)', $queued_count ) : '';
 			TCGiant_Sync_Logger::log( sprintf(
-				'Page %d/%d: Scanned %d items%s%s%s.',
-				$page_number, $total_pages, count( $items ), $inline_label, $queued_label, $filter_label
+				'Page %d/%d: Scanned %d items%s%s%s%s.',
+				$page_number, $total_pages, count( $items ), $matched_label, $inline_label, $queued_label, $filter_label
 			) );
 		}
 

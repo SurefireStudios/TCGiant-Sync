@@ -85,6 +85,49 @@ if ( $sync_state['total_queued'] > 0 ) {
 		</div>
 	<?php else : ?>
 
+	<?php
+	// Build contextual settings summary for quick reference.
+	$cat_filter_raw  = $settings['category_ids'] ?? '';
+	$sync_interval   = $settings['sync_interval'] ?? 'disabled';
+	$interval_labels = array(
+		'disabled'        => __( 'Manual Only', 'tcgiant-sync' ),
+		'tcgiant_15mins'  => __( 'Every 15 min', 'tcgiant-sync' ),
+		'tcgiant_hourly'  => __( 'Hourly', 'tcgiant-sync' ),
+		'twicedaily'      => __( 'Twice Daily', 'tcgiant-sync' ),
+		'daily'           => __( 'Daily', 'tcgiant-sync' ),
+	);
+	$interval_label = $interval_labels[ $sync_interval ] ?? $sync_interval;
+
+	$overwrite_flags = array();
+	if ( ! empty( $settings['overwrite_price'] ) && '1' === $settings['overwrite_price'] )   $overwrite_flags[] = __( 'Price', 'tcgiant-sync' );
+	if ( ! empty( $settings['overwrite_title'] ) && '1' === $settings['overwrite_title'] )   $overwrite_flags[] = __( 'Title', 'tcgiant-sync' );
+	if ( ! empty( $settings['overwrite_desc'] )  && '1' === $settings['overwrite_desc'] )    $overwrite_flags[] = __( 'Desc', 'tcgiant-sync' );
+	if ( ! empty( $settings['overwrite_images'] ) && '1' === $settings['overwrite_images'] ) $overwrite_flags[] = __( 'Images', 'tcgiant-sync' );
+	$overwrite_summary = ! empty( $overwrite_flags ) ? implode( ', ', $overwrite_flags ) : __( 'Stock only', 'tcgiant-sync' );
+	?>
+	<div class="tc-context-bar" style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;background:var(--tc-card-bg, #fff);border:1px solid var(--tc-border, #e0e0e0);border-radius:6px;padding:10px 16px;margin-bottom:20px;font-size:12.5px;line-height:1.5;">
+		<span class="dashicons dashicons-admin-settings" style="color:#888;font-size:16px;width:16px;height:16px;flex-shrink:0;"></span>
+		<span style="color:#666;">
+			<?php esc_html_e( 'Filter:', 'tcgiant-sync' ); ?>
+			<strong style="color:var(--tc-text, #1d2327);"><?php echo $cat_filter_raw ? esc_html( $cat_filter_raw ) : esc_html__( 'All Categories', 'tcgiant-sync' ); ?></strong>
+		</span>
+		<span style="color:var(--tc-border, #ccc);">·</span>
+		<span style="color:#666;">
+			<?php esc_html_e( 'Auto-Sync:', 'tcgiant-sync' ); ?>
+			<strong style="color:var(--tc-text, #1d2327);"><?php echo esc_html( $interval_label ); ?></strong>
+		</span>
+		<span style="color:var(--tc-border, #ccc);">·</span>
+		<span style="color:#666;">
+			<?php esc_html_e( 'Overwrites:', 'tcgiant-sync' ); ?>
+			<strong style="color:var(--tc-text, #1d2327);"><?php echo esc_html( $overwrite_summary ); ?></strong>
+		</span>
+		<a href="<?php echo esc_url( admin_url( 'admin.php?page=tcgiant-settings' ) ); ?>" style="margin-left:auto;color:var(--tc-primary, #3858e9);text-decoration:none;font-weight:600;white-space:nowrap;font-size:12px;display:flex;align-items:center;gap:3px;">
+			<span class="dashicons dashicons-edit" style="font-size:13px;width:13px;height:13px;"></span>
+			<?php esc_html_e( 'Edit Settings', 'tcgiant-sync' ); ?>
+		</a>
+	</div>
+
+
 	<div class="tc-row-2col">
 
 		<!-- ─── SYNC STATUS ─── -->

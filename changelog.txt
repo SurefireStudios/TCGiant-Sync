@@ -1,5 +1,11 @@
 *** TCGiant Sync Changelog ***
 
+2026-06-22 - version 1.4.3
+- Fix: Resolved category filter not matching any items during full sync. The eBay GetSellerList API was not returning Storefront (StoreCategoryID) and PrimaryCategory data because OutputSelector tags were overriding DetailLevel. Removed OutputSelector and switched to DetailLevel=ReturnAll to guarantee all item fields are returned.
+- Fix: Improved import log clarity — page summaries now distinguish between total items scanned vs. items matched by the category filter (e.g., "Scanned 100 items, 3 matched" instead of "Scanned 100 items matching NBA").
+- UX: Added a contextual settings bar on the Import page showing active category filter, auto-sync interval, and data mapping overwrite settings at a glance, with a direct link to edit settings.
+- UX: Dashboard "Recent Activity" log now renders at full width instead of being confined to the left column of the 2-column grid.
+
 2026-06-18 - version 1.4.2
 - Performance: Initial full imports now process simple products inline from enriched GetSellerList data, eliminating per-item GetItem calls for non-variation products. A 15,000-item store with 5% variations drops from ~15,150 API calls to ~900 calls (~94% reduction).
 - Improvement: GetSellerList now requests full item data (Description, SKU, Prices, PictureDetails, ItemSpecifics, ShippingPackageDetails) via expanded OutputSelectors and IncludeItemSpecifics.

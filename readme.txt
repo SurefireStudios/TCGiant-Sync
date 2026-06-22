@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.4.2
+Stable tag: 1.4.3
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -81,6 +81,12 @@ TCGiant Sync is optimized for graded trading card game (TCG) collectibles, inclu
 6. Per-product Push to eBay button with Category and Condition overrides.
 
 == Changelog ==
+
+= 1.4.3 - 2026-06-22 =
+* Fix: Resolved category filter not matching any items during full sync. The eBay GetSellerList API was not returning Storefront and PrimaryCategory data because OutputSelector tags were overriding DetailLevel. Switched to DetailLevel=ReturnAll to guarantee all item fields are returned.
+* Fix: Import log now distinguishes between total items scanned vs. items matched by the category filter (e.g., "Scanned 100 items, 3 matched").
+* UX: Added a contextual settings summary bar on the Import page showing active category filter, auto-sync interval, and data mapping settings at a glance with a direct link to edit.
+* UX: Dashboard "Recent Activity" log now renders at full width.
 
 = 1.3.1 - 2026-06-16 =
 * Security: Replaced the hardcoded webhook signing key with a unique, cryptographically random per-installation key. Each site now receives its own signing key during OAuth connection, preventing forged Marketplace Account Deletion requests.
@@ -190,6 +196,9 @@ TCGiant Sync is optimized for graded trading card game (TCG) collectibles, inclu
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 1.4.3 =
+Critical fix for stores using category filters: imports were scanning all pages but matching zero items because eBay's API was not returning category data. This release also adds a contextual settings summary bar on the Import page and fixes the dashboard activity log width.
 
 = 1.3.1 =
 Security fix: the webhook signing key used for Marketplace Account Deletion notifications is now unique per installation. We recommend reconnecting to eBay via Settings to activate the new per-site key.

@@ -339,6 +339,7 @@ if ( empty( $settings['redirect_uri'] ) ) {
 		</div>
 
 	</div>
+	</div><!-- .tc-row-2col -->
 
 	<!-- Activity Log -->
 	<div class="tc-card" style="margin-top:20px;">
