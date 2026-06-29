@@ -61,6 +61,14 @@ class TCGiant_Sync_Mapper {
 
 		$product_data['sku'] = $ebay_item['SKU'] ?? '';
 
+		// Check if eBay SKU should be routed to a bin location instead of WooCommerce SKU.
+		$product_data['bin_location'] = '';
+		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
+		if ( 'bin_location' === ( $settings['sku_maps_to'] ?? 'sku' ) && ! empty( $product_data['sku'] ) ) {
+			$product_data['bin_location'] = $product_data['sku'];
+			$product_data['sku'] = ''; // Clear so it falls through to ISBN/UPC/EAN or EBAY-{ItemID}
+		}
+
 		// Fallback 1: Try Product Identifiers (ISBN/UPC/EAN) if SKU is missing
 		if ( empty( $product_data['sku'] ) && isset( $ebay_item['ProductListingDetails'] ) ) {
 			$product_data['sku'] = $ebay_item['ProductListingDetails']['ISBN'] ?? 
@@ -517,6 +525,14 @@ class TCGiant_Sync_Mapper {
 		$product->set_manage_stock( true );
 		$product->set_stock_quantity( $product_data['stock_quantity'] );
 
+		// Mark as Virtual if setting is enabled (skips shipping calculation at checkout).
+		if ( ! empty( $settings['mark_virtual_when_baked'] ) && '1' === $settings['mark_virtual_when_baked'] ) {
+			$product->set_virtual( true );
+			if ( $is_new ) {
+				$sync_decisions[] = 'Marked as Virtual (no shipping calculation)';
+			}
+		}
+
 		// Weight & Dimensions.
 		$overwrite_weight_dims = isset( $settings['overwrite_weight_dims'] ) ? $settings['overwrite_weight_dims'] : '1';
 		if ( $is_new || '1' === $overwrite_weight_dims ) {
@@ -655,6 +671,14 @@ class TCGiant_Sync_Mapper {
 		// Set Custom Meta (including _ebay_item_id for tracking).
 		foreach ( $product_data['meta'] as $key => $val ) {
 			$product->update_meta_data( $key, $val );
+		}
+
+		// Save Bin Location if configured.
+		if ( ! empty( $product_data['bin_location'] ) ) {
+			$product->update_meta_data( '_bin_location', $product_data['bin_location'] );
+			if ( $is_new ) {
+				$sync_decisions[] = 'Bin Location: ' . $product_data['bin_location'];
+			}
 		}
 
 		// Update Sync Log.
