@@ -132,7 +132,7 @@ Your WooCommerce shipping zones and methods work exactly as configured — the p
 
 If you enable **"Add eBay Shipping Cost to Product Price"** in Settings, the eBay flat-rate shipping cost is added directly to the WooCommerce product price. For example, a $10 item with $5 eBay shipping becomes a $15 WooCommerce product.
 
-Combine this with **"Mark Products as Virtual"** to skip WooCommerce's shipping calculation entirely — your customers see one all-inclusive price with free shipping at checkout.
+To offer free shipping at checkout (since shipping is already in the price), go to **WooCommerce → Settings → Shipping → your zone → Add Shipping Method → "Free Shipping"**. Customers see one all-inclusive price with no separate shipping charge.
 
 ---
 

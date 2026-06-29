@@ -83,8 +83,8 @@ TCGiant Sync is optimized for graded trading card game (TCG) collectibles, inclu
 == Changelog ==
 
 = 1.4.6 - 2026-06-29 =
-* Feature: New "Mark Products as Virtual (No Shipping)" setting. When enabled, imported products are set as Virtual so WooCommerce skips shipping calculation at checkout — ideal when used with "Add eBay Shipping Cost to Product Price" to prevent double-charging shipping.
 * Feature: New "eBay SKU Maps To" setting with two modes: "Product SKU" (default) or "Bin Location". When set to Bin Location, the eBay SKU is stored as a `_bin_location` custom meta field instead of the WooCommerce SKU — useful for sellers who use the eBay SKU field for warehouse/shelf location codes (e.g., "A3-B7"). The WooCommerce SKU automatically falls back to ISBN/UPC/EAN or EBAY-{ItemID}.
+* Improvement: Added Free Shipping guidance tip under the "Add eBay Shipping Cost to Product Price" setting, directing users to configure a WooCommerce Free Shipping zone for an all-inclusive pricing setup.
 
 = 1.4.5 - 2026-06-29 =
 * Fix: Weight and dimensions are now correctly imported for non-US marketplaces (UK, CA, AU, DE, FR, IT, ES). Metric values from eBay (e.g., 200g, 34cm) were incorrectly treated as imperial and double-converted. The plugin now uses the configured marketplace to determine the source unit system.
@@ -210,7 +210,7 @@ TCGiant Sync is optimized for graded trading card game (TCG) collectibles, inclu
 == Upgrade Notice ==
 
 = 1.4.6 =
-Two new import settings: "Mark Products as Virtual" (skips WooCommerce shipping calculation — ideal with baked shipping) and "eBay SKU Maps To" (route eBay SKU to a Bin Location custom field instead of WooCommerce SKU).
+New import setting: "eBay SKU Maps To" lets you route eBay SKU to a Bin Location custom field instead of WooCommerce SKU — great for sellers who use eBay SKU for warehouse shelf codes. Also adds Free Shipping setup guidance for the baked-shipping workflow.
 
 = 1.4.5 =
 Critical fix for non-US marketplaces: weight and dimensions were being double-converted (metric treated as imperial). Also fixes missing Item Specifics and product images during scheduled delta syncs.

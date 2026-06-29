@@ -525,14 +525,6 @@ class TCGiant_Sync_Mapper {
 		$product->set_manage_stock( true );
 		$product->set_stock_quantity( $product_data['stock_quantity'] );
 
-		// Mark as Virtual if setting is enabled (skips shipping calculation at checkout).
-		if ( ! empty( $settings['mark_virtual_when_baked'] ) && '1' === $settings['mark_virtual_when_baked'] ) {
-			$product->set_virtual( true );
-			if ( $is_new ) {
-				$sync_decisions[] = 'Marked as Virtual (no shipping calculation)';
-			}
-		}
-
 		// Weight & Dimensions.
 		$overwrite_weight_dims = isset( $settings['overwrite_weight_dims'] ) ? $settings['overwrite_weight_dims'] : '1';
 		if ( $is_new || '1' === $overwrite_weight_dims ) {

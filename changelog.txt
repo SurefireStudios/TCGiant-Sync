@@ -1,8 +1,8 @@
 *** TCGiant Sync Changelog ***
 
 2026-06-29 - version 1.4.6
-- Feature: New "Mark Products as Virtual" setting. When enabled alongside "Add eBay Shipping Cost to Product Price", imported products are set as Virtual so WooCommerce skips shipping calculation at checkout — preventing double-charging when shipping is already baked into the price. Defaults to off.
 - Feature: New "eBay SKU Maps To" setting with two modes: "Product SKU" (default, current behavior) or "Bin Location". When set to Bin Location, the eBay SKU field is stored as a `_bin_location` custom meta field instead of the WooCommerce SKU — useful for sellers who use the eBay SKU field for warehouse/shelf location codes. The WooCommerce SKU automatically falls back to ISBN/UPC/EAN or EBAY-{ItemID}.
+- Improvement: Added Free Shipping guidance tip under the "Add eBay Shipping Cost to Product Price" setting, directing users to configure a WooCommerce Free Shipping zone for a clean all-inclusive pricing setup.
 
 2026-06-29 - version 1.4.5
 - Fix: Weight and dimensions are now correctly imported for non-US marketplaces (UK, CA, AU, DE, FR, IT, ES). Previously, metric values from eBay (e.g., 200g, 34cm) were incorrectly treated as imperial and double-converted (e.g., 200g became 5.67kg, 34cm became 86.36cm). The plugin now uses the configured marketplace to determine the source unit system when eBay doesn't include explicit unit metadata.

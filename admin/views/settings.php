@@ -212,15 +212,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 							<label><input type="radio" name="tcgiant_sync_ebay_settings[bake_shipping_into_price]" value="0" <?php checked( $settings['bake_shipping_into_price'] ?? '0', '0' ); ?>> No</label>
 						</div>
 						<p class="tc-hint"><?php esc_html_e( 'If enabled, the eBay flat-rate shipping cost will be added to the product price on import. For example, a $10 item with $5 shipping becomes $15 in WooCommerce. Only applies to flat-rate shipping — calculated/free shipping items are unaffected.', 'tcgiant-sync' ); ?></p>
-					</div>
-
-					<div class="tc-field" style="margin-top:24px;">
-						<label class="tc-label"><?php esc_html_e( 'Mark Products as Virtual (No Shipping)', 'tcgiant-sync' ); ?></label>
-						<div class="tc-radio-group">
-							<label><input type="radio" name="tcgiant_sync_ebay_settings[mark_virtual_when_baked]" value="1" <?php checked( $settings['mark_virtual_when_baked'] ?? '0', '1' ); ?>> Yes</label>
-							<label><input type="radio" name="tcgiant_sync_ebay_settings[mark_virtual_when_baked]" value="0" <?php checked( $settings['mark_virtual_when_baked'] ?? '0', '0' ); ?>> No</label>
-						</div>
-						<p class="tc-hint"><?php esc_html_e( 'If enabled, imported products will be set as "Virtual" so WooCommerce skips shipping calculation at checkout. Best used with "Add eBay Shipping Cost to Product Price" above — the shipping is already in the price, so no separate shipping charge is needed.', 'tcgiant-sync' ); ?></p>
+						<p class="tc-hint" style="margin-top:6px;"><strong><?php esc_html_e( '💡 Free Shipping Tip:', 'tcgiant-sync' ); ?></strong> <?php esc_html_e( 'Since shipping is baked into the price, you probably want to offer free shipping at checkout. Go to WooCommerce → Settings → Shipping → your zone → Add Shipping Method → "Free Shipping". Customers see one all-inclusive price with no separate shipping charge.', 'tcgiant-sync' ); ?></p>
 					</div>
 
 					<div class="tc-field" style="margin-top:24px;">
@@ -345,7 +337,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 				<?php settings_fields( 'tcgiant_sync_ebay_group' ); ?>
 				<?php
 				// Preserve all non-export fields.
-				$all_preserve = array_merge( $preserve_keys, array( 'category_ids', 'woo_category_ids', 'preserve_woo_category_ids', 'import_specs_as_tags', 'bake_shipping_into_price', 'mark_virtual_when_baked', 'sku_maps_to', 'sync_interval', 'enable_order_sync', 'overwrite_title', 'overwrite_desc', 'overwrite_price', 'overwrite_images', 'overwrite_taxonomy', 'overwrite_weight_dims' ) );
+				$all_preserve = array_merge( $preserve_keys, array( 'category_ids', 'woo_category_ids', 'preserve_woo_category_ids', 'import_specs_as_tags', 'bake_shipping_into_price', 'sku_maps_to', 'sync_interval', 'enable_order_sync', 'overwrite_title', 'overwrite_desc', 'overwrite_price', 'overwrite_images', 'overwrite_taxonomy', 'overwrite_weight_dims' ) );
 				foreach ( $all_preserve as $key ) {
 					$val = $settings[ $key ] ?? null;
 					if ( null !== $val ) {

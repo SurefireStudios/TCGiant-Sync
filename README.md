@@ -36,7 +36,6 @@ No matter which platform you start from, TCGiant Sync keeps both sides in sync. 
 | Import weight & package dimensions from eBay | ✅ | ✅ |
 | Auto-convert metric/imperial units per marketplace | ✅ | ✅ |
 | Bake eBay shipping cost into product price | ✅ | ✅ |
-| Mark imported products as Virtual (skip shipping) | ✅ | ✅ |
 | Map eBay SKU to Bin Location custom field | ✅ | ✅ |
 | Prune sold/ended listings from WooCommerce | ✅ | ✅ |
 
@@ -126,7 +125,7 @@ Whether a sale happens on eBay or WooCommerce, stock is adjusted on both platfor
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
-| **1.4.6** | 2026-06-29 | Virtual product toggle for baked shipping, eBay SKU → Bin Location mapping |
+| **1.4.6** | 2026-06-29 | eBay SKU → Bin Location mapping, Free Shipping guidance for baked shipping |
 | **1.4.5** | 2026-06-29 | Fix UK/metric weight & dimensions, fix delta sync specs & photos |
 | **1.4.4** | 2026-06-22 | Bake eBay shipping cost into WooCommerce product price |
 | **1.4.3** | 2026-06-22 | Fix category filter matching, settings summary bar on Import page |

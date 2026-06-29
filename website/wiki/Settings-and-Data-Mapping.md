@@ -40,11 +40,7 @@ When enabled, all eBay Item Specifics (e.g., "Brand: Pokemon", "Set: Base Set") 
 
 When enabled, the eBay flat-rate shipping cost is automatically added to the WooCommerce product price on import. For example, a $10 item with $5 shipping becomes $15 in WooCommerce. Free shipping and calculated shipping items are unaffected.
 
-### Mark Products as Virtual (No Shipping)
-
-When enabled, imported products are set as **"Virtual"** in WooCommerce, which skips shipping calculation at checkout. This is best used alongside **"Add eBay Shipping Cost to Product Price"** above — since the shipping is already baked into the product price, you don't want WooCommerce to charge shipping again.
-
-> **💡 Tip:** Enable both "Add eBay Shipping Cost" + "Mark as Virtual" together for a clean setup: your customers see one all-inclusive price with free shipping at checkout.
+> **💡 Free Shipping Tip:** Since shipping is baked into the price, you probably want to offer free shipping at checkout. Go to **WooCommerce → Settings → Shipping → your zone → Add Shipping Method → "Free Shipping"**. Customers see one all-inclusive price with no separate shipping charge.
 
 ### eBay SKU Maps To
 
@@ -74,7 +70,7 @@ These toggles control what happens when an **existing** product is re-synced. Th
 
 > **💡 Tip:** A common setup is: Price and Weight = "Yes" (always accurate from eBay), everything else = "No" (so you can customize your WooCommerce storefront without edits being overwritten).
 
-> **💡 Note:** Stock is always synced from eBay regardless of these settings. The Virtual flag and Bin Location are set on first import and are not affected by overwrite toggles.
+> **💡 Note:** Stock is always synced from eBay regardless of these settings. The Bin Location field is set on first import and is not affected by overwrite toggles.
 
 ### Sale Price Detection
 
