@@ -1,6 +1,6 @@
 # TCGiant Sync
 
-[![Version](https://img.shields.io/badge/version-1.4.2-blue.svg)](https://wordpress.org/plugins/tcgiant-sync/)
+[![Version](https://img.shields.io/badge/version-1.4.6-blue.svg)](https://wordpress.org/plugins/tcgiant-sync/)
 [![License](https://img.shields.io/badge/License-GPL_v2-blue.svg)](https://www.gnu.org/licenses/gpl-2.0.html)
 [![Requires PHP](https://img.shields.io/badge/PHP-7.4%2B-green.svg)](#)
 [![Tested up to](https://img.shields.io/badge/WordPress-7.0-blue.svg)](#)
@@ -34,6 +34,10 @@ No matter which platform you start from, TCGiant Sync keeps both sides in sync. 
 | Real-time stock reduction when sold on eBay | ✅ | ✅ |
 | Data mapping rules (overwrite title, price, images, etc.) | ✅ | ✅ |
 | Import weight & package dimensions from eBay | ✅ | ✅ |
+| Auto-convert metric/imperial units per marketplace | ✅ | ✅ |
+| Bake eBay shipping cost into product price | ✅ | ✅ |
+| Mark imported products as Virtual (skip shipping) | ✅ | ✅ |
+| Map eBay SKU to Bin Location custom field | ✅ | ✅ |
 | Prune sold/ended listings from WooCommerce | ✅ | ✅ |
 
 ### Push: WooCommerce → eBay *(New in v1.0.2)*
@@ -122,6 +126,11 @@ Whether a sale happens on eBay or WooCommerce, stock is adjusted on both platfor
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| **1.4.6** | 2026-06-29 | Virtual product toggle for baked shipping, eBay SKU → Bin Location mapping |
+| **1.4.5** | 2026-06-29 | Fix UK/metric weight & dimensions, fix delta sync specs & photos |
+| **1.4.4** | 2026-06-22 | Bake eBay shipping cost into WooCommerce product price |
+| **1.4.3** | 2026-06-22 | Fix category filter matching, settings summary bar on Import page |
+| **1.4.0–1.4.2** | 2026-06-18 | Delta Sync for scheduled imports, inline processing, 94% API reduction |
 | **1.3.1** | 2026-06-16 | Security: per-installation unique webhook signing keys |
 | **1.3.0** | 2026-06-16 | Import product weight & dimensions from eBay, new Data Mapping toggle |
 | **1.2.3** | 2026-06-09 | Fixed Item Specifics/Attributes saving, rate limit auto-retry for large imports |

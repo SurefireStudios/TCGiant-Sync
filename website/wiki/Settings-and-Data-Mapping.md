@@ -36,6 +36,27 @@ When enabled, all eBay Item Specifics (e.g., "Brand: Pokemon", "Set: Base Set") 
 - WooCommerce filtering and search
 - Faceted navigation on your storefront
 
+### Add eBay Shipping Cost to Product Price
+
+When enabled, the eBay flat-rate shipping cost is automatically added to the WooCommerce product price on import. For example, a $10 item with $5 shipping becomes $15 in WooCommerce. Free shipping and calculated shipping items are unaffected.
+
+### Mark Products as Virtual (No Shipping)
+
+When enabled, imported products are set as **"Virtual"** in WooCommerce, which skips shipping calculation at checkout. This is best used alongside **"Add eBay Shipping Cost to Product Price"** above — since the shipping is already baked into the product price, you don't want WooCommerce to charge shipping again.
+
+> **💡 Tip:** Enable both "Add eBay Shipping Cost" + "Mark as Virtual" together for a clean setup: your customers see one all-inclusive price with free shipping at checkout.
+
+### eBay SKU Maps To
+
+Controls where the eBay SKU field value is stored in WooCommerce:
+
+| Option | Behavior |
+|---|---|
+| **Product SKU** (Default) | eBay SKU → WooCommerce Product SKU (current behavior) |
+| **Bin Location** | eBay SKU → `_bin_location` custom meta field. WooCommerce SKU falls back to ISBN/UPC/EAN or EBAY-{ItemID} |
+
+**Use "Bin Location" if** your eBay SKU field contains warehouse/shelf location codes (e.g., "A3-B7", "SHELF-12") rather than actual product identifiers. The bin location is saved as a custom field on the product and can be viewed in the product editor under Custom Fields.
+
 ---
 
 ## Data Mapping (Re-imports)
@@ -52,6 +73,8 @@ These toggles control what happens when an **existing** product is re-synced. Th
 | **Overwrite Weight & Dimensions** | Yes | Weight/dimensions updated from eBay | Your manual WooCommerce values are preserved |
 
 > **💡 Tip:** A common setup is: Price and Weight = "Yes" (always accurate from eBay), everything else = "No" (so you can customize your WooCommerce storefront without edits being overwritten).
+
+> **💡 Note:** Stock is always synced from eBay regardless of these settings. The Virtual flag and Bin Location are set on first import and are not affected by overwrite toggles.
 
 ### Sale Price Detection
 

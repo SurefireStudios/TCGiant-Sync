@@ -128,6 +128,20 @@ This means you can:
 
 Your WooCommerce shipping zones and methods work exactly as configured — the plugin won't touch them.
 
+### Baking eBay Shipping into Price
+
+If you enable **"Add eBay Shipping Cost to Product Price"** in Settings, the eBay flat-rate shipping cost is added directly to the WooCommerce product price. For example, a $10 item with $5 eBay shipping becomes a $15 WooCommerce product.
+
+Combine this with **"Mark Products as Virtual"** to skip WooCommerce's shipping calculation entirely — your customers see one all-inclusive price with free shipping at checkout.
+
+---
+
+## SKU Handling
+
+By default, the eBay SKU maps to the WooCommerce Product SKU with a smart fallback chain: eBay SKU → ISBN/UPC/EAN → EBAY-{ItemID}.
+
+If your eBay SKU field contains **warehouse/shelf location codes** (e.g., "A3-B7") rather than product identifiers, you can change the **"eBay SKU Maps To"** setting to **"Bin Location"**. This stores the eBay SKU as a `_bin_location` custom field instead, and the WooCommerce SKU falls back to ISBN/UPC/EAN or EBAY-{ItemID}.
+
 ---
 
 ## Next Steps
