@@ -278,6 +278,7 @@ class TCGiant_Sync_API {
 <ModTimeFrom>' . $mod_time_from . '</ModTimeFrom>
 <ModTimeTo>' . $mod_time_to . '</ModTimeTo>
 <DetailLevel>ReturnAll</DetailLevel>
+<IncludeItemSpecifics>true</IncludeItemSpecifics>
 <IncludeVariationSpecifics>true</IncludeVariationSpecifics>
 <HideVariations>false</HideVariations>';
 

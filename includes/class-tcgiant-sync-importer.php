@@ -354,6 +354,10 @@ class TCGiant_Sync_Importer {
 				if ( ! isset( $ebay_item['Title'] ) || ! isset( $ebay_item['SellingStatus'] ) ) {
 					$needs_fallback = true;
 				}
+				// If specs or images are missing, we need GetItem to fetch the full data.
+				if ( ! isset( $ebay_item['ItemSpecifics'] ) || ! isset( $ebay_item['PictureDetails'] ) ) {
+					$needs_fallback = true;
+				}
 				// Check for variations that should exist but are missing.
 				if ( isset( $ebay_item['Variations'] ) && empty( $ebay_item['Variations']['Variation'] ) ) {
 					$needs_fallback = true;

@@ -1,5 +1,10 @@
 *** TCGiant Sync Changelog ***
 
+2026-06-29 - version 1.4.5
+- Fix: Weight and dimensions are now correctly imported for non-US marketplaces (UK, CA, AU, DE, FR, IT, ES). Previously, metric values from eBay (e.g., 200g, 34cm) were incorrectly treated as imperial and double-converted (e.g., 200g became 5.67kg, 34cm became 86.36cm). The plugin now uses the configured marketplace to determine the source unit system when eBay doesn't include explicit unit metadata.
+- Fix: Item Specifics (specs/attributes) now import correctly during delta syncs. The GetSellerEvents API call was missing the `IncludeItemSpecifics` flag, causing eBay to omit specs from the response.
+- Fix: Product images now import reliably during delta syncs. If GetSellerEvents omits image or spec data for an item, the plugin automatically falls back to a GetItem call to fetch the full data.
+
 2026-06-22 - version 1.4.4
 - Feature: New "Add eBay Shipping Cost to Product Price" setting. When enabled, the flat-rate eBay shipping cost is automatically added to the WooCommerce product price on import (e.g., $10 item + $5 shipping = $15 in WooCommerce). Free shipping and calculated shipping items are unaffected. Defaults to off.
 

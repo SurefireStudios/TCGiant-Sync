@@ -171,7 +171,7 @@ class TCGiant_Sync_Mapper {
 				$minor = (float) $weight_minor;
 
 				// Determine unit system from eBay data.
-				$major_unit = $this->parse_measurement_unit( $pkg['WeightMajor'] ?? null );
+				$major_unit = $this->parse_measurement_unit( $pkg['WeightMajor'] ?? null, 'weight' );
 				$is_metric  = ( 'kg' === strtolower( $major_unit ) );
 
 				if ( $is_metric ) {
@@ -190,7 +190,7 @@ class TCGiant_Sync_Mapper {
 			$width_val  = $this->parse_measurement_value( $pkg['PackageWidth'] ?? null );
 			$depth_val  = $this->parse_measurement_value( $pkg['PackageDepth'] ?? null );
 
-			$dim_unit = $this->parse_measurement_unit( $pkg['PackageLength'] ?? $pkg['PackageWidth'] ?? null );
+			$dim_unit = $this->parse_measurement_unit( $pkg['PackageLength'] ?? $pkg['PackageWidth'] ?? null, 'dimension' );
 
 			if ( '' !== $length_val ) {
 				$product_data['length'] = $this->convert_dimension_to_store_unit( (float) $length_val, $dim_unit );
@@ -858,17 +858,44 @@ class TCGiant_Sync_Mapper {
 	/**
 	 * Parse the unit string from an eBay measurement field.
 	 *
-	 * @param mixed $raw Raw measurement value (may contain @attributes with unit).
-	 * @return string Unit string (e.g., 'lbs', 'kg', 'in', 'cm') or empty string.
+	 * When eBay's XML→JSON conversion strips @attributes (common with UK/metric sites),
+	 * falls back to the configured marketplace to determine the unit system.
+	 *
+	 * @param mixed  $raw  Raw measurement value (may contain @attributes with unit).
+	 * @param string $type Context: 'weight' or 'dimension'.
+	 * @return string Unit string (e.g., 'lbs', 'kg', 'in', 'cm').
 	 */
-	private function parse_measurement_unit( $raw ) {
+	private function parse_measurement_unit( $raw, $type = 'weight' ) {
 		if ( is_array( $raw ) && isset( $raw['@attributes']['unit'] ) ) {
 			return (string) $raw['@attributes']['unit'];
 		}
 		if ( is_array( $raw ) && isset( $raw['@attributes']['measurementSystem'] ) ) {
 			return 'English' === $raw['@attributes']['measurementSystem'] ? 'lbs' : 'kg';
 		}
-		return '';
+		// Fallback: use configured marketplace to determine unit system.
+		// US uses imperial (lbs/in), all other supported marketplaces use metric (kg/cm).
+		return $this->get_marketplace_default_unit( $type );
+	}
+
+	/**
+	 * Get the default measurement unit for the configured eBay marketplace.
+	 *
+	 * US = imperial (lbs/in), all others (UK, CA, AU, DE, FR, IT, ES) = metric (kg/cm).
+	 *
+	 * @param string $type 'weight' or 'dimension'.
+	 * @return string Default unit for the marketplace.
+	 */
+	private function get_marketplace_default_unit( $type = 'weight' ) {
+		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
+		$marketplace = ! empty( $settings['marketplace'] ) ? $settings['marketplace'] : 'EBAY_US';
+
+		// Only EBAY_US uses imperial. All other supported marketplaces use metric.
+		$is_imperial = ( 'EBAY_US' === $marketplace );
+
+		if ( 'weight' === $type ) {
+			return $is_imperial ? 'lbs' : 'kg';
+		}
+		return $is_imperial ? 'in' : 'cm';
 	}
 
 	/**
@@ -920,7 +947,7 @@ class TCGiant_Sync_Mapper {
 
 		// Normalize eBay unit names.
 		if ( 'inches' === $from_unit ) $from_unit = 'in';
-		if ( empty( $from_unit ) ) $from_unit = 'in'; // eBay US default
+		if ( empty( $from_unit ) ) $from_unit = $this->get_marketplace_default_unit( 'dimension' );
 
 		if ( 'in' === $from_unit && 'cm' === $store_unit ) {
 			$value = $value * 2.54;
