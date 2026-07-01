@@ -64,9 +64,14 @@ class TCGiant_Sync_Mapper {
 		// Check if eBay SKU should be routed to a bin location instead of WooCommerce SKU.
 		$product_data['bin_location'] = '';
 		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
-		if ( 'bin_location' === ( $settings['sku_maps_to'] ?? 'sku' ) && ! empty( $product_data['sku'] ) ) {
+		$sku_maps_to = $settings['sku_maps_to'] ?? 'sku';
+		
+		if ( 'bin_location' === $sku_maps_to && ! empty( $product_data['sku'] ) ) {
 			$product_data['bin_location'] = $product_data['sku'];
 			$product_data['sku'] = ''; // Clear so it falls through to ISBN/UPC/EAN or EBAY-{ItemID}
+		} elseif ( 'both' === $sku_maps_to && ! empty( $product_data['sku'] ) ) {
+			$product_data['bin_location'] = $product_data['sku'];
+			// Do not clear SKU so it gets assigned to both WooCommerce SKU and Bin Location.
 		}
 
 		// Fallback 1: Try Product Identifiers (ISBN/UPC/EAN) if SKU is missing

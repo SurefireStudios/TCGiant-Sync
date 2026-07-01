@@ -220,8 +220,9 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						<select name="tcgiant_sync_ebay_settings[sku_maps_to]" id="ebay_sku_maps_to" class="tc-select">
 							<option value="sku" <?php selected( $settings['sku_maps_to'] ?? 'sku', 'sku' ); ?>><?php esc_html_e( 'Product SKU (Default)', 'tcgiant-sync' ); ?></option>
 							<option value="bin_location" <?php selected( $settings['sku_maps_to'] ?? 'sku', 'bin_location' ); ?>><?php esc_html_e( 'Bin Location (Custom Field)', 'tcgiant-sync' ); ?></option>
+							<option value="both" <?php selected( $settings['sku_maps_to'] ?? 'sku', 'both' ); ?>><?php esc_html_e( 'Both (Product SKU & Bin Location)', 'tcgiant-sync' ); ?></option>
 						</select>
-						<p class="tc-hint"><?php esc_html_e( 'If your eBay SKU field contains a warehouse/shelf location (e.g., "A3-B7") rather than a product identifier, select "Bin Location" to store it as a custom field instead. The WooCommerce SKU will fall back to ISBN/UPC/EAN or EBAY-{ItemID}.', 'tcgiant-sync' ); ?></p>
+						<p class="tc-hint"><?php esc_html_e( 'If your eBay SKU field contains a warehouse/shelf location (e.g., "A3-B7") rather than a product identifier, select "Bin Location" to store it as a custom field instead. Select "Both" if you want it assigned to both the WooCommerce SKU and the Bin Location field.', 'tcgiant-sync' ); ?></p>
 					</div>
 
 					<div class="tc-field" style="margin-top:24px;">

@@ -69,6 +69,12 @@ class TCGiant_Sync_Admin {
 		// WooCommerce Product Metabox Hooks.
 		add_filter( 'woocommerce_product_data_tabs', array( $this, 'add_sync_log_tab' ) );
 		add_action( 'woocommerce_product_data_panels', array( $this, 'render_sync_log_panel' ) );
+
+		// Custom Bin Location Field.
+		add_action( 'woocommerce_product_options_sku', array( $this, 'add_bin_location_field' ) );
+		add_action( 'woocommerce_process_product_meta', array( $this, 'save_bin_location_field' ) );
+		add_action( 'woocommerce_variation_options_pricing', array( $this, 'add_variation_bin_location_field' ), 10, 3 );
+		add_action( 'woocommerce_save_product_variation', array( $this, 'save_variation_bin_location_field' ), 10, 2 );
 	}
 
 	/**
@@ -1094,5 +1100,70 @@ class TCGiant_Sync_Admin {
 		})(jQuery);
 		</script>
 		<?php
+	}
+
+	/**
+	 * Add BIN Location field to WooCommerce Simple Product Inventory tab.
+	 */
+	public function add_bin_location_field() {
+		echo '<div class="options_group">';
+		woocommerce_wp_text_input( array(
+			'id'          => '_bin_location',
+			'label'       => __( 'BIN', 'tcgiant-sync' ),
+			'placeholder' => 'Enter product BIN location here e.g R2S3B2',
+			'desc_tip'    => 'true',
+			'description' => __( 'The physical bin location of the product.', 'tcgiant-sync' ),
+		) );
+		echo '</div>';
+	}
+
+	/**
+	 * Save BIN Location field for Simple Products.
+	 *
+	 * @param int $post_id Post ID.
+	 */
+	public function save_bin_location_field( $post_id ) {
+		// phpcs:disable WordPress.Security.NonceVerification.Missing
+		if ( isset( $_POST['_bin_location'] ) ) {
+			$bin_location = sanitize_text_field( wp_unslash( $_POST['_bin_location'] ) );
+			update_post_meta( $post_id, '_bin_location', $bin_location );
+		}
+		// phpcs:enable WordPress.Security.NonceVerification.Missing
+	}
+
+	/**
+	 * Add BIN Location field to WooCommerce Variation Inventory options.
+	 *
+	 * @param int     $loop           Position in the loop.
+	 * @param array   $variation_data Variation data.
+	 * @param WP_Post $variation      Post data.
+	 */
+	public function add_variation_bin_location_field( $loop, $variation_data, $variation ) {
+		$bin_location = get_post_meta( $variation->ID, '_bin_location', true );
+		
+		echo '<div class="options_group form-row form-row-full">';
+		woocommerce_wp_text_input( array(
+			'id'            => '_bin_location[' . $loop . ']',
+			'label'         => __( 'BIN', 'tcgiant-sync' ),
+			'placeholder'   => 'Enter product BIN location here e.g R2S3B2',
+			'value'         => $bin_location,
+			'wrapper_class' => 'form-row form-row-full',
+		) );
+		echo '</div>';
+	}
+
+	/**
+	 * Save BIN Location field for Variations.
+	 *
+	 * @param int $variation_id Variation ID.
+	 * @param int $i            Loop position.
+	 */
+	public function save_variation_bin_location_field( $variation_id, $i ) {
+		// phpcs:disable WordPress.Security.NonceVerification.Missing
+		if ( isset( $_POST['_bin_location'][ $i ] ) ) {
+			$bin_location = sanitize_text_field( wp_unslash( $_POST['_bin_location'][ $i ] ) );
+			update_post_meta( $variation_id, '_bin_location', $bin_location );
+		}
+		// phpcs:enable WordPress.Security.NonceVerification.Missing
 	}
 }

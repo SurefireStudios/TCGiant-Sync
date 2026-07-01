@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.4.6
+Stable tag: 1.4.7
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -81,6 +81,9 @@ TCGiant Sync is optimized for graded trading card game (TCG) collectibles, inclu
 6. Per-product Push to eBay button with Category and Condition overrides.
 
 == Changelog ==
+
+= 1.4.7 - 2026-07-01 =
+* Feature: Added a native WooCommerce "BIN" field to the product inventory tab. This visually surfaces the `_bin_location` meta field, enabling users who map eBay Custom SKU to Bin Location to view and edit warehouse bin codes directly inside WooCommerce.
 
 = 1.4.6 - 2026-06-29 =
 * Feature: New "eBay SKU Maps To" setting with two modes: "Product SKU" (default) or "Bin Location". When set to Bin Location, the eBay SKU is stored as a `_bin_location` custom meta field instead of the WooCommerce SKU — useful for sellers who use the eBay SKU field for warehouse/shelf location codes (e.g., "A3-B7"). The WooCommerce SKU automatically falls back to ISBN/UPC/EAN or EBAY-{ItemID}.
@@ -208,6 +211,9 @@ TCGiant Sync is optimized for graded trading card game (TCG) collectibles, inclu
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 1.4.7 =
+Adds a visual "BIN" field to the WooCommerce Inventory tab for sellers routing their eBay Custom SKUs to the Bin Location custom field.
 
 = 1.4.6 =
 New import setting: "eBay SKU Maps To" lets you route eBay SKU to a Bin Location custom field instead of WooCommerce SKU — great for sellers who use eBay SKU for warehouse shelf codes. Also adds Free Shipping setup guidance for the baked-shipping workflow.

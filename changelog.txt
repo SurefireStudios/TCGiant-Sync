@@ -1,5 +1,8 @@
 *** TCGiant Sync Changelog ***
 
+2026-07-01 - version 1.4.7
+- Feature: Added a native WooCommerce "BIN" field to the product inventory tab. This visually surfaces the `_bin_location` meta field, enabling users who map eBay Custom SKU to Bin Location to view and edit warehouse bin codes directly inside WooCommerce.
+
 2026-06-29 - version 1.4.6
 - Feature: New "eBay SKU Maps To" setting with two modes: "Product SKU" (default, current behavior) or "Bin Location". When set to Bin Location, the eBay SKU field is stored as a `_bin_location` custom meta field instead of the WooCommerce SKU — useful for sellers who use the eBay SKU field for warehouse/shelf location codes. The WooCommerce SKU automatically falls back to ISBN/UPC/EAN or EBAY-{ItemID}.
 - Improvement: Added Free Shipping guidance tip under the "Add eBay Shipping Cost to Product Price" setting, directing users to configure a WooCommerce Free Shipping zone for a clean all-inclusive pricing setup.
