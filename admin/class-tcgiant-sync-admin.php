@@ -956,13 +956,39 @@ class TCGiant_Sync_Admin {
 		$descriptor_fields = array(
 			'_ebay_export_item_type',
 			'_ebay_export_condition_type',
-			'_ebay_export_grader_id',
-			'_ebay_export_grade_value',
 			'_ebay_export_cert_number',
 		);
 		foreach ( $descriptor_fields as $field ) {
 			if ( isset( $_POST[ $field ] ) ) {
 				update_post_meta( $post_id, $field, sanitize_text_field( wp_unslash( $_POST[ $field ] ) ) );
+			}
+		}
+
+		// Handle grader ID and grade value saving based on item type.
+		if ( isset( $_POST['_ebay_export_item_type'] ) ) {
+			$item_type = sanitize_text_field( wp_unslash( $_POST['_ebay_export_item_type'] ) );
+			if ( 'tcg' === $item_type ) {
+				if ( isset( $_POST['_ebay_export_grader_id_tcg'] ) ) {
+					update_post_meta( $post_id, '_ebay_export_grader_id', sanitize_text_field( wp_unslash( $_POST['_ebay_export_grader_id_tcg'] ) ) );
+				}
+				if ( isset( $_POST['_ebay_export_grade_value_tcg'] ) ) {
+					update_post_meta( $post_id, '_ebay_export_grade_value', sanitize_text_field( wp_unslash( $_POST['_ebay_export_grade_value_tcg'] ) ) );
+				}
+			} elseif ( 'coins' === $item_type ) {
+				if ( isset( $_POST['_ebay_export_grader_id_coins'] ) ) {
+					update_post_meta( $post_id, '_ebay_export_grader_id', sanitize_text_field( wp_unslash( $_POST['_ebay_export_grader_id_coins'] ) ) );
+				}
+				if ( isset( $_POST['_ebay_export_grade_value_coins'] ) ) {
+					update_post_meta( $post_id, '_ebay_export_grade_value', sanitize_text_field( wp_unslash( $_POST['_ebay_export_grade_value_coins'] ) ) );
+				}
+			}
+		} else {
+			// Fallback if item type wasn't posted but grader fields were.
+			if ( isset( $_POST['_ebay_export_grader_id'] ) ) {
+				update_post_meta( $post_id, '_ebay_export_grader_id', sanitize_text_field( wp_unslash( $_POST['_ebay_export_grader_id'] ) ) );
+			}
+			if ( isset( $_POST['_ebay_export_grade_value'] ) ) {
+				update_post_meta( $post_id, '_ebay_export_grade_value', sanitize_text_field( wp_unslash( $_POST['_ebay_export_grade_value'] ) ) );
 			}
 		}
 
@@ -1069,7 +1095,8 @@ class TCGiant_Sync_Admin {
 				$grader_id  = get_post_meta( $product_id, '_ebay_export_grader_id', true );
 				$grade_val  = get_post_meta( $product_id, '_ebay_export_grade_value', true );
 				$cert_num   = get_post_meta( $product_id, '_ebay_export_cert_number', true );
-				$grader_lbl = array_search( $grader_id, TCGiant_Sync_Exporter::GRADERS, true );
+				$all_graders = TCGiant_Sync_Exporter::GRADERS_TCG + TCGiant_Sync_Exporter::GRADERS_COINS;
+				$grader_lbl = array_search( $grader_id, $all_graders, true );
 				echo esc_html( 'Graded' . ( $grader_lbl ? ' · ' . $grader_lbl : '' ) . ( $grade_val ? ' ' . $grade_val : '' ) . ( $cert_num ? ' (#' . $cert_num . ')' : '' ) );
 			} else {
 				$ungraded_id = get_post_meta( $product_id, '_ebay_export_ungraded_condition', true );
@@ -1196,33 +1223,67 @@ class TCGiant_Sync_Admin {
 				?>
 			</div>
 
-			<!-- Graded sub-fields -->
-			<div id="tcgiant-graded-fields" style="<?php echo 'graded' !== $cond_type || empty( $item_type ) ? 'display:none;' : ''; ?>">
+			<!-- Graded sub-fields TCG -->
+			<div id="tcgiant-graded-tcg-fields" style="<?php echo ( 'graded' !== $cond_type || 'tcg' !== $item_type ) ? 'display:none;' : ''; ?>">
 				<?php
 				// Professional Grader dropdown.
-				$grader_options = array( '' => __( '— Select grader —', 'tcgiant-sync' ) );
-				foreach ( TCGiant_Sync_Exporter::GRADERS as $gname => $gid ) {
-					$grader_options[ $gid ] = $gname;
+				$grader_tcg_options = array( '' => __( '— Select grader —', 'tcgiant-sync' ) );
+				foreach ( TCGiant_Sync_Exporter::GRADERS_TCG as $gname => $gid ) {
+					$grader_tcg_options[ $gid ] = $gname;
 				}
 				woocommerce_wp_select( array(
-					'id'      => '_ebay_export_grader_id',
+					'id'      => '_ebay_export_grader_id_tcg',
 					'label'   => __( 'Professional Grader', 'tcgiant-sync' ),
-					'options' => $grader_options,
-					'value'   => $grader_id,
+					'options' => $grader_tcg_options,
+					'value'   => 'tcg' === $item_type ? $grader_id : '',
 				) );
 
 				// Grade dropdown.
-				$grade_options = array( '' => __( '— Select grade —', 'tcgiant-sync' ) );
-				foreach ( TCGiant_Sync_Exporter::GRADES as $g ) {
-					$grade_options[ $g ] = $g;
+				$grade_tcg_options = array( '' => __( '— Select grade —', 'tcgiant-sync' ) );
+				foreach ( TCGiant_Sync_Exporter::GRADES_TCG as $g ) {
+					$grade_tcg_options[ $g ] = $g;
 				}
 				woocommerce_wp_select( array(
-					'id'      => '_ebay_export_grade_value',
+					'id'      => '_ebay_export_grade_value_tcg',
 					'label'   => __( 'Grade', 'tcgiant-sync' ),
-					'options' => $grade_options,
-					'value'   => $grade_val,
+					'options' => $grade_tcg_options,
+					'value'   => 'tcg' === $item_type ? $grade_val : '',
+				) );
+				?>
+			</div>
+
+			<!-- Graded sub-fields COINS -->
+			<div id="tcgiant-graded-coins-fields" style="<?php echo ( 'graded' !== $cond_type || 'coins' !== $item_type ) ? 'display:none;' : ''; ?>">
+				<?php
+				// Professional Grader dropdown.
+				$grader_coins_options = array( '' => __( '— Select grader —', 'tcgiant-sync' ) );
+				foreach ( TCGiant_Sync_Exporter::GRADERS_COINS as $gname => $gid ) {
+					$grader_coins_options[ $gid ] = $gname;
+				}
+				woocommerce_wp_select( array(
+					'id'      => '_ebay_export_grader_id_coins',
+					'label'   => __( 'Professional Grader', 'tcgiant-sync' ),
+					'options' => $grader_coins_options,
+					'value'   => 'coins' === $item_type ? $grader_id : '',
 				) );
 
+				// Grade dropdown.
+				$grade_coins_options = array( '' => __( '— Select grade —', 'tcgiant-sync' ) );
+				foreach ( TCGiant_Sync_Exporter::GRADES_COINS as $g ) {
+					$grade_coins_options[ $g ] = $g;
+				}
+				woocommerce_wp_select( array(
+					'id'      => '_ebay_export_grade_value_coins',
+					'label'   => __( 'Grade', 'tcgiant-sync' ),
+					'options' => $grade_coins_options,
+					'value'   => 'coins' === $item_type ? $grade_val : '',
+				) );
+				?>
+			</div>
+
+			<!-- Graded shared fields -->
+			<div id="tcgiant-graded-shared-fields" style="<?php echo 'graded' !== $cond_type || empty( $item_type ) ? 'display:none;' : ''; ?>">
+				<?php
 				// Certification Number.
 				woocommerce_wp_text_input( array(
 					'id'          => '_ebay_export_cert_number',
@@ -1277,7 +1338,9 @@ class TCGiant_Sync_Admin {
 					$('#tcgiant-condition-type-wrapper').toggle(itemType !== '');
 
 					// Show/hide Graded fields
-					$('#tcgiant-graded-fields').toggle(itemType !== '' && condType === 'graded');
+					$('#tcgiant-graded-tcg-fields').toggle(itemType === 'tcg' && condType === 'graded');
+					$('#tcgiant-graded-coins-fields').toggle(itemType === 'coins' && condType === 'graded');
+					$('#tcgiant-graded-shared-fields').toggle(itemType !== '' && condType === 'graded');
 
 					// Show/hide Ungraded fields based on Item Type
 					$('#tcgiant-ungraded-tcg-fields').toggle(itemType === 'tcg' && condType === 'ungraded');

@@ -71,39 +71,81 @@ class TCGiant_Sync_Exporter {
 	);
 
 	/**
-	 * Professional Grader name => eBay numeric value ID.
-	 * Shared across Trading Cards and Coins.
+	 * Professional Grader name => eBay numeric value ID or string.
+	 * Trading Cards
 	 */
-	const GRADERS = array(
-		'PSA'  => '275010',
-		'BCCG' => '275011',
-		'BVG'  => '275012',
-		'BGS'  => '275013',
-		'CSG'  => '275014',
-		'CGC'  => '275015',
-		'SGC'  => '275016',
-		'KSA'  => '275017',
-		'GMA'  => '275018',
-		'HGA'  => '275019',
-		'ISA'  => '2750110',
-		'PCA'  => '2750111',
-		'GSG'  => '2750112',
-		'PGS'  => '2750113',
-		'MNT'  => '2750114',
-		'TAG'  => '2750115',
-		'Rare' => '2750116',
-		'RCG'  => '2750117',
-		'CGA'  => '2750120',
-		'TCG'  => '2750121',
-		'Other' => '2750123',
+	const GRADERS_TCG = array(
+		'Professional Sports Authenticator (PSA)'   => '275010',
+		'Beckett Collectors Club Grading (BCCG)'    => '275011',
+		'Beckett Vintage Grading (BVG)'             => '275012',
+		'Beckett Grading Services (BGS)'            => '275013',
+		'Certified Guaranty Company (CGC)'          => '275015',
+		'Sportscard Guaranty Corporation (SGC)'     => '275016',
+		'K Sportscard Authentication (KSA)'         => '275017',
+		'Gem Mint Authentication (GMA)'             => '275018',
+		'Hybrid Grading Approach (HGA)'             => '275019',
+		'International Sports Authentication (ISA)' => '2750110',
+		'Professional Card Authenticator (PCA)'     => '2750111',
+		'Gold Standard Grading (GSG)'               => '2750112',
+		'Platin Grading Service (PGS)'              => '2750113',
+		'MNT Grading (MNT)'                         => '2750114',
+		'Technical Authentication & Grading (TAG)'  => '2750115',
+		'Rare Edition (Rare)'                       => '2750116',
+		'Revolution Card Grading (RCG)'             => '2750117',
+		'Premier Card Grading (PCG)'                => 'Premier Card Grading (PCG)',
+		'Ace Grading (Ace)'                         => 'Ace Grading (Ace)',
+		'Card Grading Australia (CGA)'              => '2750120',
+		'Trading Card Grading (TCG)'                => '2750121',
+		'ARK Grading (ARK)'                         => 'ARK Grading (ARK)',
+		'Other'                                     => '2750123',
+		'Automated Grading Systems (AGS)'           => 'Automated Grading Systems (AGS)',
+		'Diamond Service Grading (DSG)'             => 'Diamond Service Grading (DSG)',
+		'Majesty Grading Company'                   => 'Majesty Grading Company',
+		'GRAAD'                                     => 'GRAAD',
+		'Arena Club'                                => 'Arena Club',
+		'AiGrading'                                 => 'AiGrading',
 	);
 
 	/**
-	 * Numeric grade values available for graded items.
+	 * Professional Grader name => eBay numeric value ID or string.
+	 * Coins
 	 */
-	const GRADES = array(
+	const GRADERS_COINS = array(
+		'Uncertified' => 'Uncertified',
+		'PCGS'        => 'PCGS',
+		'NGC'         => 'NGC',
+		'PCGS & CAC'  => 'PCGS & CAC',
+		'NGC & CAC'   => 'NGC & CAC',
+		'ANACS'       => 'ANACS',
+		'ICG'         => 'ICG',
+		'CAC'         => 'CAC',
+		'ICCS'        => 'ICCS',
+	);
+
+	/**
+	 * Numeric grade values available for graded TCG items.
+	 */
+	const GRADES_TCG = array(
 		'10', '9.5', '9', '8.5', '8', '7.5', '7', '6.5', '6',
 		'5.5', '5', '4.5', '4', '3.5', '3', '2.5', '2', '1.5', '1',
+	);
+
+	/**
+	 * Grade values available for graded Coins.
+	 */
+	const GRADES_COINS = array(
+		'Ungraded',
+		'PR 70', 'PR 69', 'PR 68', 'PR 67', 'PR 66', 'PR 65', 'PR 64', 'PR 63', 'PR 62', 'PR 61', 'PR 60',
+		'MS 70', 'MS 69', 'MS 68', 'MS 67', 'MS 66', 'MS 65', 'MS 64', 'MS 63', 'MS 62', 'MS 61', 'MS 60',
+		'AU 58', 'AU 55', 'AU 53', 'AU 50',
+		'XF 45', 'XF 40',
+		'VF 35', 'VF 30', 'VF 25', 'VF 20',
+		'F 15', 'F 12',
+		'VG 10', 'VG 8',
+		'G 6', 'G 4',
+		'AG 3',
+		'FA 2',
+		'P 1',
 	);
 
 	/**

@@ -1,5 +1,11 @@
 *** TCGiant Sync Changelog ***
 
+2026-07-08 - version 1.5.3
+- Feature: Completely decoupled the "Graders" and "Grades" dropdowns for Trading Cards and Coins.
+- UX: When selecting "Trading Cards", the Grader list now populates with 29 specific TCG authenticators (PSA, BGS, CGC, TAG, etc.) and a 1-10 grade scale.
+- UX: When selecting "Coins", the Grader list dynamically swaps to Coin Certification Authorities (PCGS, NGC, ANACS, etc.) with the complete 70-point Sheldon coin grading scale.
+- Improvement: The "Cert Number" field intelligently remains shared across both categories, as both industries utilize slab serial numbers.
+
 2026-07-08 - version 1.5.2
 - Fix: Resolved a layout bug in the WooCommerce product data panel where the "global:" category label would float outside its container due to WooCommerce CSS conflicts.
 - Improvement: Extracted the "Grading & Condition" workflow into its own dedicated product data tab instead of nesting it within the General tab.
