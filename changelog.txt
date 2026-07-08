@@ -1,5 +1,10 @@
 *** TCGiant Sync Changelog ***
 
+2026-07-08 - version 1.5.2
+- Fix: Resolved a layout bug in the WooCommerce product data panel where the "global:" category label would float outside its container due to WooCommerce CSS conflicts.
+- Improvement: Extracted the "Grading & Condition" workflow into its own dedicated product data tab instead of nesting it within the General tab.
+- UX: Improved the condition selection workflow by adding a new "Item Category" dropdown (Trading Cards vs. Coins). The UI now dynamically filters and presents only the relevant ungraded condition options based on the chosen category instead of displaying a single massive mixed list.
+
 2026-07-08 - version 1.5.1
 - Fix: Resolved a bug where multiple eBay API errors were swallowed and replaced with "Unknown Trading API Error". The plugin now correctly extracts and combines multiple eBay error messages so the user can see exactly why a push failed.
 

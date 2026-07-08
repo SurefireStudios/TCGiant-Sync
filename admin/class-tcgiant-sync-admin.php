@@ -76,8 +76,8 @@ class TCGiant_Sync_Admin {
 		add_action( 'woocommerce_variation_options_pricing', array( $this, 'add_variation_bin_location_field' ), 10, 3 );
 		add_action( 'woocommerce_save_product_variation', array( $this, 'save_variation_bin_location_field' ), 10, 2 );
 
-		// Grading & Condition fields in General tab.
-		add_action( 'woocommerce_product_options_general_product_data', array( $this, 'render_grading_condition_fields' ) );
+		// Grading & Condition fields in its own tab.
+		add_action( 'woocommerce_product_data_panels', array( $this, 'render_grading_condition_fields' ) );
 	}
 
 	/**
@@ -954,16 +954,28 @@ class TCGiant_Sync_Admin {
 		}
 		// ConditionDescriptor overrides.
 		$descriptor_fields = array(
+			'_ebay_export_item_type',
 			'_ebay_export_condition_type',
 			'_ebay_export_grader_id',
 			'_ebay_export_grade_value',
 			'_ebay_export_cert_number',
-			'_ebay_export_ungraded_condition',
 		);
 		foreach ( $descriptor_fields as $field ) {
 			if ( isset( $_POST[ $field ] ) ) {
 				update_post_meta( $post_id, $field, sanitize_text_field( wp_unslash( $_POST[ $field ] ) ) );
 			}
+		}
+
+		// Handle ungraded condition saving based on item type.
+		if ( isset( $_POST['_ebay_export_item_type'] ) ) {
+			$item_type = sanitize_text_field( wp_unslash( $_POST['_ebay_export_item_type'] ) );
+			if ( 'tcg' === $item_type && isset( $_POST['_ebay_export_ungraded_condition_tcg'] ) ) {
+				update_post_meta( $post_id, '_ebay_export_ungraded_condition', sanitize_text_field( wp_unslash( $_POST['_ebay_export_ungraded_condition_tcg'] ) ) );
+			} elseif ( 'coins' === $item_type && isset( $_POST['_ebay_export_ungraded_condition_coins'] ) ) {
+				update_post_meta( $post_id, '_ebay_export_ungraded_condition', sanitize_text_field( wp_unslash( $_POST['_ebay_export_ungraded_condition_coins'] ) ) );
+			}
+		} elseif ( isset( $_POST['_ebay_export_ungraded_condition'] ) ) {
+			update_post_meta( $post_id, '_ebay_export_ungraded_condition', sanitize_text_field( wp_unslash( $_POST['_ebay_export_ungraded_condition'] ) ) );
 		}
 		// phpcs:enable WordPress.Security.NonceVerification.Missing
 	}
@@ -975,6 +987,12 @@ class TCGiant_Sync_Admin {
 	 * @return array
 	 */
 	public function add_sync_log_tab( $tabs ) {
+		$tabs['tcgiant_grading'] = array(
+			'label'    => __( 'Grading & Condition', 'tcgiant-sync' ),
+			'target'   => 'tcgiant_grading_data',
+			'class'    => array( 'show_if_simple', 'show_if_variable' ),
+			'priority' => 89,
+		);
 		$tabs['tcgiant_sync_log'] = array(
 			'label'    => __( 'TCGiant Sync', 'tcgiant-sync' ),
 			'target'   => 'tcgiant_sync_log_data',
@@ -1031,12 +1049,12 @@ class TCGiant_Sync_Admin {
 
 		// Category override.
 		echo '<div style="flex:1; min-width:140px;">';
-		echo '<label style="display:block; font-size:12px; color:#555; margin-bottom:3px;">';
+		echo '<div style="display:block; font-size:12px; color:#555; margin-bottom:3px;">';
 		echo esc_html__( 'eBay Category ID', 'tcgiant-sync' );
 		if ( $global_cat ) {
 			echo ' <span style="color:#888;">(global: ' . esc_html( $global_cat ) . ')</span>';
 		}
-		echo '</label>';
+		echo '</div>';
 		echo '<input type="text" name="_ebay_export_category_id" value="' . esc_attr( $cat_override ) . '" placeholder="' . esc_attr( $global_cat ?: __( 'Use global default', 'tcgiant-sync' ) ) . '" style="width:100%; font-size:12px;">';
 		echo '</div>';
 
@@ -1058,11 +1076,11 @@ class TCGiant_Sync_Admin {
 				$all_ungraded = TCGiant_Sync_Exporter::UNGRADED_TCG + TCGiant_Sync_Exporter::UNGRADED_COINS;
 				echo esc_html( 'Ungraded' . ( isset( $all_ungraded[ $ungraded_id ] ) ? ' · ' . $all_ungraded[ $ungraded_id ] : '' ) );
 			}
-			echo ' <span style="color:#888;">— ' . esc_html__( 'edit in General tab → Grading & Condition', 'tcgiant-sync' ) . '</span>';
+			echo ' <span style="color:#888;">— ' . esc_html__( 'edit in Grading & Condition tab', 'tcgiant-sync' ) . '</span>';
 			echo '</div>';
 		} else {
 			echo '<p style="font-size:12px; color:#888; margin:0 0 10px;">';
-			echo esc_html__( 'Set grading & condition in the General tab below.', 'tcgiant-sync' );
+			echo esc_html__( 'Set grading & condition in the Grading & Condition tab.', 'tcgiant-sync' );
 			echo '</p>';
 		}
 
@@ -1127,40 +1145,59 @@ class TCGiant_Sync_Admin {
 	}
 
 	/**
-	 * Render the "Grading & Condition" section in the General product data tab.
+	 * Render the "Grading & Condition" section in its own product data tab.
 	 */
 	public function render_grading_condition_fields() {
 		global $post;
 		$product_id = $post->ID;
 
+		$item_type = get_post_meta( $product_id, '_ebay_export_item_type', true );
 		$cond_type = get_post_meta( $product_id, '_ebay_export_condition_type', true );
 		$grader_id = get_post_meta( $product_id, '_ebay_export_grader_id', true );
 		$grade_val = get_post_meta( $product_id, '_ebay_export_grade_value', true );
 		$cert_num  = get_post_meta( $product_id, '_ebay_export_cert_number', true );
 		$ungraded  = get_post_meta( $product_id, '_ebay_export_ungraded_condition', true );
 		?>
-		<div class="options_group" id="tcgiant-grading-section">
+		<div id="tcgiant_grading_data" class="panel woocommerce_options_panel hide_if_grouped hide_if_external">
+			<div class="options_group" id="tcgiant-grading-section">
 			<p class="form-field" style="padding:0 12px 0 12px !important;">
 				<strong style="font-size:13px;"><?php esc_html_e( 'Grading & Condition', 'tcgiant-sync' ); ?></strong>
-				<span class="woocommerce-help-tip" data-tip="<?php esc_attr_e( 'Required for eBay Trading Cards and Coins categories. Select whether this item is professionally graded or ungraded, then fill in the relevant details.', 'tcgiant-sync' ); ?>"></span>
+				<span class="woocommerce-help-tip" data-tip="<?php esc_attr_e( 'Select Item Type first, then choose Condition Type and details.', 'tcgiant-sync' ); ?>"></span>
 			</p>
 			<?php
 			woocommerce_wp_select( array(
-				'id'          => '_ebay_export_condition_type',
-				'label'       => __( 'Condition Type', 'tcgiant-sync' ),
+				'id'          => '_ebay_export_item_type',
+				'label'       => __( 'Item Category', 'tcgiant-sync' ),
 				'options'     => array(
-					''         => __( '— Not set (uses global default) —', 'tcgiant-sync' ),
-					'graded'   => __( 'Graded — Professionally graded & slabbed', 'tcgiant-sync' ),
-					'ungraded' => __( 'Ungraded — Raw / not graded', 'tcgiant-sync' ),
+					''      => __( '— Select item category —', 'tcgiant-sync' ),
+					'tcg'   => __( 'Trading Cards', 'tcgiant-sync' ),
+					'coins' => __( 'Coins', 'tcgiant-sync' ),
 				),
-				'value'       => $cond_type,
+				'value'       => $item_type,
 				'desc_tip'    => true,
-				'description' => __( 'Choose whether this item is professionally graded or ungraded.', 'tcgiant-sync' ),
+				'description' => __( 'Choose whether this item is a trading card or coin.', 'tcgiant-sync' ),
 			) );
 			?>
 
+			<div id="tcgiant-condition-type-wrapper" style="<?php echo empty( $item_type ) ? 'display:none;' : ''; ?>">
+				<?php
+				woocommerce_wp_select( array(
+					'id'          => '_ebay_export_condition_type',
+					'label'       => __( 'Condition Type', 'tcgiant-sync' ),
+					'options'     => array(
+						''         => __( '— Select condition type —', 'tcgiant-sync' ),
+						'graded'   => __( 'Graded — Professionally graded & slabbed', 'tcgiant-sync' ),
+						'ungraded' => __( 'Ungraded — Raw / not graded', 'tcgiant-sync' ),
+					),
+					'value'       => $cond_type,
+					'desc_tip'    => true,
+					'description' => __( 'Choose whether this item is professionally graded or ungraded.', 'tcgiant-sync' ),
+				) );
+				?>
+			</div>
+
 			<!-- Graded sub-fields -->
-			<div id="tcgiant-graded-fields" style="<?php echo 'graded' !== $cond_type ? 'display:none;' : ''; ?>">
+			<div id="tcgiant-graded-fields" style="<?php echo 'graded' !== $cond_type || empty( $item_type ) ? 'display:none;' : ''; ?>">
 				<?php
 				// Professional Grader dropdown.
 				$grader_options = array( '' => __( '— Select grader —', 'tcgiant-sync' ) );
@@ -1198,21 +1235,34 @@ class TCGiant_Sync_Admin {
 				?>
 			</div>
 
-			<!-- Ungraded sub-fields -->
-			<div id="tcgiant-ungraded-fields" style="<?php echo 'ungraded' !== $cond_type ? 'display:none;' : ''; ?>">
+			<!-- Ungraded sub-fields TCG -->
+			<div id="tcgiant-ungraded-tcg-fields" style="<?php echo ( 'ungraded' !== $cond_type || 'tcg' !== $item_type ) ? 'display:none;' : ''; ?>">
 				<?php
-				$ungraded_options = array( '' => __( '— Select condition —', 'tcgiant-sync' ) );
+				$ungraded_tcg_options = array( '' => __( '— Select condition —', 'tcgiant-sync' ) );
 				foreach ( TCGiant_Sync_Exporter::UNGRADED_TCG as $uid => $ulabel ) {
-					$ungraded_options[ $uid ] = __( 'Card', 'tcgiant-sync' ) . ': ' . $ulabel;
-				}
-				foreach ( TCGiant_Sync_Exporter::UNGRADED_COINS as $uid => $ulabel ) {
-					$ungraded_options[ $uid ] = __( 'Coin', 'tcgiant-sync' ) . ': ' . $ulabel;
+					$ungraded_tcg_options[ $uid ] = $ulabel;
 				}
 				woocommerce_wp_select( array(
-					'id'      => '_ebay_export_ungraded_condition',
+					'id'      => '_ebay_export_ungraded_condition_tcg',
 					'label'   => __( 'Condition', 'tcgiant-sync' ),
-					'options' => $ungraded_options,
-					'value'   => $ungraded,
+					'options' => $ungraded_tcg_options,
+					'value'   => 'tcg' === $item_type ? $ungraded : '',
+				) );
+				?>
+			</div>
+
+			<!-- Ungraded sub-fields COINS -->
+			<div id="tcgiant-ungraded-coins-fields" style="<?php echo ( 'ungraded' !== $cond_type || 'coins' !== $item_type ) ? 'display:none;' : ''; ?>">
+				<?php
+				$ungraded_coins_options = array( '' => __( '— Select condition —', 'tcgiant-sync' ) );
+				foreach ( TCGiant_Sync_Exporter::UNGRADED_COINS as $uid => $ulabel ) {
+					$ungraded_coins_options[ $uid ] = $ulabel;
+				}
+				woocommerce_wp_select( array(
+					'id'      => '_ebay_export_ungraded_condition_coins',
+					'label'   => __( 'Condition', 'tcgiant-sync' ),
+					'options' => $ungraded_coins_options,
+					'value'   => 'coins' === $item_type ? $ungraded : '',
 				) );
 				?>
 			</div>
@@ -1220,14 +1270,25 @@ class TCGiant_Sync_Admin {
 			<script>
 			jQuery(function($){
 				function tcGradingToggle() {
-					var v = $('#_ebay_export_condition_type').val();
-					$('#tcgiant-graded-fields').toggle(v === 'graded');
-					$('#tcgiant-ungraded-fields').toggle(v === 'ungraded');
+					var itemType = $('#_ebay_export_item_type').val();
+					var condType = $('#_ebay_export_condition_type').val();
+
+					// Show/hide Condition Type wrapper
+					$('#tcgiant-condition-type-wrapper').toggle(itemType !== '');
+
+					// Show/hide Graded fields
+					$('#tcgiant-graded-fields').toggle(itemType !== '' && condType === 'graded');
+
+					// Show/hide Ungraded fields based on Item Type
+					$('#tcgiant-ungraded-tcg-fields').toggle(itemType === 'tcg' && condType === 'ungraded');
+					$('#tcgiant-ungraded-coins-fields').toggle(itemType === 'coins' && condType === 'ungraded');
 				}
-				$('#_ebay_export_condition_type').on('change', tcGradingToggle);
+
+				$('#_ebay_export_item_type, #_ebay_export_condition_type').on('change', tcGradingToggle);
 				tcGradingToggle();
 			});
 			</script>
+			</div>
 		</div>
 		<?php
 	}
