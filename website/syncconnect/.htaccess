@@ -1,4 +1,0 @@
-# Protect sensitive files from direct web access
-<FilesMatch "\.(env|db|sqlite)$">
-    Require all denied
-</FilesMatch>

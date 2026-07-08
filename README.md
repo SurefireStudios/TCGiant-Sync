@@ -1,6 +1,6 @@
 # TCGiant Sync
 
-[![Version](https://img.shields.io/badge/version-1.4.8-blue.svg)](https://wordpress.org/plugins/tcgiant-sync/)
+[![Version](https://img.shields.io/badge/version-1.5.0-blue.svg)](https://wordpress.org/plugins/tcgiant-sync/)
 [![License](https://img.shields.io/badge/License-GPL_v2-blue.svg)](https://www.gnu.org/licenses/gpl-2.0.html)
 [![Requires PHP](https://img.shields.io/badge/PHP-7.4%2B-green.svg)](#)
 [![Tested up to](https://img.shields.io/badge/WordPress-7.0-blue.svg)](#)
@@ -47,6 +47,7 @@ No matter which platform you start from, TCGiant Sync keeps both sides in sync. 
 | Smart update detection (AddItem vs ReviseItem) | ✅ | ✅ |
 | Curated TCG category dropdown + custom ID override | ✅ | ✅ |
 | Per-product Category & Condition overrides | ✅ | ✅ |
+| eBay ConditionDescriptor support (Graded/Ungraded for TCG & Coins) | ✅ | ✅ |
 | eBay Business Policy integration (Shipping/Returns/Payment) | ✅ | ✅ |
 | Async background processing via Action Scheduler | ✅ | ✅ |
 
@@ -91,9 +92,10 @@ No matter which platform you start from, TCGiant Sync keeps both sides in sync. 
 
 ### Pushing to eBay *(New in v1.0.2)*
 1. Go to **TCGiant Sync → Settings** → configure your default eBay Category and click **Fetch Policies** to load your Business Policies.
-2. Save settings.
-3. **Single product:** Open any WooCommerce product → **eBay Sync tab** → click **Push to eBay**.
-4. **Bulk:** Go to **WooCommerce → Products** → select products → **Bulk Actions → Push to eBay**.
+2. Set the **Condition Type** — choose "Graded" (with Professional Grader, Grade, and optional Cert Number) or "Ungraded" (with card/coin condition) for TCG and Coins categories. Use "None (Legacy)" for other categories.
+3. Save settings.
+4. **Single product:** Open any WooCommerce product → **eBay Sync tab** → click **Push to eBay**. You can override the condition type per-product.
+5. **Bulk:** Go to **WooCommerce → Products** → select products → **Bulk Actions → Push to eBay**.
 
 > ⚠️ **Push to eBay requires eBay Business Policies** to be enabled on your seller account (Shipping, Returns, and Payment policies). Most seller accounts have this enabled automatically.
 
@@ -125,6 +127,7 @@ Whether a sale happens on eBay or WooCommerce, stock is adjusted on both platfor
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| **1.5.0** | 2026-07-08 | eBay ConditionDescriptor support for Trading Cards & Coins (Graded/Ungraded), Coins categories added to export dropdown |
 | **1.4.8** | 2026-07-08 | Fix Item.Location export error, add Location & Postal Code settings |
 | **1.4.7** | 2026-07-01 | Added native WooCommerce BIN field to Inventory tab for eBay SKU to Bin mapping |
 | **1.4.6** | 2026-06-29 | eBay SKU → Bin Location mapping, Free Shipping guidance for baked shipping |

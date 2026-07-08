@@ -33,7 +33,7 @@ class TCGiant_Sync_Exporter {
 	const PUSH_ACTION = 'tcgiant_export_push_product';
 
 	/**
-	 * eBay condition IDs relevant to TCG / collectibles.
+	 * eBay condition IDs relevant to TCG / collectibles (legacy fallback).
 	 */
 	const CONDITIONS = array(
 		'1000' => 'New / Sealed',
@@ -41,6 +41,92 @@ class TCGiant_Sync_Exporter {
 		'3000' => 'Very Good',
 		'4000' => 'Good',
 		'5000' => 'Acceptable',
+	);
+
+	/**
+	 * eBay categories that require ConditionDescriptors — Trading Cards.
+	 */
+	const DESCRIPTOR_CATEGORIES_TCG = array(
+		'183050', // Trading Card Games
+		'183454', // CCG Individual Cards (Dragon Ball Super, etc.)
+		'261328', // Sports Trading Card Singles
+		'2536',   // Trading Cards
+		'261068', // Non-Sport Trading Card Games
+		'180006', // Pokémon Individual Cards
+		'176055', // Magic: The Gathering Cards
+		'69243',  // Yu-Gi-Oh! Individual Cards
+		'183446', // Disney Lorcana
+		'185089', // One Piece Card Game
+	);
+
+	/**
+	 * eBay categories that require ConditionDescriptors — Coins.
+	 */
+	const DESCRIPTOR_CATEGORIES_COINS = array(
+		'253',   // Coins: US
+		'256',   // Coins: World
+		'3377',  // Coins: Canada
+		'4733',  // Coins: Ancient
+		'18466', // Coins: Medieval
+	);
+
+	/**
+	 * Professional Grader name => eBay numeric value ID.
+	 * Shared across Trading Cards and Coins.
+	 */
+	const GRADERS = array(
+		'PSA'  => '275010',
+		'BCCG' => '275011',
+		'BVG'  => '275012',
+		'BGS'  => '275013',
+		'CSG'  => '275014',
+		'CGC'  => '275015',
+		'SGC'  => '275016',
+		'KSA'  => '275017',
+		'GMA'  => '275018',
+		'HGA'  => '275019',
+		'ISA'  => '2750110',
+		'PCA'  => '2750111',
+		'GSG'  => '2750112',
+		'PGS'  => '2750113',
+		'MNT'  => '2750114',
+		'TAG'  => '2750115',
+		'Rare' => '2750116',
+		'RCG'  => '2750117',
+		'CGA'  => '2750120',
+		'TCG'  => '2750121',
+		'Other' => '2750123',
+	);
+
+	/**
+	 * Numeric grade values available for graded items.
+	 */
+	const GRADES = array(
+		'10', '9.5', '9', '8.5', '8', '7.5', '7', '6.5', '6',
+		'5.5', '5', '4.5', '4', '3.5', '3', '2.5', '2', '1.5', '1',
+	);
+
+	/**
+	 * Ungraded Trading Card conditions — value ID => label.
+	 */
+	const UNGRADED_TCG = array(
+		'400010' => 'Near Mint or Better',
+		'400011' => 'Excellent',
+		'400012' => 'Very Good',
+		'400013' => 'Poor',
+		'400015' => 'Lightly Played (Excellent)',
+		'400016' => 'Moderately Played (Very Good)',
+		'400017' => 'Heavily Played (Poor)',
+	);
+
+	/**
+	 * Ungraded Coin conditions — value ID => label.
+	 */
+	const UNGRADED_COINS = array(
+		'400020' => 'Uncirculated',
+		'400021' => 'Extremely Fine to About Uncirculated',
+		'400022' => 'Fine to Very Fine',
+		'400023' => 'Below Fine',
 	);
 
 	/**
@@ -381,7 +467,18 @@ class TCGiant_Sync_Exporter {
 		}
 
 		$xml .= '<CategoryMappingAllowed>true</CategoryMappingAllowed>' . "\n";
-		$xml .= '<ConditionID>' . esc_attr( $settings['condition_id'] ) . '</ConditionID>' . "\n";
+
+		// Condition: use new ConditionDescriptor system for eligible categories,
+		// fall back to legacy ConditionID for everything else.
+		$descriptor_xml = $this->build_condition_descriptors_xml( $settings );
+		if ( ! empty( $descriptor_xml ) ) {
+			// ConditionID is set inside build_condition_descriptors_xml based on type.
+			$condition_id = 'graded' === $settings['condition_type'] ? '2750' : '4000';
+			$xml .= '<ConditionID>' . esc_attr( $condition_id ) . '</ConditionID>' . "\n";
+			$xml .= $descriptor_xml . "\n";
+		} else {
+			$xml .= '<ConditionID>' . esc_attr( $settings['condition_id'] ) . '</ConditionID>' . "\n";
+		}
 		$xml .= '<Country>US</Country>' . "\n";
 		if ( ! empty( $settings['location'] ) ) {
 			$xml .= '<Location>' . esc_xml( $settings['location'] ) . '</Location>' . "\n";
@@ -467,13 +564,18 @@ class TCGiant_Sync_Exporter {
 		$product  = wc_get_product( $product_id );
 
 		$settings = array(
-			'category_id'          => $global['export_category_id'] ?? '',
-			'condition_id'         => $global['export_condition_id'] ?? '1000',
-			'location'             => $global['export_location'] ?? '',
-			'postal_code'          => $global['export_postal_code'] ?? '',
+			'category_id'           => $global['export_category_id'] ?? '',
+			'condition_id'          => $global['export_condition_id'] ?? '1000',
+			'condition_type'        => $global['export_condition_type'] ?? '',
+			'grader_id'             => $global['export_grader_id'] ?? '',
+			'grade_value'           => $global['export_grade_value'] ?? '',
+			'cert_number'           => $global['export_cert_number'] ?? '',
+			'ungraded_condition'    => $global['export_ungraded_condition'] ?? '',
+			'location'              => $global['export_location'] ?? '',
+			'postal_code'           => $global['export_postal_code'] ?? '',
 			'fulfillment_policy_id' => $global['export_fulfillment_policy'] ?? '',
-			'return_policy_id'     => $global['export_return_policy'] ?? '',
-			'payment_policy_id'    => $global['export_payment_policy'] ?? '',
+			'return_policy_id'      => $global['export_return_policy'] ?? '',
+			'payment_policy_id'     => $global['export_payment_policy'] ?? '',
 		);
 
 		if ( $product ) {
@@ -486,6 +588,32 @@ class TCGiant_Sync_Exporter {
 			}
 			if ( ! empty( $override_condition ) ) {
 				$settings['condition_id'] = $override_condition;
+			}
+
+			// ConditionDescriptor per-product overrides.
+			$override_cond_type = $product->get_meta( '_ebay_export_condition_type' );
+			if ( ! empty( $override_cond_type ) ) {
+				$settings['condition_type'] = $override_cond_type;
+			}
+
+			$override_grader = $product->get_meta( '_ebay_export_grader_id' );
+			if ( ! empty( $override_grader ) ) {
+				$settings['grader_id'] = $override_grader;
+			}
+
+			$override_grade = $product->get_meta( '_ebay_export_grade_value' );
+			if ( ! empty( $override_grade ) ) {
+				$settings['grade_value'] = $override_grade;
+			}
+
+			$override_cert = $product->get_meta( '_ebay_export_cert_number' );
+			if ( ! empty( $override_cert ) ) {
+				$settings['cert_number'] = $override_cert;
+			}
+
+			$override_ungraded = $product->get_meta( '_ebay_export_ungraded_condition' );
+			if ( ! empty( $override_ungraded ) ) {
+				$settings['ungraded_condition'] = $override_ungraded;
 			}
 		}
 
@@ -520,6 +648,24 @@ class TCGiant_Sync_Exporter {
 			$missing[] = __( 'Payment Policy (fetch policies in TCGiant Sync settings)', 'tcgiant-sync' );
 		}
 
+		// Validate ConditionDescriptor fields for eligible categories.
+		if ( self::is_descriptor_category( $settings['category_id'] ) ) {
+			if ( empty( $settings['condition_type'] ) ) {
+				$missing[] = __( 'Condition Type (select Graded or Ungraded in TCGiant Sync settings — required for this eBay category)', 'tcgiant-sync' );
+			} elseif ( 'graded' === $settings['condition_type'] ) {
+				if ( empty( $settings['grader_id'] ) ) {
+					$missing[] = __( 'Professional Grader (required for graded items)', 'tcgiant-sync' );
+				}
+				if ( empty( $settings['grade_value'] ) ) {
+					$missing[] = __( 'Grade (required for graded items)', 'tcgiant-sync' );
+				}
+			} elseif ( 'ungraded' === $settings['condition_type'] ) {
+				if ( empty( $settings['ungraded_condition'] ) ) {
+					$missing[] = __( 'Ungraded Condition (required for ungraded items in this category)', 'tcgiant-sync' );
+				}
+			}
+		}
+
 		if ( ! empty( $missing ) ) {
 			return new WP_Error(
 				'missing_export_settings',
@@ -529,6 +675,103 @@ class TCGiant_Sync_Exporter {
 		}
 
 		return true;
+	}
+
+	// -------------------------------------------------------------------------
+	// ConditionDescriptor Methods
+	// -------------------------------------------------------------------------
+
+	/**
+	 * Check if a category ID requires ConditionDescriptors.
+	 *
+	 * @param string $category_id eBay category ID.
+	 * @return bool True if the category requires descriptors.
+	 */
+	public static function is_descriptor_category( $category_id ) {
+		return in_array( (string) $category_id, self::DESCRIPTOR_CATEGORIES_TCG, true )
+		    || in_array( (string) $category_id, self::DESCRIPTOR_CATEGORIES_COINS, true );
+	}
+
+	/**
+	 * Check if a category is a Coins category (vs TCG).
+	 *
+	 * @param string $category_id eBay category ID.
+	 * @return bool True if the category is a Coins category.
+	 */
+	public static function is_coins_category( $category_id ) {
+		return in_array( (string) $category_id, self::DESCRIPTOR_CATEGORIES_COINS, true );
+	}
+
+	/**
+	 * Get the appropriate ungraded conditions for a category.
+	 *
+	 * @param string $category_id eBay category ID.
+	 * @return array Value ID => label.
+	 */
+	public static function get_ungraded_conditions( $category_id ) {
+		if ( self::is_coins_category( $category_id ) ) {
+			return self::UNGRADED_COINS;
+		}
+		return self::UNGRADED_TCG;
+	}
+
+	/**
+	 * Build <ConditionDescriptors> XML for the listing.
+	 *
+	 * Returns empty string if the category does not require descriptors
+	 * or if the condition_type is not set.
+	 *
+	 * @param array $settings Merged export settings.
+	 * @return string XML string or empty.
+	 */
+	private function build_condition_descriptors_xml( array $settings ) {
+		if ( ! self::is_descriptor_category( $settings['category_id'] ) ) {
+			return '';
+		}
+
+		if ( empty( $settings['condition_type'] ) ) {
+			return '';
+		}
+
+		$xml = '<ConditionDescriptors>' . "\n";
+
+		if ( 'graded' === $settings['condition_type'] ) {
+			// Professional Grader (required).
+			if ( ! empty( $settings['grader_id'] ) ) {
+				$xml .= "\t<ConditionDescriptor>\n";
+				$xml .= "\t\t<Name>27501</Name>\n";
+				$xml .= "\t\t<Value>" . esc_attr( $settings['grader_id'] ) . "</Value>\n";
+				$xml .= "\t</ConditionDescriptor>\n";
+			}
+
+			// Grade (required).
+			if ( ! empty( $settings['grade_value'] ) ) {
+				$xml .= "\t<ConditionDescriptor>\n";
+				$xml .= "\t\t<Name>27502</Name>\n";
+				$xml .= "\t\t<Value>" . esc_attr( $settings['grade_value'] ) . "</Value>\n";
+				$xml .= "\t</ConditionDescriptor>\n";
+			}
+
+			// Certification Number (optional).
+			if ( ! empty( $settings['cert_number'] ) ) {
+				$xml .= "\t<ConditionDescriptor>\n";
+				$xml .= "\t\t<Name>27503</Name>\n";
+				$xml .= "\t\t<AdditionalInfo>" . esc_attr( $settings['cert_number'] ) . "</AdditionalInfo>\n";
+				$xml .= "\t</ConditionDescriptor>\n";
+			}
+		} elseif ( 'ungraded' === $settings['condition_type'] ) {
+			// Ungraded condition (required).
+			if ( ! empty( $settings['ungraded_condition'] ) ) {
+				$xml .= "\t<ConditionDescriptor>\n";
+				$xml .= "\t\t<Name>40001</Name>\n";
+				$xml .= "\t\t<Value>" . esc_attr( $settings['ungraded_condition'] ) . "</Value>\n";
+				$xml .= "\t</ConditionDescriptor>\n";
+			}
+		}
+
+		$xml .= '</ConditionDescriptors>';
+
+		return $xml;
 	}
 
 	// -------------------------------------------------------------------------

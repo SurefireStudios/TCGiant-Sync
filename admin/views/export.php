@@ -61,9 +61,22 @@ $export_state = TCGiant_Sync_Exporter::get_export_state();
 		<p style="margin:0;color:#444;">
 			<?php if ( $policies_configured && $category_configured ) : ?>
 				<?php
-				$conditions    = TCGiant_Sync_Exporter::CONDITIONS;
-				$cond_id       = $settings['export_condition_id'] ?? '1000';
-				$cond_label    = $conditions[ $cond_id ] ?? $cond_id;
+				$cond_type = $settings['export_condition_type'] ?? '';
+				if ( 'graded' === $cond_type ) {
+					$graders    = TCGiant_Sync_Exporter::GRADERS;
+					$grader_id  = $settings['export_grader_id'] ?? '';
+					$grader_lbl = array_search( $grader_id, $graders, true );
+					$grade_val  = $settings['export_grade_value'] ?? '';
+					$cond_label = 'Graded' . ( $grader_lbl ? ' · ' . $grader_lbl : '' ) . ( $grade_val ? ' ' . $grade_val : '' );
+				} elseif ( 'ungraded' === $cond_type ) {
+					$all_ungraded = TCGiant_Sync_Exporter::UNGRADED_TCG + TCGiant_Sync_Exporter::UNGRADED_COINS;
+					$ungraded_val = $settings['export_ungraded_condition'] ?? '';
+					$cond_label   = 'Ungraded' . ( isset( $all_ungraded[ $ungraded_val ] ) ? ' · ' . $all_ungraded[ $ungraded_val ] : '' );
+				} else {
+					$conditions = TCGiant_Sync_Exporter::CONDITIONS;
+					$cond_id    = $settings['export_condition_id'] ?? '1000';
+					$cond_label = $conditions[ $cond_id ] ?? $cond_id;
+				}
 				?>
 				<?php
 				/* translators: %s: eBay category ID */
@@ -176,15 +189,39 @@ $export_state = TCGiant_Sync_Exporter::get_export_state();
 						</td>
 					</tr>
 					<tr>
-						<td style="padding:5px 0;color:#666;"><?php esc_html_e( 'Condition', 'tcgiant-sync' ); ?></td>
-						<td style="padding:5px 0;font-weight:500;">
-							<?php
-							$conditions  = TCGiant_Sync_Exporter::CONDITIONS;
-							$cond_id     = $settings['export_condition_id'] ?? '1000';
-							echo esc_html( $conditions[ $cond_id ] ?? $cond_id );
-							?>
-						</td>
-					</tr>
+					<td style="padding:5px 0;color:#666;"><?php esc_html_e( 'Condition', 'tcgiant-sync' ); ?></td>
+					<td style="padding:5px 0;font-weight:500;">
+					<?php
+					$cond_type = $settings['export_condition_type'] ?? '';
+					if ( 'graded' === $cond_type ) {
+						$graders    = TCGiant_Sync_Exporter::GRADERS;
+						$grader_id  = $settings['export_grader_id'] ?? '';
+						$grader_lbl = array_search( $grader_id, $graders, true );
+						$grade_val  = $settings['export_grade_value'] ?? '';
+						echo '<strong>' . esc_html__( 'Graded', 'tcgiant-sync' ) . '</strong>';
+						if ( $grader_lbl ) {
+							echo ' &middot; ' . esc_html( $grader_lbl );
+						}
+						if ( $grade_val ) {
+							echo ' ' . esc_html( $grade_val );
+						}
+					} elseif ( 'ungraded' === $cond_type ) {
+						$ungraded_val   = $settings['export_ungraded_condition'] ?? '';
+						$all_ungraded   = TCGiant_Sync_Exporter::UNGRADED_TCG + TCGiant_Sync_Exporter::UNGRADED_COINS;
+						$ungraded_label = $all_ungraded[ $ungraded_val ] ?? $ungraded_val;
+						echo '<strong>' . esc_html__( 'Ungraded', 'tcgiant-sync' ) . '</strong>';
+						if ( $ungraded_label ) {
+							echo ' &middot; ' . esc_html( $ungraded_label );
+						}
+					} else {
+						$conditions  = TCGiant_Sync_Exporter::CONDITIONS;
+						$cond_id     = $settings['export_condition_id'] ?? '1000';
+						echo esc_html( $conditions[ $cond_id ] ?? $cond_id );
+						echo ' <span style="color:#888; font-size:11px;">' . esc_html__( '(legacy)', 'tcgiant-sync' ) . '</span>';
+					}
+					?>
+					</td>
+				</tr>
 					<tr>
 						<td style="padding:5px 0;color:#666;"><?php esc_html_e( 'Fulfillment Policy', 'tcgiant-sync' ); ?></td>
 						<td style="padding:5px 0;font-weight:500;">

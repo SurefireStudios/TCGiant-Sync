@@ -1,5 +1,19 @@
 *** TCGiant Sync Changelog ***
 
+2026-07-08 - version 1.5.1
+- Fix: Resolved a bug where multiple eBay API errors were swallowed and replaced with "Unknown Trading API Error". The plugin now correctly extracts and combines multiple eBay error messages so the user can see exactly why a push failed.
+
+2026-07-08 - version 1.5.0
+- Feature: Added eBay ConditionDescriptor support for Trading Cards and Coins categories. eBay now mandates structured condition data (Graded vs. Ungraded) for these categories as of July 2026. Listings missing this data will be blocked or hidden.
+- Feature: New "Condition Type" setting replaces the simple Condition dropdown. Choose "Graded" (with Professional Grader, Grade, and optional Certification Number) or "Ungraded" (with card/coin condition) to generate the required `<ConditionDescriptors>` XML in AddItem/ReviseItem calls.
+- Feature: 21 professional grading companies supported (PSA, BGS, SGC, CGC, CSG, KSA, GMA, HGA, ISA, and more) with correct eBay numeric value IDs.
+- Feature: Ungraded conditions are category-aware — Trading Cards show Near Mint, Excellent, Very Good, Poor, Lightly Played, Moderately Played, Heavily Played; Coins show Uncirculated, Extremely Fine to About Uncirculated, Fine to Very Fine, Below Fine.
+- Feature: Per-product condition descriptor overrides in the TCGiant Sync product tab — override grader, grade, cert number, or ungraded condition for individual products.
+- Feature: Added Coins categories (US, World, Canada, Ancient, Medieval) to the export category dropdown alongside existing TCG categories.
+- Improvement: Export validation now checks for required ConditionDescriptor fields when the target category is a TCG or Coins category, providing clear error messages before hitting the eBay API.
+- Improvement: Export status page and push summary now display the structured condition info (e.g., "Graded · PSA · 10" or "Ungraded · Near Mint or Better") instead of the legacy condition label.
+- Note: Legacy condition behavior is fully preserved for non-TCG/Coins categories. Existing per-product condition overrides continue to work for those categories.
+
 2026-07-08 - version 1.4.8
 - Fix: Resolved "No <Item.Location> exists or <Item.Location> is specified as an empty tag" error when pushing products to eBay. The required `<Location>` and `<PostalCode>` XML tags were missing from the AddItem/ReviseItem API call.
 - Feature: Added "Item Location" and "Postal Code" fields to the Push to eBay settings page, allowing sellers to configure their shipping origin city/state and ZIP code.

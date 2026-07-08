@@ -33,6 +33,11 @@ $tcg_categories = array(
 	'183454' => 'Dragon Ball Super CCG',
 	'183446' => 'Disney Lorcana',
 	'185089' => 'One Piece Card Game',
+	'253'    => 'Coins: US',
+	'256'    => 'Coins: World',
+	'3377'   => 'Coins: Canada',
+	'4733'   => 'Coins: Ancient',
+	'18466'  => 'Coins: Medieval',
 	'custom' => 'Custom Category ID...',
 );
 
@@ -133,7 +138,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 					}
 				}
 				// Preserve export settings too so they aren't wiped by this form.
-				$export_preserve = array( 'export_category_id', 'export_condition_id', 'export_location', 'export_postal_code', 'export_fulfillment_policy', 'export_return_policy', 'export_payment_policy' );
+				$export_preserve = array( 'export_category_id', 'export_condition_id', 'export_condition_type', 'export_grader_id', 'export_grade_value', 'export_cert_number', 'export_ungraded_condition', 'export_location', 'export_postal_code', 'export_fulfillment_policy', 'export_return_policy', 'export_payment_policy' );
 				foreach ( $export_preserve as $key ) {
 					if ( ! empty( $settings[ $key ] ) ) {
 						echo '<input type="hidden" name="tcgiant_sync_ebay_settings[' . esc_attr( $key ) . ']" value="' . esc_attr( $settings[ $key ] ) . '">';
@@ -339,6 +344,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 				<?php
 				// Preserve all non-export fields.
 				$all_preserve = array_merge( $preserve_keys, array( 'category_ids', 'woo_category_ids', 'preserve_woo_category_ids', 'import_specs_as_tags', 'bake_shipping_into_price', 'sku_maps_to', 'sync_interval', 'enable_order_sync', 'overwrite_title', 'overwrite_desc', 'overwrite_price', 'overwrite_images', 'overwrite_taxonomy', 'overwrite_weight_dims' ) );
+				// Note: export condition descriptor fields are handled by the export form itself.
 				foreach ( $all_preserve as $key ) {
 					$val = $settings[ $key ] ?? null;
 					if ( null !== $val ) {
@@ -372,16 +378,89 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 					<p class="tc-hint"><?php esc_html_e( 'Choose a common TCG category or select "Custom" to enter any eBay category ID. Per-product overrides available on the product edit screen.', 'tcgiant-sync' ); ?></p>
 				</div>
 
-				<!-- Default Condition -->
+				<!-- Condition Type -->
 				<div class="tc-field">
-					<label class="tc-label" for="export_condition_id"><?php esc_html_e( 'Default Condition', 'tcgiant-sync' ); ?></label>
-					<select class="tc-select" id="export_condition_id" name="tcgiant_sync_ebay_settings[export_condition_id]">
-						<?php foreach ( TCGiant_Sync_Exporter::CONDITIONS as $cid => $clabel ) : ?>
-							<option value="<?php echo esc_attr( $cid ); ?>" <?php selected( $settings['export_condition_id'] ?? '1000', $cid ); ?>>
-								<?php echo esc_html( $clabel ); ?>
-							</option>
-						<?php endforeach; ?>
+					<label class="tc-label" for="export_condition_type"><?php esc_html_e( 'Condition Type', 'tcgiant-sync' ); ?></label>
+					<select class="tc-select" id="export_condition_type" name="tcgiant_sync_ebay_settings[export_condition_type]">
+						<option value="" <?php selected( $settings['export_condition_type'] ?? '', '' ); ?>><?php esc_html_e( 'None (Legacy — use for non-TCG/Coins categories)', 'tcgiant-sync' ); ?></option>
+						<option value="graded" <?php selected( $settings['export_condition_type'] ?? '', 'graded' ); ?>><?php esc_html_e( 'Graded: Professionally graded', 'tcgiant-sync' ); ?></option>
+						<option value="ungraded" <?php selected( $settings['export_condition_type'] ?? '', 'ungraded' ); ?>><?php esc_html_e( 'Ungraded: Not professionally graded', 'tcgiant-sync' ); ?></option>
 					</select>
+					<p class="tc-hint"><?php esc_html_e( 'Required for Trading Cards and Coins categories. Select "None" for other categories to use the legacy condition below.', 'tcgiant-sync' ); ?></p>
+				</div>
+
+				<!-- Graded Fields (shown when Condition Type = graded) -->
+				<div id="tc-graded-fields" style="display:none; border-left:3px solid var(--tc-primary, #2563eb); padding-left:14px; margin-top:4px;">
+					<div class="tc-field">
+						<label class="tc-label" for="export_grader_id"><?php esc_html_e( 'Professional Grader', 'tcgiant-sync' ); ?></label>
+						<select class="tc-select" id="export_grader_id" name="tcgiant_sync_ebay_settings[export_grader_id]">
+							<option value=""><?php esc_html_e( '— Select grader —', 'tcgiant-sync' ); ?></option>
+							<?php foreach ( TCGiant_Sync_Exporter::GRADERS as $gname => $gid ) : ?>
+								<option value="<?php echo esc_attr( $gid ); ?>" <?php selected( $settings['export_grader_id'] ?? '', $gid ); ?>>
+									<?php echo esc_html( $gname ); ?>
+								</option>
+							<?php endforeach; ?>
+						</select>
+					</div>
+					<div class="tc-field">
+						<label class="tc-label" for="export_grade_value"><?php esc_html_e( 'Grade', 'tcgiant-sync' ); ?></label>
+						<select class="tc-select" id="export_grade_value" name="tcgiant_sync_ebay_settings[export_grade_value]">
+							<option value=""><?php esc_html_e( '— Select grade —', 'tcgiant-sync' ); ?></option>
+							<?php foreach ( TCGiant_Sync_Exporter::GRADES as $grade ) : ?>
+								<option value="<?php echo esc_attr( $grade ); ?>" <?php selected( $settings['export_grade_value'] ?? '', $grade ); ?>>
+									<?php echo esc_html( $grade ); ?>
+								</option>
+							<?php endforeach; ?>
+						</select>
+					</div>
+					<div class="tc-field">
+						<label class="tc-label" for="export_cert_number"><?php esc_html_e( 'Certification Number', 'tcgiant-sync' ); ?> <span style="color:#888; font-weight:normal;"><?php esc_html_e( '(optional)', 'tcgiant-sync' ); ?></span></label>
+						<input type="text" class="tc-input" id="export_cert_number"
+							name="tcgiant_sync_ebay_settings[export_cert_number]"
+							value="<?php echo esc_attr( $settings['export_cert_number'] ?? '' ); ?>"
+							placeholder="<?php esc_attr_e( 'e.g. 95422421', 'tcgiant-sync' ); ?>">
+						<p class="tc-hint"><?php esc_html_e( 'The slab certification number. Can be overridden per-product.', 'tcgiant-sync' ); ?></p>
+					</div>
+				</div>
+
+				<!-- Ungraded Fields (shown when Condition Type = ungraded) -->
+				<div id="tc-ungraded-fields" style="display:none; border-left:3px solid var(--tc-warning, #f59e0b); padding-left:14px; margin-top:4px;">
+					<div class="tc-field">
+						<label class="tc-label" for="export_ungraded_condition"><?php esc_html_e( 'Card / Coin Condition', 'tcgiant-sync' ); ?></label>
+						<select class="tc-select" id="export_ungraded_condition" name="tcgiant_sync_ebay_settings[export_ungraded_condition]">
+							<option value=""><?php esc_html_e( '— Select condition —', 'tcgiant-sync' ); ?></option>
+							<optgroup label="<?php esc_attr_e( 'Trading Cards', 'tcgiant-sync' ); ?>" id="tc-ungraded-tcg-group">
+								<?php foreach ( TCGiant_Sync_Exporter::UNGRADED_TCG as $uid => $ulabel ) : ?>
+									<option value="<?php echo esc_attr( $uid ); ?>" <?php selected( $settings['export_ungraded_condition'] ?? '', $uid ); ?>>
+										<?php echo esc_html( $ulabel ); ?>
+									</option>
+								<?php endforeach; ?>
+							</optgroup>
+							<optgroup label="<?php esc_attr_e( 'Coins', 'tcgiant-sync' ); ?>" id="tc-ungraded-coins-group">
+								<?php foreach ( TCGiant_Sync_Exporter::UNGRADED_COINS as $uid => $ulabel ) : ?>
+									<option value="<?php echo esc_attr( $uid ); ?>" <?php selected( $settings['export_ungraded_condition'] ?? '', $uid ); ?>>
+										<?php echo esc_html( $ulabel ); ?>
+									</option>
+								<?php endforeach; ?>
+							</optgroup>
+						</select>
+						<p class="tc-hint"><?php esc_html_e( 'The available conditions depend on whether your category is Trading Cards or Coins.', 'tcgiant-sync' ); ?></p>
+					</div>
+				</div>
+
+				<!-- Legacy Condition (shown when Condition Type = none) -->
+				<div id="tc-legacy-condition" style="display:none;">
+					<div class="tc-field">
+						<label class="tc-label" for="export_condition_id"><?php esc_html_e( 'Legacy Condition', 'tcgiant-sync' ); ?></label>
+						<select class="tc-select" id="export_condition_id" name="tcgiant_sync_ebay_settings[export_condition_id]">
+							<?php foreach ( TCGiant_Sync_Exporter::CONDITIONS as $cid => $clabel ) : ?>
+								<option value="<?php echo esc_attr( $cid ); ?>" <?php selected( $settings['export_condition_id'] ?? '1000', $cid ); ?>>
+									<?php echo esc_html( $clabel ); ?>
+								</option>
+							<?php endforeach; ?>
+						</select>
+						<p class="tc-hint"><?php esc_html_e( 'Used for categories that do not require ConditionDescriptors (non-TCG/Coins).', 'tcgiant-sync' ); ?></p>
+					</div>
 				</div>
 
 				<!-- Item Location -->
@@ -464,5 +543,15 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 			$input.val(val).hide();
 		}
 	});
+
+	// Condition Type → show/hide graded/ungraded/legacy fields.
+	function toggleConditionFields() {
+		var type = $('#export_condition_type').val();
+		$('#tc-graded-fields').toggle(type === 'graded');
+		$('#tc-ungraded-fields').toggle(type === 'ungraded');
+		$('#tc-legacy-condition').toggle(type === '' || !type);
+	}
+	$('#export_condition_type').on('change', toggleConditionFields);
+	toggleConditionFields(); // Init on page load.
 })(jQuery);
 </script>

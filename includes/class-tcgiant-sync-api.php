@@ -179,8 +179,21 @@ class TCGiant_Sync_API {
 		$array = json_decode( $json, true );
 
 		if ( isset( $array['Ack'] ) && 'Failure' === $array['Ack'] ) {
-			$error_msg = isset( $array['Errors']['ShortMessage'] ) ? $array['Errors']['ShortMessage'] : 'Unknown Trading API Error';
-			$error_code = isset( $array['Errors']['ErrorCode'] ) ? (string) $array['Errors']['ErrorCode'] : '';
+			// Normalize: eBay may return a single error object or an indexed array of errors.
+			if ( isset( $array['Errors'][0] ) ) {
+				$first_error = $array['Errors'][0];
+				$error_parts = array();
+				foreach ( $array['Errors'] as $err ) {
+					if ( isset( $err['ShortMessage'] ) ) {
+						$error_parts[] = $err['ShortMessage'];
+					}
+				}
+				$error_msg  = ! empty( $error_parts ) ? implode( ' | ', $error_parts ) : 'Unknown Trading API Error';
+				$error_code = isset( $first_error['ErrorCode'] ) ? (string) $first_error['ErrorCode'] : '';
+			} else {
+				$error_msg  = isset( $array['Errors']['ShortMessage'] ) ? $array['Errors']['ShortMessage'] : 'Unknown Trading API Error';
+				$error_code = isset( $array['Errors']['ErrorCode'] ) ? (string) $array['Errors']['ErrorCode'] : '';
+			}
 
 			// eBay rate limit error codes:
 			// 518  = "Calls to this call have exceeded the call limit."

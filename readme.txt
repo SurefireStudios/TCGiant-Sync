@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.4.8
+Stable tag: 1.5.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -24,6 +24,7 @@ TCGiant Sync bridges your eBay store and WooCommerce, enabling automatic import 
 * Activity logging for troubleshooting
 * **Push to eBay** — create new eBay listings directly from WooCommerce (single product or bulk)
 * Per-product eBay Category and Condition overrides
+* eBay ConditionDescriptor support — Graded (PSA, BGS, SGC, CGC, etc.) and Ungraded conditions for Trading Cards and Coins categories
 * Business Policy management (Shipping, Returns, Payments) with one-click fetch
 
 **Pro Features (requires license key):**
@@ -69,7 +70,7 @@ When a product sells on either eBay or WooCommerce, the plugin automatically adj
 
 = What types of products are supported? =
 
-TCGiant Sync is optimized for graded trading card game (TCG) collectibles, including PSA and BGS graded cards, but works with any eBay listing.
+TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It includes full eBay ConditionDescriptor support for graded items (PSA, BGS, SGC, CGC, and 17 other graders) and ungraded items (Near Mint, Excellent, etc. for cards; Uncirculated, Fine to Very Fine, etc. for coins). It works with any eBay listing type.
 
 == Screenshots ==
 
@@ -81,6 +82,16 @@ TCGiant Sync is optimized for graded trading card game (TCG) collectibles, inclu
 6. Per-product Push to eBay button with Category and Condition overrides.
 
 == Changelog ==
+
+= 1.5.0 - 2026-07-08 =
+* Feature: Added eBay ConditionDescriptor support for Trading Cards and Coins categories. eBay now mandates structured condition data (Graded vs. Ungraded) for these categories — listings missing this data will be blocked.
+* Feature: New "Condition Type" setting with Graded (Professional Grader + Grade + optional Cert Number) and Ungraded (card/coin condition) options that generate the required `ConditionDescriptors` XML.
+* Feature: 21 professional grading companies supported (PSA, BGS, SGC, CGC, CSG, and more) with correct eBay numeric value IDs.
+* Feature: Category-aware ungraded conditions — Trading Cards show Near Mint, Excellent, Very Good, Poor, etc.; Coins show Uncirculated, Extremely Fine to AU, Fine to VF, Below Fine.
+* Feature: Per-product condition descriptor overrides in the TCGiant Sync product tab.
+* Feature: Added Coins categories (US, World, Canada, Ancient, Medieval) to the export category dropdown.
+* Improvement: Export validation now checks for required ConditionDescriptor fields when the target category is TCG or Coins.
+* Improvement: Export status page displays structured condition info (e.g., "Graded · PSA · 10").
 
 = 1.4.8 - 2026-07-08 =
 * Fix: Resolved "No <Item.Location> exists" error when pushing products to eBay. The required `<Location>` and `<PostalCode>` XML tags were missing from the AddItem/ReviseItem API call.
