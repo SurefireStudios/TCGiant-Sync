@@ -133,7 +133,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 					}
 				}
 				// Preserve export settings too so they aren't wiped by this form.
-				$export_preserve = array( 'export_category_id', 'export_condition_id', 'export_fulfillment_policy', 'export_return_policy', 'export_payment_policy' );
+				$export_preserve = array( 'export_category_id', 'export_condition_id', 'export_location', 'export_postal_code', 'export_fulfillment_policy', 'export_return_policy', 'export_payment_policy' );
 				foreach ( $export_preserve as $key ) {
 					if ( ! empty( $settings[ $key ] ) ) {
 						echo '<input type="hidden" name="tcgiant_sync_ebay_settings[' . esc_attr( $key ) . ']" value="' . esc_attr( $settings[ $key ] ) . '">';
@@ -382,6 +382,26 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 							</option>
 						<?php endforeach; ?>
 					</select>
+				</div>
+
+				<!-- Item Location -->
+				<div class="tc-field">
+					<label class="tc-label" for="export_location"><?php esc_html_e( 'Item Location', 'tcgiant-sync' ); ?></label>
+					<input type="text" class="tc-input" id="export_location"
+						name="tcgiant_sync_ebay_settings[export_location]"
+						value="<?php echo esc_attr( $settings['export_location'] ?? '' ); ?>"
+						placeholder="<?php esc_attr_e( 'e.g. Chicago, IL', 'tcgiant-sync' ); ?>">
+					<p class="tc-hint"><?php esc_html_e( 'City and state where items ship from. Required by eBay for all listings.', 'tcgiant-sync' ); ?></p>
+				</div>
+
+				<!-- Postal Code -->
+				<div class="tc-field">
+					<label class="tc-label" for="export_postal_code"><?php esc_html_e( 'Postal Code', 'tcgiant-sync' ); ?></label>
+					<input type="text" class="tc-input" id="export_postal_code"
+						name="tcgiant_sync_ebay_settings[export_postal_code]"
+						value="<?php echo esc_attr( $settings['export_postal_code'] ?? '' ); ?>"
+						placeholder="<?php esc_attr_e( 'e.g. 60601', 'tcgiant-sync' ); ?>">
+					<p class="tc-hint"><?php esc_html_e( 'ZIP / postal code of your shipping origin. Required by eBay for all listings.', 'tcgiant-sync' ); ?></p>
 				</div>
 
 				<!-- Business Policies -->

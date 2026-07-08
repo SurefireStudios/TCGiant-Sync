@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.4.7
+Stable tag: 1.4.8
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -81,6 +81,11 @@ TCGiant Sync is optimized for graded trading card game (TCG) collectibles, inclu
 6. Per-product Push to eBay button with Category and Condition overrides.
 
 == Changelog ==
+
+= 1.4.8 - 2026-07-08 =
+* Fix: Resolved "No <Item.Location> exists" error when pushing products to eBay. The required `<Location>` and `<PostalCode>` XML tags were missing from the AddItem/ReviseItem API call.
+* Feature: Added "Item Location" and "Postal Code" fields to the Push to eBay settings page.
+* Improvement: Export validation now catches missing Location and Postal Code before hitting the eBay API, providing a clear error message instead of a raw API error.
 
 = 1.4.7 - 2026-07-01 =
 * Feature: Added a native WooCommerce "BIN" field to the product inventory tab. This visually surfaces the `_bin_location` meta field, enabling users who map eBay Custom SKU to Bin Location to view and edit warehouse bin codes directly inside WooCommerce.
@@ -211,6 +216,9 @@ TCGiant Sync is optimized for graded trading card game (TCG) collectibles, inclu
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 1.4.8 =
+Fixes the "No <Item.Location> exists" error that blocked all Push to eBay exports. Adds new Item Location and Postal Code fields to the export settings. After updating, go to TCGiant Sync → Settings → Push to eBay Settings and fill in your city/state and ZIP code.
 
 = 1.4.7 =
 Adds a visual "BIN" field to the WooCommerce Inventory tab for sellers routing their eBay Custom SKUs to the Bin Location custom field.

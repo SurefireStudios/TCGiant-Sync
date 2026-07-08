@@ -383,6 +383,12 @@ class TCGiant_Sync_Exporter {
 		$xml .= '<CategoryMappingAllowed>true</CategoryMappingAllowed>' . "\n";
 		$xml .= '<ConditionID>' . esc_attr( $settings['condition_id'] ) . '</ConditionID>' . "\n";
 		$xml .= '<Country>US</Country>' . "\n";
+		if ( ! empty( $settings['location'] ) ) {
+			$xml .= '<Location>' . esc_xml( $settings['location'] ) . '</Location>' . "\n";
+		}
+		if ( ! empty( $settings['postal_code'] ) ) {
+			$xml .= '<PostalCode>' . esc_xml( $settings['postal_code'] ) . '</PostalCode>' . "\n";
+		}
 		$xml .= '<Currency>USD</Currency>' . "\n";
 		$xml .= '<DispatchTimeMax>3</DispatchTimeMax>' . "\n";
 		$xml .= '<ListingDuration>GTC</ListingDuration>' . "\n";
@@ -463,6 +469,8 @@ class TCGiant_Sync_Exporter {
 		$settings = array(
 			'category_id'          => $global['export_category_id'] ?? '',
 			'condition_id'         => $global['export_condition_id'] ?? '1000',
+			'location'             => $global['export_location'] ?? '',
+			'postal_code'          => $global['export_postal_code'] ?? '',
 			'fulfillment_policy_id' => $global['export_fulfillment_policy'] ?? '',
 			'return_policy_id'     => $global['export_return_policy'] ?? '',
 			'payment_policy_id'    => $global['export_payment_policy'] ?? '',
@@ -495,6 +503,12 @@ class TCGiant_Sync_Exporter {
 
 		if ( empty( $settings['category_id'] ) ) {
 			$missing[] = __( 'eBay Category ID (set a default in TCGiant Sync settings)', 'tcgiant-sync' );
+		}
+		if ( empty( $settings['location'] ) ) {
+			$missing[] = __( 'Item Location (set city/state in TCGiant Sync settings)', 'tcgiant-sync' );
+		}
+		if ( empty( $settings['postal_code'] ) ) {
+			$missing[] = __( 'Postal Code (set ZIP code in TCGiant Sync settings)', 'tcgiant-sync' );
 		}
 		if ( empty( $settings['fulfillment_policy_id'] ) ) {
 			$missing[] = __( 'Fulfillment (Shipping) Policy (fetch policies in TCGiant Sync settings)', 'tcgiant-sync' );

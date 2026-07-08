@@ -1,5 +1,10 @@
 *** TCGiant Sync Changelog ***
 
+2026-07-08 - version 1.4.8
+- Fix: Resolved "No <Item.Location> exists or <Item.Location> is specified as an empty tag" error when pushing products to eBay. The required `<Location>` and `<PostalCode>` XML tags were missing from the AddItem/ReviseItem API call.
+- Feature: Added "Item Location" and "Postal Code" fields to the Push to eBay settings page, allowing sellers to configure their shipping origin city/state and ZIP code.
+- Improvement: Export validation now catches missing Location and Postal Code before hitting the eBay API, providing a clear settings-level error message instead of a raw API error.
+
 2026-07-01 - version 1.4.7
 - Feature: Added a native WooCommerce "BIN" field to the product inventory tab. This visually surfaces the `_bin_location` meta field, enabling users who map eBay Custom SKU to Bin Location to view and edit warehouse bin codes directly inside WooCommerce.
 

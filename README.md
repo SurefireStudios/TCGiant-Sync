@@ -1,6 +1,6 @@
 # TCGiant Sync
 
-[![Version](https://img.shields.io/badge/version-1.4.7-blue.svg)](https://wordpress.org/plugins/tcgiant-sync/)
+[![Version](https://img.shields.io/badge/version-1.4.8-blue.svg)](https://wordpress.org/plugins/tcgiant-sync/)
 [![License](https://img.shields.io/badge/License-GPL_v2-blue.svg)](https://www.gnu.org/licenses/gpl-2.0.html)
 [![Requires PHP](https://img.shields.io/badge/PHP-7.4%2B-green.svg)](#)
 [![Tested up to](https://img.shields.io/badge/WordPress-7.0-blue.svg)](#)
@@ -125,6 +125,7 @@ Whether a sale happens on eBay or WooCommerce, stock is adjusted on both platfor
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| **1.4.8** | 2026-07-08 | Fix Item.Location export error, add Location & Postal Code settings |
 | **1.4.7** | 2026-07-01 | Added native WooCommerce BIN field to Inventory tab for eBay SKU to Bin mapping |
 | **1.4.6** | 2026-06-29 | eBay SKU → Bin Location mapping, Free Shipping guidance for baked shipping |
 | **1.4.5** | 2026-06-29 | Fix UK/metric weight & dimensions, fix delta sync specs & photos |
