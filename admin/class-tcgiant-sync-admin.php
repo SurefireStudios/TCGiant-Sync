@@ -57,6 +57,7 @@ class TCGiant_Sync_Admin {
 		add_action( 'wp_ajax_tcgiant_push_product', array( $this, 'ajax_push_product' ) );
 		add_action( 'wp_ajax_tcgiant_fetch_policies', array( $this, 'ajax_fetch_policies' ) );
 		add_action( 'wp_ajax_tcgiant_export_status', array( $this, 'ajax_export_status' ) );
+		add_action( 'wp_ajax_tcgiant_browse_categories', array( $this, 'ajax_browse_categories' ) );
 
 		// Bulk action on WooCommerce Products list.
 		add_filter( 'bulk_actions-edit-product', array( $this, 'register_bulk_push_action' ) );
@@ -495,10 +496,13 @@ class TCGiant_Sync_Admin {
 		$sanitized = array();
 		if ( is_array( $input ) ) {
 			foreach ( $input as $key => $value ) {
+				$clean_key = sanitize_key( $key );
 				if ( is_array( $value ) ) {
-					$sanitized[ sanitize_key( $key ) ] = array_map( 'sanitize_text_field', $value );
+					$sanitized[ $clean_key ] = array_map( 'sanitize_text_field', $value );
+				} elseif ( 'custom_saved_categories' === $clean_key ) {
+					$sanitized[ $clean_key ] = sanitize_textarea_field( $value );
 				} else {
-					$sanitized[ sanitize_key( $key ) ] = sanitize_text_field( $value );
+					$sanitized[ $clean_key ] = sanitize_text_field( $value );
 				}
 			}
 		}
@@ -882,6 +886,37 @@ class TCGiant_Sync_Admin {
 	}
 
 	/**
+	 * AJAX: Browse eBay categories via the Taxonomy API.
+	 * If parent_id is empty, returns root categories. Otherwise returns children.
+	 */
+	public function ajax_browse_categories() {
+		check_ajax_referer( 'tcgiant_sync_ajax' );
+
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'Unauthorized.' ) );
+		}
+
+		if ( ! TCGiant_Sync_OAuth::instance()->is_authenticated() ) {
+			wp_send_json_error( array( 'message' => 'Not connected to eBay. Please connect first in Settings.' ) );
+		}
+
+		$parent_id = isset( $_POST['parent_id'] ) ? sanitize_text_field( wp_unslash( $_POST['parent_id'] ) ) : '';
+		$api = TCGiant_Sync_API::instance();
+
+		if ( empty( $parent_id ) ) {
+			$result = $api->get_category_tree_root();
+		} else {
+			$result = $api->get_category_subtree( $parent_id );
+		}
+
+		if ( is_wp_error( $result ) ) {
+			wp_send_json_error( array( 'message' => $result->get_error_message() ) );
+		}
+
+		wp_send_json_success( array( 'categories' => $result ) );
+	}
+
+	/**
 	 * Register "Push to eBay" as a WooCommerce bulk action.
 	 *
 	 * @param array $actions Existing bulk actions.
@@ -1088,7 +1123,7 @@ class TCGiant_Sync_Admin {
 		}
 		echo '</div>';
 		
-		$tcg_categories = TCGiant_Sync_Exporter::CATEGORIES;
+		$tcg_categories = TCGiant_Sync_Exporter::get_categories();
 		$current_category = $cat_override;
 		$is_custom_cat = ! empty( $current_category ) && ! isset( $tcg_categories[ $current_category ] );
 		$select_val    = $is_custom_cat ? 'custom' : $current_category;
@@ -1106,6 +1141,14 @@ class TCGiant_Sync_Admin {
 		echo '</select>';
 		
 		echo '<input type="text" name="_ebay_export_category_id_custom" id="_ebay_export_category_id_custom" value="' . esc_attr( $is_custom_cat ? $current_category : '' ) . '" placeholder="Enter custom eBay Category ID" style="width:100%; font-size:12px; ' . ( 'custom' === $select_val ? '' : 'display:none;' ) . '">';
+		echo '<button type="button" class="button" id="tc-browse-categories-btn-product" style="margin-top:4px;font-size:11px;width:100%;">
+			<span class="dashicons dashicons-category" style="font-size:13px;vertical-align:middle;margin-right:2px;"></span> Browse eBay Categories
+		</button>';
+		echo '<div id="tc-category-browser-product" style="display:none; margin-top:6px; border:1px solid #e5e5e5; border-radius:4px; padding:8px; background:#f9fafb;">
+			<div id="tc-category-breadcrumb-product" style="font-size:11px; color:#666; margin-bottom:6px;"></div>
+			<div id="tc-category-drilldown-product" style="max-height:200px; overflow-y:auto;"></div>
+			<div id="tc-category-browser-status-product" style="font-size:11px; color:#888; margin-top:4px;"></div>
+		</div>';
 		echo '</div>';
 		
 		echo '<script>
@@ -1116,6 +1159,87 @@ class TCGiant_Sync_Admin {
 					} else {
 						$("#_ebay_export_category_id_custom").hide();
 					}
+				});
+
+				// Category browser for product edit page.
+				var ajaxUrl = "' . esc_js( admin_url( 'admin-ajax.php' ) ) . '";
+				var nonce   = "' . esc_js( wp_create_nonce( 'tcgiant_sync_ajax' ) ) . '";
+				var trail   = [];
+
+				$("#tc-browse-categories-btn-product").on("click", function() {
+					var $b = $("#tc-category-browser-product");
+					$b.toggle();
+					if ($b.is(":visible") && $("#tc-category-drilldown-product").children().length === 0) {
+						loadCats("");
+					}
+				});
+
+				function loadCats(parentId) {
+					var $d = $("#tc-category-drilldown-product");
+					var $s = $("#tc-category-browser-status-product");
+					$d.html("<div style=\"text-align:center;padding:12px;color:#888;\">Loading…</div>");
+					$s.text("");
+					$.post(ajaxUrl, {action:"tcgiant_browse_categories",_ajax_nonce:nonce,parent_id:parentId}, function(res){
+						if (!res.success) { $d.html("<div style=\"color:#c00;padding:6px;\">"+res.data.message+"</div>"); return; }
+						renderCats(res.data.categories);
+					}).fail(function(){ $d.html("<div style=\"color:#c00;padding:6px;\">Request failed.</div>"); });
+				}
+
+				function renderCats(cats) {
+					var $d = $("#tc-category-drilldown-product");
+					var $s = $("#tc-category-browser-status-product");
+					$d.empty();
+					if (!cats || !cats.length) { $d.html("<div style=\"padding:6px;color:#888;\">No subcategories.</div>"); return; }
+					$.each(cats, function(i,cat){
+						var $row = $("<div style=\"display:flex;align-items:center;justify-content:space-between;padding:5px 6px;border-bottom:1px solid #eee;cursor:pointer;font-size:12px;\"></div>");
+						$row.append($("<span style=\"flex:1;\"></span>").text(cat.name));
+						$row.append(cat.leaf ? "<span style=\"color:#888;font-size:10px;\">leaf</span>" : "<span class=\"dashicons dashicons-arrow-right-alt2\" style=\"color:#888;font-size:13px;width:13px;height:13px;\"></span>");
+						$row.on("mouseenter",function(){$(this).css("background","#f0f6fc");}).on("mouseleave",function(){$(this).css("background","");});
+						$row.on("click",function(){
+							if (cat.leaf) {
+								$("#_ebay_export_category_id_select").val("custom");
+								$("#_ebay_export_category_id_custom").val(cat.id).show();
+								$s.html("✔ " + cat.name + " (" + cat.id + ")");
+								$("#tc-category-browser-product").slideUp(200);
+								trail = [];
+							} else {
+								trail.push({id:cat.id,name:cat.name});
+								renderBread();
+								loadCats(cat.id);
+								$s.html("Click to drill deeper, or <a href=\"#\" class=\"tc-prod-use\" data-id=\""+cat.id+"\">use <b>"+cat.name+" ("+cat.id+")</b></a>");
+							}
+						});
+						$d.append($row);
+					});
+				}
+
+				function renderBread() {
+					var $bc = $("#tc-category-breadcrumb-product");
+					$bc.empty();
+					var $root = $("<a href=\"#\" style=\"color:#2271b1;text-decoration:none;font-size:11px;\">All</a>");
+					$root.on("click",function(e){e.preventDefault();trail=[];renderBread();loadCats("");$("#tc-category-browser-status-product").text("");});
+					$bc.append($root);
+					$.each(trail,function(i,c){
+						$bc.append("<span style=\"margin:0 3px;color:#aaa;\"> › </span>");
+						if (i < trail.length-1) {
+							var $l = $("<a href=\"#\" style=\"color:#2271b1;text-decoration:none;font-size:11px;\"></a>").text(c.name);
+							(function(idx){$l.on("click",function(e){e.preventDefault();trail=trail.slice(0,idx+1);renderBread();loadCats(c.id);$("#tc-category-browser-status-product").text("");});})(i);
+							$bc.append($l);
+						} else {
+							$bc.append($("<b style=\"font-size:11px;\"></b>").text(c.name));
+						}
+					});
+				}
+
+				$("#tc-category-browser-status-product").on("click",".tc-prod-use",function(e){
+					e.preventDefault();
+					var id = $(this).data("id");
+					var last = trail.length ? trail[trail.length-1] : null;
+					$("#_ebay_export_category_id_select").val("custom");
+					$("#_ebay_export_category_id_custom").val(id).show();
+					$("#tc-category-browser-status-product").html("✔ " + (last?last.name:id) + " (" + id + ")");
+					$("#tc-category-browser-product").slideUp(200);
+					trail = [];
 				});
 			});
 		</script>';

@@ -22,7 +22,7 @@ $license_ui       = $license->get_status_for_ui();
 $preserve_keys = array( 'access_token', 'refresh_token', 'token_expiry', 'relay_secret', 'redirect_uri', 'app_id', 'cert_id', 'store_name', 'import_status', 'marketplace' );
 
 // TCG-relevant eBay category map (ID => label).
-$tcg_categories = TCGiant_Sync_Exporter::CATEGORIES;
+$tcg_categories = TCGiant_Sync_Exporter::get_categories();
 
 $current_category = $settings['export_category_id'] ?? '';
 // If the saved value isn't in our curated list, it's a custom ID.
@@ -145,6 +145,15 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						</select>
 						<p class="tc-hint"><?php esc_html_e( 'Select the eBay regional site where your listings are managed.', 'tcgiant-sync' ); ?></p>
 					</div>
+
+					<div class="tc-field" style="margin-top:24px;">
+						<label class="tc-label" for="custom_saved_categories"><?php esc_html_e( 'Saved Custom Categories', 'tcgiant-sync' ); ?></label>
+						<textarea class="tc-input" id="custom_saved_categories" name="tcgiant_sync_ebay_settings[custom_saved_categories]" rows="4" placeholder="<?php esc_attr_e( "e.g.\n12345\n67890: Vintage Posters", 'tcgiant-sync' ); ?>"><?php echo esc_textarea( $settings['custom_saved_categories'] ?? '' ); ?></textarea>
+						<p class="tc-hint">
+							<?php esc_html_e( 'Enter custom eBay Category IDs to make them available in the category dropdowns. Enter one per line. Format: ID or ID: Label', 'tcgiant-sync' ); ?>
+							<br><a href="https://www.isoldwhat.com/" target="_blank" rel="noopener"><?php esc_html_e( 'Find eBay Category IDs ↗', 'tcgiant-sync' ); ?></a>
+						</p>
+					</div>
 				</div>
 
 				<!-- Category Filter -->
@@ -166,7 +175,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 					<div class="tc-field" style="margin-top:24px;">
 						<label class="tc-label"><?php esc_html_e( 'eBay Standard Categories to Import', 'tcgiant-sync' ); ?></label>
 						<?php
-						$standard_cats = TCGiant_Sync_Exporter::CATEGORIES;
+						$standard_cats = TCGiant_Sync_Exporter::get_categories();
 						$selected_standard_cats = isset( $settings['import_standard_category_ids'] ) && is_array( $settings['import_standard_category_ids'] ) ? $settings['import_standard_category_ids'] : array();
 						?>
 						<div class="tc-checkbox-group" style="max-height:160px;overflow-y:auto;border:1px solid var(--tc-border);padding:12px;border-radius:4px;background:#fff;">
@@ -345,7 +354,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 				<?php settings_fields( 'tcgiant_sync_ebay_group' ); ?>
 				<?php
 				// Preserve all non-export fields.
-				$all_preserve = array_merge( $preserve_keys, array( 'category_ids', 'woo_category_ids', 'preserve_woo_category_ids', 'import_specs_as_tags', 'bake_shipping_into_price', 'sku_maps_to', 'sync_interval', 'enable_order_sync', 'overwrite_title', 'overwrite_desc', 'overwrite_price', 'overwrite_images', 'overwrite_taxonomy', 'overwrite_weight_dims' ) );
+				$all_preserve = array_merge( $preserve_keys, array( 'custom_saved_categories', 'category_ids', 'woo_category_ids', 'preserve_woo_category_ids', 'import_specs_as_tags', 'bake_shipping_into_price', 'sku_maps_to', 'sync_interval', 'enable_order_sync', 'overwrite_title', 'overwrite_desc', 'overwrite_price', 'overwrite_images', 'overwrite_taxonomy', 'overwrite_weight_dims' ) );
 				// Note: export condition descriptor fields are handled by the export form itself.
 				foreach ( $all_preserve as $key ) {
 					$val = $settings[ $key ] ?? null;
@@ -354,6 +363,8 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 							foreach ( $val as $v ) {
 								echo '<input type="hidden" name="tcgiant_sync_ebay_settings[' . esc_attr( $key ) . '][]" value="' . esc_attr( $v ) . '">';
 							}
+						} elseif ( 'custom_saved_categories' === $key ) {
+							echo '<textarea name="tcgiant_sync_ebay_settings[' . esc_attr( $key ) . ']" style="display:none;">' . esc_textarea( $val ) . '</textarea>';
 						} else {
 							echo '<input type="hidden" name="tcgiant_sync_ebay_settings[' . esc_attr( $key ) . ']" value="' . esc_attr( $val ) . '">';
 						}
@@ -377,7 +388,16 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						value="<?php echo esc_attr( $current_category ); ?>"
 						placeholder="<?php esc_attr_e( 'Enter numeric eBay Category ID', 'tcgiant-sync' ); ?>"
 						style="display:<?php echo ( ! $current_category || $is_custom_cat ) ? 'block' : 'none'; ?>;">
-					<p class="tc-hint"><?php esc_html_e( 'Choose a common TCG category or select "Custom" to enter any eBay category ID. Per-product overrides available on the product edit screen.', 'tcgiant-sync' ); ?></p>
+					<button type="button" class="tc-button secondary" id="tc-browse-categories-btn" style="margin-top:6px;font-size:12px;">
+						<span class="dashicons dashicons-category" style="font-size:14px;vertical-align:middle;margin-right:2px;"></span>
+						<?php esc_html_e( 'Browse eBay Categories', 'tcgiant-sync' ); ?>
+					</button>
+					<div id="tc-category-browser" style="display:none; margin-top:8px; border:1px solid var(--tc-border); border-radius:6px; padding:12px; background:#f9fafb;">
+						<div id="tc-category-breadcrumb" style="font-size:12px; color:#666; margin-bottom:8px;"></div>
+						<div id="tc-category-drilldown" style="max-height:250px; overflow-y:auto;"></div>
+						<div id="tc-category-browser-status" style="font-size:12px; color:#888; margin-top:6px;"></div>
+					</div>
+					<p class="tc-hint"><?php esc_html_e( 'Choose a common category, browse the full eBay tree, or select "Custom" to enter any category ID. Per-product overrides available on the product edit screen.', 'tcgiant-sync' ); ?></p>
 				</div>
 
 				<!-- Condition Type -->
@@ -559,5 +579,138 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 	}
 	$('#export_condition_type').on('change', toggleConditionFields);
 	toggleConditionFields(); // Init on page load.
+
+	// ─── Category Browser (Drill-Down) ───
+	function initCategoryBrowser(opts) {
+		var $btn        = $(opts.btn);
+		var $browser    = $(opts.browser);
+		var $breadcrumb = $(opts.breadcrumb);
+		var $drilldown  = $(opts.drilldown);
+		var $status     = $(opts.status);
+		var onSelect    = opts.onSelect;
+		var trail       = []; // [{id, name}]
+
+		$btn.on('click', function() {
+			$browser.toggle();
+			if ($browser.is(':visible') && $drilldown.children().length === 0) {
+				loadCategories('');
+			}
+		});
+
+		function loadCategories(parentId) {
+			$drilldown.html('<div style="text-align:center;padding:16px;color:#888;">Loading…</div>');
+			$status.text('');
+			$.post(tcgiantSync.ajaxUrl, {
+				action: 'tcgiant_browse_categories',
+				_ajax_nonce: tcgiantSync.nonce,
+				parent_id: parentId
+			}, function(res) {
+				if (!res.success) {
+					$drilldown.html('<div style="color:#cc1818;padding:8px;">'+res.data.message+'</div>');
+					return;
+				}
+				renderCategories(res.data.categories);
+			}).fail(function() {
+				$drilldown.html('<div style="color:#cc1818;padding:8px;">Request failed. Please try again.</div>');
+			});
+		}
+
+		function renderCategories(cats) {
+			$drilldown.empty();
+			if (!cats || cats.length === 0) {
+				$drilldown.html('<div style="padding:8px;color:#888;">No subcategories found.</div>');
+				return;
+			}
+			var $list = $('<div></div>');
+			$.each(cats, function(i, cat) {
+				var $item = $('<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 8px;border-bottom:1px solid #eee;cursor:pointer;font-size:13px;transition:background 0.15s;"></div>');
+				var $label = $('<span style="flex:1;"></span>').text(cat.name);
+				$item.append($label);
+				if (!cat.leaf) {
+					$item.append('<span class="dashicons dashicons-arrow-right-alt2" style="color:#888;font-size:14px;width:14px;height:14px;"></span>');
+				} else {
+					$item.append('<span style="color:#888;font-size:11px;">leaf</span>');
+				}
+				$item.on('mouseenter', function() { $(this).css('background', '#f0f6fc'); });
+				$item.on('mouseleave', function() { $(this).css('background', ''); });
+				$item.on('click', function() {
+					if (cat.leaf) {
+						selectCategory(cat);
+					} else {
+						trail.push({id: cat.id, name: cat.name});
+						renderBreadcrumb();
+						loadCategories(cat.id);
+						$status.html('Click a category to drill deeper, or <a href="#" class="tc-cat-use-this" data-id="' + cat.id + '">use <strong>' + cat.name + ' (' + cat.id + ')</strong></a>');
+					}
+				});
+				$list.append($item);
+			});
+			$drilldown.append($list);
+		}
+
+		function renderBreadcrumb() {
+			$breadcrumb.empty();
+			var $root = $('<a href="#" style="color:#2271b1;text-decoration:none;">All Categories</a>');
+			$root.on('click', function(e) {
+				e.preventDefault();
+				trail = [];
+				renderBreadcrumb();
+				loadCategories('');
+				$status.text('');
+			});
+			$breadcrumb.append($root);
+			$.each(trail, function(i, crumb) {
+				$breadcrumb.append('<span style="margin:0 4px;color:#aaa;"> › </span>');
+				if (i < trail.length - 1) {
+					var $link = $('<a href="#" style="color:#2271b1;text-decoration:none;"></a>').text(crumb.name);
+					(function(idx) {
+						$link.on('click', function(e) {
+							e.preventDefault();
+							trail = trail.slice(0, idx + 1);
+							renderBreadcrumb();
+							loadCategories(crumb.id);
+							$status.text('');
+						});
+					})(i);
+					$breadcrumb.append($link);
+				} else {
+					$breadcrumb.append($('<strong></strong>').text(crumb.name));
+				}
+			});
+		}
+
+		function selectCategory(cat) {
+			onSelect(cat.id, cat.name);
+			$status.html('✔ Selected: <strong>' + cat.name + '</strong> (' + cat.id + ')');
+			$browser.slideUp(200);
+			trail = [];
+		}
+
+		// Delegate click on "use this" link in status area.
+		$status.on('click', '.tc-cat-use-this', function(e) {
+			e.preventDefault();
+			var id = $(this).data('id');
+			var lastCrumb = trail[trail.length - 1];
+			onSelect(id, lastCrumb ? lastCrumb.name : id);
+			$status.html('✔ Selected: <strong>' + (lastCrumb ? lastCrumb.name : id) + '</strong> (' + id + ')');
+			$browser.slideUp(200);
+			trail = [];
+		});
+	}
+
+	// Init for Settings page
+	if ($('#tc-browse-categories-btn').length) {
+		initCategoryBrowser({
+			btn: '#tc-browse-categories-btn',
+			browser: '#tc-category-browser',
+			breadcrumb: '#tc-category-breadcrumb',
+			drilldown: '#tc-category-drilldown',
+			status: '#tc-category-browser-status',
+			onSelect: function(id) {
+				$('#export_category_select').val('custom');
+				$('#export_category_id_custom').val(id).show();
+			}
+		});
+	}
 })(jQuery);
 </script>

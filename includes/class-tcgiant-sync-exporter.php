@@ -204,6 +204,48 @@ class TCGiant_Sync_Exporter {
 	const MAX_IMAGES = 12;
 
 	/**
+	 * Get categories, including user-defined custom saved categories.
+	 *
+	 * @return array Map of category ID => label.
+	 */
+	public static function get_categories() {
+		$categories = self::CATEGORIES;
+		
+		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
+		if ( ! empty( $settings['custom_saved_categories'] ) ) {
+			$lines = explode( "\n", $settings['custom_saved_categories'] );
+			$custom_cats = array();
+			foreach ( $lines as $line ) {
+				$line = trim( $line );
+				if ( empty( $line ) ) {
+					continue;
+				}
+				if ( strpos( $line, ':' ) !== false ) {
+					list( $id, $label ) = explode( ':', $line, 2 );
+					$id    = trim( $id );
+					$label = trim( $label );
+					if ( '' !== $id && ctype_digit( $id ) ) {
+						$custom_cats[ $id ] = '' !== $label ? $label : 'Custom ' . $id;
+					}
+				} elseif ( ctype_digit( $line ) ) {
+					$custom_cats[ $line ] = 'Custom ' . $line;
+				}
+			}
+			
+			if ( ! empty( $custom_cats ) ) {
+				$custom_option = $categories['custom'];
+				unset( $categories['custom'] );
+				foreach ( $custom_cats as $id => $label ) {
+					$categories[ $id ] = $label;
+				}
+				$categories['custom'] = $custom_option;
+			}
+		}
+		
+		return $categories;
+	}
+
+	/**
 	 * Main instance.
 	 */
 	public static function instance() {
@@ -814,28 +856,69 @@ class TCGiant_Sync_Exporter {
 		$xml = '<ConditionDescriptors>' . "\n";
 
 		if ( 'graded' === $settings['condition_type'] ) {
-			// Professional Grader (required).
-			if ( ! empty( $settings['grader_id'] ) ) {
-				$xml .= "\t<ConditionDescriptor>\n";
-				$xml .= "\t\t<Name>27501</Name>\n";
-				$xml .= "\t\t<Value>" . esc_attr( $settings['grader_id'] ) . "</Value>\n";
-				$xml .= "\t</ConditionDescriptor>\n";
-			}
+			if ( self::is_coins_category( $settings['category_id'], $item_type ) ) {
+				// Professional Grader (Name 1)
+				if ( ! empty( $settings['grader_id'] ) ) {
+					$xml .= "\t<ConditionDescriptor>\n";
+					$xml .= "\t\t<Name>1</Name>\n";
+					$xml .= "\t\t<Value>" . esc_attr( $settings['grader_id'] ) . "</Value>\n";
+					$xml .= "\t</ConditionDescriptor>\n";
+				}
 
-			// Grade (required).
-			if ( ! empty( $settings['grade_value'] ) ) {
-				$xml .= "\t<ConditionDescriptor>\n";
-				$xml .= "\t\t<Name>27502</Name>\n";
-				$xml .= "\t\t<Value>" . esc_attr( $settings['grade_value'] ) . "</Value>\n";
-				$xml .= "\t</ConditionDescriptor>\n";
-			}
+				// Grade (split into Letter [3] and Numeric [4])
+				if ( ! empty( $settings['grade_value'] ) ) {
+					$parts = explode( ' ', $settings['grade_value'], 2 );
+					if ( count( $parts ) === 2 ) {
+						// Letter grade
+						$xml .= "\t<ConditionDescriptor>\n";
+						$xml .= "\t\t<Name>3</Name>\n";
+						$xml .= "\t\t<Value>" . esc_attr( $parts[0] ) . "</Value>\n";
+						$xml .= "\t</ConditionDescriptor>\n";
+						// Numeric grade
+						$xml .= "\t<ConditionDescriptor>\n";
+						$xml .= "\t\t<Name>4</Name>\n";
+						$xml .= "\t\t<Value>" . esc_attr( $parts[1] ) . "</Value>\n";
+						$xml .= "\t</ConditionDescriptor>\n";
+					} else {
+						// Fallback if grade is not space-separated
+						$xml .= "\t<ConditionDescriptor>\n";
+						$xml .= "\t\t<Name>3</Name>\n";
+						$xml .= "\t\t<Value>" . esc_attr( $settings['grade_value'] ) . "</Value>\n";
+						$xml .= "\t</ConditionDescriptor>\n";
+					}
+				}
 
-			// Certification Number (optional).
-			if ( ! empty( $settings['cert_number'] ) ) {
-				$xml .= "\t<ConditionDescriptor>\n";
-				$xml .= "\t\t<Name>27503</Name>\n";
-				$xml .= "\t\t<AdditionalInfo>" . esc_attr( $settings['cert_number'] ) . "</AdditionalInfo>\n";
-				$xml .= "\t</ConditionDescriptor>\n";
+				// Certification Number (Name 2)
+				if ( ! empty( $settings['cert_number'] ) ) {
+					$xml .= "\t<ConditionDescriptor>\n";
+					$xml .= "\t\t<Name>2</Name>\n";
+					$xml .= "\t\t<AdditionalInfo>" . esc_attr( $settings['cert_number'] ) . "</AdditionalInfo>\n";
+					$xml .= "\t</ConditionDescriptor>\n";
+				}
+			} else {
+				// Professional Grader (required) for TCG.
+				if ( ! empty( $settings['grader_id'] ) ) {
+					$xml .= "\t<ConditionDescriptor>\n";
+					$xml .= "\t\t<Name>27501</Name>\n";
+					$xml .= "\t\t<Value>" . esc_attr( $settings['grader_id'] ) . "</Value>\n";
+					$xml .= "\t</ConditionDescriptor>\n";
+				}
+	
+				// Grade (required) for TCG.
+				if ( ! empty( $settings['grade_value'] ) ) {
+					$xml .= "\t<ConditionDescriptor>\n";
+					$xml .= "\t\t<Name>27502</Name>\n";
+					$xml .= "\t\t<Value>" . esc_attr( $settings['grade_value'] ) . "</Value>\n";
+					$xml .= "\t</ConditionDescriptor>\n";
+				}
+	
+				// Certification Number (optional) for TCG.
+				if ( ! empty( $settings['cert_number'] ) ) {
+					$xml .= "\t<ConditionDescriptor>\n";
+					$xml .= "\t\t<Name>27503</Name>\n";
+					$xml .= "\t\t<AdditionalInfo>" . esc_attr( $settings['cert_number'] ) . "</AdditionalInfo>\n";
+					$xml .= "\t</ConditionDescriptor>\n";
+				}
 			}
 		} elseif ( 'ungraded' === $settings['condition_type'] ) {
 			// Ungraded condition (required).

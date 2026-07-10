@@ -1,5 +1,13 @@
 *** TCGiant Sync Changelog ***
 
+2026-07-10 - version 1.6.0
+- Feature: New "Browse eBay Categories" drill-down browser on Settings and Product edit pages. Browse the full eBay category tree to find the correct category ID without leaving the plugin. Uses the eBay Taxonomy API with 7-day caching.
+- Feature: New "Saved Custom Categories" textarea in Settings. Enter frequently-used eBay Category IDs (one per line, format: ID or ID: Label) and they appear in all category dropdowns across the plugin.
+- Feature: Added "Find eBay Category IDs" link in Settings pointing to a free category lookup tool.
+- Fix: Resolved "Condition descriptor is not valid for condition INVALID_CONDITION" error when pushing graded coins to eBay. Coins require different ConditionDescriptor names (1, 3, 4, 2) than Trading Cards (27501, 27502, 27503). The grade is now correctly split into Letter Grade and Numeric Grade as eBay requires for coins (e.g., "MS 64" → Letter: "MS", Numeric: "64").
+- Fix: Custom saved categories textarea content is now preserved correctly across form saves using sanitize_textarea_field() instead of sanitize_text_field() which strips newlines.
+- Fix: Hidden field preservation for custom categories now uses a hidden textarea to maintain newlines when saving from the Export Settings form.
+
 2026-07-08 - version 1.5.3
 - Feature: Completely decoupled the "Graders" and "Grades" dropdowns for Trading Cards and Coins.
 - UX: When selecting "Trading Cards", the Grader list now populates with 29 specific TCG authenticators (PSA, BGS, CGC, TAG, etc.) and a 1-10 grade scale.

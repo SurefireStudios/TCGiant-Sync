@@ -552,4 +552,108 @@ class TCGiant_Sync_API {
 			'marketplace_id' => $marketplace_id,
 		) );
 	}
+
+	// =========================================================================
+	// Category Tree (Taxonomy API)
+	// =========================================================================
+
+	/**
+	 * eBay marketplace ID → Taxonomy API category_tree_id mapping.
+	 */
+	const CATEGORY_TREE_IDS = array(
+		'EBAY_US' => '0',
+		'EBAY_GB' => '3',
+		'EBAY_CA' => '2',
+		'EBAY_AU' => '15',
+		'EBAY_DE' => '77',
+		'EBAY_FR' => '71',
+		'EBAY_IT' => '101',
+		'EBAY_ES' => '186',
+	);
+
+	/**
+	 * Get top-level eBay categories (root children) from the Taxonomy API.
+	 * Cached in a transient for 7 days since eBay's tree rarely changes.
+	 *
+	 * @return array|WP_Error Array of categories [{ id, name, leaf }] or error.
+	 */
+	public function get_category_tree_root() {
+		$config  = $this->get_marketplace_config();
+		$tree_id = self::CATEGORY_TREE_IDS[ $config['marketplace_id'] ] ?? '0';
+
+		$transient_key = 'tcgiant_cat_tree_root_' . $tree_id;
+		$cached = get_transient( $transient_key );
+		if ( false !== $cached ) {
+			return $cached;
+		}
+
+		$response = $this->request(
+			'commerce/taxonomy/v1/category_tree/' . $tree_id,
+			'GET',
+			array(),
+			array(),
+			false
+		);
+
+		if ( is_wp_error( $response ) ) {
+			return $response;
+		}
+
+		$categories = array();
+		if ( ! empty( $response['rootCategoryNode']['childCategoryTreeNodes'] ) ) {
+			foreach ( $response['rootCategoryNode']['childCategoryTreeNodes'] as $node ) {
+				$categories[] = array(
+					'id'   => $node['category']['categoryId'] ?? '',
+					'name' => $node['category']['categoryName'] ?? '',
+					'leaf' => empty( $node['childCategoryTreeNodes'] ),
+				);
+			}
+		}
+
+		set_transient( $transient_key, $categories, 7 * DAY_IN_SECONDS );
+		return $categories;
+	}
+
+	/**
+	 * Get children of a specific eBay category via the Taxonomy API.
+	 *
+	 * @param string $category_id The parent category ID.
+	 * @return array|WP_Error Array of categories [{ id, name, leaf }] or error.
+	 */
+	public function get_category_subtree( $category_id ) {
+		$config  = $this->get_marketplace_config();
+		$tree_id = self::CATEGORY_TREE_IDS[ $config['marketplace_id'] ] ?? '0';
+
+		$transient_key = 'tcgiant_cat_sub_' . $tree_id . '_' . $category_id;
+		$cached = get_transient( $transient_key );
+		if ( false !== $cached ) {
+			return $cached;
+		}
+
+		$response = $this->request(
+			'commerce/taxonomy/v1/category_tree/' . $tree_id . '/get_category_subtree',
+			'GET',
+			array(),
+			array( 'category_id' => $category_id ),
+			false
+		);
+
+		if ( is_wp_error( $response ) ) {
+			return $response;
+		}
+
+		$categories = array();
+		if ( ! empty( $response['categorySubtreeNode']['childCategoryTreeNodes'] ) ) {
+			foreach ( $response['categorySubtreeNode']['childCategoryTreeNodes'] as $node ) {
+				$categories[] = array(
+					'id'   => $node['category']['categoryId'] ?? '',
+					'name' => $node['category']['categoryName'] ?? '',
+					'leaf' => empty( $node['childCategoryTreeNodes'] ),
+				);
+			}
+		}
+
+		set_transient( $transient_key, $categories, 7 * DAY_IN_SECONDS );
+		return $categories;
+	}
 }
