@@ -269,6 +269,10 @@
                     alert(res.data ? (res.data.message || 'Failed to load categories.') : 'Failed to load categories.');
                     return;
                 }
+                if (!res.data.categories || res.data.categories.length === 0) {
+                    alert('No custom store categories were found on your eBay account.');
+                    return;
+                }
                 $dropdown.empty().append('<option value="">- Select a category -</option>');
                 res.data.categories.forEach(function(cat) {
                     $dropdown.append('<option value="' + esc(cat.raw) + '">' + esc(cat.name) + '</option>');
