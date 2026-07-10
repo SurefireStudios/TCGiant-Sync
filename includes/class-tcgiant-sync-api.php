@@ -316,7 +316,7 @@ class TCGiant_Sync_API {
 	 * Get user's eBay Store Details and Categories via Trading API.
 	 */
 	public function get_store() {
-		$xml = '<DetailLevel>ReturnAll</DetailLevel>';
+		$xml = '<DetailLevel>ReturnAll</DetailLevel><CategoryStructureOnly>true</CategoryStructureOnly>';
 		return $this->trading_api_request( 'GetStore', $xml );
 	}
 
