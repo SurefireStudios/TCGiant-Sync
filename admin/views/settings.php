@@ -397,7 +397,9 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						<label class="tc-label" for="export_grader_id"><?php esc_html_e( 'Professional Grader', 'tcgiant-sync' ); ?></label>
 						<select class="tc-select" id="export_grader_id" name="tcgiant_sync_ebay_settings[export_grader_id]">
 							<option value=""><?php esc_html_e( '— Select grader —', 'tcgiant-sync' ); ?></option>
-							<?php foreach ( TCGiant_Sync_Exporter::GRADERS as $gname => $gid ) : ?>
+							<?php 
+							$all_graders = array_merge( TCGiant_Sync_Exporter::GRADERS_TCG, TCGiant_Sync_Exporter::GRADERS_COINS );
+							foreach ( $all_graders as $gname => $gid ) : ?>
 								<option value="<?php echo esc_attr( $gid ); ?>" <?php selected( $settings['export_grader_id'] ?? '', $gid ); ?>>
 									<?php echo esc_html( $gname ); ?>
 								</option>

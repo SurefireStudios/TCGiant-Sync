@@ -63,7 +63,7 @@ $export_state = TCGiant_Sync_Exporter::get_export_state();
 				<?php
 				$cond_type = $settings['export_condition_type'] ?? '';
 				if ( 'graded' === $cond_type ) {
-					$graders    = TCGiant_Sync_Exporter::GRADERS;
+					$graders    = array_merge( TCGiant_Sync_Exporter::GRADERS_TCG, TCGiant_Sync_Exporter::GRADERS_COINS );
 					$grader_id  = $settings['export_grader_id'] ?? '';
 					$grader_lbl = array_search( $grader_id, $graders, true );
 					$grade_val  = $settings['export_grade_value'] ?? '';
@@ -194,7 +194,7 @@ $export_state = TCGiant_Sync_Exporter::get_export_state();
 					<?php
 					$cond_type = $settings['export_condition_type'] ?? '';
 					if ( 'graded' === $cond_type ) {
-						$graders    = TCGiant_Sync_Exporter::GRADERS;
+						$graders    = array_merge( TCGiant_Sync_Exporter::GRADERS_TCG, TCGiant_Sync_Exporter::GRADERS_COINS );
 						$grader_id  = $settings['export_grader_id'] ?? '';
 						$grader_lbl = array_search( $grader_id, $graders, true );
 						$grade_val  = $settings['export_grade_value'] ?? '';

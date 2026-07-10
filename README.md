@@ -1,6 +1,6 @@
 # TCGiant Sync
 
-[![Version](https://img.shields.io/badge/version-1.5.4-blue.svg)](https://wordpress.org/plugins/tcgiant-sync/)
+[![Version](https://img.shields.io/badge/version-1.5.5-blue.svg)](https://wordpress.org/plugins/tcgiant-sync/)
 [![License](https://img.shields.io/badge/License-GPL_v2-blue.svg)](https://www.gnu.org/licenses/gpl-2.0.html)
 [![Requires PHP](https://img.shields.io/badge/PHP-7.4%2B-green.svg)](#)
 [![Tested up to](https://img.shields.io/badge/WordPress-7.0-blue.svg)](#)
@@ -127,6 +127,7 @@ Whether a sale happens on eBay or WooCommerce, stock is adjusted on both platfor
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| **1.5.5** | 2026-07-10 | Fixed fatal error on settings and export pages caused by missing GRADERS constant |
 | **1.5.4** | 2026-07-10 | Added Standard eBay Categories filter, fixed deep subcategory condition API errors, and added UI error handling for category fetch |
 | **1.5.0** | 2026-07-08 | eBay ConditionDescriptor support for Trading Cards & Coins (Graded/Ungraded), Coins categories added to export dropdown |
 | **1.4.8** | 2026-07-08 | Fix Item.Location export error, add Location & Postal Code settings |

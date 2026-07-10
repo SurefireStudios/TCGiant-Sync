@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.5.4
+Stable tag: 1.5.5
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -82,6 +82,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 6. Per-product Push to eBay button with Category and Condition overrides.
 
 == Changelog ==
+
+= 1.5.5 - 2026-07-10 =
+* Fix: Resolved a fatal error (`Undefined constant GRADERS`) on the settings and export pages caused by the recent splitting of the graders list into separate Trading Cards and Coins arrays.
 
 = 1.5.4 - 2026-07-10 =
 * Feature: Added "eBay Standard Categories to Import" filter to settings to allow importing specific standard categories (e.g. Trading Card Games, Coins: US) without requiring an eBay Store subscription.
