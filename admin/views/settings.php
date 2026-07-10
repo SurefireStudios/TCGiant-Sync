@@ -22,24 +22,7 @@ $license_ui       = $license->get_status_for_ui();
 $preserve_keys = array( 'access_token', 'refresh_token', 'token_expiry', 'relay_secret', 'redirect_uri', 'app_id', 'cert_id', 'store_name', 'import_status', 'marketplace' );
 
 // TCG-relevant eBay category map (ID => label).
-$tcg_categories = array(
-	''       => '— Select a default category —',
-	'183050' => 'Trading Card Games',
-	'2536'   => 'Trading Cards',
-	'261068' => 'Non-Sport Trading Card Games',
-	'180006' => 'Pokémon Individual Cards',
-	'176055' => 'Magic: The Gathering Cards',
-	'69243'  => 'Yu-Gi-Oh! Individual Cards',
-	'183454' => 'Dragon Ball Super CCG',
-	'183446' => 'Disney Lorcana',
-	'185089' => 'One Piece Card Game',
-	'253'    => 'Coins: US',
-	'256'    => 'Coins: World',
-	'3377'   => 'Coins: Canada',
-	'4733'   => 'Coins: Ancient',
-	'18466'  => 'Coins: Medieval',
-	'custom' => 'Custom Category ID...',
-);
+$tcg_categories = TCGiant_Sync_Exporter::CATEGORIES;
 
 $current_category = $settings['export_category_id'] ?? '';
 // If the saved value isn't in our curated list, it's a custom ID.
@@ -168,16 +151,35 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 				<div class="tc-section">
 					<h3 class="tc-section-title"><?php esc_html_e( 'Import Filters', 'tcgiant-sync' ); ?></h3>
 					<div class="tc-field">
-						<label class="tc-label"><?php esc_html_e( 'eBay Store Categories to Import', 'tcgiant-sync' ); ?></label>
+						<label class="tc-label"><?php esc_html_e( 'eBay Custom Store Categories to Import', 'tcgiant-sync' ); ?></label>
 						<div class="tc-category-selector" id="tc-category-selector">
 							<div class="tc-category-tags" id="tc-category-tags"></div>
 							<input type="hidden" name="tcgiant_sync_ebay_settings[category_ids]" id="tc-category-hidden" value="<?php echo esc_attr( $settings['category_ids'] ?? '' ); ?>">
 							<div style="display:flex;gap:6px;">
 								<select class="tc-select" id="tc-category-dropdown" style="display:none;"></select>
-								<button type="button" class="tc-button secondary" id="tc-load-categories" style="white-space:nowrap;flex-shrink:0;font-size:12px;"><?php esc_html_e( 'Load eBay Categories', 'tcgiant-sync' ); ?></button>
+								<button type="button" class="tc-button secondary" id="tc-load-categories" style="white-space:nowrap;flex-shrink:0;font-size:12px;"><?php esc_html_e( 'Load Store Categories', 'tcgiant-sync' ); ?></button>
 							</div>
-							<p class="tc-hint"><?php esc_html_e( 'Load your store categories, then select which ones to import. Leave empty to import all.', 'tcgiant-sync' ); ?></p>
+							<p class="tc-hint"><?php esc_html_e( 'Load your custom eBay store categories, then select which ones to import. Leave empty to import all.', 'tcgiant-sync' ); ?></p>
 						</div>
+					</div>
+
+					<div class="tc-field" style="margin-top:24px;">
+						<label class="tc-label"><?php esc_html_e( 'eBay Standard Categories to Import', 'tcgiant-sync' ); ?></label>
+						<?php
+						$standard_cats = TCGiant_Sync_Exporter::CATEGORIES;
+						$selected_standard_cats = isset( $settings['import_standard_category_ids'] ) && is_array( $settings['import_standard_category_ids'] ) ? $settings['import_standard_category_ids'] : array();
+						?>
+						<div class="tc-checkbox-group" style="max-height:160px;overflow-y:auto;border:1px solid var(--tc-border);padding:12px;border-radius:4px;background:#fff;">
+							<?php foreach ( $standard_cats as $id => $label ) : 
+								if ( '' === $id || 'custom' === $id ) continue;
+							?>
+								<label style="display:block;margin-bottom:6px;font-weight:normal;cursor:pointer;">
+									<input type="checkbox" name="tcgiant_sync_ebay_settings[import_standard_category_ids][]" value="<?php echo esc_attr( $id ); ?>" <?php checked( in_array( $id, $selected_standard_cats ) ); ?>>
+									<?php echo esc_html( $label . ' (' . $id . ')' ); ?>
+								</label>
+							<?php endforeach; ?>
+						</div>
+						<p class="tc-hint" style="margin-top:8px;"><?php esc_html_e( 'Only import items that belong to these standard eBay categories. If neither Custom nor Standard categories are selected, ALL active listings will be imported.', 'tcgiant-sync' ); ?></p>
 					</div>
 
 					<div class="tc-field" style="margin-top:24px;">

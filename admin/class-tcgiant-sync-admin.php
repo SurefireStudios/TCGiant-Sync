@@ -946,8 +946,14 @@ class TCGiant_Sync_Admin {
 			return;
 		}
 		// phpcs:disable WordPress.Security.NonceVerification.Missing
-		if ( isset( $_POST['_ebay_export_category_id'] ) ) {
-			update_post_meta( $post_id, '_ebay_export_category_id', sanitize_text_field( wp_unslash( $_POST['_ebay_export_category_id'] ) ) );
+		if ( isset( $_POST['_ebay_export_category_id_select'] ) ) {
+			$cat_select = sanitize_text_field( wp_unslash( $_POST['_ebay_export_category_id_select'] ) );
+			if ( 'custom' === $cat_select ) {
+				$cat_val = isset( $_POST['_ebay_export_category_id_custom'] ) ? sanitize_text_field( wp_unslash( $_POST['_ebay_export_category_id_custom'] ) ) : '';
+			} else {
+				$cat_val = $cat_select;
+			}
+			update_post_meta( $post_id, '_ebay_export_category_id', $cat_val );
 		}
 		if ( isset( $_POST['_ebay_export_condition_id'] ) ) {
 			update_post_meta( $post_id, '_ebay_export_condition_id', sanitize_text_field( wp_unslash( $_POST['_ebay_export_condition_id'] ) ) );
@@ -1081,8 +1087,38 @@ class TCGiant_Sync_Admin {
 			echo ' <span style="color:#888;">(global: ' . esc_html( $global_cat ) . ')</span>';
 		}
 		echo '</div>';
-		echo '<input type="text" name="_ebay_export_category_id" value="' . esc_attr( $cat_override ) . '" placeholder="' . esc_attr( $global_cat ?: __( 'Use global default', 'tcgiant-sync' ) ) . '" style="width:100%; font-size:12px;">';
+		
+		$tcg_categories = TCGiant_Sync_Exporter::CATEGORIES;
+		$current_category = $cat_override;
+		$is_custom_cat = ! empty( $current_category ) && ! isset( $tcg_categories[ $current_category ] );
+		$select_val    = $is_custom_cat ? 'custom' : $current_category;
+
+		echo '<select name="_ebay_export_category_id_select" id="_ebay_export_category_id_select" style="width:100%; font-size:12px; margin-bottom:4px;">';
+		foreach ( $tcg_categories as $id => $label ) {
+			echo '<option value="' . esc_attr( $id ) . '" ' . selected( $select_val, $id, false ) . '>';
+			if ( '' === $id ) {
+				echo esc_html( $label ) . ' ' . ( $global_cat ? '(Global: ' . esc_html( $global_cat ) . ')' : '' );
+			} else {
+				echo esc_html( $label . ( 'custom' !== $id ? " ($id)" : '' ) );
+			}
+			echo '</option>';
+		}
+		echo '</select>';
+		
+		echo '<input type="text" name="_ebay_export_category_id_custom" id="_ebay_export_category_id_custom" value="' . esc_attr( $is_custom_cat ? $current_category : '' ) . '" placeholder="Enter custom eBay Category ID" style="width:100%; font-size:12px; ' . ( 'custom' === $select_val ? '' : 'display:none;' ) . '">';
 		echo '</div>';
+		
+		echo '<script>
+			jQuery(function($){
+				$("#_ebay_export_category_id_select").on("change", function(){
+					if($(this).val() === "custom") {
+						$("#_ebay_export_category_id_custom").show();
+					} else {
+						$("#_ebay_export_category_id_custom").hide();
+					}
+				});
+			});
+		</script>';
 
 		echo '</div>'; // end flex row
 

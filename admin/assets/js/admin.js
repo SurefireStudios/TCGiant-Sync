@@ -266,7 +266,7 @@
             }, function(res) {
                 $loadBtn.text('Load eBay Categories').prop('disabled', false);
                 if (!res.success) {
-                    alert(res.data.message || 'Failed to load categories.');
+                    alert(res.data ? (res.data.message || 'Failed to load categories.') : 'Failed to load categories.');
                     return;
                 }
                 $dropdown.empty().append('<option value="">- Select a category -</option>');
@@ -274,6 +274,9 @@
                     $dropdown.append('<option value="' + esc(cat.raw) + '">' + esc(cat.name) + '</option>');
                 });
                 $dropdown.show().focus();
+            }).fail(function(xhr) {
+                $loadBtn.text('Load eBay Categories').prop('disabled', false);
+                alert('Network error or server issue when loading categories.');
             });
         });
 

@@ -299,8 +299,11 @@ class TCGiant_Sync_Importer {
 
 		// Category filtering (same logic as fetch_listings_page).
 		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
-		$is_filtering = ! empty( $settings['category_ids'] );
-		$valid_ids = $is_filtering ? $this->get_allowed_category_ids() : array();
+		$is_custom_filtering = ! empty( $settings['category_ids'] );
+		$standard_cats       = ! empty( $settings['import_standard_category_ids'] ) && is_array( $settings['import_standard_category_ids'] ) ? $settings['import_standard_category_ids'] : array();
+		$is_filtering        = $is_custom_filtering || ! empty( $standard_cats );
+		
+		$valid_custom_ids = $is_custom_filtering ? $this->get_allowed_category_ids() : array();
 
 		$mapper = TCGiant_Sync_Mapper::instance();
 		$license = TCGiant_Sync_License::instance();
@@ -334,14 +337,24 @@ class TCGiant_Sync_Importer {
 				}
 
 				// Category pre-filter.
-				if ( $is_filtering && ! empty( $valid_ids ) ) {
+				if ( $is_filtering ) {
 					$primary_cat = $ebay_item['PrimaryCategory']['CategoryID'] ?? '';
 					$store_cat1  = $ebay_item['Storefront']['StoreCategoryID'] ?? '';
 					$store_cat2  = $ebay_item['Storefront']['StoreCategory2ID'] ?? '';
 
-					$match = in_array( (string) $primary_cat, $valid_ids, true )
-					      || in_array( (string) $store_cat1, $valid_ids, true )
-					      || in_array( (string) $store_cat2, $valid_ids, true );
+					$match = false;
+					
+					// Check against Standard Categories
+					if ( ! empty( $standard_cats ) ) {
+						if ( in_array( (string) $primary_cat, $standard_cats, true ) ) $match = true;
+					}
+
+					// Check against Custom Store Categories
+					if ( ! empty( $valid_custom_ids ) ) {
+						if ( in_array( (string) $primary_cat, $valid_custom_ids, true ) ) $match = true;
+						if ( in_array( (string) $store_cat1, $valid_custom_ids, true ) ) $match = true;
+						if ( in_array( (string) $store_cat2, $valid_custom_ids, true ) ) $match = true;
+					}
 
 					if ( ! $match ) {
 						$skipped++;
@@ -548,15 +561,18 @@ class TCGiant_Sync_Importer {
 
 		$queued_count = 0;
 		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
-		$is_filtering = ! empty( $settings['category_ids'] );
-		$valid_ids = $is_filtering ? $this->get_allowed_category_ids() : array();
+		$is_custom_filtering = ! empty( $settings['category_ids'] );
+		$standard_cats       = ! empty( $settings['import_standard_category_ids'] ) && is_array( $settings['import_standard_category_ids'] ) ? $settings['import_standard_category_ids'] : array();
+		$is_filtering        = $is_custom_filtering || ! empty( $standard_cats );
+		
+		$valid_custom_ids = $is_custom_filtering ? $this->get_allowed_category_ids() : array();
 
 		// Debug: log resolved category IDs on the first page so we can verify matching.
 		if ( $page_number === 1 && $is_filtering ) {
 			TCGiant_Sync_Logger::log( sprintf(
-				'Category filter active: "%s" -> resolved to IDs: [%s]',
-				$settings['category_ids'],
-				implode( ', ', $valid_ids )
+				'Category filter active. Custom IDs: [%s]. Standard IDs: [%s].',
+				implode( ', ', $valid_custom_ids ),
+				implode( ', ', $standard_cats )
 			) );
 			// Log the first item's category fields to verify what eBay returns.
 			if ( ! empty( $items[0] ) ) {
@@ -588,17 +604,24 @@ class TCGiant_Sync_Importer {
 			$active_ids_batch[] = $item_id;
 
 			// Category pre-filter.
-			if ( $is_filtering && empty( $valid_ids ) ) {
-				continue;
-			} elseif ( $is_filtering ) {
+			if ( $is_filtering ) {
 				$primary_cat = $item['PrimaryCategory']['CategoryID'] ?? '';
 				$store_cat1 = $item['Storefront']['StoreCategoryID'] ?? '';
 				$store_cat2 = $item['Storefront']['StoreCategory2ID'] ?? '';
 
 				$match = false;
-				if ( in_array( (string) $primary_cat, $valid_ids, true ) ) $match = true;
-				if ( in_array( (string) $store_cat1, $valid_ids, true ) ) $match = true;
-				if ( in_array( (string) $store_cat2, $valid_ids, true ) ) $match = true;
+				
+				// Check against Standard Categories (Primary Category Only usually, but checking all is fine)
+				if ( ! empty( $standard_cats ) ) {
+					if ( in_array( (string) $primary_cat, $standard_cats, true ) ) $match = true;
+				}
+
+				// Check against Custom Store Categories
+				if ( ! empty( $valid_custom_ids ) ) {
+					if ( in_array( (string) $primary_cat, $valid_custom_ids, true ) ) $match = true;
+					if ( in_array( (string) $store_cat1, $valid_custom_ids, true ) ) $match = true;
+					if ( in_array( (string) $store_cat2, $valid_custom_ids, true ) ) $match = true;
+				}
 
 				if ( ! $match ) {
 					continue;

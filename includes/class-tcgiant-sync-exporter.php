@@ -172,6 +172,28 @@ class TCGiant_Sync_Exporter {
 	);
 
 	/**
+	 * TCG-relevant eBay category map (ID => label).
+	 */
+	const CATEGORIES = array(
+		''       => '— Select a default category —',
+		'183050' => 'Trading Card Games',
+		'2536'   => 'Trading Cards',
+		'261068' => 'Non-Sport Trading Card Games',
+		'180006' => 'Pokémon Individual Cards',
+		'176055' => 'Magic: The Gathering Cards',
+		'69243'  => 'Yu-Gi-Oh! Individual Cards',
+		'183454' => 'Dragon Ball Super CCG',
+		'183446' => 'Disney Lorcana',
+		'185089' => 'One Piece Card Game',
+		'253'    => 'Coins: US',
+		'256'    => 'Coins: World',
+		'3377'   => 'Coins: Canada',
+		'4733'   => 'Coins: Ancient',
+		'18466'  => 'Coins: Medieval',
+		'custom' => 'Custom Category ID...',
+	);
+
+	/**
 	 * Maximum eBay title length (hard limit).
 	 */
 	const MAX_TITLE_LENGTH = 80;
@@ -638,6 +660,11 @@ class TCGiant_Sync_Exporter {
 				$settings['condition_type'] = $override_cond_type;
 			}
 
+			$override_item_type = $product->get_meta( '_ebay_export_item_type' );
+			if ( ! empty( $override_item_type ) ) {
+				$settings['item_type'] = $override_item_type;
+			}
+
 			$override_grader = $product->get_meta( '_ebay_export_grader_id' );
 			if ( ! empty( $override_grader ) ) {
 				$settings['grader_id'] = $override_grader;
@@ -691,7 +718,8 @@ class TCGiant_Sync_Exporter {
 		}
 
 		// Validate ConditionDescriptor fields for eligible categories.
-		if ( self::is_descriptor_category( $settings['category_id'] ) ) {
+		$item_type = $settings['item_type'] ?? '';
+		if ( self::is_descriptor_category( $settings['category_id'], $item_type ) ) {
 			if ( empty( $settings['condition_type'] ) ) {
 				$missing[] = __( 'Condition Type (select Graded or Ungraded in TCGiant Sync settings — required for this eBay category)', 'tcgiant-sync' );
 			} elseif ( 'graded' === $settings['condition_type'] ) {
@@ -729,7 +757,10 @@ class TCGiant_Sync_Exporter {
 	 * @param string $category_id eBay category ID.
 	 * @return bool True if the category requires descriptors.
 	 */
-	public static function is_descriptor_category( $category_id ) {
+	public static function is_descriptor_category( $category_id, $item_type = '' ) {
+		if ( in_array( $item_type, array( 'tcg', 'coins' ), true ) ) {
+			return true;
+		}
 		return in_array( (string) $category_id, self::DESCRIPTOR_CATEGORIES_TCG, true )
 		    || in_array( (string) $category_id, self::DESCRIPTOR_CATEGORIES_COINS, true );
 	}
@@ -738,9 +769,13 @@ class TCGiant_Sync_Exporter {
 	 * Check if a category is a Coins category (vs TCG).
 	 *
 	 * @param string $category_id eBay category ID.
+	 * @param string $item_type Optional item type override.
 	 * @return bool True if the category is a Coins category.
 	 */
-	public static function is_coins_category( $category_id ) {
+	public static function is_coins_category( $category_id, $item_type = '' ) {
+		if ( 'coins' === $item_type ) {
+			return true;
+		}
 		return in_array( (string) $category_id, self::DESCRIPTOR_CATEGORIES_COINS, true );
 	}
 
@@ -750,8 +785,8 @@ class TCGiant_Sync_Exporter {
 	 * @param string $category_id eBay category ID.
 	 * @return array Value ID => label.
 	 */
-	public static function get_ungraded_conditions( $category_id ) {
-		if ( self::is_coins_category( $category_id ) ) {
+	public static function get_ungraded_conditions( $category_id, $item_type = '' ) {
+		if ( self::is_coins_category( $category_id, $item_type ) ) {
 			return self::UNGRADED_COINS;
 		}
 		return self::UNGRADED_TCG;
@@ -767,7 +802,8 @@ class TCGiant_Sync_Exporter {
 	 * @return string XML string or empty.
 	 */
 	private function build_condition_descriptors_xml( array $settings ) {
-		if ( ! self::is_descriptor_category( $settings['category_id'] ) ) {
+		$item_type = $settings['item_type'] ?? '';
+		if ( ! self::is_descriptor_category( $settings['category_id'], $item_type ) ) {
 			return '';
 		}
 
