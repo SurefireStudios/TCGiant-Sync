@@ -1,6 +1,6 @@
 # TCGiant Sync
 
-[![Version](https://img.shields.io/badge/version-1.6.2-blue.svg)](https://wordpress.org/plugins/tcgiant-sync/)
+[![Version](https://img.shields.io/badge/version-1.6.3-blue.svg)](https://wordpress.org/plugins/tcgiant-sync/)
 [![License](https://img.shields.io/badge/License-GPL_v2-blue.svg)](https://www.gnu.org/licenses/gpl-2.0.html)
 [![Requires PHP](https://img.shields.io/badge/PHP-7.4%2B-green.svg)](#)
 [![Tested up to](https://img.shields.io/badge/WordPress-7.0-blue.svg)](#)
@@ -50,6 +50,7 @@ No matter which platform you start from, TCGiant Sync keeps both sides in sync. 
 | eBay ConditionDescriptor support (Graded/Ungraded for TCG & Coins) | ✅ | ✅ |
 | eBay Business Policy integration (Shipping/Returns/Payment) | ✅ | ✅ |
 | Async background processing via Action Scheduler | ✅ | ✅ |
+| **"Push to eBay" column on WooCommerce Products list** | ✅ | ✅ |
 
 ### General
 - **Secure OAuth 2.0** connection via centralized relay — credentials never stored
@@ -127,6 +128,7 @@ Whether a sale happens on eBay or WooCommerce, stock is adjusted on both platfor
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| **1.6.3** | 2026-07-15 | New "Push to eBay" column on WooCommerce Products list — inline push/update buttons, eBay category display, item ID links, and error status per product |
 | **1.6.2** | 2026-07-15 | Fix all Coin + TCG ConditionDescriptor errors — verified numeric IDs for graders, grades, ungraded conditions. Category browser now stores & shows selected name |
 | **1.6.1** | 2026-07-15 | Major performance fix for large stores (13,000+ items). Inline variation processing, async image downloads, reduced scheduling delays |
 | **1.6.0** | 2026-07-10 | Browse eBay Categories drill-down, Saved Custom Categories, Coin ConditionDescriptor fix |

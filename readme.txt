@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.6.2
+Stable tag: 1.6.3
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -82,6 +82,13 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 6. Per-product Push to eBay button with Category and Condition overrides.
 
 == Changelog ==
+
+= 1.6.3 - 2026-07-15 =
+* Feature: New "Push to eBay" column on the WooCommerce Products list table. View eBay category, item ID link, push date, and error status for every product at a glance.
+* Feature: Inline "Push to eBay" / "Update" buttons in the product list — one-click push without opening the product editor.
+* Feature: AJAX-powered push queue with real-time status feedback ("Queuing…", "✔ Queued!", or error messages) inline.
+* Improvement: Red "No eBay category" warning for products that need configuration before export.
+* Improvement: Category column resolves human-readable names from built-in lists, saved custom categories, and per-product overrides.
 
 = 1.6.2 - 2026-07-15 =
 * Fix: Resolved all Coin ConditionDescriptor errors when pushing graded and ungraded coins to eBay. Grader, Letter Grade, and Numeric Grade values now use the correct eBay conditionDescriptorValueIds instead of raw text strings.
@@ -254,6 +261,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 1.6.3 =
+New "Push to eBay" column on the WooCommerce Products list! See eBay category, item ID, push status, and errors for every product at a glance. Push or update any product to eBay with one click directly from the products table — no need to open each product individually.
 
 = 1.6.2 =
 Critical fix for coin and TCG sellers: Graded coins and several TCG graders were sending text strings instead of eBay's required numeric conditionDescriptorValueIds, causing export failures. All descriptor IDs are now verified against the eBay Metadata API. Also adds category browser name persistence — you'll now see the selected category name alongside the ID.

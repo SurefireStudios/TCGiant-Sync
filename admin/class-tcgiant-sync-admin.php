@@ -79,6 +79,11 @@ class TCGiant_Sync_Admin {
 
 		// Grading & Condition fields in its own tab.
 		add_action( 'woocommerce_product_data_panels', array( $this, 'render_grading_condition_fields' ) );
+
+		// eBay column on WooCommerce Products list.
+		add_filter( 'manage_edit-product_columns', array( $this, 'add_ebay_column' ) );
+		add_action( 'manage_product_posts_custom_column', array( $this, 'render_ebay_column' ), 10, 2 );
+		add_action( 'admin_footer-edit.php', array( $this, 'render_product_list_inline_assets' ) );
 	}
 
 	/**
@@ -1595,5 +1600,224 @@ class TCGiant_Sync_Admin {
 			update_post_meta( $variation_id, '_bin_location', $bin_location );
 		}
 		// phpcs:enable WordPress.Security.NonceVerification.Missing
+	}
+
+	// =========================================================================
+	// eBay Column on WooCommerce Products List
+	// =========================================================================
+
+	/**
+	 * Add the "eBay" column to the WooCommerce products list table.
+	 *
+	 * @param array $columns Existing columns.
+	 * @return array Modified columns.
+	 */
+	public function add_ebay_column( $columns ) {
+		$columns['tcgiant_ebay'] = __( 'Push to eBay', 'tcgiant-sync' );
+		return $columns;
+	}
+
+	/**
+	 * Render the "eBay" column content for each product row.
+	 *
+	 * @param string $column  Column key.
+	 * @param int    $post_id Product (post) ID.
+	 */
+	public function render_ebay_column( $column, $post_id ) {
+		if ( 'tcgiant_ebay' !== $column ) {
+			return;
+		}
+
+		$ebay_item_id  = get_post_meta( $post_id, '_ebay_item_id', true );
+		$last_pushed   = get_post_meta( $post_id, '_ebay_export_last_pushed', true );
+		$export_status = get_post_meta( $post_id, '_ebay_export_status', true );
+		$export_error  = get_post_meta( $post_id, '_ebay_export_error', true );
+		$cat_override  = get_post_meta( $post_id, '_ebay_export_category_id', true );
+		$cat_name      = get_post_meta( $post_id, '_ebay_export_category_name', true );
+
+		$global_settings = TCGiant_Sync_OAuth::instance()->get_settings();
+		$global_cat      = $global_settings['export_category_id'] ?? '';
+		$global_cat_name = $global_settings['export_category_name'] ?? '';
+
+		// Determine which category to display.
+		if ( ! empty( $cat_override ) ) {
+			$display_cat_id   = $cat_override;
+			$display_cat_name = ! empty( $cat_name ) ? $cat_name : '';
+			$cat_source       = '';
+		} elseif ( ! empty( $global_cat ) ) {
+			$display_cat_id   = $global_cat;
+			$display_cat_name = ! empty( $global_cat_name ) ? $global_cat_name : '';
+			$cat_source       = 'global';
+		} else {
+			$display_cat_id   = '';
+			$display_cat_name = '';
+			$cat_source       = '';
+		}
+
+		// Also check the built-in categories list for a label.
+		if ( ! empty( $display_cat_id ) && empty( $display_cat_name ) ) {
+			$all_cats = TCGiant_Sync_Exporter::get_categories();
+			if ( isset( $all_cats[ $display_cat_id ] ) ) {
+				$display_cat_name = $all_cats[ $display_cat_id ];
+			}
+		}
+
+		echo '<div class="tc-ebay-col">';
+
+		// Category line.
+		if ( ! empty( $display_cat_id ) ) {
+			$cat_label = ! empty( $display_cat_name ) ? esc_html( $display_cat_name ) : esc_html( $display_cat_id );
+			$source_badge = 'global' === $cat_source ? ' <span class="tc-ebay-global">(global)</span>' : '';
+			echo '<div class="tc-ebay-cat" title="eBay Category ID: ' . esc_attr( $display_cat_id ) . '">' . $cat_label . $source_badge . '</div>';
+		} else {
+			echo '<div class="tc-ebay-cat tc-ebay-nocat">No eBay category</div>';
+		}
+
+		// eBay Item ID link if already pushed.
+		if ( ! empty( $ebay_item_id ) ) {
+			echo '<div class="tc-ebay-itemid"><a href="https://www.ebay.com/itm/' . esc_attr( $ebay_item_id ) . '" target="_blank" rel="noopener" title="View on eBay">Item ' . esc_html( $ebay_item_id ) . ' ↗</a></div>';
+		}
+
+		// Error notice.
+		if ( 'error' === $export_status && ! empty( $export_error ) ) {
+			echo '<div class="tc-ebay-error" title="' . esc_attr( $export_error ) . '">⚠ Error</div>';
+		}
+
+		// Last pushed date.
+		if ( ! empty( $last_pushed ) ) {
+			echo '<div class="tc-ebay-pushed">✔ ' . esc_html( date_i18n( 'M j, Y', strtotime( $last_pushed ) ) ) . '</div>';
+		}
+
+		// Push/Update button.
+		$btn_label = ! empty( $ebay_item_id ) ? '↺ Update' : '📤 Push to eBay';
+		$btn_class = ! empty( $ebay_item_id ) ? 'tc-ebay-btn tc-ebay-btn-update' : 'tc-ebay-btn tc-ebay-btn-push';
+		echo '<button type="button" class="' . esc_attr( $btn_class ) . '" data-product-id="' . esc_attr( $post_id ) . '">' . esc_html( $btn_label ) . '</button>';
+		echo '<span class="tc-ebay-btn-status" data-product-id="' . esc_attr( $post_id ) . '"></span>';
+
+		echo '</div>';
+	}
+
+	/**
+	 * Output inline CSS and JS for the eBay column on the product list page.
+	 * Hooked to admin_footer-edit.php so it only fires on list table screens.
+	 */
+	public function render_product_list_inline_assets() {
+		$screen = get_current_screen();
+		if ( ! $screen || 'edit-product' !== $screen->id ) {
+			return;
+		}
+		?>
+		<style>
+			/* eBay column styling */
+			.column-tcgiant_ebay { width: 160px; }
+			.tc-ebay-col { font-size: 12px; line-height: 1.5; }
+			.tc-ebay-cat {
+				color: #1d2327;
+				font-weight: 500;
+				margin-bottom: 3px;
+				white-space: nowrap;
+				overflow: hidden;
+				text-overflow: ellipsis;
+				max-width: 155px;
+			}
+			.tc-ebay-cat.tc-ebay-nocat { color: #d63638; font-weight: 400; }
+			.tc-ebay-global { color: #888; font-weight: 400; font-size: 11px; }
+			.tc-ebay-itemid { margin-bottom: 2px; }
+			.tc-ebay-itemid a {
+				color: #2271b1;
+				text-decoration: none;
+				font-size: 11px;
+			}
+			.tc-ebay-itemid a:hover { text-decoration: underline; }
+			.tc-ebay-error {
+				color: #d63638;
+				font-size: 11px;
+				cursor: help;
+				margin-bottom: 2px;
+			}
+			.tc-ebay-pushed {
+				color: #00a32a;
+				font-size: 11px;
+				margin-bottom: 4px;
+			}
+			.tc-ebay-btn {
+				display: inline-block;
+				padding: 3px 10px;
+				font-size: 11px;
+				font-weight: 500;
+				border-radius: 3px;
+				cursor: pointer;
+				border: 1px solid #2271b1;
+				background: #2271b1;
+				color: #fff;
+				line-height: 1.6;
+				transition: background 0.15s, border-color 0.15s;
+			}
+			.tc-ebay-btn:hover { background: #135e96; border-color: #135e96; }
+			.tc-ebay-btn:disabled {
+				opacity: 0.6;
+				cursor: not-allowed;
+			}
+			.tc-ebay-btn-update {
+				background: #fff;
+				color: #2271b1;
+				border-color: #2271b1;
+			}
+			.tc-ebay-btn-update:hover {
+				background: #f0f6fc;
+				color: #135e96;
+				border-color: #135e96;
+			}
+			.tc-ebay-btn-status {
+				display: block;
+				font-size: 11px;
+				margin-top: 3px;
+				min-height: 16px;
+			}
+			.tc-ebay-btn-status.is-success { color: #00a32a; }
+			.tc-ebay-btn-status.is-error { color: #d63638; }
+		</style>
+		<script>
+		(function($){
+			var nonce = '<?php echo esc_js( wp_create_nonce( 'tcgiant_sync_ajax' ) ); ?>';
+			var ajaxUrl = '<?php echo esc_js( admin_url( 'admin-ajax.php' ) ); ?>';
+
+			$(document).on('click', '.tc-ebay-btn', function(e) {
+				e.preventDefault();
+				var btn = $(this);
+				var productId = btn.data('product-id');
+				var statusEl = $('.tc-ebay-btn-status[data-product-id="' + productId + '"]');
+
+				btn.prop('disabled', true);
+				statusEl.removeClass('is-success is-error').text('Queuing…');
+
+				$.post(ajaxUrl, {
+					action: 'tcgiant_push_product',
+					product_id: productId,
+					_ajax_nonce: nonce
+				}, function(res) {
+					if (res.success) {
+						statusEl.addClass('is-success').text('✔ Queued!');
+						// Change button text to indicate it's been queued.
+						btn.text('↺ Update');
+						btn.removeClass('tc-ebay-btn-push').addClass('tc-ebay-btn-update');
+						// Re-enable after a delay.
+						setTimeout(function() {
+							btn.prop('disabled', false);
+							statusEl.text('');
+						}, 5000);
+					} else {
+						var msg = res.data && res.data.message ? res.data.message : 'Unknown error';
+						statusEl.addClass('is-error').text('✖ ' + msg);
+						btn.prop('disabled', false);
+					}
+				}).fail(function() {
+					statusEl.addClass('is-error').text('✖ Request failed');
+					btn.prop('disabled', false);
+				});
+			});
+		})(jQuery);
+		</script>
+		<?php
 	}
 }

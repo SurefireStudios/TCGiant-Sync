@@ -1,5 +1,12 @@
 *** TCGiant Sync Changelog ***
 
+2026-07-15 - version 1.6.3
+- Feature: New "Push to eBay" column on the WooCommerce Products list table. Each product row now displays its eBay category (with "(global)" badge for inherited defaults), a clickable eBay Item ID link (opens the listing on eBay), last-pushed date, and error status — all at a glance without opening the product editor.
+- Feature: Inline "Push to eBay" and "↺ Update" buttons directly in the product list. Push or update a product to eBay with one click from the Products table. The button automatically switches from "Push" to "Update" after the first successful export.
+- Feature: AJAX-powered push queue with real-time status feedback — shows "Queuing…", "✔ Queued!", or error messages inline next to each button.
+- Improvement: Products with no eBay category configured now show a red "No eBay category" warning in the column, making it easy to identify items that need configuration before export.
+- Improvement: eBay category column resolves names from built-in category lists, custom saved categories, and per-product overrides, displaying the human-readable name with a tooltip showing the numeric ID.
+
 2026-07-15 - version 1.6.2
 - Fix: Resolved all Coin ConditionDescriptor errors when pushing graded and ungraded coins to eBay. Grader, Letter Grade, and Numeric Grade values now use the correct eBay conditionDescriptorValueIds (e.g., NGC = 15, MS/PR = 18, 65 = 55) instead of raw text strings.
 - Fix: Ungraded Coin Condition now uses eBay descriptor Name 2 with correct value IDs (Uncirculated = 7, EF to AU = 8, Fine to VF = 9, Below Fine = 10) instead of descriptor Name 40001 with TCG-specific IDs.
