@@ -107,19 +107,26 @@ class TCGiant_Sync_Exporter {
 	);
 
 	/**
-	 * Professional Grader name => eBay numeric value ID or string.
-	 * Coins
+	 * Professional Grader name => eBay conditionDescriptorValueId.
+	 * Coins — Descriptor Name 1.
 	 */
 	const GRADERS_COINS = array(
-		'Uncertified' => 'Uncertified',
-		'PCGS'        => 'PCGS',
-		'NGC'         => 'NGC',
-		'PCGS & CAC'  => 'PCGS & CAC',
-		'NGC & CAC'   => 'NGC & CAC',
-		'ANACS'       => 'ANACS',
-		'ICG'         => 'ICG',
-		'CAC'         => 'CAC',
-		'ICCS'        => 'ICCS',
+		'PCGS'    => '14',
+		'NGC'     => '15',
+		'CAC'     => '16',
+		'ANACS'   => '34',
+		'ICG'     => '35',
+		'ICCS'    => '36',
+		'CCCS'    => '37',
+		'LCGS'    => '38',
+		'CGS-UK'  => '39',
+		'SEGS'    => '40',
+		'NNC'     => '41',
+		'NTC'     => '42',
+		'PCI'     => '43',
+		'ACG'     => '44',
+		'ASA'     => '45',
+		'Other'   => '76',
 	);
 
 	/**
@@ -132,11 +139,11 @@ class TCGiant_Sync_Exporter {
 
 	/**
 	 * Grade values available for graded Coins.
+	 * Format: 'LETTER NUM' => display label (kept for UI dropdowns).
 	 */
 	const GRADES_COINS = array(
-		'Ungraded',
-		'PR 70', 'PR 69', 'PR 68', 'PR 67', 'PR 66', 'PR 65', 'PR 64', 'PR 63', 'PR 62', 'PR 61', 'PR 60',
-		'MS 70', 'MS 69', 'MS 68', 'MS 67', 'MS 66', 'MS 65', 'MS 64', 'MS 63', 'MS 62', 'MS 61', 'MS 60',
+		'MS/PR 70', 'MS/PR 69', 'MS/PR 68', 'MS/PR 67', 'MS/PR 66', 'MS/PR 65',
+		'MS/PR 64', 'MS/PR 63', 'MS/PR 62', 'MS/PR 61', 'MS/PR 60',
 		'AU 58', 'AU 55', 'AU 53', 'AU 50',
 		'XF 45', 'XF 40',
 		'VF 35', 'VF 30', 'VF 25', 'VF 20',
@@ -144,8 +151,62 @@ class TCGiant_Sync_Exporter {
 		'VG 10', 'VG 8',
 		'G 6', 'G 4',
 		'AG 3',
-		'FA 2',
+		'FR 2',
 		'P 1',
+	);
+
+	/**
+	 * Letter grade label => eBay conditionDescriptorValueId.
+	 * Coins — Descriptor Name 3.
+	 */
+	const LETTER_GRADES_COINS = array(
+		'MS/PR' => '18',
+		'AU'    => '19',
+		'XF'    => '20',
+		'VF'    => '46',
+		'F'     => '47',
+		'VG'    => '48',
+		'G'     => '49',
+		'AG'    => '50',
+		'FR'    => '51',
+		'P'     => '52',
+	);
+
+	/**
+	 * Numeric grade label => eBay conditionDescriptorValueId.
+	 * Coins — Descriptor Name 4.
+	 */
+	const NUMERIC_GRADES_COINS = array(
+		'70' => '32',
+		'69' => '25',
+		'68' => '26',
+		'67' => '53',
+		'66' => '54',
+		'65' => '55',
+		'64' => '56',
+		'63' => '57',
+		'62' => '58',
+		'61' => '59',
+		'60' => '60',
+		'58' => '27',
+		'55' => '28',
+		'53' => '29',
+		'50' => '61',
+		'45' => '30',
+		'40' => '31',
+		'35' => '62',
+		'30' => '63',
+		'25' => '64',
+		'20' => '65',
+		'15' => '66',
+		'12' => '67',
+		'10' => '68',
+		'8'  => '69',
+		'6'  => '70',
+		'4'  => '71',
+		'3'  => '72',
+		'2'  => '73',
+		'1'  => '74',
 	);
 
 	/**
@@ -162,13 +223,14 @@ class TCGiant_Sync_Exporter {
 	);
 
 	/**
-	 * Ungraded Coin conditions — value ID => label.
+	 * Ungraded Coin conditions — conditionDescriptorValueId => label.
+	 * Coins — Descriptor Name 2.
 	 */
 	const UNGRADED_COINS = array(
-		'400020' => 'Uncirculated',
-		'400021' => 'Extremely Fine to About Uncirculated',
-		'400022' => 'Fine to Very Fine',
-		'400023' => 'Below Fine',
+		'7'  => 'Uncirculated',
+		'8'  => 'Extremely Fine to About Uncirculated',
+		'9'  => 'Fine to Very Fine',
+		'10' => 'Below Fine',
 	);
 
 	/**
@@ -857,7 +919,8 @@ class TCGiant_Sync_Exporter {
 
 		if ( 'graded' === $settings['condition_type'] ) {
 			if ( self::is_coins_category( $settings['category_id'], $item_type ) ) {
-				// Professional Grader (Name 1)
+				// ---- COINS: Graded ----
+				// Professional Grader (Descriptor Name 1) — value must be a numeric ID.
 				if ( ! empty( $settings['grader_id'] ) ) {
 					$xml .= "\t<ConditionDescriptor>\n";
 					$xml .= "\t\t<Name>1</Name>\n";
@@ -865,37 +928,44 @@ class TCGiant_Sync_Exporter {
 					$xml .= "\t</ConditionDescriptor>\n";
 				}
 
-				// Grade (split into Letter [3] and Numeric [4])
+				// Grade (split into Letter [Descriptor 3] and Numeric [Descriptor 4])
+				// User selects e.g. "MS/PR 65" — split into letter "MS/PR" and number "65",
+				// then look up the eBay conditionDescriptorValueId for each.
 				if ( ! empty( $settings['grade_value'] ) ) {
 					$parts = explode( ' ', $settings['grade_value'], 2 );
 					if ( count( $parts ) === 2 ) {
-						// Letter grade
-						$xml .= "\t<ConditionDescriptor>\n";
-						$xml .= "\t\t<Name>3</Name>\n";
-						$xml .= "\t\t<Value>" . esc_attr( $parts[0] ) . "</Value>\n";
-						$xml .= "\t</ConditionDescriptor>\n";
-						// Numeric grade
-						$xml .= "\t<ConditionDescriptor>\n";
-						$xml .= "\t\t<Name>4</Name>\n";
-						$xml .= "\t\t<Value>" . esc_attr( $parts[1] ) . "</Value>\n";
-						$xml .= "\t</ConditionDescriptor>\n";
-					} else {
-						// Fallback if grade is not space-separated
-						$xml .= "\t<ConditionDescriptor>\n";
-						$xml .= "\t\t<Name>3</Name>\n";
-						$xml .= "\t\t<Value>" . esc_attr( $settings['grade_value'] ) . "</Value>\n";
-						$xml .= "\t</ConditionDescriptor>\n";
+						$letter_label = $parts[0];
+						$number_label = $parts[1];
+
+						// Look up Letter Grade value ID.
+						$letter_value_id = self::LETTER_GRADES_COINS[ $letter_label ] ?? '';
+						if ( $letter_value_id ) {
+							$xml .= "\t<ConditionDescriptor>\n";
+							$xml .= "\t\t<Name>3</Name>\n";
+							$xml .= "\t\t<Value>" . esc_attr( $letter_value_id ) . "</Value>\n";
+							$xml .= "\t</ConditionDescriptor>\n";
+						}
+
+						// Look up Numeric Grade value ID.
+						$numeric_value_id = self::NUMERIC_GRADES_COINS[ $number_label ] ?? '';
+						if ( $numeric_value_id ) {
+							$xml .= "\t<ConditionDescriptor>\n";
+							$xml .= "\t\t<Name>4</Name>\n";
+							$xml .= "\t\t<Value>" . esc_attr( $numeric_value_id ) . "</Value>\n";
+							$xml .= "\t</ConditionDescriptor>\n";
+						}
 					}
 				}
 
-				// Certification Number (Name 2)
+				// Certification Number (Descriptor Name 5) — free text, max 20 chars.
 				if ( ! empty( $settings['cert_number'] ) ) {
 					$xml .= "\t<ConditionDescriptor>\n";
-					$xml .= "\t\t<Name>2</Name>\n";
-					$xml .= "\t\t<AdditionalInfo>" . esc_attr( $settings['cert_number'] ) . "</AdditionalInfo>\n";
+					$xml .= "\t\t<Name>5</Name>\n";
+					$xml .= "\t\t<AdditionalInfo>" . esc_attr( substr( $settings['cert_number'], 0, 20 ) ) . "</AdditionalInfo>\n";
 					$xml .= "\t</ConditionDescriptor>\n";
 				}
 			} else {
+				// ---- TCG: Graded ----
 				// Professional Grader (required) for TCG.
 				if ( ! empty( $settings['grader_id'] ) ) {
 					$xml .= "\t<ConditionDescriptor>\n";
@@ -921,12 +991,20 @@ class TCGiant_Sync_Exporter {
 				}
 			}
 		} elseif ( 'ungraded' === $settings['condition_type'] ) {
-			// Ungraded condition (required).
 			if ( ! empty( $settings['ungraded_condition'] ) ) {
-				$xml .= "\t<ConditionDescriptor>\n";
-				$xml .= "\t\t<Name>40001</Name>\n";
-				$xml .= "\t\t<Value>" . esc_attr( $settings['ungraded_condition'] ) . "</Value>\n";
-				$xml .= "\t</ConditionDescriptor>\n";
+				if ( self::is_coins_category( $settings['category_id'], $item_type ) ) {
+					// Coins: Descriptor Name 2 ("Coin Condition").
+					$xml .= "\t<ConditionDescriptor>\n";
+					$xml .= "\t\t<Name>2</Name>\n";
+					$xml .= "\t\t<Value>" . esc_attr( $settings['ungraded_condition'] ) . "</Value>\n";
+					$xml .= "\t</ConditionDescriptor>\n";
+				} else {
+					// TCG: Descriptor Name 40001 ("Card Condition").
+					$xml .= "\t<ConditionDescriptor>\n";
+					$xml .= "\t\t<Name>40001</Name>\n";
+					$xml .= "\t\t<Value>" . esc_attr( $settings['ungraded_condition'] ) . "</Value>\n";
+					$xml .= "\t</ConditionDescriptor>\n";
+				}
 			}
 		}
 

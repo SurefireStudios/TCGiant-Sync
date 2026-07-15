@@ -678,22 +678,3 @@ class TCGiant_Sync_API {
 		);
 	}
 }
-
-/**
- * Temporary debug AJAX handler to fetch condition policies.
- * Admin-only. Remove after coin descriptor IDs are resolved.
- */
-add_action( 'wp_ajax_tcgiant_debug_condition_policies', function() {
-	if ( ! current_user_can( 'manage_woocommerce' ) ) {
-		wp_die( 'Unauthorized', 403 );
-	}
-
-	$category_id = isset( $_GET['category_id'] ) ? sanitize_text_field( $_GET['category_id'] ) : '253';
-
-	$api = TCGiant_Sync_API::instance();
-	$result = $api->get_condition_policies( $category_id );
-
-	header( 'Content-Type: application/json; charset=utf-8' );
-	echo wp_json_encode( $result, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE );
-	wp_die();
-});
