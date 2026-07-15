@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.6.0
+Stable tag: 1.6.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -82,6 +82,12 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 6. Per-product Push to eBay button with Category and Condition overrides.
 
 == Changelog ==
+
+= 1.6.1 - 2026-07-15 =
+* Performance: Dramatically faster full syncs for large stores (10,000+ items). Variation items are now processed inline when GetSellerList returns complete data, eliminating thousands of individual GetItem API calls.
+* Performance: Image downloads in the GetItem fallback path are now scheduled asynchronously, preventing long blocking operations from clogging the Action Scheduler queue.
+* Performance: Reduced per-item stagger delay from 3 seconds to 1 second for items that still require GetItem fallback.
+* Performance: Reduced next-page scanning delay from 5 seconds to 2 seconds when all items on a page are processed inline.
 
 = 1.5.6 - 2026-07-10 =
 * Fix: Resolved another fatal error (`Undefined constant GRADES`) in the settings page that was preventing Javascript from loading and rendering the "Load Store Categories" button inert.
@@ -239,6 +245,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 1.6.1 =
+Major performance improvement for large eBay stores. Full syncs that previously took 2+ days for 13,000+ item stores now complete in 2-4 hours. Variation items are processed inline instead of requiring individual API calls, and image downloads no longer block the import queue. Recommended for all users with 1,000+ eBay listings.
 
 = 1.4.8 =
 Fixes the "No <Item.Location> exists" error that blocked all Push to eBay exports. Adds new Item Location and Postal Code fields to the export settings. After updating, go to TCGiant Sync → Settings → Push to eBay Settings and fill in your city/state and ZIP code.

@@ -635,17 +635,20 @@ class TCGiant_Sync_Importer {
 				break;
 			}
 
-			// Determine if this item needs a GetItem fallback (variations or missing data).
+			// Determine if this item needs a GetItem fallback.
 			$has_variations = isset( $item['Variations'] );
 			$missing_critical = ! isset( $item['Title'] ) || ! isset( $item['SellingStatus'] );
 
-			if ( $has_variations || $missing_critical ) {
-				// Queue for GetItem — variation items need reliable full data.
-				$delay = 3 * $queued_count;
-				as_schedule_single_action( time() + $delay, 'tcgiant_sync_process_item_import', array( 'item_id' => $item_id ), 'tcgiant_sync_group' );
-				$queued_count++;
-			} else {
-				// Process inline — simple item with full data from GetSellerList.
+			// Try inline processing first — even for variation items if the data is complete.
+			// GetSellerList with DetailLevel=ReturnAll already returns variation data.
+			$can_inline = ! $missing_critical;
+			if ( $has_variations && $can_inline ) {
+				// Only inline if variation data is actually present and populated.
+				$can_inline = isset( $item['Variations']['Variation'] ) && ! empty( $item['Variations']['Variation'] );
+			}
+
+			if ( $can_inline ) {
+				// Process inline — item has sufficient data from GetSellerList.
 				try {
 					$title = $item['Title'] ?? 'Unknown';
 					$product_data = $mapper->map_ebay_to_woo( $item );
@@ -664,9 +667,10 @@ class TCGiant_Sync_Importer {
 						$price_display = ! empty( $product_data['price'] ) ? '$' . $product_data['price'] : 'No price';
 						$attr_count = count( $product_data['attributes'] );
 						$weight_display = ! empty( $product_data['weight'] ) ? ', ' . $product_data['weight'] . get_option( 'woocommerce_weight_unit', 'lbs' ) : '';
+						$var_label = $has_variations ? ' [inline+vars]' : ' [inline]';
 						TCGiant_Sync_Logger::log( sprintf(
-							'Imported: "%s" -> WC #%d (%s, Qty: %d, %d attrs%s) [inline]',
-							$title, $product_id, $price_display, $product_data['stock_quantity'], $attr_count, $weight_display
+							'Imported: "%s" -> WC #%d (%s, Qty: %d, %d attrs%s)%s',
+							$title, $product_id, $price_display, $product_data['stock_quantity'], $attr_count, $weight_display, $var_label
 						), 'success' );
 					} else {
 						$inline_errors++;
@@ -679,6 +683,11 @@ class TCGiant_Sync_Importer {
 					$inline_errors++;
 					TCGiant_Sync_Logger::error( 'Inline import fatal for ' . $item_id . ': ' . $e->getMessage() );
 				}
+			} else {
+				// Queue for GetItem fallback — critical data is missing from GetSellerList response.
+				$delay = 1 * $queued_count;
+				as_schedule_single_action( time() + $delay, 'tcgiant_sync_process_item_import', array( 'item_id' => $item_id ), 'tcgiant_sync_group' );
+				$queued_count++;
 			}
 		}
 
@@ -720,7 +729,7 @@ class TCGiant_Sync_Importer {
 
 		// Schedule next page — minimal delay since inline processing is done, only wait for queued items.
 		if ( $page_number < $total_pages ) {
-			$delay_next_page = $queued_count > 0 ? ( $queued_count * 3 ) + 5 : 5;
+			$delay_next_page = $queued_count > 0 ? $queued_count + 5 : 2;
 			as_schedule_single_action( time() + $delay_next_page, 'tcgiant_sync_fetch_listings', array( 'page_number' => $page_number + 1 ), 'tcgiant_sync_group' );
 		} else {
 			if ( $new_total_queued > 0 ) {
@@ -931,9 +940,12 @@ class TCGiant_Sync_Importer {
 			$product_id = $mapper->save_as_product( $product_data );
 
 			if ( $product_id ) {
-				// Download images synchronously.
+				// Schedule image downloads as async to avoid blocking the Action Scheduler queue.
 				if ( ! empty( $product_data['images'] ) ) {
-					$this->download_product_images( $product_id, $product_data['images'] );
+					as_enqueue_async_action( 'tcgiant_sync_download_images', array(
+						'product_id' => $product_id,
+						'image_urls' => $product_data['images'],
+					), 'tcgiant_sync_group' );
 				}
 
 				$state = self::get_sync_state();
