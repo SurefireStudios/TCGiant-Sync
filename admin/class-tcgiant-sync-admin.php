@@ -989,6 +989,10 @@ class TCGiant_Sync_Admin {
 				$cat_val = $cat_select;
 			}
 			update_post_meta( $post_id, '_ebay_export_category_id', $cat_val );
+			// Save the category name if provided.
+			if ( isset( $_POST['_ebay_export_category_name'] ) ) {
+				update_post_meta( $post_id, '_ebay_export_category_name', sanitize_text_field( wp_unslash( $_POST['_ebay_export_category_name'] ) ) );
+			}
 		}
 		if ( isset( $_POST['_ebay_export_condition_id'] ) ) {
 			update_post_meta( $post_id, '_ebay_export_condition_id', sanitize_text_field( wp_unslash( $_POST['_ebay_export_condition_id'] ) ) );
@@ -1140,7 +1144,15 @@ class TCGiant_Sync_Admin {
 		}
 		echo '</select>';
 		
+		$cat_name_override = get_post_meta( $product_id, '_ebay_export_category_name', true );
 		echo '<input type="text" name="_ebay_export_category_id_custom" id="_ebay_export_category_id_custom" value="' . esc_attr( $is_custom_cat ? $current_category : '' ) . '" placeholder="Enter custom eBay Category ID" style="width:100%; font-size:12px; ' . ( 'custom' === $select_val ? '' : 'display:none;' ) . '">';
+		echo '<input type="hidden" name="_ebay_export_category_name" id="_ebay_export_category_name" value="' . esc_attr( $cat_name_override ) . '">';
+		$show_prod_label = $current_category && $cat_name_override;
+		echo '<div id="tc-selected-category-label-product" style="margin-top:4px; font-size:11px; color:#16a34a; font-weight:500; ' . ( $show_prod_label ? '' : 'display:none;' ) . '">';
+		if ( $show_prod_label ) {
+			echo '✔ ' . esc_html( $cat_name_override ) . ' (' . esc_html( $current_category ) . ')';
+		}
+		echo '</div>';
 		echo '<button type="button" class="button" id="tc-browse-categories-btn-product" style="margin-top:4px;font-size:11px;width:100%;">
 			<span class="dashicons dashicons-category" style="font-size:13px;vertical-align:middle;margin-right:2px;"></span> Browse eBay Categories
 		</button>';
@@ -1199,6 +1211,8 @@ class TCGiant_Sync_Admin {
 							if (cat.leaf) {
 								$("#_ebay_export_category_id_select").val("custom");
 								$("#_ebay_export_category_id_custom").val(cat.id).show();
+								$("#_ebay_export_category_name").val(cat.name);
+								$("#tc-selected-category-label-product").html("✔ " + cat.name + " (" + cat.id + ")").show();
 								$s.html("✔ " + cat.name + " (" + cat.id + ")");
 								$("#tc-category-browser-product").slideUp(200);
 								trail = [];
@@ -1206,7 +1220,7 @@ class TCGiant_Sync_Admin {
 								trail.push({id:cat.id,name:cat.name});
 								renderBread();
 								loadCats(cat.id);
-								$s.html("Click to drill deeper, or <a href=\"#\" class=\"tc-prod-use\" data-id=\""+cat.id+"\">use <b>"+cat.name+" ("+cat.id+")</b></a>");
+								$s.html("Click to drill deeper, or <a href=\"#\" class=\"tc-prod-use\" data-id=\""+cat.id+"\"  data-name=\""+cat.name+"\">use <b>"+cat.name+" ("+cat.id+")</b></a>");
 							}
 						});
 						$d.append($row);
@@ -1234,10 +1248,12 @@ class TCGiant_Sync_Admin {
 				$("#tc-category-browser-status-product").on("click",".tc-prod-use",function(e){
 					e.preventDefault();
 					var id = $(this).data("id");
-					var last = trail.length ? trail[trail.length-1] : null;
+					var name = $(this).data("name") || (trail.length ? trail[trail.length-1].name : id);
 					$("#_ebay_export_category_id_select").val("custom");
 					$("#_ebay_export_category_id_custom").val(id).show();
-					$("#tc-category-browser-status-product").html("✔ " + (last?last.name:id) + " (" + id + ")");
+					$("#_ebay_export_category_name").val(name);
+					$("#tc-selected-category-label-product").html("✔ " + name + " (" + id + ")").show();
+					$("#tc-category-browser-status-product").html("✔ " + name + " (" + id + ")");
 					$("#tc-category-browser-product").slideUp(200);
 					trail = [];
 				});

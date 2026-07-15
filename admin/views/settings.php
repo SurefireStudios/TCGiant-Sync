@@ -388,6 +388,16 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						value="<?php echo esc_attr( $current_category ); ?>"
 						placeholder="<?php esc_attr_e( 'Enter numeric eBay Category ID', 'tcgiant-sync' ); ?>"
 						style="display:<?php echo ( ! $current_category || $is_custom_cat ) ? 'block' : 'none'; ?>;">
+					<input type="hidden" id="export_category_name" name="tcgiant_sync_ebay_settings[export_category_name]" value="<?php echo esc_attr( $settings['export_category_name'] ?? '' ); ?>">
+					<?php
+					$saved_cat_name = $settings['export_category_name'] ?? '';
+					$show_selected  = $current_category && $saved_cat_name;
+					?>
+					<div id="tc-selected-category-label" style="margin-top:6px; font-size:12px; color:#16a34a; font-weight:500; <?php echo $show_selected ? '' : 'display:none;'; ?>">
+						<?php if ( $show_selected ) : ?>
+							✔ <?php echo esc_html( $saved_cat_name ); ?> (<?php echo esc_html( $current_category ); ?>)
+						<?php endif; ?>
+					</div>
 					<button type="button" class="tc-button secondary" id="tc-browse-categories-btn" style="margin-top:6px;font-size:12px;">
 						<span class="dashicons dashicons-category" style="font-size:14px;vertical-align:middle;margin-right:2px;"></span>
 						<?php esc_html_e( 'Browse eBay Categories', 'tcgiant-sync' ); ?>
@@ -706,9 +716,11 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 			breadcrumb: '#tc-category-breadcrumb',
 			drilldown: '#tc-category-drilldown',
 			status: '#tc-category-browser-status',
-			onSelect: function(id) {
+			onSelect: function(id, name) {
 				$('#export_category_select').val('custom');
 				$('#export_category_id_custom').val(id).show();
+				$('#export_category_name').val(name);
+				$('#tc-selected-category-label').html('✔ ' + name + ' (' + id + ')').show();
 			}
 		});
 	}
