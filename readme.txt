@@ -87,8 +87,10 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Fix: Resolved all Coin ConditionDescriptor errors when pushing graded and ungraded coins to eBay. Grader, Letter Grade, and Numeric Grade values now use the correct eBay conditionDescriptorValueIds instead of raw text strings.
 * Fix: Ungraded Coin Condition now uses eBay descriptor Name 2 with correct value IDs instead of the TCG descriptor Name 40001.
 * Fix: Coin Certification Number now uses descriptor Name 5 (not 2) with a 20-character max per eBay requirements.
+* Fix: TCG graders (Ace, AGS, DSG, Majesty, GRAAD, Arena Club, AiGrading) now use correct numeric IDs. Removed 3 delisted graders (PCA, TCG, ARK).
 * Improvement: Added all 16 eBay-recognized coin grading companies with correct numeric IDs.
 * Improvement: Added complete Sheldon scale numeric grade ID mapping (70 through 1).
+* Feature: Category browser now remembers and displays the selected category name persistently (e.g., "✔ US Coins (253)") on Settings, Product Edit, and Export pages.
 
 = 1.6.1 - 2026-07-15 =
 * Performance: Dramatically faster full syncs for large stores (10,000+ items). Variation items are now processed inline when GetSellerList returns complete data, eliminating thousands of individual GetItem API calls.
@@ -254,7 +256,7 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 == Upgrade Notice ==
 
 = 1.6.2 =
-Critical fix for coin sellers: Graded and ungraded coins were failing to push to eBay because the plugin was sending text strings (NGC, MS, Uncirculated) instead of eBay's required numeric conditionDescriptorValueIds. All coin graders, grades, and ungraded conditions now use the correct eBay Metadata API values. If you sell coins, this update is required.
+Critical fix for coin and TCG sellers: Graded coins and several TCG graders were sending text strings instead of eBay's required numeric conditionDescriptorValueIds, causing export failures. All descriptor IDs are now verified against the eBay Metadata API. Also adds category browser name persistence — you'll now see the selected category name alongside the ID.
 
 = 1.6.1 =
 Major performance improvement for large eBay stores. Full syncs that previously took 2+ days for 13,000+ item stores now complete in 2-4 hours. Variation items are processed inline instead of requiring individual API calls, and image downloads no longer block the import queue. Recommended for all users with 1,000+ eBay listings.

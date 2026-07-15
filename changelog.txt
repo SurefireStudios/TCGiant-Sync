@@ -5,8 +5,12 @@
 - Fix: Ungraded Coin Condition now uses eBay descriptor Name 2 with correct value IDs (Uncirculated = 7, EF to AU = 8, Fine to VF = 9, Below Fine = 10) instead of descriptor Name 40001 with TCG-specific IDs.
 - Fix: Coin Certification Number now uses descriptor Name 5 (not 2) with a 20-character max length per eBay requirements.
 - Fix: Coin grade format updated from "MS 65" / "PR 65" to "MS/PR 65" to match eBay's combined letter grade format.
+- Fix: TCG graders Ace Grading, AGS, DSG, Majesty, GRAAD, Arena Club, and AiGrading now use correct eBay numeric conditionDescriptorValueIds instead of raw text strings. Removed 3 delisted graders (PCA, TCG, ARK) that eBay no longer recognizes.
 - Improvement: Added all 16 eBay-recognized coin grading companies (PCGS, NGC, CAC, ANACS, ICG, ICCS, CCCS, LCGS, CGS-UK, SEGS, NNC, NTC, PCI, ACG, ASA, Other) with correct conditionDescriptorValueIds.
 - Improvement: Added complete numeric grade value ID mapping for all 30 Sheldon scale grades (70 through 1, plus "None").
+- Feature: Category browser now stores and displays the selected category name. After selecting via the drill-down browser, a persistent green label shows the category name and ID (e.g., "✔ US Coins (253)") on Settings, Product Edit, and Export pages.
+- Feature: Selected category name persists across page saves and reloads on both the global Settings page and per-product overrides.
+- Improvement: Export page now displays the category name alongside the ID in the configuration summary.
 
 2026-07-15 - version 1.6.1
 - Performance: Dramatically faster full syncs for large stores (10,000+ items). Variation items are now processed inline when GetSellerList returns complete data, eliminating thousands of individual GetItem API calls.

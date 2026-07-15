@@ -121,7 +121,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 					}
 				}
 				// Preserve export settings too so they aren't wiped by this form.
-				$export_preserve = array( 'export_category_id', 'export_condition_id', 'export_condition_type', 'export_grader_id', 'export_grade_value', 'export_cert_number', 'export_ungraded_condition', 'export_location', 'export_postal_code', 'export_fulfillment_policy', 'export_return_policy', 'export_payment_policy' );
+				$export_preserve = array( 'export_category_id', 'export_category_name', 'export_condition_id', 'export_condition_type', 'export_grader_id', 'export_grade_value', 'export_cert_number', 'export_ungraded_condition', 'export_location', 'export_postal_code', 'export_fulfillment_policy', 'export_return_policy', 'export_payment_policy' );
 				foreach ( $export_preserve as $key ) {
 					if ( ! empty( $settings[ $key ] ) ) {
 						echo '<input type="hidden" name="tcgiant_sync_ebay_settings[' . esc_attr( $key ) . ']" value="' . esc_attr( $settings[ $key ] ) . '">';

@@ -127,7 +127,7 @@ Whether a sale happens on eBay or WooCommerce, stock is adjusted on both platfor
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
-| **1.6.2** | 2026-07-15 | Fix all Coin ConditionDescriptor errors — correct numeric value IDs for graders, grades, and ungraded conditions |
+| **1.6.2** | 2026-07-15 | Fix all Coin + TCG ConditionDescriptor errors — verified numeric IDs for graders, grades, ungraded conditions. Category browser now stores & shows selected name |
 | **1.6.1** | 2026-07-15 | Major performance fix for large stores (13,000+ items). Inline variation processing, async image downloads, reduced scheduling delays |
 | **1.6.0** | 2026-07-10 | Browse eBay Categories drill-down, Saved Custom Categories, Coin ConditionDescriptor fix |
 | **1.5.5** | 2026-07-10 | Fixed fatal error on settings and export pages caused by missing GRADERS constant |

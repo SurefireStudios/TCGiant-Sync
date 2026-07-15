@@ -80,7 +80,11 @@ $export_state = TCGiant_Sync_Exporter::get_export_state();
 				?>
 				<?php
 				/* translators: %s: eBay category ID */
-				printf( esc_html__( 'Default category: %s · Condition: %s', 'tcgiant-sync' ), '<strong>' . esc_html( $settings['export_category_id'] ) . '</strong>', '<strong>' . esc_html( $cond_label ) . '</strong>' );
+				$cat_display = esc_html( $settings['export_category_id'] );
+				if ( ! empty( $settings['export_category_name'] ) ) {
+					$cat_display = esc_html( $settings['export_category_name'] ) . ' (' . $cat_display . ')';
+				}
+				printf( esc_html__( 'Default category: %s · Condition: %s', 'tcgiant-sync' ), '<strong>' . $cat_display . '</strong>', '<strong>' . esc_html( $cond_label ) . '</strong>' );
 				?>
 				&nbsp;·&nbsp;
 				<a href="<?php echo esc_url( admin_url( 'admin.php?page=tcgiant-settings' ) ); ?>" style="color:inherit;"><?php esc_html_e( 'Edit settings ↗', 'tcgiant-sync' ); ?></a>
@@ -185,7 +189,17 @@ $export_state = TCGiant_Sync_Exporter::get_export_state();
 					<tr>
 						<td style="padding:5px 0;color:#666;width:45%;"><?php esc_html_e( 'Default Category', 'tcgiant-sync' ); ?></td>
 						<td style="padding:5px 0;font-weight:500;">
-							<?php echo $category_configured ? esc_html( $settings['export_category_id'] ) : '<span style="color:#d63638;">' . esc_html__( 'Not set', 'tcgiant-sync' ) . '</span>'; ?>
+							<?php
+						if ( $category_configured ) {
+							$cat_conf_display = esc_html( $settings['export_category_id'] );
+							if ( ! empty( $settings['export_category_name'] ) ) {
+								$cat_conf_display = esc_html( $settings['export_category_name'] ) . ' (' . $cat_conf_display . ')';
+							}
+							echo $cat_conf_display;
+						} else {
+							echo '<span style="color:#d63638;">' . esc_html__( 'Not set', 'tcgiant-sync' ) . '</span>';
+						}
+						?>
 						</td>
 					</tr>
 					<tr>
