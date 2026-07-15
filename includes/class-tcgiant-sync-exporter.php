@@ -71,8 +71,9 @@ class TCGiant_Sync_Exporter {
 	);
 
 	/**
-	 * Professional Grader name => eBay numeric value ID or string.
-	 * Trading Cards
+	 * Professional Grader name => eBay conditionDescriptorValueId.
+	 * Trading Cards — Descriptor Name 27501.
+	 * IDs verified against eBay Metadata API for category 183050.
 	 */
 	const GRADERS_TCG = array(
 		'Professional Sports Authenticator (PSA)'   => '275010',
@@ -85,25 +86,21 @@ class TCGiant_Sync_Exporter {
 		'Gem Mint Authentication (GMA)'             => '275018',
 		'Hybrid Grading Approach (HGA)'             => '275019',
 		'International Sports Authentication (ISA)' => '2750110',
-		'Professional Card Authenticator (PCA)'     => '2750111',
 		'Gold Standard Grading (GSG)'               => '2750112',
 		'Platin Grading Service (PGS)'              => '2750113',
 		'MNT Grading (MNT)'                         => '2750114',
 		'Technical Authentication & Grading (TAG)'  => '2750115',
 		'Rare Edition (Rare)'                       => '2750116',
 		'Revolution Card Grading (RCG)'             => '2750117',
-		'Premier Card Grading (PCG)'                => 'Premier Card Grading (PCG)',
-		'Ace Grading (Ace)'                         => 'Ace Grading (Ace)',
+		'Ace Grading (Ace)'                         => '2750119',
 		'Card Grading Australia (CGA)'              => '2750120',
-		'Trading Card Grading (TCG)'                => '2750121',
-		'ARK Grading (ARK)'                         => 'ARK Grading (ARK)',
 		'Other'                                     => '2750123',
-		'Automated Grading Systems (AGS)'           => 'Automated Grading Systems (AGS)',
-		'Diamond Service Grading (DSG)'             => 'Diamond Service Grading (DSG)',
-		'Majesty Grading Company'                   => 'Majesty Grading Company',
-		'GRAAD'                                     => 'GRAAD',
-		'Arena Club'                                => 'Arena Club',
-		'AiGrading'                                 => 'AiGrading',
+		'Automated Grading Systems (AGS)'           => '2750124',
+		'Diamond Service Grading (DSG)'             => '2750125',
+		'Majesty Grading Company'                   => '2750126',
+		'GRAAD'                                     => '2750127',
+		'Arena Club'                                => '2750128',
+		'AiGrading'                                 => '2750129',
 	);
 
 	/**
