@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.6.3
+Stable tag: 1.7.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -22,7 +22,11 @@ TCGiant Sync bridges your eBay store and WooCommerce, enabling automatic import 
 * Real-time inventory synchronization
 * Live sync dashboard with status monitoring
 * Activity logging for troubleshooting
-* **Push to eBay** — create new eBay listings directly from WooCommerce (single product or bulk)
+* **Push to eBay** -- create new eBay listings directly from WooCommerce (single product or bulk)
+* **Unified "eBay Listing" tab** -- guided step-by-step flow: Item Type, Category, Condition, Push
+* **Category auto-suggestion** -- eBay suggests the best leaf categories from your product title
+* **Visual card selectors** for Item Type (Trading Cards / Coins) and Condition (Graded / Ungraded)
+* **Pre-push readiness checklist** validates category, condition, policies, images, and title length
 * Per-product eBay Category and Condition overrides
 * eBay ConditionDescriptor support — Graded (PSA, BGS, SGC, CGC, etc.) and Ungraded conditions for Trading Cards and Coins categories
 * Business Policy management (Shipping, Returns, Payments) with one-click fetch
@@ -46,7 +50,11 @@ TCGiant Sync bridges your eBay store and WooCommerce, enabling automatic import 
 
 = Can I push WooCommerce products to eBay? =
 
-Yes! As of version 1.0.2, TCGiant Sync includes a full export module. Configure your default eBay Category ID and Business Policies in TCGiant Sync → Settings, then use the "Push to eBay" button on any product edit screen, or select multiple products and use the bulk action on the WooCommerce Products list.
+Yes! Open any product and click the **"eBay Listing"** tab. Follow the guided 4-step flow: choose Item Type, select a Category (or let eBay auto-suggest one from your title), set the Condition, then review the readiness checklist and click Push. You can also bulk-push from the WooCommerce Products list.
+
+= What is the "eBay Listing" tab? =
+
+The eBay Listing tab is a unified product panel that replaces the old "Grading & Condition" and "TCGiant Sync" tabs. It walks you through 4 steps: (1) Item Type, (2) Category, (3) Condition, (4) Push to eBay. Each step uses visual card selectors instead of dropdowns, and includes a readiness checklist to catch issues before you push.
 
 = What are eBay Business Policies? =
 
@@ -79,9 +87,25 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 3. Category filter selector for targeted imports.
 4. Live activity log with real-time updates.
 5. Push to eBay export settings with Business Policy selector.
-6. Per-product Push to eBay button with Category and Condition overrides.
+6. "eBay Listing" tab showing the unified step-by-step push flow with readiness checklist.
+7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 1.7.0 - 2026-07-17 =
+* Feature: Unified "eBay Listing" tab replaces the separate "Grading & Condition" and "TCGiant Sync" tabs. All export fields are now in a single panel with a guided 4-step flow.
+* Feature: Step-by-step push wizard: Item Type -> Category -> Condition -> Push to eBay. Sections use progressive disclosure and auto-expand as you complete each step.
+* Feature: Visual card selectors for Item Type (Trading Cards / Coins) and Condition (Graded / Ungraded) replace plain dropdowns.
+* Feature: Category auto-suggestion via eBay's Taxonomy API. Click "Suggest Category from Title" and select from clickable suggestion pills.
+* Feature: Pre-push readiness checklist validates category, condition, business policies, images, and title length before queuing.
+* Feature: Category browser now filters by item type -- Coins items start at "Coins & Paper Money" root, TCG items start at "Toys & Hobbies" root.
+* Feature: Clear Error button to dismiss export errors and retry cleanly.
+* Improvement: Smart AJAX polling with adaptive intervals -- reduces server load on non-export pages.
+* Improvement: Transient caching for sync stats (30s) and static caching for category lists.
+* Improvement: Pre-push validation runs synchronously before queuing, preventing invalid listings from entering the export queue.
+* Improvement: All icons use WordPress Dashicons instead of emoji for reliable cross-platform rendering.
+* Fix: Grader and grade field name mismatches for item-type-specific suffixes (_tcg, _coins) now resolve correctly.
+* Fix: Category-item type mismatch detection warns when a Coins category is set for a TCG item and vice versa.
 
 = 1.6.3 - 2026-07-15 =
 * Feature: New "Push to eBay" column on the WooCommerce Products list table. View eBay category, item ID link, push date, and error status for every product at a glance.
@@ -261,6 +285,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 1.7.0 =
+Major UX rework for Push to eBay! The old "Grading & Condition" and "TCGiant Sync" tabs are merged into a single "eBay Listing" tab with a guided 4-step wizard. New features include category auto-suggestion from your product title, visual card selectors, a pre-push readiness checklist, and smart validation that catches errors before they hit eBay. Plus performance improvements with smarter AJAX polling and transient caching.
 
 = 1.6.3 =
 New "Push to eBay" column on the WooCommerce Products list! See eBay category, item ID, push status, and errors for every product at a glance. Push or update any product to eBay with one click directly from the products table — no need to open each product individually.
