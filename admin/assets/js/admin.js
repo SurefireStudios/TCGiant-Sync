@@ -19,9 +19,27 @@
     });
 
     /* ─── Status Polling ─── */
+    var statusTimer = null;
+    var logTimer = null;
+    var lastSyncStatus = 'idle';
+
     function initStatusPolling() {
+        // Only poll on Dashboard and Import pages.
+        if (!tcgiantSync.enablePolling) return;
+
         fetchSyncStatus();
-        setInterval(fetchSyncStatus, 5000);
+        scheduleNextStatusPoll();
+    }
+
+    function scheduleNextStatusPoll() {
+        if (statusTimer) clearTimeout(statusTimer);
+        // Poll faster when a sync is actively running, slower when idle.
+        var isActive = ['scanning', 'importing', 'queued', 'rate_limited'].indexOf(lastSyncStatus) !== -1;
+        var interval = isActive ? 5000 : 30000;
+        statusTimer = setTimeout(function() {
+            fetchSyncStatus();
+            scheduleNextStatusPoll();
+        }, interval);
     }
 
     function fetchSyncStatus() {
@@ -34,6 +52,22 @@
             var s = res.data.state;
             var st = res.data.stats;
             var lic = res.data.license;
+            var prevStatus = lastSyncStatus;
+            lastSyncStatus = s.status;
+
+            // If status changed from idle to active (or vice versa), reschedule.
+            var wasActive = ['scanning', 'importing', 'queued', 'rate_limited'].indexOf(prevStatus) !== -1;
+            var isActive  = ['scanning', 'importing', 'queued', 'rate_limited'].indexOf(s.status) !== -1;
+            if (wasActive !== isActive) {
+                scheduleNextStatusPoll();
+            }
+
+            // Start/stop log polling based on activity.
+            if (isActive && !logTimer) {
+                startLogPolling();
+            } else if (!isActive && logTimer) {
+                stopLogPolling();
+            }
 
             // Dot class.
             $('.tc-sync-dot')
@@ -150,8 +184,25 @@
 
     /* ─── Log Polling ─── */
     function initLogPolling() {
+        // Only fetch logs on initial load if polling is enabled.
+        if (!tcgiantSync.enablePolling) return;
         fetchLogs();
-        setInterval(fetchLogs, 8000);
+        // Don't start interval here — it's started/stopped based on sync activity.
+    }
+
+    function startLogPolling() {
+        if (logTimer) return;
+        fetchLogs();
+        logTimer = setInterval(fetchLogs, 8000);
+    }
+
+    function stopLogPolling() {
+        if (logTimer) {
+            clearInterval(logTimer);
+            logTimer = null;
+        }
+        // One final fetch to show the latest state.
+        fetchLogs();
     }
 
     function fetchLogs() {

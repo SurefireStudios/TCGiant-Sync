@@ -268,6 +268,11 @@ class TCGiant_Sync_Exporter {
 	 * @return array Map of category ID => label.
 	 */
 	public static function get_categories() {
+		static $cached = null;
+		if ( null !== $cached ) {
+			return $cached;
+		}
+
 		$categories = self::CATEGORIES;
 		
 		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
@@ -301,7 +306,8 @@ class TCGiant_Sync_Exporter {
 			}
 		}
 		
-		return $categories;
+		$cached = $categories;
+		return $cached;
 	}
 
 	/**
@@ -377,6 +383,11 @@ class TCGiant_Sync_Exporter {
 			array( 'product_id' => $product_id ),
 			'tcgiant_sync_group'
 		);
+
+		// Clear any previous error so it doesn't linger during the new attempt.
+		$product->update_meta_data( '_ebay_export_status', 'queued' );
+		$product->update_meta_data( '_ebay_export_error', '' );
+		$product->save();
 
 		TCGiant_Sync_Logger::log( sprintf( 'Export: Queued "%s" (WC #%d) for push to eBay.', $product->get_name(), $product_id ) );
 		return true;
@@ -644,6 +655,13 @@ class TCGiant_Sync_Exporter {
 		} else {
 			$xml .= '<ConditionID>' . esc_attr( $settings['condition_id'] ) . '</ConditionID>' . "\n";
 		}
+
+		// ItemSpecifics: required for Coins categories (e.g. Certification, Grade).
+		$item_specifics_xml = $this->build_item_specifics_xml( $settings );
+		if ( ! empty( $item_specifics_xml ) ) {
+			$xml .= $item_specifics_xml . "\n";
+		}
+
 		$xml .= '<Country>US</Country>' . "\n";
 		if ( ! empty( $settings['location'] ) ) {
 			$xml .= '<Location>' . esc_xml( $settings['location'] ) . '</Location>' . "\n";
@@ -787,6 +805,16 @@ class TCGiant_Sync_Exporter {
 			}
 		}
 
+		// Flag category-item_type mismatch so validation can catch it.
+		// e.g. user picks "Coins" but the global default category is 183050 (TCG).
+		$item_type   = $settings['item_type'] ?? '';
+		$category_id = $settings['category_id'] ?? '';
+		if ( 'coins' === $item_type && in_array( (string) $category_id, self::DESCRIPTOR_CATEGORIES_TCG, true ) ) {
+			$settings['_category_mismatch'] = 'coins_in_tcg';
+		} elseif ( 'tcg' === $item_type && in_array( (string) $category_id, self::DESCRIPTOR_CATEGORIES_COINS, true ) ) {
+			$settings['_category_mismatch'] = 'tcg_in_coins';
+		}
+
 		return $settings;
 	}
 
@@ -796,8 +824,17 @@ class TCGiant_Sync_Exporter {
 	 * @param array $settings Export settings array.
 	 * @return true|WP_Error True on success, WP_Error describing what's missing.
 	 */
-	private function validate_export_settings( array $settings ) {
+	public function validate_export_settings( array $settings ) {
 		$missing = array();
+
+		// Check for category-item_type mismatch (set in get_export_settings).
+		if ( ! empty( $settings['_category_mismatch'] ) ) {
+			if ( 'coins_in_tcg' === $settings['_category_mismatch'] ) {
+				$missing[] = __( 'eBay Category — this is a Coins item but the eBay category is set to Trading Cards. Set a Coins leaf category (e.g. "Coins: US > Dollars > Silver Eagles") on this product using Browse eBay Categories in the TCGiant Sync tab', 'tcgiant-sync' );
+			} elseif ( 'tcg_in_coins' === $settings['_category_mismatch'] ) {
+				$missing[] = __( 'eBay Category — this is a Trading Cards item but the eBay category is set to Coins. Set a TCG leaf category on this product using Browse eBay Categories in the TCGiant Sync tab', 'tcgiant-sync' );
+			}
+		}
 
 		if ( empty( $settings['category_id'] ) ) {
 			$missing[] = __( 'eBay Category ID (set a default in TCGiant Sync settings)', 'tcgiant-sync' );
@@ -849,6 +886,88 @@ class TCGiant_Sync_Exporter {
 	}
 
 	// -------------------------------------------------------------------------
+	// ItemSpecifics Methods
+	// -------------------------------------------------------------------------
+
+	/**
+	 * Build <ItemSpecifics> XML for the listing.
+	 *
+	 * eBay Coins categories require item specifics like "Certification" (grader name)
+	 * in addition to the structured ConditionDescriptors. Returns empty string for
+	 * non-coin categories or if no relevant data is available.
+	 *
+	 * @param array $settings Merged export settings.
+	 * @return string XML string or empty.
+	 */
+	private function build_item_specifics_xml( array $settings ) {
+		$item_type = $settings['item_type'] ?? '';
+
+		// Only generate ItemSpecifics for Coins categories.
+		if ( ! self::is_coins_category( $settings['category_id'] ?? '', $item_type ) ) {
+			return '';
+		}
+
+		$specifics = array();
+
+		if ( 'graded' === ( $settings['condition_type'] ?? '' ) ) {
+			// Certification — the grader name (e.g. "NGC", "PCGS").
+			if ( ! empty( $settings['grader_id'] ) ) {
+				$grader_name = self::get_grader_name_by_id( $settings['grader_id'], 'coins' );
+				if ( $grader_name ) {
+					$specifics['Certification'] = $grader_name;
+				}
+			}
+
+			// Grade (e.g. "MS/PR 69").
+			if ( ! empty( $settings['grade_value'] ) ) {
+				$specifics['Grade'] = $settings['grade_value'];
+			}
+
+			// Certification Number.
+			if ( ! empty( $settings['cert_number'] ) ) {
+				$specifics['Certification Number'] = $settings['cert_number'];
+			}
+		} elseif ( 'ungraded' === ( $settings['condition_type'] ?? '' ) ) {
+			// Ungraded coins should indicate they are not certified.
+			$specifics['Certification'] = 'Uncertified';
+		}
+
+		if ( empty( $specifics ) ) {
+			return '';
+		}
+
+		$xml = '<ItemSpecifics>' . "\n";
+		foreach ( $specifics as $name => $value ) {
+			$xml .= "\t<NameValueList>\n";
+			$xml .= "\t\t<Name>" . esc_xml( $name ) . "</Name>\n";
+			$xml .= "\t\t<Value>" . esc_xml( $value ) . "</Value>\n";
+			$xml .= "\t</NameValueList>\n";
+		}
+		$xml .= '</ItemSpecifics>';
+
+		return $xml;
+	}
+
+	/**
+	 * Reverse-lookup a grader's display name from its eBay conditionDescriptorValueId.
+	 *
+	 * @param string $value_id The numeric value ID stored in settings.
+	 * @param string $type     Either 'coins' or 'tcg'.
+	 * @return string|false The grader display name, or false if not found.
+	 */
+	public static function get_grader_name_by_id( $value_id, $type = 'coins' ) {
+		$map = 'coins' === $type ? self::GRADERS_COINS : self::GRADERS_TCG;
+
+		foreach ( $map as $name => $id ) {
+			if ( (string) $id === (string) $value_id ) {
+				return $name;
+			}
+		}
+
+		return false;
+	}
+
+	// -------------------------------------------------------------------------
 	// ConditionDescriptor Methods
 	// -------------------------------------------------------------------------
 
@@ -874,10 +993,20 @@ class TCGiant_Sync_Exporter {
 	 * @return bool True if the category is a Coins category.
 	 */
 	public static function is_coins_category( $category_id, $item_type = '' ) {
-		if ( 'coins' === $item_type ) {
+		$cat_str = (string) $category_id;
+
+		// The actual eBay category is authoritative. If the category is in a
+		// known list, use that — regardless of what item_type the user selected.
+		// This prevents sending Coins descriptors to a TCG category (or vice versa).
+		if ( in_array( $cat_str, self::DESCRIPTOR_CATEGORIES_COINS, true ) ) {
 			return true;
 		}
-		return in_array( (string) $category_id, self::DESCRIPTOR_CATEGORIES_COINS, true );
+		if ( in_array( $cat_str, self::DESCRIPTOR_CATEGORIES_TCG, true ) ) {
+			return false;
+		}
+
+		// For custom/unknown categories, fall back to item_type.
+		return 'coins' === $item_type;
 	}
 
 	/**

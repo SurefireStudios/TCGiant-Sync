@@ -184,14 +184,16 @@ class TCGiant_Sync_API {
 				$first_error = $array['Errors'][0];
 				$error_parts = array();
 				foreach ( $array['Errors'] as $err ) {
-					if ( isset( $err['ShortMessage'] ) ) {
-						$error_parts[] = $err['ShortMessage'];
+					// Prefer LongMessage (detailed) over ShortMessage (generic).
+					$msg = $err['LongMessage'] ?? $err['ShortMessage'] ?? '';
+					if ( ! empty( $msg ) ) {
+						$error_parts[] = $msg;
 					}
 				}
 				$error_msg  = ! empty( $error_parts ) ? implode( ' | ', $error_parts ) : 'Unknown Trading API Error';
 				$error_code = isset( $first_error['ErrorCode'] ) ? (string) $first_error['ErrorCode'] : '';
 			} else {
-				$error_msg  = isset( $array['Errors']['ShortMessage'] ) ? $array['Errors']['ShortMessage'] : 'Unknown Trading API Error';
+				$error_msg  = $array['Errors']['LongMessage'] ?? $array['Errors']['ShortMessage'] ?? 'Unknown Trading API Error';
 				$error_code = isset( $array['Errors']['ErrorCode'] ) ? (string) $array['Errors']['ErrorCode'] : '';
 			}
 

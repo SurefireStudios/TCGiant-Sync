@@ -58,6 +58,7 @@ class TCGiant_Sync_Admin {
 		add_action( 'wp_ajax_tcgiant_fetch_policies', array( $this, 'ajax_fetch_policies' ) );
 		add_action( 'wp_ajax_tcgiant_export_status', array( $this, 'ajax_export_status' ) );
 		add_action( 'wp_ajax_tcgiant_browse_categories', array( $this, 'ajax_browse_categories' ) );
+		add_action( 'wp_ajax_tcgiant_clear_export_error', array( $this, 'ajax_clear_export_error' ) );
 
 		// Bulk action on WooCommerce Products list.
 		add_filter( 'bulk_actions-edit-product', array( $this, 'register_bulk_push_action' ) );
@@ -107,10 +108,19 @@ class TCGiant_Sync_Admin {
 		wp_enqueue_script( 'tcgiant-sync-admin', TCGIANT_SYNC_URL . 'admin/assets/js/admin.js', array( 'jquery' ), $js_ver, true );
 
 		$license = TCGiant_Sync_License::instance();
+
+		// Only enable AJAX polling on pages that display live status/logs.
+		$polling_pages = array(
+			'toplevel_page_tcgiant-sync',
+			'tcgiant-sync_page_tcgiant-import',
+		);
+		$enable_polling = in_array( $hook, $polling_pages, true );
+
 		wp_localize_script( 'tcgiant-sync-admin', 'tcgiantSync', array(
-			'ajaxUrl' => admin_url( 'admin-ajax.php' ),
-			'nonce'   => wp_create_nonce( 'tcgiant_sync_ajax' ),
-			'license' => $license->get_status_for_ui(),
+			'ajaxUrl'       => admin_url( 'admin-ajax.php' ),
+			'nonce'         => wp_create_nonce( 'tcgiant_sync_ajax' ),
+			'license'       => $license->get_status_for_ui(),
+			'enablePolling' => $enable_polling,
 		) );
 	}
 
@@ -723,6 +733,15 @@ class TCGiant_Sync_Admin {
 	 * Get sync statistics.
 	 */
 	public function get_sync_stats() {
+		// Use a short transient to avoid running expensive DB queries on every poll.
+		$cached = get_transient( 'tcgiant_sync_stats_cache' );
+		if ( false !== $cached ) {
+			// Always refresh the state (cheap get_option) for live status updates.
+			$state = TCGiant_Sync_Importer::get_sync_state();
+			$cached['last_completed'] = $state['last_completed'] ?? '';
+			return $cached;
+		}
+
 		global $wpdb;
 
 		// Count WooCommerce products synced from eBay.
@@ -749,11 +768,15 @@ class TCGiant_Sync_Admin {
 
 		$state = TCGiant_Sync_Importer::get_sync_state();
 
-		return array(
+		$stats = array(
 			'synced_products' => $synced_products,
 			'pending_jobs'    => $pending_jobs,
 			'last_completed'  => $state['last_completed'] ?? '',
 		);
+
+		set_transient( 'tcgiant_sync_stats_cache', $stats, 30 );
+
+		return $stats;
 	}
 
 	/**
@@ -823,13 +846,83 @@ class TCGiant_Sync_Admin {
 		}
 
 		$exporter = TCGiant_Sync_Exporter::instance();
-		$queued   = $exporter->push_product( $product_id );
+
+		// Save per-product override fields from the form before queuing.
+		$override_fields = array(
+			'override_category_id'        => '_ebay_export_category_id',
+			'override_condition_id'       => '_ebay_export_condition_id',
+			'override_item_type'          => '_ebay_export_item_type',
+			'override_condition_type'     => '_ebay_export_condition_type',
+			'override_grader_id'          => '_ebay_export_grader_id',
+			'override_grade_value'        => '_ebay_export_grade_value',
+			'override_cert_number'        => '_ebay_export_cert_number',
+			'override_ungraded_condition' => '_ebay_export_ungraded_condition',
+		);
+		foreach ( $override_fields as $post_key => $meta_key ) {
+			if ( isset( $_POST[ $post_key ] ) ) {
+				$value = sanitize_text_field( wp_unslash( $_POST[ $post_key ] ) );
+				update_post_meta( $product_id, $meta_key, $value );
+			}
+		}
+
+		// Pre-push validation: check all requirements BEFORE queuing.
+		// This gives the user instant feedback instead of async error discovery.
+		$settings = $exporter->get_export_settings( $product_id );
+		$valid    = $exporter->validate_export_settings( $settings );
+		if ( is_wp_error( $valid ) ) {
+			// Save error to product meta so it shows on page reload too.
+			update_post_meta( $product_id, '_ebay_export_status', 'error' );
+			update_post_meta( $product_id, '_ebay_export_error', $valid->get_error_message() );
+			wp_send_json_error( array( 'message' => $valid->get_error_message() ) );
+		}
+
+		// Also check product has images (eBay requires at least 1).
+		$product = wc_get_product( $product_id );
+		if ( $product ) {
+			$image_id  = $product->get_image_id();
+			$gallery   = $product->get_gallery_image_ids();
+			if ( empty( $image_id ) && empty( $gallery ) ) {
+				$msg = __( 'Product has no images. eBay requires at least 1 photo.', 'tcgiant-sync' );
+				update_post_meta( $product_id, '_ebay_export_status', 'error' );
+				update_post_meta( $product_id, '_ebay_export_error', $msg );
+				wp_send_json_error( array( 'message' => $msg ) );
+			}
+		}
+
+		$queued = $exporter->push_product( $product_id );
 
 		if ( $queued ) {
 			wp_send_json_success( array( 'message' => 'Product queued for push to eBay. Check the Activity Log for results.' ) );
 		} else {
 			wp_send_json_error( array( 'message' => 'Could not queue product. It may not exist.' ) );
 		}
+	}
+
+	/**
+	 * AJAX: Clear export error for a product.
+	 */
+	public function ajax_clear_export_error() {
+		check_ajax_referer( 'tcgiant_sync_ajax' );
+
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'Unauthorized.' ) );
+		}
+
+		$product_id = isset( $_POST['product_id'] ) ? (int) $_POST['product_id'] : 0;
+		if ( ! $product_id ) {
+			wp_send_json_error( array( 'message' => 'Invalid product ID.' ) );
+		}
+
+		$product = wc_get_product( $product_id );
+		if ( ! $product ) {
+			wp_send_json_error( array( 'message' => 'Product not found.' ) );
+		}
+
+		$product->update_meta_data( '_ebay_export_status', '' );
+		$product->update_meta_data( '_ebay_export_error', '' );
+		$product->save();
+
+		wp_send_json_success( array( 'message' => 'Error cleared.' ) );
 	}
 
 	/**
@@ -1115,10 +1208,116 @@ class TCGiant_Sync_Admin {
 
 		// Export error notice.
 		if ( 'error' === $export_status && ! empty( $export_error ) ) {
-			echo '<p style="color:#cc1818; background:#fff0f0; border:1px solid #fcc; padding:6px 8px; border-radius:3px; font-size:12px; margin:0 0 8px;">';
-			echo '⚠ ' . esc_html( $export_error );
-			echo '</p>';
+			echo '<div id="tcgiant-export-error-notice" style="background:#fff0f0; border:1px solid #fcc; border-radius:4px; padding:8px 10px; margin:0 0 10px;">';
+			echo '<p style="color:#cc1818; font-size:12px; margin:0 0 6px; line-height:1.4;">⚠ ' . esc_html( $export_error ) . '</p>';
+			echo '<a href="#" id="tcgiant-dismiss-export-error" data-product-id="' . esc_attr( $product_id ) . '" style="display:inline-block; background:#cc1818; color:#fff; font-size:11px; font-weight:600; padding:3px 10px; border-radius:3px; text-decoration:none; cursor:pointer;">' . esc_html__( '✕ Clear Error', 'tcgiant-sync' ) . '</a>';
+			echo '</div>';
+			echo '<script>
+				jQuery(function($){
+					$("#tcgiant-dismiss-export-error").on("click", function(e){
+						e.preventDefault();
+						var $notice = $("#tcgiant-export-error-notice");
+						$.post(ajaxurl, {
+							action: "tcgiant_clear_export_error",
+							product_id: $(this).data("product-id"),
+							_ajax_nonce: "' . wp_create_nonce( 'tcgiant_sync_ajax' ) . '"
+						});
+						$notice.slideUp(200);
+					});
+				});
+			</script>';
 		}
+
+		// ---- Readiness Checklist ----
+		$exporter        = TCGiant_Sync_Exporter::instance();
+		$product         = wc_get_product( $product_id );
+		$merged_settings = $exporter->get_export_settings( $product_id );
+		$checks          = array();
+
+		// Category.
+		$eff_cat  = $merged_settings['category_id'] ?? '';
+		$cat_name = get_post_meta( $product_id, '_ebay_export_category_name', true );
+		if ( ! empty( $eff_cat ) ) {
+			$cat_display = $cat_name ? $cat_name . ' (' . $eff_cat . ')' : $eff_cat;
+			$is_mismatch = ! empty( $merged_settings['_category_mismatch'] );
+			$checks[] = array(
+				'ok'    => ! $is_mismatch,
+				'label' => $is_mismatch
+					? sprintf( __( 'Category: %s — ⚠ item type mismatch, set a %s category', 'tcgiant-sync' ), $cat_display, $merged_settings['item_type'] ?? 'matching' )
+					: sprintf( __( 'Category: %s', 'tcgiant-sync' ), $cat_display ),
+			);
+		} else {
+			$checks[] = array( 'ok' => false, 'label' => __( 'Category: Not set', 'tcgiant-sync' ) );
+		}
+
+		// Condition.
+		$cond_type_eff = $merged_settings['condition_type'] ?? '';
+		$item_type_eff = $merged_settings['item_type'] ?? '';
+		if ( ! empty( $cond_type_eff ) ) {
+			if ( 'graded' === $cond_type_eff ) {
+				$g_id   = $merged_settings['grader_id'] ?? '';
+				$g_val  = $merged_settings['grade_value'] ?? '';
+				$grader_map = 'coins' === $item_type_eff ? TCGiant_Sync_Exporter::GRADERS_COINS : TCGiant_Sync_Exporter::GRADERS_TCG;
+				$g_name = $g_id ? array_search( $g_id, $grader_map, true ) : '';
+				$cond_label = 'Graded' . ( $g_name ? ' · ' . $g_name : '' ) . ( $g_val ? ' ' . $g_val : '' );
+				$cond_ok = ! empty( $g_id ) && ! empty( $g_val );
+				if ( ! $cond_ok ) {
+					$cond_label .= ' — ' . __( 'grader and grade required', 'tcgiant-sync' );
+				}
+			} else {
+				$u_val       = $merged_settings['ungraded_condition'] ?? '';
+				$u_map       = 'coins' === $item_type_eff ? TCGiant_Sync_Exporter::UNGRADED_COINS : TCGiant_Sync_Exporter::UNGRADED_TCG;
+				$cond_label  = 'Ungraded' . ( isset( $u_map[ $u_val ] ) ? ' · ' . $u_map[ $u_val ] : '' );
+				$cond_ok     = ! empty( $u_val );
+				if ( ! $cond_ok ) {
+					$cond_label .= ' — ' . __( 'condition required', 'tcgiant-sync' );
+				}
+			}
+			$checks[] = array( 'ok' => $cond_ok, 'label' => sprintf( __( 'Condition: %s', 'tcgiant-sync' ), $cond_label ) );
+		} else {
+			$checks[] = array( 'ok' => false, 'label' => __( 'Condition: Not set — configure in Grading & Condition tab', 'tcgiant-sync' ) );
+		}
+
+		// Policies.
+		$has_policies = ! empty( $merged_settings['fulfillment_policy_id'] ) && ! empty( $merged_settings['return_policy_id'] ) && ! empty( $merged_settings['payment_policy_id'] );
+		$checks[] = array(
+			'ok'    => $has_policies,
+			'label' => $has_policies ? __( 'Business Policies: Configured', 'tcgiant-sync' ) : __( 'Business Policies: Missing — configure in Settings', 'tcgiant-sync' ),
+		);
+
+		// Images.
+		$has_images = false;
+		if ( $product ) {
+			$has_images = ! empty( $product->get_image_id() ) || ! empty( $product->get_gallery_image_ids() );
+		}
+		$img_count = $product ? count( array_filter( array_merge( array( $product->get_image_id() ), $product->get_gallery_image_ids() ) ) ) : 0;
+		$checks[] = array(
+			'ok'    => $has_images,
+			'label' => $has_images
+				? sprintf( __( 'Images: %d photo(s)', 'tcgiant-sync' ), $img_count )
+				: __( 'Images: No photos — eBay requires at least 1', 'tcgiant-sync' ),
+		);
+
+		// Title length.
+		$title_len = $product ? mb_strlen( $product->get_name() ) : 0;
+		$checks[] = array(
+			'ok'    => $title_len <= 80 && $title_len > 0,
+			'label' => sprintf( __( 'Title: %d/80 characters', 'tcgiant-sync' ), $title_len ) . ( $title_len > 80 ? ' — ' . __( 'will be truncated', 'tcgiant-sync' ) : '' ),
+		);
+
+		$all_ok = true;
+		foreach ( $checks as $c ) {
+			if ( ! $c['ok'] ) { $all_ok = false; break; }
+		}
+
+		echo '<div style="border:1px solid ' . ( $all_ok ? '#c3e6cb' : '#f5c6cb' ) . '; border-radius:4px; padding:8px 10px; margin:0 0 10px; background:' . ( $all_ok ? '#f0faf0' : '#fef8f8' ) . '; font-size:12px;">';
+		echo '<div style="font-weight:600; margin-bottom:4px; color:' . ( $all_ok ? '#1e7e34' : '#721c24' ) . ';">' . ( $all_ok ? '✔ ' . esc_html__( 'Ready to push', 'tcgiant-sync' ) : '⚠ ' . esc_html__( 'Not ready — fix issues below', 'tcgiant-sync' ) ) . '</div>';
+		foreach ( $checks as $c ) {
+			$icon  = $c['ok'] ? '<span style="color:#1e7e34;">✔</span>' : '<span style="color:#dc3545;">✖</span>';
+			$color = $c['ok'] ? '#333' : '#721c24';
+			echo '<div style="padding:1px 0; color:' . $color . ';">' . $icon . ' ' . esc_html( $c['label'] ) . '</div>';
+		}
+		echo '</div>';
 
 		// Per-product overrides.
 		echo '<div style="display:flex; gap:12px; margin-bottom:10px; flex-wrap:wrap;">';
@@ -1332,11 +1531,32 @@ class TCGiant_Sync_Admin {
 				var btn = $(this);
 				var status = $('#tcgiant-push-status');
 				btn.prop('disabled', true);
-				status.text('Saving overrides and queuing push...');
-				// Save post first so override fields are persisted, then trigger push.
+				status.css('color','#555').text('Saving overrides and queuing push...');
+
+				// Collect all per-product override values from the form.
+				var catSelect = $('#_ebay_export_category_id_select').val() || '';
+				var catCustom = $('#_ebay_export_category_id_custom').val() || '';
+				var categoryId = (catSelect === 'custom') ? catCustom : catSelect;
+
+				// Grader/grade/ungraded fields are item-type-suffixed in the HTML.
+				var itemType = $('[name="_ebay_export_item_type"]').val() || '';
+				var suffix = itemType ? '_' + itemType : '';
+				var graderId = $('#_ebay_export_grader_id' + suffix).val() || '';
+				var gradeValue = $('#_ebay_export_grade_value' + suffix).val() || '';
+				var ungradedCond = $('#_ebay_export_ungraded_condition' + suffix).val() || '';
+
 				$.post(ajaxurl, {
 					action: 'tcgiant_push_product',
 					product_id: btn.data('product-id'),
+					// Override fields to save before push.
+					override_category_id: categoryId,
+					override_condition_id: $('#_ebay_export_condition_id').val() || '',
+					override_item_type: itemType,
+					override_condition_type: $('[name="_ebay_export_condition_type"]').val() || '',
+					override_grader_id: graderId,
+					override_grade_value: gradeValue,
+					override_cert_number: $('[name="_ebay_export_cert_number"]').val() || '',
+					override_ungraded_condition: ungradedCond,
 					_ajax_nonce: '<?php echo esc_js( wp_create_nonce( 'tcgiant_sync_ajax' ) ); ?>'
 				}, function(res){
 					if (res.success) {
@@ -1678,9 +1898,14 @@ class TCGiant_Sync_Admin {
 			echo '<div class="tc-ebay-itemid"><a href="https://www.ebay.com/itm/' . esc_attr( $ebay_item_id ) . '" target="_blank" rel="noopener" title="View on eBay">Item ' . esc_html( $ebay_item_id ) . ' ↗</a></div>';
 		}
 
-		// Error notice.
+		// Error notice — show actual error message and link to logs.
 		if ( 'error' === $export_status && ! empty( $export_error ) ) {
-			echo '<div class="tc-ebay-error" title="' . esc_attr( $export_error ) . '">⚠ Error</div>';
+			$log_url = admin_url( 'admin.php?page=tcgiant-export' );
+			// Truncate very long error messages for the column display.
+			$display_error = mb_strlen( $export_error ) > 120 ? mb_substr( $export_error, 0, 117 ) . '…' : $export_error;
+			echo '<div class="tc-ebay-error" title="' . esc_attr( $export_error ) . '">';
+			echo '<a href="' . esc_url( $log_url ) . '" style="color:#d63638;text-decoration:none;">⚠ ' . esc_html( $display_error ) . '</a>';
+			echo '</div>';
 		}
 
 		// Last pushed date.
@@ -1732,9 +1957,12 @@ class TCGiant_Sync_Admin {
 			.tc-ebay-error {
 				color: #d63638;
 				font-size: 11px;
-				cursor: help;
 				margin-bottom: 2px;
+				word-break: break-word;
+				line-height: 1.4;
 			}
+			.tc-ebay-error a { cursor: pointer; }
+			.tc-ebay-error a:hover { text-decoration: underline !important; }
 			.tc-ebay-pushed {
 				color: #00a32a;
 				font-size: 11px;
