@@ -639,9 +639,14 @@ class TCGiant_Sync_Importer {
 			$has_variations = isset( $item['Variations'] );
 			$missing_critical = ! isset( $item['Title'] ) || ! isset( $item['SellingStatus'] );
 
+			// Also require ItemSpecifics and PictureDetails for inline processing.
+			// GetSellerList sometimes omits these even with DetailLevel=ReturnAll.
+			// Without this check, products import with empty attributes and no images.
+			$missing_specs_or_images = ! isset( $item['ItemSpecifics'] ) || ! isset( $item['PictureDetails'] );
+
 			// Try inline processing first — even for variation items if the data is complete.
 			// GetSellerList with DetailLevel=ReturnAll already returns variation data.
-			$can_inline = ! $missing_critical;
+			$can_inline = ! $missing_critical && ! $missing_specs_or_images;
 			if ( $has_variations && $can_inline ) {
 				// Only inline if variation data is actually present and populated.
 				$can_inline = isset( $item['Variations']['Variation'] ) && ! empty( $item['Variations']['Variation'] );
