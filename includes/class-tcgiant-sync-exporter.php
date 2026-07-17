@@ -662,18 +662,21 @@ class TCGiant_Sync_Exporter {
 			$xml .= $item_specifics_xml . "\n";
 		}
 
-		$xml .= '<Country>US</Country>' . "\n";
+		// Derive Country, Currency, and Site from the configured marketplace.
+		$marketplace = TCGiant_Sync_API::instance()->get_marketplace_config();
+
+		$xml .= '<Country>' . esc_attr( $marketplace['country'] ) . '</Country>' . "\n";
 		if ( ! empty( $settings['location'] ) ) {
 			$xml .= '<Location>' . esc_xml( $settings['location'] ) . '</Location>' . "\n";
 		}
 		if ( ! empty( $settings['postal_code'] ) ) {
 			$xml .= '<PostalCode>' . esc_xml( $settings['postal_code'] ) . '</PostalCode>' . "\n";
 		}
-		$xml .= '<Currency>USD</Currency>' . "\n";
+		$xml .= '<Currency>' . esc_attr( $marketplace['currency'] ) . '</Currency>' . "\n";
 		$xml .= '<DispatchTimeMax>3</DispatchTimeMax>' . "\n";
 		$xml .= '<ListingDuration>GTC</ListingDuration>' . "\n";
 		$xml .= '<ListingType>FixedPriceItem</ListingType>' . "\n";
-		$xml .= '<Site>US</Site>' . "\n";
+		$xml .= '<Site>' . esc_attr( $marketplace['site'] ) . '</Site>' . "\n";
 
 		if ( $product->is_type( 'variable' ) ) {
 			$xml .= '<Variations>' . "\n";

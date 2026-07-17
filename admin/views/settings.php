@@ -143,7 +143,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 							}
 							?>
 						</select>
-						<p class="tc-hint"><?php esc_html_e( 'Select the eBay regional site where your listings are managed.', 'tcgiant-sync' ); ?></p>
+						<p class="tc-hint"><?php esc_html_e( 'Select the eBay regional site where your listings are managed. This also sets the Country, Currency, and Site used when pushing listings.', 'tcgiant-sync' ); ?></p>
 					</div>
 
 					<div class="tc-field" style="margin-top:24px;">
@@ -505,7 +505,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 					<input type="text" class="tc-input" id="export_location"
 						name="tcgiant_sync_ebay_settings[export_location]"
 						value="<?php echo esc_attr( $settings['export_location'] ?? '' ); ?>"
-						placeholder="<?php esc_attr_e( 'e.g. Chicago, IL', 'tcgiant-sync' ); ?>">
+						placeholder="<?php esc_attr_e( 'e.g. Chicago, IL or London, UK', 'tcgiant-sync' ); ?>">
 					<p class="tc-hint"><?php esc_html_e( 'City and state where items ship from. Required by eBay for all listings.', 'tcgiant-sync' ); ?></p>
 				</div>
 
@@ -515,7 +515,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 					<input type="text" class="tc-input" id="export_postal_code"
 						name="tcgiant_sync_ebay_settings[export_postal_code]"
 						value="<?php echo esc_attr( $settings['export_postal_code'] ?? '' ); ?>"
-						placeholder="<?php esc_attr_e( 'e.g. 60601', 'tcgiant-sync' ); ?>">
+						placeholder="<?php esc_attr_e( 'e.g. 60601 or SW1A 1AA', 'tcgiant-sync' ); ?>">
 					<p class="tc-hint"><?php esc_html_e( 'ZIP / postal code of your shipping origin. Required by eBay for all listings.', 'tcgiant-sync' ); ?></p>
 				</div>
 

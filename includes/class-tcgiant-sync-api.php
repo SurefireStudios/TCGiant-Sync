@@ -31,14 +31,14 @@ class TCGiant_Sync_API {
 	 * Supported Marketplaces.
 	 */
 	const MARKETPLACES = array(
-		'EBAY_US' => array( 'label' => 'United States', 'site_id' => '0' ),
-		'EBAY_GB' => array( 'label' => 'United Kingdom', 'site_id' => '3' ),
-		'EBAY_CA' => array( 'label' => 'Canada', 'site_id' => '2' ),
-		'EBAY_AU' => array( 'label' => 'Australia', 'site_id' => '15' ),
-		'EBAY_DE' => array( 'label' => 'Germany', 'site_id' => '77' ),
-		'EBAY_FR' => array( 'label' => 'France', 'site_id' => '71' ),
-		'EBAY_IT' => array( 'label' => 'Italy', 'site_id' => '101' ),
-		'EBAY_ES' => array( 'label' => 'Spain', 'site_id' => '186' ),
+		'EBAY_US' => array( 'label' => 'United States',  'site_id' => '0',   'country' => 'US', 'currency' => 'USD', 'site' => 'US' ),
+		'EBAY_GB' => array( 'label' => 'United Kingdom', 'site_id' => '3',   'country' => 'GB', 'currency' => 'GBP', 'site' => 'UK' ),
+		'EBAY_CA' => array( 'label' => 'Canada',         'site_id' => '2',   'country' => 'CA', 'currency' => 'CAD', 'site' => 'Canada' ),
+		'EBAY_AU' => array( 'label' => 'Australia',      'site_id' => '15',  'country' => 'AU', 'currency' => 'AUD', 'site' => 'Australia' ),
+		'EBAY_DE' => array( 'label' => 'Germany',        'site_id' => '77',  'country' => 'DE', 'currency' => 'EUR', 'site' => 'Germany' ),
+		'EBAY_FR' => array( 'label' => 'France',         'site_id' => '71',  'country' => 'FR', 'currency' => 'EUR', 'site' => 'France' ),
+		'EBAY_IT' => array( 'label' => 'Italy',          'site_id' => '101', 'country' => 'IT', 'currency' => 'EUR', 'site' => 'Italy' ),
+		'EBAY_ES' => array( 'label' => 'Spain',          'site_id' => '186', 'country' => 'ES', 'currency' => 'EUR', 'site' => 'Spain' ),
 	);
 
 	/**
@@ -65,6 +65,9 @@ class TCGiant_Sync_API {
 		return array(
 			'marketplace_id' => $marketplace_id,
 			'site_id'        => self::MARKETPLACES[ $marketplace_id ]['site_id'],
+			'country'        => self::MARKETPLACES[ $marketplace_id ]['country'],
+			'currency'       => self::MARKETPLACES[ $marketplace_id ]['currency'],
+			'site'           => self::MARKETPLACES[ $marketplace_id ]['site'],
 		);
 	}
 
