@@ -1,5 +1,11 @@
 *** TCGiant Sync Changelog ***
 
+2026-07-17 - version 1.7.1
+- Fix: Export <Country>, <Currency>, and <Site> XML tags now use marketplace-derived values instead of hardcoded US/USD.
+- Fix: Full sync inline processing now requires ItemSpecifics and PictureDetails before processing inline. Products missing either are routed to GetItem fallback, ensuring attributes and images import reliably.
+- Improvement: MARKETPLACES constant now includes country, currency, and site fields for all 8 supported markets.
+- Improvement: Settings page placeholder text updated with international examples (e.g., "London, UK", "SW1A 1AA") and marketplace dropdown hint clarifies it controls export Country/Currency/Site.
+
 2026-07-15 - version 1.6.3
 - Feature: New "Push to eBay" column on the WooCommerce Products list table. Each product row now displays its eBay category (with "(global)" badge for inherited defaults), a clickable eBay Item ID link (opens the listing on eBay), last-pushed date, and error status — all at a glance without opening the product editor.
 - Feature: Inline "Push to eBay" and "↺ Update" buttons directly in the product list. Push or update a product to eBay with one click from the Products table. The button automatically switches from "Push" to "Update" after the first successful export.

@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.7.0
+Stable tag: 1.7.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -91,6 +91,12 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 1.7.1 - 2026-07-17 =
+* Fix: Export <Country>, <Currency>, and <Site> XML tags now use marketplace-derived values instead of hardcoded US/USD.
+* Fix: Full sync inline processing now requires ItemSpecifics and PictureDetails before processing inline. Products missing either are routed to GetItem fallback, ensuring attributes and images import reliably.
+* Improvement: MARKETPLACES constant now includes country, currency, and site fields for all 8 supported markets.
+* Improvement: Settings page placeholder text updated with international examples (e.g., "London, UK", "SW1A 1AA") and marketplace dropdown hint clarifies it controls export Country/Currency/Site.
 
 = 1.7.0 - 2026-07-17 =
 * Feature: Unified "eBay Listing" tab replaces the separate "Grading & Condition" and "TCGiant Sync" tabs. All export fields are now in a single panel with a guided 4-step flow.
