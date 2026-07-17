@@ -46,19 +46,20 @@ class TCGiant_Sync_Admin {
 		add_action( 'admin_post_tcgiant_clear_recent_sales', array( $this, 'handle_clear_recent_sales' ) );
 		add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_admin_assets' ) );
 		
-		// AJAX endpoints — Import.
+		// AJAX endpoints â€” Import.
 		add_action( 'wp_ajax_tcgiant_sync_status', array( $this, 'ajax_sync_status' ) );
 		add_action( 'wp_ajax_tcgiant_get_logs', array( $this, 'ajax_get_logs' ) );
 		add_action( 'wp_ajax_tcgiant_get_store_categories', array( $this, 'ajax_get_store_categories' ) );
 		add_action( 'wp_ajax_tcgiant_activate_license', array( $this, 'ajax_activate_license' ) );
 		add_action( 'wp_ajax_tcgiant_deactivate_license', array( $this, 'ajax_deactivate_license' ) );
 
-		// AJAX endpoints — Export.
+		// AJAX endpoints â€” Export.
 		add_action( 'wp_ajax_tcgiant_push_product', array( $this, 'ajax_push_product' ) );
 		add_action( 'wp_ajax_tcgiant_fetch_policies', array( $this, 'ajax_fetch_policies' ) );
 		add_action( 'wp_ajax_tcgiant_export_status', array( $this, 'ajax_export_status' ) );
 		add_action( 'wp_ajax_tcgiant_browse_categories', array( $this, 'ajax_browse_categories' ) );
 		add_action( 'wp_ajax_tcgiant_clear_export_error', array( $this, 'ajax_clear_export_error' ) );
+		add_action( 'wp_ajax_tcgiant_suggest_category', array( $this, 'ajax_suggest_category' ) );
 
 		// Bulk action on WooCommerce Products list.
 		add_filter( 'bulk_actions-edit-product', array( $this, 'register_bulk_push_action' ) );
@@ -68,18 +69,15 @@ class TCGiant_Sync_Admin {
 		// Save per-product export overrides.
 		add_action( 'woocommerce_process_product_meta', array( $this, 'save_product_export_meta' ) );
 
-		// WooCommerce Product Metabox Hooks.
+		// WooCommerce Product Metabox Hooks â€” unified eBay Listing tab.
 		add_filter( 'woocommerce_product_data_tabs', array( $this, 'add_sync_log_tab' ) );
-		add_action( 'woocommerce_product_data_panels', array( $this, 'render_sync_log_panel' ) );
+		add_action( 'woocommerce_product_data_panels', array( $this, 'render_ebay_listing_panel' ) );
 
 		// Custom Bin Location Field.
 		add_action( 'woocommerce_product_options_sku', array( $this, 'add_bin_location_field' ) );
 		add_action( 'woocommerce_process_product_meta', array( $this, 'save_bin_location_field' ) );
 		add_action( 'woocommerce_variation_options_pricing', array( $this, 'add_variation_bin_location_field' ), 10, 3 );
 		add_action( 'woocommerce_save_product_variation', array( $this, 'save_variation_bin_location_field' ), 10, 2 );
-
-		// Grading & Condition fields in its own tab.
-		add_action( 'woocommerce_product_data_panels', array( $this, 'render_grading_condition_fields' ) );
 
 		// eBay column on WooCommerce Products list.
 		add_filter( 'manage_edit-product_columns', array( $this, 'add_ebay_column' ) );
@@ -172,7 +170,7 @@ class TCGiant_Sync_Admin {
 	/**
 	 * AJAX: Sync a specific WooCommerce order's stock directly to eBay.
 	 *
-	 * This bypasses Action Scheduler and WP-Cron entirely — it reads the
+	 * This bypasses Action Scheduler and WP-Cron entirely â€” it reads the
 	 * order items, gets their current WooCommerce stock, and calls the eBay
 	 * API directly and synchronously. Nothing else runs as a side effect.
 	 */
@@ -210,17 +208,17 @@ class TCGiant_Sync_Admin {
 				$results[] = array(
 					'product' => $name,
 					'status'  => 'skipped',
-					'message' => 'No SKU set — cannot identify on eBay.',
+					'message' => 'No SKU set â€” cannot identify on eBay.',
 				);
 				continue;
 			}
 
 			TCGiant_Sync_Logger::log( sprintf(
-				'Manual order sync: Pushing stock for SKU %s (Order #%d) → Qty %d',
+				'Manual order sync: Pushing stock for SKU %s (Order #%d) â†’ Qty %d',
 				$sku, $order_id, (int) $new_qty
 			) );
 
-			// Direct API call — no queue, no cron, no side effects.
+			// Direct API call â€” no queue, no cron, no side effects.
 			$result = $api->update_inventory_item_availability( $sku, (int) $new_qty );
 
 			if ( is_wp_error( $result ) ) {
@@ -827,7 +825,7 @@ class TCGiant_Sync_Admin {
 	}
 
 	// =========================================================================
-	// Export / Push to eBay — Admin Methods
+	// Export / Push to eBay â€” Admin Methods
 	// =========================================================================
 
 	/**
@@ -950,10 +948,10 @@ class TCGiant_Sync_Admin {
 			$raw_msg = $fulfillment->get_error_message();
 
 			// 403 means the current OAuth token was issued without the sell.account scope.
-			// The user must re-authenticate via Settings → Reconnect to get a new token.
+			// The user must re-authenticate via Settings â†’ Reconnect to get a new token.
 			if ( false !== strpos( $raw_msg, '403' ) ) {
 				wp_send_json_error( array(
-					'message' => 'Permission denied (403). Your eBay token was issued without the required account scope. Go to Settings → Reconnect to re-authenticate, then try again.',
+					'message' => 'Permission denied (403). Your eBay token was issued without the required account scope. Go to Settings â†’ Reconnect to re-authenticate, then try again.',
 				) );
 			}
 
@@ -1015,6 +1013,36 @@ class TCGiant_Sync_Admin {
 	}
 
 	/**
+	 * AJAX: Suggest eBay categories based on a product title.
+	 * Uses eBay's Taxonomy API getCategorySuggestions endpoint.
+	 */
+	public function ajax_suggest_category() {
+		check_ajax_referer( 'tcgiant_sync_ajax' );
+
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'Unauthorized.' ) );
+		}
+
+		if ( ! TCGiant_Sync_OAuth::instance()->is_authenticated() ) {
+			wp_send_json_error( array( 'message' => 'Not connected to eBay.' ) );
+		}
+
+		$title = isset( $_POST['title'] ) ? sanitize_text_field( wp_unslash( $_POST['title'] ) ) : '';
+		if ( empty( $title ) ) {
+			wp_send_json_error( array( 'message' => 'No title provided.' ) );
+		}
+
+		$api    = TCGiant_Sync_API::instance();
+		$result = $api->get_suggested_categories( $title );
+
+		if ( is_wp_error( $result ) ) {
+			wp_send_json_error( array( 'message' => $result->get_error_message() ) );
+		}
+
+		wp_send_json_success( array( 'suggestions' => $result ) );
+	}
+
+	/**
 	 * Register "Push to eBay" as a WooCommerce bulk action.
 	 *
 	 * @param array $actions Existing bulk actions.
@@ -1066,7 +1094,7 @@ class TCGiant_Sync_Admin {
 			esc_html( _n( '%d product queued for push to eBay.', '%d products queued for push to eBay.', $count, 'tcgiant-sync' ) ),
 			(int) $count
 		);
-		echo ' <a href="' . esc_url( admin_url( 'admin.php?page=tcgiant-sync' ) ) . '">' . esc_html__( 'View progress →', 'tcgiant-sync' ) . '</a></p></div>';
+		echo ' <a href="' . esc_url( admin_url( 'admin.php?page=tcgiant-sync' ) ) . '">' . esc_html__( 'View progress â†’', 'tcgiant-sync' ) . '</a></p></div>';
 	}
 
 	/**
@@ -1156,604 +1184,340 @@ class TCGiant_Sync_Admin {
 	 * @return array
 	 */
 	public function add_sync_log_tab( $tabs ) {
-		$tabs['tcgiant_grading'] = array(
-			'label'    => __( 'Grading & Condition', 'tcgiant-sync' ),
-			'target'   => 'tcgiant_grading_data',
+		$tabs['tcgiant_ebay_listing'] = array(
+			'label'    => __( 'eBay Listing', 'tcgiant-sync' ),
+			'target'   => 'tcgiant_ebay_listing_data',
 			'class'    => array( 'show_if_simple', 'show_if_variable' ),
 			'priority' => 89,
-		);
-		$tabs['tcgiant_sync_log'] = array(
-			'label'    => __( 'TCGiant Sync', 'tcgiant-sync' ),
-			'target'   => 'tcgiant_sync_log_data',
-			'class'    => array( 'show_if_simple', 'show_if_variable' ),
-			'priority' => 90,
 		);
 		return $tabs;
 	}
 
 	/**
-	 * Render the custom tab content — includes eBay export controls and sync log.
+	 * Render the unified "eBay Listing" panel â€” combines item type, category,
+	 * grading/condition, readiness checks, push button, and sync log.
 	 */
-	public function render_sync_log_panel() {
+	public function render_ebay_listing_panel() {
 		global $post;
 		$product_id = $post->ID;
+		$product    = wc_get_product( $product_id );
 
-		echo '<div id="tcgiant_sync_log_data" class="panel woocommerce_options_panel hide_if_grouped hide_if_external">';
-		echo '<div style="padding:15px;">';
-
-		// ---- Push to eBay Section ----
+		// ---- Load all meta ----
 		$ebay_item_id   = get_post_meta( $product_id, '_ebay_item_id', true );
 		$export_status  = get_post_meta( $product_id, '_ebay_export_status', true );
 		$export_error   = get_post_meta( $product_id, '_ebay_export_error', true );
 		$last_pushed    = get_post_meta( $product_id, '_ebay_export_last_pushed', true );
 		$cat_override   = get_post_meta( $product_id, '_ebay_export_category_id', true );
-		$cond_override  = get_post_meta( $product_id, '_ebay_export_condition_id', true );
+		$cat_name_saved = get_post_meta( $product_id, '_ebay_export_category_name', true );
+		$item_type      = get_post_meta( $product_id, '_ebay_export_item_type', true );
+		$cond_type      = get_post_meta( $product_id, '_ebay_export_condition_type', true );
+		$grader_id      = get_post_meta( $product_id, '_ebay_export_grader_id', true );
+		$grade_val      = get_post_meta( $product_id, '_ebay_export_grade_value', true );
+		$cert_num       = get_post_meta( $product_id, '_ebay_export_cert_number', true );
+		$ungraded       = get_post_meta( $product_id, '_ebay_export_ungraded_condition', true );
 
 		$global_settings = TCGiant_Sync_OAuth::instance()->get_settings();
 		$global_cat      = $global_settings['export_category_id'] ?? '';
-
-		echo '<div style="border:1px solid #ddd; border-radius:4px; padding:12px; margin-bottom:16px; background:#fafafa;">';
-		echo '<h4 style="margin:0 0 10px; font-size:13px; color:#23282d;">📤 ' . esc_html__( 'Push to eBay', 'tcgiant-sync' ) . '</h4>';
-
-		// eBay listing status.
-		if ( ! empty( $ebay_item_id ) ) {
-			$listing_url = 'https://www.ebay.com/itm/' . esc_attr( $ebay_item_id );
-			echo '<p style="margin:0 0 8px;"><strong>' . esc_html__( 'eBay Item ID:', 'tcgiant-sync' ) . '</strong> ';
-			echo '<a href="' . esc_url( $listing_url ) . '" target="_blank">' . esc_html( $ebay_item_id ) . ' ↗</a>';
-			if ( $last_pushed ) {
-				echo ' <span style="color:#888; font-size:11px;">(' . esc_html__( 'Last pushed:', 'tcgiant-sync' ) . ' ' . esc_html( $last_pushed ) . ')</span>';
-			}
-			echo '</p>';
-		}
-
-		// Export error notice.
-		if ( 'error' === $export_status && ! empty( $export_error ) ) {
-			echo '<div id="tcgiant-export-error-notice" style="background:#fff0f0; border:1px solid #fcc; border-radius:4px; padding:8px 10px; margin:0 0 10px;">';
-			echo '<p style="color:#cc1818; font-size:12px; margin:0 0 6px; line-height:1.4;">⚠ ' . esc_html( $export_error ) . '</p>';
-			echo '<a href="#" id="tcgiant-dismiss-export-error" data-product-id="' . esc_attr( $product_id ) . '" style="display:inline-block; background:#cc1818; color:#fff; font-size:11px; font-weight:600; padding:3px 10px; border-radius:3px; text-decoration:none; cursor:pointer;">' . esc_html__( '✕ Clear Error', 'tcgiant-sync' ) . '</a>';
-			echo '</div>';
-			echo '<script>
-				jQuery(function($){
-					$("#tcgiant-dismiss-export-error").on("click", function(e){
-						e.preventDefault();
-						var $notice = $("#tcgiant-export-error-notice");
-						$.post(ajaxurl, {
-							action: "tcgiant_clear_export_error",
-							product_id: $(this).data("product-id"),
-							_ajax_nonce: "' . wp_create_nonce( 'tcgiant_sync_ajax' ) . '"
-						});
-						$notice.slideUp(200);
-					});
-				});
-			</script>';
-		}
-
-		// ---- Readiness Checklist ----
 		$exporter        = TCGiant_Sync_Exporter::instance();
-		$product         = wc_get_product( $product_id );
 		$merged_settings = $exporter->get_export_settings( $product_id );
-		$checks          = array();
-
-		// Category.
-		$eff_cat  = $merged_settings['category_id'] ?? '';
-		$cat_name = get_post_meta( $product_id, '_ebay_export_category_name', true );
-		if ( ! empty( $eff_cat ) ) {
-			$cat_display = $cat_name ? $cat_name . ' (' . $eff_cat . ')' : $eff_cat;
-			$is_mismatch = ! empty( $merged_settings['_category_mismatch'] );
-			$checks[] = array(
-				'ok'    => ! $is_mismatch,
-				'label' => $is_mismatch
-					? sprintf( __( 'Category: %s — ⚠ item type mismatch, set a %s category', 'tcgiant-sync' ), $cat_display, $merged_settings['item_type'] ?? 'matching' )
-					: sprintf( __( 'Category: %s', 'tcgiant-sync' ), $cat_display ),
-			);
-		} else {
-			$checks[] = array( 'ok' => false, 'label' => __( 'Category: Not set', 'tcgiant-sync' ) );
-		}
-
-		// Condition.
-		$cond_type_eff = $merged_settings['condition_type'] ?? '';
-		$item_type_eff = $merged_settings['item_type'] ?? '';
-		if ( ! empty( $cond_type_eff ) ) {
-			if ( 'graded' === $cond_type_eff ) {
-				$g_id   = $merged_settings['grader_id'] ?? '';
-				$g_val  = $merged_settings['grade_value'] ?? '';
-				$grader_map = 'coins' === $item_type_eff ? TCGiant_Sync_Exporter::GRADERS_COINS : TCGiant_Sync_Exporter::GRADERS_TCG;
-				$g_name = $g_id ? array_search( $g_id, $grader_map, true ) : '';
-				$cond_label = 'Graded' . ( $g_name ? ' · ' . $g_name : '' ) . ( $g_val ? ' ' . $g_val : '' );
-				$cond_ok = ! empty( $g_id ) && ! empty( $g_val );
-				if ( ! $cond_ok ) {
-					$cond_label .= ' — ' . __( 'grader and grade required', 'tcgiant-sync' );
-				}
-			} else {
-				$u_val       = $merged_settings['ungraded_condition'] ?? '';
-				$u_map       = 'coins' === $item_type_eff ? TCGiant_Sync_Exporter::UNGRADED_COINS : TCGiant_Sync_Exporter::UNGRADED_TCG;
-				$cond_label  = 'Ungraded' . ( isset( $u_map[ $u_val ] ) ? ' · ' . $u_map[ $u_val ] : '' );
-				$cond_ok     = ! empty( $u_val );
-				if ( ! $cond_ok ) {
-					$cond_label .= ' — ' . __( 'condition required', 'tcgiant-sync' );
-				}
-			}
-			$checks[] = array( 'ok' => $cond_ok, 'label' => sprintf( __( 'Condition: %s', 'tcgiant-sync' ), $cond_label ) );
-		} else {
-			$checks[] = array( 'ok' => false, 'label' => __( 'Condition: Not set — configure in Grading & Condition tab', 'tcgiant-sync' ) );
-		}
-
-		// Policies.
-		$has_policies = ! empty( $merged_settings['fulfillment_policy_id'] ) && ! empty( $merged_settings['return_policy_id'] ) && ! empty( $merged_settings['payment_policy_id'] );
-		$checks[] = array(
-			'ok'    => $has_policies,
-			'label' => $has_policies ? __( 'Business Policies: Configured', 'tcgiant-sync' ) : __( 'Business Policies: Missing — configure in Settings', 'tcgiant-sync' ),
-		);
-
-		// Images.
-		$has_images = false;
-		if ( $product ) {
-			$has_images = ! empty( $product->get_image_id() ) || ! empty( $product->get_gallery_image_ids() );
-		}
-		$img_count = $product ? count( array_filter( array_merge( array( $product->get_image_id() ), $product->get_gallery_image_ids() ) ) ) : 0;
-		$checks[] = array(
-			'ok'    => $has_images,
-			'label' => $has_images
-				? sprintf( __( 'Images: %d photo(s)', 'tcgiant-sync' ), $img_count )
-				: __( 'Images: No photos — eBay requires at least 1', 'tcgiant-sync' ),
-		);
-
-		// Title length.
-		$title_len = $product ? mb_strlen( $product->get_name() ) : 0;
-		$checks[] = array(
-			'ok'    => $title_len <= 80 && $title_len > 0,
-			'label' => sprintf( __( 'Title: %d/80 characters', 'tcgiant-sync' ), $title_len ) . ( $title_len > 80 ? ' — ' . __( 'will be truncated', 'tcgiant-sync' ) : '' ),
-		);
-
-		$all_ok = true;
-		foreach ( $checks as $c ) {
-			if ( ! $c['ok'] ) { $all_ok = false; break; }
-		}
-
-		echo '<div style="border:1px solid ' . ( $all_ok ? '#c3e6cb' : '#f5c6cb' ) . '; border-radius:4px; padding:8px 10px; margin:0 0 10px; background:' . ( $all_ok ? '#f0faf0' : '#fef8f8' ) . '; font-size:12px;">';
-		echo '<div style="font-weight:600; margin-bottom:4px; color:' . ( $all_ok ? '#1e7e34' : '#721c24' ) . ';">' . ( $all_ok ? '✔ ' . esc_html__( 'Ready to push', 'tcgiant-sync' ) : '⚠ ' . esc_html__( 'Not ready — fix issues below', 'tcgiant-sync' ) ) . '</div>';
-		foreach ( $checks as $c ) {
-			$icon  = $c['ok'] ? '<span style="color:#1e7e34;">✔</span>' : '<span style="color:#dc3545;">✖</span>';
-			$color = $c['ok'] ? '#333' : '#721c24';
-			echo '<div style="padding:1px 0; color:' . $color . ';">' . $icon . ' ' . esc_html( $c['label'] ) . '</div>';
-		}
-		echo '</div>';
-
-		// Per-product overrides.
-		echo '<div style="display:flex; gap:12px; margin-bottom:10px; flex-wrap:wrap;">';
-
-		// Category override.
-		echo '<div style="flex:1; min-width:140px;">';
-		echo '<div style="display:block; font-size:12px; color:#555; margin-bottom:3px;">';
-		echo esc_html__( 'eBay Category ID', 'tcgiant-sync' );
-		if ( $global_cat ) {
-			echo ' <span style="color:#888;">(global: ' . esc_html( $global_cat ) . ')</span>';
-		}
-		echo '</div>';
-		
-		$tcg_categories = TCGiant_Sync_Exporter::get_categories();
-		$current_category = $cat_override;
-		$is_custom_cat = ! empty( $current_category ) && ! isset( $tcg_categories[ $current_category ] );
-		$select_val    = $is_custom_cat ? 'custom' : $current_category;
-
-		echo '<select name="_ebay_export_category_id_select" id="_ebay_export_category_id_select" style="width:100%; font-size:12px; margin-bottom:4px;">';
-		foreach ( $tcg_categories as $id => $label ) {
-			echo '<option value="' . esc_attr( $id ) . '" ' . selected( $select_val, $id, false ) . '>';
-			if ( '' === $id ) {
-				echo esc_html( $label ) . ' ' . ( $global_cat ? '(Global: ' . esc_html( $global_cat ) . ')' : '' );
-			} else {
-				echo esc_html( $label . ( 'custom' !== $id ? " ($id)" : '' ) );
-			}
-			echo '</option>';
-		}
-		echo '</select>';
-		
-		$cat_name_override = get_post_meta( $product_id, '_ebay_export_category_name', true );
-		echo '<input type="text" name="_ebay_export_category_id_custom" id="_ebay_export_category_id_custom" value="' . esc_attr( $is_custom_cat ? $current_category : '' ) . '" placeholder="Enter custom eBay Category ID" style="width:100%; font-size:12px; ' . ( 'custom' === $select_val ? '' : 'display:none;' ) . '">';
-		echo '<input type="hidden" name="_ebay_export_category_name" id="_ebay_export_category_name" value="' . esc_attr( $cat_name_override ) . '">';
-		$show_prod_label = $current_category && $cat_name_override;
-		echo '<div id="tc-selected-category-label-product" style="margin-top:4px; font-size:11px; color:#16a34a; font-weight:500; ' . ( $show_prod_label ? '' : 'display:none;' ) . '">';
-		if ( $show_prod_label ) {
-			echo '✔ ' . esc_html( $cat_name_override ) . ' (' . esc_html( $current_category ) . ')';
-		}
-		echo '</div>';
-		echo '<button type="button" class="button" id="tc-browse-categories-btn-product" style="margin-top:4px;font-size:11px;width:100%;">
-			<span class="dashicons dashicons-category" style="font-size:13px;vertical-align:middle;margin-right:2px;"></span> Browse eBay Categories
-		</button>';
-		echo '<div id="tc-category-browser-product" style="display:none; margin-top:6px; border:1px solid #e5e5e5; border-radius:4px; padding:8px; background:#f9fafb;">
-			<div id="tc-category-breadcrumb-product" style="font-size:11px; color:#666; margin-bottom:6px;"></div>
-			<div id="tc-category-drilldown-product" style="max-height:200px; overflow-y:auto;"></div>
-			<div id="tc-category-browser-status-product" style="font-size:11px; color:#888; margin-top:4px;"></div>
-		</div>';
-		echo '</div>';
-		
-		echo '<script>
-			jQuery(function($){
-				$("#_ebay_export_category_id_select").on("change", function(){
-					if($(this).val() === "custom") {
-						$("#_ebay_export_category_id_custom").show();
-					} else {
-						$("#_ebay_export_category_id_custom").hide();
-					}
-				});
-
-				// Category browser for product edit page.
-				var ajaxUrl = "' . esc_js( admin_url( 'admin-ajax.php' ) ) . '";
-				var nonce   = "' . esc_js( wp_create_nonce( 'tcgiant_sync_ajax' ) ) . '";
-				var trail   = [];
-
-				$("#tc-browse-categories-btn-product").on("click", function() {
-					var $b = $("#tc-category-browser-product");
-					$b.toggle();
-					if ($b.is(":visible") && $("#tc-category-drilldown-product").children().length === 0) {
-						loadCats("");
-					}
-				});
-
-				function loadCats(parentId) {
-					var $d = $("#tc-category-drilldown-product");
-					var $s = $("#tc-category-browser-status-product");
-					$d.html("<div style=\"text-align:center;padding:12px;color:#888;\">Loading…</div>");
-					$s.text("");
-					$.post(ajaxUrl, {action:"tcgiant_browse_categories",_ajax_nonce:nonce,parent_id:parentId}, function(res){
-						if (!res.success) { $d.html("<div style=\"color:#c00;padding:6px;\">"+res.data.message+"</div>"); return; }
-						renderCats(res.data.categories);
-					}).fail(function(){ $d.html("<div style=\"color:#c00;padding:6px;\">Request failed.</div>"); });
-				}
-
-				function renderCats(cats) {
-					var $d = $("#tc-category-drilldown-product");
-					var $s = $("#tc-category-browser-status-product");
-					$d.empty();
-					if (!cats || !cats.length) { $d.html("<div style=\"padding:6px;color:#888;\">No subcategories.</div>"); return; }
-					$.each(cats, function(i,cat){
-						var $row = $("<div style=\"display:flex;align-items:center;justify-content:space-between;padding:5px 6px;border-bottom:1px solid #eee;cursor:pointer;font-size:12px;\"></div>");
-						$row.append($("<span style=\"flex:1;\"></span>").text(cat.name));
-						$row.append(cat.leaf ? "<span style=\"color:#888;font-size:10px;\">leaf</span>" : "<span class=\"dashicons dashicons-arrow-right-alt2\" style=\"color:#888;font-size:13px;width:13px;height:13px;\"></span>");
-						$row.on("mouseenter",function(){$(this).css("background","#f0f6fc");}).on("mouseleave",function(){$(this).css("background","");});
-						$row.on("click",function(){
-							if (cat.leaf) {
-								$("#_ebay_export_category_id_select").val("custom");
-								$("#_ebay_export_category_id_custom").val(cat.id).show();
-								$("#_ebay_export_category_name").val(cat.name);
-								$("#tc-selected-category-label-product").html("✔ " + cat.name + " (" + cat.id + ")").show();
-								$s.html("✔ " + cat.name + " (" + cat.id + ")");
-								$("#tc-category-browser-product").slideUp(200);
-								trail = [];
-							} else {
-								trail.push({id:cat.id,name:cat.name});
-								renderBread();
-								loadCats(cat.id);
-								$s.html("Click to drill deeper, or <a href=\"#\" class=\"tc-prod-use\" data-id=\""+cat.id+"\"  data-name=\""+cat.name+"\">use <b>"+cat.name+" ("+cat.id+")</b></a>");
-							}
-						});
-						$d.append($row);
-					});
-				}
-
-				function renderBread() {
-					var $bc = $("#tc-category-breadcrumb-product");
-					$bc.empty();
-					var $root = $("<a href=\"#\" style=\"color:#2271b1;text-decoration:none;font-size:11px;\">All</a>");
-					$root.on("click",function(e){e.preventDefault();trail=[];renderBread();loadCats("");$("#tc-category-browser-status-product").text("");});
-					$bc.append($root);
-					$.each(trail,function(i,c){
-						$bc.append("<span style=\"margin:0 3px;color:#aaa;\"> › </span>");
-						if (i < trail.length-1) {
-							var $l = $("<a href=\"#\" style=\"color:#2271b1;text-decoration:none;font-size:11px;\"></a>").text(c.name);
-							(function(idx){$l.on("click",function(e){e.preventDefault();trail=trail.slice(0,idx+1);renderBread();loadCats(c.id);$("#tc-category-browser-status-product").text("");});})(i);
-							$bc.append($l);
-						} else {
-							$bc.append($("<b style=\"font-size:11px;\"></b>").text(c.name));
-						}
-					});
-				}
-
-				$("#tc-category-browser-status-product").on("click",".tc-prod-use",function(e){
-					e.preventDefault();
-					var id = $(this).data("id");
-					var name = $(this).data("name") || (trail.length ? trail[trail.length-1].name : id);
-					$("#_ebay_export_category_id_select").val("custom");
-					$("#_ebay_export_category_id_custom").val(id).show();
-					$("#_ebay_export_category_name").val(name);
-					$("#tc-selected-category-label-product").html("✔ " + name + " (" + id + ")").show();
-					$("#tc-category-browser-status-product").html("✔ " + name + " (" + id + ")");
-					$("#tc-category-browser-product").slideUp(200);
-					trail = [];
-				});
-			});
-		</script>';
-
-		echo '</div>'; // end flex row
-
-		// Condition summary — fields are in the General tab "Grading & Condition" section.
-		$cond_type_override  = get_post_meta( $product_id, '_ebay_export_condition_type', true );
-		if ( ! empty( $cond_type_override ) ) {
-			echo '<div style="border:1px solid #e5e5e5; border-radius:4px; padding:8px 10px; margin-bottom:10px; background:#f9f9f9; font-size:12px;">';
-			echo '<strong>' . esc_html__( 'Condition:', 'tcgiant-sync' ) . '</strong> ';
-			if ( 'graded' === $cond_type_override ) {
-				$grader_id  = get_post_meta( $product_id, '_ebay_export_grader_id', true );
-				$grade_val  = get_post_meta( $product_id, '_ebay_export_grade_value', true );
-				$cert_num   = get_post_meta( $product_id, '_ebay_export_cert_number', true );
-				$all_graders = TCGiant_Sync_Exporter::GRADERS_TCG + TCGiant_Sync_Exporter::GRADERS_COINS;
-				$grader_lbl = array_search( $grader_id, $all_graders, true );
-				echo esc_html( 'Graded' . ( $grader_lbl ? ' · ' . $grader_lbl : '' ) . ( $grade_val ? ' ' . $grade_val : '' ) . ( $cert_num ? ' (#' . $cert_num . ')' : '' ) );
-			} else {
-				$ungraded_id = get_post_meta( $product_id, '_ebay_export_ungraded_condition', true );
-				$all_ungraded = TCGiant_Sync_Exporter::UNGRADED_TCG + TCGiant_Sync_Exporter::UNGRADED_COINS;
-				echo esc_html( 'Ungraded' . ( isset( $all_ungraded[ $ungraded_id ] ) ? ' · ' . $all_ungraded[ $ungraded_id ] : '' ) );
-			}
-			echo ' <span style="color:#888;">— ' . esc_html__( 'edit in Grading & Condition tab', 'tcgiant-sync' ) . '</span>';
-			echo '</div>';
-		} else {
-			echo '<p style="font-size:12px; color:#888; margin:0 0 10px;">';
-			echo esc_html__( 'Set grading & condition in the Grading & Condition tab.', 'tcgiant-sync' );
-			echo '</p>';
-		}
-
-		// Push button.
-		$btn_label = ! empty( $ebay_item_id ) ? __( '↺ Update eBay Listing', 'tcgiant-sync' ) : __( '📤 Push to eBay', 'tcgiant-sync' );
-		echo '<button type="button" id="tcgiant-push-btn" class="button button-primary" data-product-id="' . esc_attr( $product_id ) . '" style="margin-top:4px;">' . esc_html( $btn_label ) . '</button>';
-		echo ' <span id="tcgiant-push-status" style="margin-left:8px; font-size:12px; color:#555;"></span>';
-
-		echo '</div>'; // end push box
-
-		// ---- Sync Log Section ----
-		$logs = get_post_meta( $product_id, '_tcgiant_sync_log', true );
-
-		if ( empty( $logs ) || ! is_array( $logs ) ) {
-			echo '<p style="color:#888;">' . esc_html__( 'No import sync decisions logged yet.', 'tcgiant-sync' ) . '</p>';
-		} else {
-			echo '<p style="margin:0 0 6px;"><strong>' . esc_html__( 'Import Sync Log (Last 20)', 'tcgiant-sync' ) . '</strong></p>';
-			echo '<div style="max-height: 300px; overflow-y: auto;">';
-			foreach ( $logs as $entry ) {
-				echo '<div style="margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid #eee;">';
-				echo '<strong style="color: #666; font-size: 11px;">' . esc_html( $entry['timestamp'] ?? 'Unknown Time' ) . '</strong>';
-				if ( ! empty( $entry['decisions'] ) && is_array( $entry['decisions'] ) ) {
-					echo '<ul style="margin-top: 4px; padding-left: 16px; margin-bottom: 0;">';
-					foreach ( $entry['decisions'] as $decision ) {
-						echo '<li style="font-size:12px;">' . esc_html( $decision ) . '</li>';
-					}
-					echo '</ul>';
-				}
-				echo '</div>';
-			}
-			echo '</div>';
-		}
-
-		echo '</div></div>'; // end padding + panel
-
-		// Inline JS for the Push button.
+		$tcg_categories  = TCGiant_Sync_Exporter::get_categories();
 		?>
-		<script>
-		(function($){
-			$('#tcgiant-push-btn').on('click', function(){
-				var btn = $(this);
-				var status = $('#tcgiant-push-status');
-				btn.prop('disabled', true);
-				status.css('color','#555').text('Saving overrides and queuing push...');
+		<div id="tcgiant_ebay_listing_data" class="panel woocommerce_options_panel hide_if_grouped hide_if_external">
+		<style>
+			.tc-ebay-section{border:1px solid #e0e0e0;border-radius:6px;margin:0 15px 12px;background:#fafafa;overflow:hidden}
+			.tc-ebay-section-head{display:flex;align-items:center;gap:8px;padding:10px 14px;cursor:pointer;user-select:none;font-size:13px;font-weight:600;color:#23282d;background:#fafafa;transition:background .15s}
+			.tc-ebay-section-head:hover{background:#f0f0f0}
+			.tc-ebay-section-head .dashicons{font-size:14px;width:14px;height:14px;color:#666;transition:transform .2s}
+			.tc-ebay-section-head.open .dashicons{transform:rotate(90deg)}
+			.tc-ebay-section-body{padding:12px 14px;border-top:1px solid #e0e0e0;display:none}
+			.tc-ebay-section-body.open{display:block}
+			.tc-card-selector{display:flex;gap:10px;flex-wrap:wrap}
+			.tc-card-option{flex:1;min-width:110px;border:2px solid #ddd;border-radius:8px;padding:14px 10px;text-align:center;cursor:pointer;transition:all .2s;background:#fff}
+			.tc-card-option:hover{border-color:#2271b1;background:#f0f6fc}
+			.tc-card-option.selected{border-color:#2271b1;background:#e8f2fb;box-shadow:0 0 0 1px #2271b1}
+			.tc-card-icon{display:block;font-size:28px;margin-bottom:4px}
+			.tc-card-label{display:block;font-size:13px;font-weight:600;color:#333}
+			.tc-card-desc{display:block;font-size:10px;color:#888;margin-top:2px}
+			.tc-readiness{border:1px solid #c3e6cb;border-radius:5px;padding:8px 12px;margin:0 0 10px;background:#f0faf0;font-size:12px}
+			.tc-readiness.has-issues{border-color:#f5c6cb;background:#fef8f8}
+			.tc-readiness-title{font-weight:600;margin-bottom:3px}
+			.tc-readiness-check{padding:1px 0}
+			.tc-suggest-pills{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+			.tc-suggest-pill{display:inline-block;background:#e8f2fb;border:1px solid #b8d4f0;border-radius:12px;padding:3px 10px;font-size:11px;color:#2271b1;cursor:pointer;transition:all .15s}
+			.tc-suggest-pill:hover{background:#2271b1;color:#fff}
+		</style>
+		<div style="padding:12px 0;">
 
-				// Collect all per-product override values from the form.
-				var catSelect = $('#_ebay_export_category_id_select').val() || '';
-				var catCustom = $('#_ebay_export_category_id_custom').val() || '';
-				var categoryId = (catSelect === 'custom') ? catCustom : catSelect;
-
-				// Grader/grade/ungraded fields are item-type-suffixed in the HTML.
-				var itemType = $('[name="_ebay_export_item_type"]').val() || '';
-				var suffix = itemType ? '_' + itemType : '';
-				var graderId = $('#_ebay_export_grader_id' + suffix).val() || '';
-				var gradeValue = $('#_ebay_export_grade_value' + suffix).val() || '';
-				var ungradedCond = $('#_ebay_export_ungraded_condition' + suffix).val() || '';
-
-				$.post(ajaxurl, {
-					action: 'tcgiant_push_product',
-					product_id: btn.data('product-id'),
-					// Override fields to save before push.
-					override_category_id: categoryId,
-					override_condition_id: $('#_ebay_export_condition_id').val() || '',
-					override_item_type: itemType,
-					override_condition_type: $('[name="_ebay_export_condition_type"]').val() || '',
-					override_grader_id: graderId,
-					override_grade_value: gradeValue,
-					override_cert_number: $('[name="_ebay_export_cert_number"]').val() || '',
-					override_ungraded_condition: ungradedCond,
-					_ajax_nonce: '<?php echo esc_js( wp_create_nonce( 'tcgiant_sync_ajax' ) ); ?>'
-				}, function(res){
-					if (res.success) {
-						status.css('color','#2a8a2a').text('✔ ' + res.data.message);
-					} else {
-						status.css('color','#cc1818').text('✖ ' + (res.data ? res.data.message : 'Unknown error'));
-						btn.prop('disabled', false);
-					}
-				});
-			});
-		})(jQuery);
-		</script>
-		<?php
-	}
-
-	/**
-	 * Render the "Grading & Condition" section in its own product data tab.
-	 */
-	public function render_grading_condition_fields() {
-		global $post;
-		$product_id = $post->ID;
-
-		$item_type = get_post_meta( $product_id, '_ebay_export_item_type', true );
-		$cond_type = get_post_meta( $product_id, '_ebay_export_condition_type', true );
-		$grader_id = get_post_meta( $product_id, '_ebay_export_grader_id', true );
-		$grade_val = get_post_meta( $product_id, '_ebay_export_grade_value', true );
-		$cert_num  = get_post_meta( $product_id, '_ebay_export_cert_number', true );
-		$ungraded  = get_post_meta( $product_id, '_ebay_export_ungraded_condition', true );
-		?>
-		<div id="tcgiant_grading_data" class="panel woocommerce_options_panel hide_if_grouped hide_if_external">
-			<div class="options_group" id="tcgiant-grading-section">
-			<p class="form-field" style="padding:0 12px 0 12px !important;">
-				<strong style="font-size:13px;"><?php esc_html_e( 'Grading & Condition', 'tcgiant-sync' ); ?></strong>
-				<span class="woocommerce-help-tip" data-tip="<?php esc_attr_e( 'Select Item Type first, then choose Condition Type and details.', 'tcgiant-sync' ); ?>"></span>
-			</p>
-			<?php
-			woocommerce_wp_select( array(
-				'id'          => '_ebay_export_item_type',
-				'label'       => __( 'Item Category', 'tcgiant-sync' ),
-				'options'     => array(
-					''      => __( '— Select item category —', 'tcgiant-sync' ),
-					'tcg'   => __( 'Trading Cards', 'tcgiant-sync' ),
-					'coins' => __( 'Coins', 'tcgiant-sync' ),
-				),
-				'value'       => $item_type,
-				'desc_tip'    => true,
-				'description' => __( 'Choose whether this item is a trading card or coin.', 'tcgiant-sync' ),
-			) );
-			?>
-
-			<div id="tcgiant-condition-type-wrapper" style="<?php echo empty( $item_type ) ? 'display:none;' : ''; ?>">
-				<?php
-				woocommerce_wp_select( array(
-					'id'          => '_ebay_export_condition_type',
-					'label'       => __( 'Condition Type', 'tcgiant-sync' ),
-					'options'     => array(
-						''         => __( '— Select condition type —', 'tcgiant-sync' ),
-						'graded'   => __( 'Graded — Professionally graded & slabbed', 'tcgiant-sync' ),
-						'ungraded' => __( 'Ungraded — Raw / not graded', 'tcgiant-sync' ),
-					),
-					'value'       => $cond_type,
-					'desc_tip'    => true,
-					'description' => __( 'Choose whether this item is professionally graded or ungraded.', 'tcgiant-sync' ),
-				) );
-				?>
+		<?php // ---- Error Notice ---- ?>
+		<?php if ( 'error' === $export_status && ! empty( $export_error ) ) : ?>
+			<div id="tcgiant-export-error-notice" style="background:#fff0f0;border:1px solid #fcc;border-radius:4px;padding:8px 10px;margin:0 15px 10px;">
+				<p style="color:#cc1818;font-size:12px;margin:0 0 6px;line-height:1.4;">âš  <?php echo esc_html( $export_error ); ?></p>
+				<a href="#" id="tcgiant-dismiss-export-error" data-product-id="<?php echo esc_attr( $product_id ); ?>" style="display:inline-block;background:#cc1818;color:#fff;font-size:11px;font-weight:600;padding:3px 10px;border-radius:3px;text-decoration:none;cursor:pointer;"><?php esc_html_e( 'âœ• Clear Error', 'tcgiant-sync' ); ?></a>
 			</div>
+		<?php endif; ?>
 
-			<!-- Graded sub-fields TCG -->
-			<div id="tcgiant-graded-tcg-fields" style="<?php echo ( 'graded' !== $cond_type || 'tcg' !== $item_type ) ? 'display:none;' : ''; ?>">
-				<?php
-				// Professional Grader dropdown.
-				$grader_tcg_options = array( '' => __( '— Select grader —', 'tcgiant-sync' ) );
-				foreach ( TCGiant_Sync_Exporter::GRADERS_TCG as $gname => $gid ) {
-					$grader_tcg_options[ $gid ] = $gname;
-				}
-				woocommerce_wp_select( array(
-					'id'      => '_ebay_export_grader_id_tcg',
-					'label'   => __( 'Professional Grader', 'tcgiant-sync' ),
-					'options' => $grader_tcg_options,
-					'value'   => 'tcg' === $item_type ? $grader_id : '',
-				) );
-
-				// Grade dropdown.
-				$grade_tcg_options = array( '' => __( '— Select grade —', 'tcgiant-sync' ) );
-				foreach ( TCGiant_Sync_Exporter::GRADES_TCG as $g ) {
-					$grade_tcg_options[ $g ] = $g;
-				}
-				woocommerce_wp_select( array(
-					'id'      => '_ebay_export_grade_value_tcg',
-					'label'   => __( 'Grade', 'tcgiant-sync' ),
-					'options' => $grade_tcg_options,
-					'value'   => 'tcg' === $item_type ? $grade_val : '',
-				) );
-				?>
+		<?php // ---- eBay Listing Status ---- ?>
+		<?php if ( ! empty( $ebay_item_id ) ) : ?>
+			<div style="margin:0 15px 10px;padding:8px 12px;background:#f0faf0;border:1px solid #c3e6cb;border-radius:4px;font-size:12px;">
+				<strong><?php esc_html_e( 'eBay Item:', 'tcgiant-sync' ); ?></strong>
+				<a href="<?php echo esc_url( 'https://www.ebay.com/itm/' . $ebay_item_id ); ?>" target="_blank"><?php echo esc_html( $ebay_item_id ); ?> â†—</a>
+				<?php if ( $last_pushed ) : ?>
+					<span style="color:#888;margin-left:6px;"><?php echo esc_html( 'Last pushed: ' . $last_pushed ); ?></span>
+				<?php endif; ?>
 			</div>
+		<?php endif; ?>
 
-			<!-- Graded sub-fields COINS -->
-			<div id="tcgiant-graded-coins-fields" style="<?php echo ( 'graded' !== $cond_type || 'coins' !== $item_type ) ? 'display:none;' : ''; ?>">
-				<?php
-				// Professional Grader dropdown.
-				$grader_coins_options = array( '' => __( '— Select grader —', 'tcgiant-sync' ) );
-				foreach ( TCGiant_Sync_Exporter::GRADERS_COINS as $gname => $gid ) {
-					$grader_coins_options[ $gid ] = $gname;
-				}
-				woocommerce_wp_select( array(
-					'id'      => '_ebay_export_grader_id_coins',
-					'label'   => __( 'Professional Grader', 'tcgiant-sync' ),
-					'options' => $grader_coins_options,
-					'value'   => 'coins' === $item_type ? $grader_id : '',
-				) );
-
-				// Grade dropdown.
-				$grade_coins_options = array( '' => __( '— Select grade —', 'tcgiant-sync' ) );
-				foreach ( TCGiant_Sync_Exporter::GRADES_COINS as $g ) {
-					$grade_coins_options[ $g ] = $g;
-				}
-				woocommerce_wp_select( array(
-					'id'      => '_ebay_export_grade_value_coins',
-					'label'   => __( 'Grade', 'tcgiant-sync' ),
-					'options' => $grade_coins_options,
-					'value'   => 'coins' === $item_type ? $grade_val : '',
-				) );
-				?>
+		<?php // â”€â”€ STEP 1: ITEM TYPE â”€â”€ ?>
+		<div class="tc-ebay-section" id="tc-section-item-type">
+			<div class="tc-ebay-section-head open" data-target="tc-body-item-type">
+				<span class="dashicons dashicons-arrow-right-alt2"></span>
+				<span>â‘  <?php esc_html_e( 'Item Type', 'tcgiant-sync' ); ?></span>
+				<span id="tc-step1-summary" style="font-weight:400;color:#888;font-size:12px;margin-left:auto;"><?php
+					if ( $item_type ) { echo esc_html( 'coins' === $item_type ? 'ðŸª™ Coins' : 'ðŸƒ Trading Cards' ); }
+				?></span>
 			</div>
-
-			<!-- Graded shared fields -->
-			<div id="tcgiant-graded-shared-fields" style="<?php echo 'graded' !== $cond_type || empty( $item_type ) ? 'display:none;' : ''; ?>">
-				<?php
-				// Certification Number.
-				woocommerce_wp_text_input( array(
-					'id'          => '_ebay_export_cert_number',
-					'label'       => __( 'Cert Number', 'tcgiant-sync' ),
-					'placeholder' => __( 'e.g. 12345678', 'tcgiant-sync' ),
-					'value'       => $cert_num,
-					'desc_tip'    => true,
-					'description' => __( 'The certification/slab number from the grading company.', 'tcgiant-sync' ),
-				) );
-				?>
-			</div>
-
-			<!-- Ungraded sub-fields TCG -->
-			<div id="tcgiant-ungraded-tcg-fields" style="<?php echo ( 'ungraded' !== $cond_type || 'tcg' !== $item_type ) ? 'display:none;' : ''; ?>">
-				<?php
-				$ungraded_tcg_options = array( '' => __( '— Select condition —', 'tcgiant-sync' ) );
-				foreach ( TCGiant_Sync_Exporter::UNGRADED_TCG as $uid => $ulabel ) {
-					$ungraded_tcg_options[ $uid ] = $ulabel;
-				}
-				woocommerce_wp_select( array(
-					'id'      => '_ebay_export_ungraded_condition_tcg',
-					'label'   => __( 'Condition', 'tcgiant-sync' ),
-					'options' => $ungraded_tcg_options,
-					'value'   => 'tcg' === $item_type ? $ungraded : '',
-				) );
-				?>
-			</div>
-
-			<!-- Ungraded sub-fields COINS -->
-			<div id="tcgiant-ungraded-coins-fields" style="<?php echo ( 'ungraded' !== $cond_type || 'coins' !== $item_type ) ? 'display:none;' : ''; ?>">
-				<?php
-				$ungraded_coins_options = array( '' => __( '— Select condition —', 'tcgiant-sync' ) );
-				foreach ( TCGiant_Sync_Exporter::UNGRADED_COINS as $uid => $ulabel ) {
-					$ungraded_coins_options[ $uid ] = $ulabel;
-				}
-				woocommerce_wp_select( array(
-					'id'      => '_ebay_export_ungraded_condition_coins',
-					'label'   => __( 'Condition', 'tcgiant-sync' ),
-					'options' => $ungraded_coins_options,
-					'value'   => 'coins' === $item_type ? $ungraded : '',
-				) );
-				?>
-			</div>
-
-			<script>
-			jQuery(function($){
-				function tcGradingToggle() {
-					var itemType = $('#_ebay_export_item_type').val();
-					var condType = $('#_ebay_export_condition_type').val();
-
-					// Show/hide Condition Type wrapper
-					$('#tcgiant-condition-type-wrapper').toggle(itemType !== '');
-
-					// Show/hide Graded fields
-					$('#tcgiant-graded-tcg-fields').toggle(itemType === 'tcg' && condType === 'graded');
-					$('#tcgiant-graded-coins-fields').toggle(itemType === 'coins' && condType === 'graded');
-					$('#tcgiant-graded-shared-fields').toggle(itemType !== '' && condType === 'graded');
-
-					// Show/hide Ungraded fields based on Item Type
-					$('#tcgiant-ungraded-tcg-fields').toggle(itemType === 'tcg' && condType === 'ungraded');
-					$('#tcgiant-ungraded-coins-fields').toggle(itemType === 'coins' && condType === 'ungraded');
-				}
-
-				$('#_ebay_export_item_type, #_ebay_export_condition_type').on('change', tcGradingToggle);
-				tcGradingToggle();
-			});
-			</script>
+			<div class="tc-ebay-section-body open" id="tc-body-item-type">
+				<p style="margin:0 0 8px;font-size:12px;color:#666;"><?php esc_html_e( 'What type of item is this?', 'tcgiant-sync' ); ?></p>
+				<input type="hidden" name="_ebay_export_item_type" id="_ebay_export_item_type" value="<?php echo esc_attr( $item_type ); ?>">
+				<div class="tc-card-selector">
+					<div class="tc-card-option <?php echo 'tcg' === $item_type ? 'selected' : ''; ?>" data-value="tcg">
+						<span class="tc-card-icon">ðŸƒ</span>
+						<span class="tc-card-label"><?php esc_html_e( 'Trading Cards', 'tcgiant-sync' ); ?></span>
+						<span class="tc-card-desc"><?php esc_html_e( 'PokÃ©mon, MTG, Yu-Gi-Oh, Sports', 'tcgiant-sync' ); ?></span>
+					</div>
+					<div class="tc-card-option <?php echo 'coins' === $item_type ? 'selected' : ''; ?>" data-value="coins">
+						<span class="tc-card-icon">ðŸª™</span>
+						<span class="tc-card-label"><?php esc_html_e( 'Coins', 'tcgiant-sync' ); ?></span>
+						<span class="tc-card-desc"><?php esc_html_e( 'US, World, Bullion, Paper Money', 'tcgiant-sync' ); ?></span>
+					</div>
+				</div>
 			</div>
 		</div>
+
+		<?php // â”€â”€ STEP 2: CATEGORY â”€â”€
+			  $is_custom_cat = ! empty( $cat_override ) && ! isset( $tcg_categories[ $cat_override ] );
+			  $select_val    = $is_custom_cat ? 'custom' : $cat_override;
+			  $eff_cat       = $merged_settings['category_id'] ?? '';
+		?>
+		<div class="tc-ebay-section" id="tc-section-category">
+			<div class="tc-ebay-section-head <?php echo ! empty( $item_type ) ? 'open' : ''; ?>" data-target="tc-body-category">
+				<span class="dashicons dashicons-arrow-right-alt2"></span>
+				<span>â‘¡ <?php esc_html_e( 'eBay Category', 'tcgiant-sync' ); ?></span>
+				<span id="tc-step2-summary" style="font-weight:400;color:#888;font-size:12px;margin-left:auto;"><?php
+					if ( $cat_name_saved && $cat_override ) { echo esc_html( $cat_name_saved . ' (' . $cat_override . ')' ); }
+					elseif ( $eff_cat ) { echo esc_html( $eff_cat ); }
+				?></span>
+			</div>
+			<div class="tc-ebay-section-body <?php echo ! empty( $item_type ) ? 'open' : ''; ?>" id="tc-body-category">
+				<?php if ( $global_cat ) : ?>
+					<p style="margin:0 0 6px;font-size:11px;color:#888;"><?php echo esc_html( sprintf( __( 'Global default: %s â€” override below for this product', 'tcgiant-sync' ), $global_cat ) ); ?></p>
+				<?php endif; ?>
+				<select name="_ebay_export_category_id_select" id="_ebay_export_category_id_select" style="width:100%;font-size:12px;margin-bottom:4px;">
+				<?php foreach ( $tcg_categories as $id => $label ) : ?>
+					<option value="<?php echo esc_attr( $id ); ?>" <?php selected( $select_val, $id ); ?>><?php
+						if ( '' === $id ) { echo esc_html( $label ) . ( $global_cat ? ' (Global: ' . esc_html( $global_cat ) . ')' : '' ); }
+						else { echo esc_html( $label . ( 'custom' !== $id ? " ($id)" : '' ) ); }
+					?></option>
+				<?php endforeach; ?>
+				</select>
+				<input type="text" name="_ebay_export_category_id_custom" id="_ebay_export_category_id_custom" value="<?php echo esc_attr( $is_custom_cat ? $cat_override : '' ); ?>" placeholder="<?php esc_attr_e( 'Enter eBay leaf category ID', 'tcgiant-sync' ); ?>" style="width:100%;font-size:12px;<?php echo 'custom' === $select_val ? '' : 'display:none;'; ?>">
+				<input type="hidden" name="_ebay_export_category_name" id="_ebay_export_category_name" value="<?php echo esc_attr( $cat_name_saved ); ?>">
+				<div id="tc-selected-category-label-product" style="margin-top:4px;font-size:11px;color:#16a34a;font-weight:500;<?php echo ( $cat_override && $cat_name_saved ) ? '' : 'display:none;'; ?>"><?php
+					if ( $cat_override && $cat_name_saved ) { echo 'âœ” ' . esc_html( $cat_name_saved . ' (' . $cat_override . ')' ); }
+				?></div>
+				<div id="tc-category-suggestions" style="margin-top:4px;">
+					<button type="button" id="tc-suggest-category-btn" class="button" style="font-size:11px;margin-top:4px;"><span class="dashicons dashicons-lightbulb" style="font-size:13px;vertical-align:middle;margin-right:2px;"></span><?php esc_html_e( 'Suggest Category from Title', 'tcgiant-sync' ); ?></button>
+					<div id="tc-suggest-pills" class="tc-suggest-pills" style="display:none;"></div>
+				</div>
+				<button type="button" class="button" id="tc-browse-categories-btn-product" style="margin-top:6px;font-size:11px;width:100%;"><span class="dashicons dashicons-category" style="font-size:13px;vertical-align:middle;margin-right:2px;"></span><?php esc_html_e( 'Browse eBay Categories', 'tcgiant-sync' ); ?></button>
+				<div id="tc-category-browser-product" style="display:none;margin-top:6px;border:1px solid #e5e5e5;border-radius:4px;padding:8px;background:#f9fafb;">
+					<div id="tc-category-breadcrumb-product" style="font-size:11px;color:#666;margin-bottom:6px;"></div>
+					<div id="tc-category-drilldown-product" style="max-height:200px;overflow-y:auto;"></div>
+					<div id="tc-category-browser-status-product" style="font-size:11px;color:#888;margin-top:4px;"></div>
+				</div>
+			</div>
+		</div>
+
+		<?php // â”€â”€ STEP 3: CONDITION â”€â”€ ?>
+		<div class="tc-ebay-section" id="tc-section-condition">
+			<div class="tc-ebay-section-head <?php echo ! empty( $item_type ) ? 'open' : ''; ?>" data-target="tc-body-condition">
+				<span class="dashicons dashicons-arrow-right-alt2"></span>
+				<span>â‘¢ <?php esc_html_e( 'Condition', 'tcgiant-sync' ); ?></span>
+				<span id="tc-step3-summary" style="font-weight:400;color:#888;font-size:12px;margin-left:auto;"><?php
+					if ( 'graded' === $cond_type ) {
+						$all_g = TCGiant_Sync_Exporter::GRADERS_TCG + TCGiant_Sync_Exporter::GRADERS_COINS;
+						$gl    = $grader_id ? array_search( $grader_id, $all_g, true ) : '';
+						echo esc_html( 'Graded' . ( $gl ? ' Â· ' . $gl : '' ) . ( $grade_val ? ' ' . $grade_val : '' ) );
+					} elseif ( 'ungraded' === $cond_type ) {
+						$all_u = TCGiant_Sync_Exporter::UNGRADED_TCG + TCGiant_Sync_Exporter::UNGRADED_COINS;
+						echo esc_html( 'Ungraded' . ( isset( $all_u[ $ungraded ] ) ? ' Â· ' . $all_u[ $ungraded ] : '' ) );
+					}
+				?></span>
+			</div>
+			<div class="tc-ebay-section-body <?php echo ! empty( $item_type ) ? 'open' : ''; ?>" id="tc-body-condition">
+				<?php if ( empty( $item_type ) ) : ?>
+					<p style="margin:0;font-size:12px;color:#999;"><?php esc_html_e( 'Select an Item Type above first.', 'tcgiant-sync' ); ?></p>
+				<?php endif; ?>
+				<div id="tc-condition-type-wrapper" style="<?php echo empty( $item_type ) ? 'display:none;' : ''; ?>">
+					<p style="margin:0 0 8px;font-size:12px;color:#666;"><?php esc_html_e( 'What condition is this item in?', 'tcgiant-sync' ); ?></p>
+					<input type="hidden" name="_ebay_export_condition_type" id="_ebay_export_condition_type" value="<?php echo esc_attr( $cond_type ); ?>">
+					<div class="tc-card-selector" style="margin-bottom:10px;">
+						<div class="tc-card-option <?php echo 'graded' === $cond_type ? 'selected' : ''; ?>" data-value="graded">
+							<span class="tc-card-icon">ðŸ…</span><span class="tc-card-label"><?php esc_html_e( 'Graded', 'tcgiant-sync' ); ?></span><span class="tc-card-desc"><?php esc_html_e( 'Professionally graded & slabbed', 'tcgiant-sync' ); ?></span>
+						</div>
+						<div class="tc-card-option <?php echo 'ungraded' === $cond_type ? 'selected' : ''; ?>" data-value="ungraded">
+							<span class="tc-card-icon">ðŸ“¦</span><span class="tc-card-label"><?php esc_html_e( 'Ungraded', 'tcgiant-sync' ); ?></span><span class="tc-card-desc"><?php esc_html_e( 'Raw / not professionally graded', 'tcgiant-sync' ); ?></span>
+						</div>
+					</div>
+					<div id="tcgiant-graded-tcg-fields" style="<?php echo ( 'graded' !== $cond_type || 'tcg' !== $item_type ) ? 'display:none;' : ''; ?>"><?php
+						$go1 = array( '' => __( 'â€” Select grader â€”', 'tcgiant-sync' ) );
+						foreach ( TCGiant_Sync_Exporter::GRADERS_TCG as $gn => $gi ) { $go1[ $gi ] = $gn; }
+						woocommerce_wp_select( array( 'id' => '_ebay_export_grader_id_tcg', 'label' => __( 'Professional Grader', 'tcgiant-sync' ), 'options' => $go1, 'value' => 'tcg' === $item_type ? $grader_id : '' ) );
+						$go2 = array( '' => __( 'â€” Select grade â€”', 'tcgiant-sync' ) );
+						foreach ( TCGiant_Sync_Exporter::GRADES_TCG as $g ) { $go2[ $g ] = $g; }
+						woocommerce_wp_select( array( 'id' => '_ebay_export_grade_value_tcg', 'label' => __( 'Grade', 'tcgiant-sync' ), 'options' => $go2, 'value' => 'tcg' === $item_type ? $grade_val : '' ) );
+					?></div>
+					<div id="tcgiant-graded-coins-fields" style="<?php echo ( 'graded' !== $cond_type || 'coins' !== $item_type ) ? 'display:none;' : ''; ?>"><?php
+						$co1 = array( '' => __( 'â€” Select grader â€”', 'tcgiant-sync' ) );
+						foreach ( TCGiant_Sync_Exporter::GRADERS_COINS as $gn => $gi ) { $co1[ $gi ] = $gn; }
+						woocommerce_wp_select( array( 'id' => '_ebay_export_grader_id_coins', 'label' => __( 'Professional Grader', 'tcgiant-sync' ), 'options' => $co1, 'value' => 'coins' === $item_type ? $grader_id : '' ) );
+						$co2 = array( '' => __( 'â€” Select grade â€”', 'tcgiant-sync' ) );
+						foreach ( TCGiant_Sync_Exporter::GRADES_COINS as $g ) { $co2[ $g ] = $g; }
+						woocommerce_wp_select( array( 'id' => '_ebay_export_grade_value_coins', 'label' => __( 'Grade', 'tcgiant-sync' ), 'options' => $co2, 'value' => 'coins' === $item_type ? $grade_val : '' ) );
+					?></div>
+					<div id="tcgiant-graded-shared-fields" style="<?php echo ( 'graded' !== $cond_type || empty( $item_type ) ) ? 'display:none;' : ''; ?>"><?php
+						woocommerce_wp_text_input( array( 'id' => '_ebay_export_cert_number', 'label' => __( 'Cert Number', 'tcgiant-sync' ), 'placeholder' => __( 'e.g. 12345678', 'tcgiant-sync' ), 'value' => $cert_num, 'desc_tip' => true, 'description' => __( 'The certification/slab number from the grading company.', 'tcgiant-sync' ) ) );
+					?></div>
+					<div id="tcgiant-ungraded-tcg-fields" style="<?php echo ( 'ungraded' !== $cond_type || 'tcg' !== $item_type ) ? 'display:none;' : ''; ?>"><?php
+						$uo1 = array( '' => __( 'â€” Select condition â€”', 'tcgiant-sync' ) );
+						foreach ( TCGiant_Sync_Exporter::UNGRADED_TCG as $uid => $ul ) { $uo1[ $uid ] = $ul; }
+						woocommerce_wp_select( array( 'id' => '_ebay_export_ungraded_condition_tcg', 'label' => __( 'Condition', 'tcgiant-sync' ), 'options' => $uo1, 'value' => 'tcg' === $item_type ? $ungraded : '' ) );
+					?></div>
+					<div id="tcgiant-ungraded-coins-fields" style="<?php echo ( 'ungraded' !== $cond_type || 'coins' !== $item_type ) ? 'display:none;' : ''; ?>"><?php
+						$uo2 = array( '' => __( 'â€” Select condition â€”', 'tcgiant-sync' ) );
+						foreach ( TCGiant_Sync_Exporter::UNGRADED_COINS as $uid => $ul ) { $uo2[ $uid ] = $ul; }
+						woocommerce_wp_select( array( 'id' => '_ebay_export_ungraded_condition_coins', 'label' => __( 'Condition', 'tcgiant-sync' ), 'options' => $uo2, 'value' => 'coins' === $item_type ? $ungraded : '' ) );
+					?></div>
+				</div>
+			</div>
+		</div>
+
+		<?php // â”€â”€ STEP 4: READINESS + PUSH â”€â”€
+			  $checks = array();
+			  // Category
+			  if ( ! empty( $eff_cat ) ) {
+				  $cd = $cat_name_saved ? $cat_name_saved . ' (' . $eff_cat . ')' : $eff_cat;
+				  $mm = ! empty( $merged_settings['_category_mismatch'] );
+				  $checks[] = array( 'ok' => ! $mm, 'label' => $mm ? sprintf( __( 'Category: %s â€” item type mismatch', 'tcgiant-sync' ), $cd ) : sprintf( __( 'Category: %s', 'tcgiant-sync' ), $cd ) );
+			  } else { $checks[] = array( 'ok' => false, 'label' => __( 'Category: Not set', 'tcgiant-sync' ) ); }
+			  // Condition
+			  $cte = $merged_settings['condition_type'] ?? ''; $ite = $merged_settings['item_type'] ?? '';
+			  if ( ! empty( $cte ) ) {
+				  if ( 'graded' === $cte ) {
+					  $gi = $merged_settings['grader_id'] ?? ''; $gv = $merged_settings['grade_value'] ?? '';
+					  $gm = 'coins' === $ite ? TCGiant_Sync_Exporter::GRADERS_COINS : TCGiant_Sync_Exporter::GRADERS_TCG;
+					  $gn = $gi ? array_search( $gi, $gm, true ) : '';
+					  $cl = 'Graded' . ( $gn ? ' Â· ' . $gn : '' ) . ( $gv ? ' ' . $gv : '' );
+					  $co = ! empty( $gi ) && ! empty( $gv );
+					  if ( ! $co ) { $cl .= ' â€” grader and grade required'; }
+				  } else {
+					  $uv = $merged_settings['ungraded_condition'] ?? '';
+					  $um = 'coins' === $ite ? TCGiant_Sync_Exporter::UNGRADED_COINS : TCGiant_Sync_Exporter::UNGRADED_TCG;
+					  $cl = 'Ungraded' . ( isset( $um[ $uv ] ) ? ' Â· ' . $um[ $uv ] : '' );
+					  $co = ! empty( $uv );
+					  if ( ! $co ) { $cl .= ' â€” condition required'; }
+				  }
+				  $checks[] = array( 'ok' => $co, 'label' => 'Condition: ' . $cl );
+			  } else { $checks[] = array( 'ok' => false, 'label' => __( 'Condition: Not set', 'tcgiant-sync' ) ); }
+			  // Policies
+			  $hp = ! empty( $merged_settings['fulfillment_policy_id'] ) && ! empty( $merged_settings['return_policy_id'] ) && ! empty( $merged_settings['payment_policy_id'] );
+			  $checks[] = array( 'ok' => $hp, 'label' => $hp ? __( 'Business Policies: Configured', 'tcgiant-sync' ) : __( 'Business Policies: Missing â€” configure in Settings', 'tcgiant-sync' ) );
+			  // Images
+			  $ii = $product ? array_filter( array_merge( array( $product->get_image_id() ), $product->get_gallery_image_ids() ) ) : array();
+			  $io = count( $ii ) > 0;
+			  $checks[] = array( 'ok' => $io, 'label' => $io ? sprintf( __( 'Images: %d photo(s)', 'tcgiant-sync' ), count( $ii ) ) : __( 'Images: No photos â€” eBay requires at least 1', 'tcgiant-sync' ) );
+			  // Title
+			  $tl = $product ? mb_strlen( $product->get_name() ) : 0;
+			  $checks[] = array( 'ok' => $tl <= 80 && $tl > 0, 'label' => sprintf( __( 'Title: %d/80 characters', 'tcgiant-sync' ), $tl ) . ( $tl > 80 ? ' â€” will be truncated' : '' ) );
+			  $all_ok = true;
+			  foreach ( $checks as $c ) { if ( ! $c['ok'] ) { $all_ok = false; break; } }
+		?>
+		<div class="tc-ebay-section" id="tc-section-push">
+			<div class="tc-ebay-section-head open" data-target="tc-body-push">
+				<span class="dashicons dashicons-arrow-right-alt2"></span>
+				<span>â‘£ <?php esc_html_e( 'Push to eBay', 'tcgiant-sync' ); ?></span>
+			</div>
+			<div class="tc-ebay-section-body open" id="tc-body-push">
+				<div class="tc-readiness <?php echo $all_ok ? '' : 'has-issues'; ?>">
+					<div class="tc-readiness-title" style="color:<?php echo $all_ok ? '#1e7e34' : '#721c24'; ?>;"><?php echo $all_ok ? 'âœ” ' . esc_html__( 'Ready to push', 'tcgiant-sync' ) : 'âš  ' . esc_html__( 'Not ready â€” fix issues above', 'tcgiant-sync' ); ?></div>
+					<?php foreach ( $checks as $c ) : ?>
+						<div class="tc-readiness-check" style="color:<?php echo $c['ok'] ? '#333' : '#721c24'; ?>;"><?php echo $c['ok'] ? '<span style="color:#1e7e34;">âœ”</span>' : '<span style="color:#dc3545;">âœ–</span>'; ?> <?php echo esc_html( $c['label'] ); ?></div>
+					<?php endforeach; ?>
+				</div>
+				<?php $bl = ! empty( $ebay_item_id ) ? __( 'â†º Update eBay Listing', 'tcgiant-sync' ) : __( 'ðŸ“¤ Push to eBay', 'tcgiant-sync' ); ?>
+				<button type="button" id="tcgiant-push-btn" class="button button-primary" data-product-id="<?php echo esc_attr( $product_id ); ?>" style="margin-top:4px;font-size:13px;padding:4px 16px;"><?php echo esc_html( $bl ); ?></button>
+				<span id="tcgiant-push-status" style="margin-left:8px;font-size:12px;color:#555;"></span>
+			</div>
+		</div>
+
+		<?php // â”€â”€ SYNC LOG (collapsed) â”€â”€
+			  $logs = get_post_meta( $product_id, '_tcgiant_sync_log', true );
+		?>
+		<div class="tc-ebay-section" id="tc-section-sync-log">
+			<div class="tc-ebay-section-head" data-target="tc-body-sync-log">
+				<span class="dashicons dashicons-arrow-right-alt2"></span>
+				<span><?php esc_html_e( 'Import Sync Log', 'tcgiant-sync' ); ?></span>
+				<?php if ( ! empty( $logs ) && is_array( $logs ) ) : ?>
+					<span style="font-weight:400;color:#888;font-size:11px;margin-left:auto;"><?php echo esc_html( count( $logs ) . ' entries' ); ?></span>
+				<?php endif; ?>
+			</div>
+			<div class="tc-ebay-section-body" id="tc-body-sync-log">
+				<?php if ( empty( $logs ) || ! is_array( $logs ) ) : ?>
+					<p style="color:#888;margin:0;font-size:12px;"><?php esc_html_e( 'No import sync decisions logged yet.', 'tcgiant-sync' ); ?></p>
+				<?php else : ?>
+					<div style="max-height:250px;overflow-y:auto;">
+					<?php foreach ( $logs as $entry ) : ?>
+						<div style="margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid #eee;">
+							<strong style="color:#666;font-size:11px;"><?php echo esc_html( $entry['timestamp'] ?? 'Unknown Time' ); ?></strong>
+							<?php if ( ! empty( $entry['decisions'] ) && is_array( $entry['decisions'] ) ) : ?>
+								<ul style="margin-top:3px;padding-left:16px;margin-bottom:0;"><?php foreach ( $entry['decisions'] as $d ) : ?><li style="font-size:12px;"><?php echo esc_html( $d ); ?></li><?php endforeach; ?></ul>
+							<?php endif; ?>
+						</div>
+					<?php endforeach; ?>
+					</div>
+				<?php endif; ?>
+			</div>
+		</div>
+
+		</div></div>
+
+		<script>
+		(function($){
+			// Accordion
+			$('.tc-ebay-section-head').on('click',function(){var $h=$(this),$b=$('#'+$h.data('target'));$h.toggleClass('open');if($b.hasClass('open')){$b.removeClass('open').slideUp(200);}else{$b.addClass('open').slideDown(200);}});
+			// Item Type cards
+			$('#tc-section-item-type .tc-card-option').on('click',function(){var v=$(this).data('value');$('#tc-section-item-type .tc-card-option').removeClass('selected');$(this).addClass('selected');$('#_ebay_export_item_type').val(v);$('#tc-step1-summary').text(v==='coins'?'ðŸª™ Coins':'ðŸƒ Trading Cards');$('#tc-section-category .tc-ebay-section-head,#tc-section-condition .tc-ebay-section-head').addClass('open');$('#tc-body-category,#tc-body-condition').addClass('open').slideDown(200);$('#tc-condition-type-wrapper').show();$('#tc-body-condition p[style*="color:#999"]').hide();tcGradingToggle();});
+			// Condition Type cards
+			$('#tc-section-condition .tc-card-selector .tc-card-option').on('click',function(){var v=$(this).data('value');$('#tc-section-condition .tc-card-selector .tc-card-option').removeClass('selected');$(this).addClass('selected');$('#_ebay_export_condition_type').val(v);tcGradingToggle();});
+			// Grading toggle
+			function tcGradingToggle(){var it=$('#_ebay_export_item_type').val(),ct=$('#_ebay_export_condition_type').val();$('#tcgiant-graded-tcg-fields').toggle(it==='tcg'&&ct==='graded');$('#tcgiant-graded-coins-fields').toggle(it==='coins'&&ct==='graded');$('#tcgiant-graded-shared-fields').toggle(it!==''&&ct==='graded');$('#tcgiant-ungraded-tcg-fields').toggle(it==='tcg'&&ct==='ungraded');$('#tcgiant-ungraded-coins-fields').toggle(it==='coins'&&ct==='ungraded');}
+			// Category dropdown
+			$('#_ebay_export_category_id_select').on('change',function(){$('#_ebay_export_category_id_custom').toggle($(this).val()==='custom');});
+			// Category browser
+			var ajaxUrl='<?php echo esc_js( admin_url( 'admin-ajax.php' ) ); ?>',nonce='<?php echo esc_js( wp_create_nonce( 'tcgiant_sync_ajax' ) ); ?>',trail=[];
+			$('#tc-browse-categories-btn-product').on('click',function(){var $b=$('#tc-category-browser-product');$b.toggle();if($b.is(':visible')&&$('#tc-category-drilldown-product').children().length===0){var it=$('#_ebay_export_item_type').val(),sid='';if(it==='coins'){sid='11116';trail=[{id:'11116',name:'Coins & Paper Money'}];}else if(it==='tcg'){sid='2536';trail=[{id:'2536',name:'Toys & Hobbies'}];}renderBread();loadCats(sid);}});
+			function loadCats(pid){var $d=$('#tc-category-drilldown-product'),$s=$('#tc-category-browser-status-product');$d.html('<div style="text-align:center;padding:12px;color:#888;">Loadingâ€¦</div>');$s.text('');$.post(ajaxUrl,{action:'tcgiant_browse_categories',_ajax_nonce:nonce,parent_id:pid},function(r){if(!r.success){$d.html('<div style="color:#c00;padding:6px;">'+r.data.message+'</div>');return;}renderCats(r.data.categories);}).fail(function(){$d.html('<div style="color:#c00;padding:6px;">Request failed.</div>');});}
+			function renderCats(cats){var $d=$('#tc-category-drilldown-product');$d.empty();if(!cats||!cats.length){$d.html('<div style="padding:6px;color:#888;">No subcategories.</div>');return;}$.each(cats,function(i,c){var $r=$('<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 6px;border-bottom:1px solid #eee;cursor:pointer;font-size:12px;"></div>');$r.append($('<span style="flex:1;"></span>').text(c.name));$r.append(c.leaf?'<span style="color:#16a34a;font-size:10px;font-weight:600;">âœ” leaf</span>':'<span class="dashicons dashicons-arrow-right-alt2" style="color:#888;font-size:13px;width:13px;height:13px;"></span>');$r.on('mouseenter',function(){$(this).css('background','#f0f6fc');}).on('mouseleave',function(){$(this).css('background','');});$r.on('click',function(){if(c.leaf){selectCat(c.id,c.name);$('#tc-category-browser-product').slideUp(200);trail=[];}else{trail.push({id:c.id,name:c.name});renderBread();loadCats(c.id);}});$d.append($r);});}
+			function selectCat(id,name){$('#_ebay_export_category_id_select').val('custom');$('#_ebay_export_category_id_custom').val(id).show();$('#_ebay_export_category_name').val(name);$('#tc-selected-category-label-product').html('âœ” '+name+' ('+id+')').show();$('#tc-step2-summary').text(name+' ('+id+')');}
+			function renderBread(){var $bc=$('#tc-category-breadcrumb-product');$bc.empty();var $root=$('<a href="#" style="color:#2271b1;text-decoration:none;font-size:11px;">All</a>');$root.on('click',function(e){e.preventDefault();trail=[];renderBread();loadCats('');});$bc.append($root);$.each(trail,function(i,c){$bc.append('<span style="margin:0 3px;color:#aaa;"> â€º </span>');if(i<trail.length-1){var $l=$('<a href="#" style="color:#2271b1;text-decoration:none;font-size:11px;"></a>').text(c.name);(function(idx){$l.on('click',function(e){e.preventDefault();trail=trail.slice(0,idx+1);renderBread();loadCats(c.id);});})(i);$bc.append($l);}else{$bc.append($('<b style="font-size:11px;"></b>').text(c.name));}});}
+			// Category suggestion
+			$('#tc-suggest-category-btn').on('click',function(){var btn=$(this),$p=$('#tc-suggest-pills'),title='<?php echo esc_js( $product ? $product->get_name() : '' ); ?>';if(!title)return;btn.prop('disabled',true).text('Searching...');$.post(ajaxUrl,{action:'tcgiant_suggest_category',_ajax_nonce:nonce,title:title},function(r){btn.prop('disabled',false).html('<span class="dashicons dashicons-lightbulb" style="font-size:13px;vertical-align:middle;margin-right:2px;"></span> Suggest Category from Title');if(r.success&&r.data.suggestions&&r.data.suggestions.length){$p.empty().show();$.each(r.data.suggestions,function(i,s){var $pill=$('<span class="tc-suggest-pill"></span>').text(s.name+' ('+s.id+')');$pill.on('click',function(){selectCat(s.id,s.name);$p.slideUp(200);});$p.append($pill);});}else{$p.html('<span style="font-size:11px;color:#888;">No suggestions found.</span>').show();}}).fail(function(){btn.prop('disabled',false).html('<span class="dashicons dashicons-lightbulb" style="font-size:13px;vertical-align:middle;margin-right:2px;"></span> Suggest Category from Title');});});
+			// Dismiss error
+			$('#tcgiant-dismiss-export-error').on('click',function(e){e.preventDefault();$.post(ajaxUrl,{action:'tcgiant_clear_export_error',product_id:$(this).data('product-id'),_ajax_nonce:nonce});$('#tcgiant-export-error-notice').slideUp(200);});
+			// Push
+			$('#tcgiant-push-btn').on('click',function(){var btn=$(this),st=$('#tcgiant-push-status');btn.prop('disabled',true);st.css('color','#555').text('Saving & validating...');var cs=$('#_ebay_export_category_id_select').val()||'',cc=$('#_ebay_export_category_id_custom').val()||'',catId=(cs==='custom')?cc:cs,it=$('#_ebay_export_item_type').val()||'',sf=it?'_'+it:'',gid=$('#_ebay_export_grader_id'+sf).val()||'',gv=$('#_ebay_export_grade_value'+sf).val()||'',uc=$('#_ebay_export_ungraded_condition'+sf).val()||'';$.post(ajaxUrl,{action:'tcgiant_push_product',product_id:btn.data('product-id'),override_category_id:catId,override_condition_id:$('#_ebay_export_condition_id').val()||'',override_item_type:it,override_condition_type:$('#_ebay_export_condition_type').val()||'',override_grader_id:gid,override_grade_value:gv,override_cert_number:$('[name="_ebay_export_cert_number"]').val()||'',override_ungraded_condition:uc,_ajax_nonce:nonce},function(r){if(r.success){st.css('color','#2a8a2a').text('âœ” '+r.data.message);}else{st.css('color','#cc1818').text('âœ– '+(r.data?r.data.message:'Unknown error'));btn.prop('disabled',false);}});});
+		})(jQuery);
+		</script>
 		<?php
 	}
 
@@ -1895,26 +1659,26 @@ class TCGiant_Sync_Admin {
 
 		// eBay Item ID link if already pushed.
 		if ( ! empty( $ebay_item_id ) ) {
-			echo '<div class="tc-ebay-itemid"><a href="https://www.ebay.com/itm/' . esc_attr( $ebay_item_id ) . '" target="_blank" rel="noopener" title="View on eBay">Item ' . esc_html( $ebay_item_id ) . ' ↗</a></div>';
+			echo '<div class="tc-ebay-itemid"><a href="https://www.ebay.com/itm/' . esc_attr( $ebay_item_id ) . '" target="_blank" rel="noopener" title="View on eBay">Item ' . esc_html( $ebay_item_id ) . ' â†—</a></div>';
 		}
 
-		// Error notice — show actual error message and link to logs.
+		// Error notice â€” show actual error message and link to logs.
 		if ( 'error' === $export_status && ! empty( $export_error ) ) {
 			$log_url = admin_url( 'admin.php?page=tcgiant-export' );
 			// Truncate very long error messages for the column display.
-			$display_error = mb_strlen( $export_error ) > 120 ? mb_substr( $export_error, 0, 117 ) . '…' : $export_error;
+			$display_error = mb_strlen( $export_error ) > 120 ? mb_substr( $export_error, 0, 117 ) . 'â€¦' : $export_error;
 			echo '<div class="tc-ebay-error" title="' . esc_attr( $export_error ) . '">';
-			echo '<a href="' . esc_url( $log_url ) . '" style="color:#d63638;text-decoration:none;">⚠ ' . esc_html( $display_error ) . '</a>';
+			echo '<a href="' . esc_url( $log_url ) . '" style="color:#d63638;text-decoration:none;">âš  ' . esc_html( $display_error ) . '</a>';
 			echo '</div>';
 		}
 
 		// Last pushed date.
 		if ( ! empty( $last_pushed ) ) {
-			echo '<div class="tc-ebay-pushed">✔ ' . esc_html( date_i18n( 'M j, Y', strtotime( $last_pushed ) ) ) . '</div>';
+			echo '<div class="tc-ebay-pushed">âœ” ' . esc_html( date_i18n( 'M j, Y', strtotime( $last_pushed ) ) ) . '</div>';
 		}
 
 		// Push/Update button.
-		$btn_label = ! empty( $ebay_item_id ) ? '↺ Update' : '📤 Push to eBay';
+		$btn_label = ! empty( $ebay_item_id ) ? 'â†º Update' : 'ðŸ“¤ Push to eBay';
 		$btn_class = ! empty( $ebay_item_id ) ? 'tc-ebay-btn tc-ebay-btn-update' : 'tc-ebay-btn tc-ebay-btn-push';
 		echo '<button type="button" class="' . esc_attr( $btn_class ) . '" data-product-id="' . esc_attr( $post_id ) . '">' . esc_html( $btn_label ) . '</button>';
 		echo '<span class="tc-ebay-btn-status" data-product-id="' . esc_attr( $post_id ) . '"></span>';
@@ -2017,7 +1781,7 @@ class TCGiant_Sync_Admin {
 				var statusEl = $('.tc-ebay-btn-status[data-product-id="' + productId + '"]');
 
 				btn.prop('disabled', true);
-				statusEl.removeClass('is-success is-error').text('Queuing…');
+				statusEl.removeClass('is-success is-error').text('Queuingâ€¦');
 
 				$.post(ajaxUrl, {
 					action: 'tcgiant_push_product',
@@ -2025,9 +1789,9 @@ class TCGiant_Sync_Admin {
 					_ajax_nonce: nonce
 				}, function(res) {
 					if (res.success) {
-						statusEl.addClass('is-success').text('✔ Queued!');
+						statusEl.addClass('is-success').text('âœ” Queued!');
 						// Change button text to indicate it's been queued.
-						btn.text('↺ Update');
+						btn.text('â†º Update');
 						btn.removeClass('tc-ebay-btn-push').addClass('tc-ebay-btn-update');
 						// Re-enable after a delay.
 						setTimeout(function() {
@@ -2036,11 +1800,11 @@ class TCGiant_Sync_Admin {
 						}, 5000);
 					} else {
 						var msg = res.data && res.data.message ? res.data.message : 'Unknown error';
-						statusEl.addClass('is-error').text('✖ ' + msg);
+						statusEl.addClass('is-error').text('âœ– ' + msg);
 						btn.prop('disabled', false);
 					}
 				}).fail(function() {
-					statusEl.addClass('is-error').text('✖ Request failed');
+					statusEl.addClass('is-error').text('âœ– Request failed');
 					btn.prop('disabled', false);
 				});
 			});

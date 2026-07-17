@@ -679,4 +679,60 @@ class TCGiant_Sync_API {
 			array( 'filter' => 'categoryId:{' . $category_id . '}' )
 		);
 	}
+
+	/**
+	 * Get suggested categories for a query string (product title) via the Taxonomy API.
+	 *
+	 * Uses the getCategorySuggestions endpoint to return leaf-level categories
+	 * that eBay thinks are the best match for the given title.
+	 *
+	 * @param string $title The product title to find categories for.
+	 * @return array|WP_Error Array of suggestions [{ id, name }] or error.
+	 */
+	public function get_suggested_categories( $title ) {
+		$config  = $this->get_marketplace_config();
+		$tree_id = self::CATEGORY_TREE_IDS[ $config['marketplace_id'] ] ?? '0';
+
+		$response = $this->request(
+			'commerce/taxonomy/v1/category_tree/' . $tree_id . '/get_category_suggestions',
+			'GET',
+			array(),
+			array( 'q' => $title ),
+			false
+		);
+
+		if ( is_wp_error( $response ) ) {
+			return $response;
+		}
+
+		$suggestions = array();
+		if ( ! empty( $response['categorySuggestions'] ) ) {
+			foreach ( $response['categorySuggestions'] as $s ) {
+				$cat = $s['category'] ?? array();
+				if ( empty( $cat['categoryId'] ) ) {
+					continue;
+				}
+				// Build the full path name from ancestors if available.
+				$name = $cat['categoryName'] ?? '';
+				if ( ! empty( $s['categoryTreeNodeAncestors'] ) ) {
+					$ancestors = array_reverse( $s['categoryTreeNodeAncestors'] );
+					$path      = array();
+					foreach ( $ancestors as $a ) {
+						$path[] = $a['categoryName'] ?? '';
+					}
+					$path[] = $name;
+					$name   = implode( ' > ', array_filter( $path ) );
+				}
+				$suggestions[] = array(
+					'id'   => $cat['categoryId'],
+					'name' => $name,
+				);
+				if ( count( $suggestions ) >= 5 ) {
+					break;
+				}
+			}
+		}
+
+		return $suggestions;
+	}
 }
