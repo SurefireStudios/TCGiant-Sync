@@ -38,6 +38,7 @@ class TCGiant_Sync_Admin {
 		add_action( 'admin_init', array( $this, 'handle_oauth_callback' ) );
 		add_action( 'admin_init', array( $this, 'register_settings' ) );
 		add_action( 'admin_post_tcgiant_sync_now', array( $this, 'handle_manual_sync' ) );
+		add_action( 'admin_post_tcgiant_sync_specific', array( $this, 'handle_sync_specific' ) );
 		add_action( 'admin_post_tcgiant_force_queue', array( $this, 'handle_force_queue' ) );
 		add_action( 'admin_post_tcgiant_resume_sync', array( $this, 'handle_resume_sync' ) );
 		add_action( 'wp_ajax_tcgiant_sync_order_to_ebay', array( $this, 'ajax_sync_order_to_ebay' ) );
@@ -134,6 +135,36 @@ class TCGiant_Sync_Admin {
 
 		TCGiant_Sync_Importer::instance()->start_full_sync( true );
 		wp_safe_redirect( admin_url( 'admin.php?page=tcgiant-sync&sync_started=1' ) );
+		exit;
+	}
+
+	/**
+	 * Handle specific items sync request.
+	 */
+	public function handle_sync_specific() {
+		check_admin_referer( 'tcgiant_sync_specific' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'Unauthorized.', 'tcgiant-sync' ) );
+		}
+
+		$item_ids_str  = isset( $_POST['tcgiant_item_ids'] ) ? sanitize_text_field( wp_unslash( $_POST['tcgiant_item_ids'] ) ) : '';
+		$images_only   = ! empty( $_POST['tcgiant_images_only'] );
+
+		if ( ! empty( $item_ids_str ) ) {
+			$item_ids = array_map( 'trim', explode( ',', $item_ids_str ) );
+			$item_ids = array_filter( $item_ids );
+
+			if ( ! empty( $item_ids ) ) {
+				$importer = TCGiant_Sync_Importer::instance();
+				if ( $images_only ) {
+					$importer->start_images_only_sync( $item_ids );
+				} else {
+					$importer->start_specific_sync( $item_ids );
+				}
+			}
+		}
+
+		wp_safe_redirect( admin_url( 'admin.php?page=tcgiant-import&sync_started=1' ) );
 		exit;
 	}
 
@@ -289,6 +320,7 @@ class TCGiant_Sync_Admin {
 		if ( function_exists( 'as_unschedule_all_actions' ) ) {
 			as_unschedule_all_actions( 'tcgiant_sync_fetch_listings', null, 'tcgiant_sync_group' );
 			as_unschedule_all_actions( 'tcgiant_sync_process_item_import', null, 'tcgiant_sync_group' );
+			as_unschedule_all_actions( 'tcgiant_sync_download_images', null, 'tcgiant_sync_group' );
 		}
 
 		TCGiant_Sync_Importer::update_sync_state( array( 'status' => 'stopped' ) );

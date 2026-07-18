@@ -231,14 +231,34 @@ class TCGiant_Sync_Mapper {
 				$variations = array( $variations );
 			}
 			
+			// Parse variation-specific pictures if present.
+			$variation_pictures = array();
+			if ( isset( $ebay_item['Variations']['Pictures']['VariationSpecificPictureSet'] ) ) {
+				$sets = $ebay_item['Variations']['Pictures']['VariationSpecificPictureSet'];
+				if ( isset( $sets['VariationSpecificValue'] ) ) {
+					$sets = array( $sets );
+				}
+				foreach ( $sets as $set ) {
+					$val = $set['VariationSpecificValue'] ?? '';
+					$urls = array();
+					if ( isset( $set['PictureURL'] ) ) {
+						$urls = is_array( $set['PictureURL'] ) ? $set['PictureURL'] : array( $set['PictureURL'] );
+					}
+					if ( $val && ! empty( $urls ) ) {
+						$variation_pictures[ $val ] = $urls[0]; // First photo is thumbnail
+					}
+				}
+			}
+			
 			foreach ( $variations as $var ) {
 				$var_prices = $this->extract_prices( $var );
 				$var_data = array(
-					'sku' => $var['SKU'] ?? '',
-					'regular_price' => $var_prices['regular_price'],
-					'sale_price' => $var_prices['sale_price'],
+					'sku'            => $var['SKU'] ?? '',
+					'regular_price'  => $var_prices['regular_price'],
+					'sale_price'     => $var_prices['sale_price'],
 					'stock_quantity' => max( 0, (int) ($var['Quantity'] ?? 0) - (int) ($var['SellingStatus']['QuantitySold'] ?? 0) ),
-					'attributes' => array(),
+					'attributes'     => array(),
+					'image_url'      => '',
 				);
 				
 				if ( isset( $var['VariationSpecifics']['NameValueList'] ) ) {
@@ -249,6 +269,10 @@ class TCGiant_Sync_Mapper {
 						$val = is_array( $spec['Value'] ) ? implode( ', ', $spec['Value'] ) : ( $spec['Value'] ?? '' );
 						if ( $name ) {
 							$var_data['attributes'][ $name ] = $val;
+						}
+						// Check if this specific value has a corresponding picture
+						if ( isset( $variation_pictures[ $val ] ) ) {
+							$var_data['image_url'] = $variation_pictures[ $val ];
 						}
 					}
 				}
@@ -454,7 +478,7 @@ class TCGiant_Sync_Mapper {
 	 *
 	 * @param array $product_data Mapped product data.
 	 */
-	public function save_as_product( $product_data ) {
+	public function save_as_product( &$product_data ) {
 		$item_id = $product_data['meta']['_ebay_item_id'];
 		$product_id = false;
 
@@ -707,14 +731,14 @@ class TCGiant_Sync_Mapper {
 	 * Save child variations for a variable product.
 	 *
 	 * @param int $parent_id WooCommerce Parent Product ID.
-	 * @param array $variations_data Array of variation data from map_ebay_to_woo.
+	 * @param array $variations_data Array of variation data from map_ebay_to_woo (by reference).
 	 */
-	private function save_variations( $parent_id, $variations_data ) {
+	private function save_variations( $parent_id, &$variations_data ) {
 		$product = wc_get_product( $parent_id );
 		$existing_variations = $product->get_children();
 		$processed_ids = array();
 		
-		foreach ( $variations_data as $var_data ) {
+		foreach ( $variations_data as &$var_data ) {
 			$variation_id = 0;
 			
 			// Try to match by SKU
@@ -754,6 +778,7 @@ class TCGiant_Sync_Mapper {
 			$saved_var_id = $variation->save();
 			if ( $saved_var_id ) {
 				$processed_ids[] = $saved_var_id;
+				$var_data['variation_id'] = $saved_var_id;
 			}
 		}
 		

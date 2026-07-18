@@ -319,6 +319,24 @@ if ( $sync_state['total_queued'] > 0 ) {
 				</form>
 			</div>
 
+				<div class="tc-section">
+				<h3 class="tc-section-title"><?php esc_html_e( 'Sync Specific Items', 'tcgiant-sync' ); ?></h3>
+				<p class="tc-section-desc"><?php esc_html_e( 'Enter a comma-separated list of eBay Item IDs to sync them immediately. Optionally re-download images only.', 'tcgiant-sync' ); ?></p>
+				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+					<input type="hidden" name="action" value="tcgiant_sync_specific">
+					<?php wp_nonce_field( 'tcgiant_sync_specific' ); ?>
+					<input type="text" name="tcgiant_item_ids" placeholder="e.g. 123456789012, 987654321098" style="width:100%; margin-bottom:10px;">
+					<label style="display:flex;align-items:center;gap:6px;margin-bottom:12px;font-size:13px;cursor:pointer;">
+						<input type="checkbox" name="tcgiant_images_only" value="1">
+						<?php esc_html_e( 'Re-sync images only (skip product data)', 'tcgiant-sync' ); ?>
+					</label>
+					<button type="submit" class="tc-button secondary full-width">
+						<span class="dashicons dashicons-download" style="font-size:16px;"></span>
+						<?php esc_html_e( 'Sync specific items', 'tcgiant-sync' ); ?>
+					</button>
+				</form>
+			</div>
+
 			<div class="tc-section">
 				<h3 class="tc-section-title tc-danger-text"><?php esc_html_e( 'Emergency Stop', 'tcgiant-sync' ); ?></h3>
 				<p class="tc-section-desc"><?php esc_html_e( 'Immediately cancel all pending and scheduled sync jobs. This cannot be undone.', 'tcgiant-sync' ); ?></p>

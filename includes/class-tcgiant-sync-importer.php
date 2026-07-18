@@ -44,7 +44,7 @@ class TCGiant_Sync_Importer {
 		add_action( 'tcgiant_sync_process_item_import', array( $this, 'process_item_import' ), 10, 1 );
 		add_action( 'tcgiant_sync_fetch_listings', array( $this, 'fetch_listings_page' ), 10, 1 );
 		add_action( 'tcgiant_sync_fetch_delta_events', array( $this, 'fetch_delta_events' ) );
-		add_action( 'tcgiant_sync_download_images', array( $this, 'download_product_images' ), 10, 2 );
+		add_action( 'tcgiant_sync_download_images', array( $this, 'download_product_images' ), 10, 3 );
 		add_action( 'tcgiant_sync_prune_orphans', array( $this, 'prune_orphaned_items' ) );
 	}
 
@@ -120,6 +120,7 @@ class TCGiant_Sync_Importer {
 			as_unschedule_all_actions( 'tcgiant_sync_fetch_listings', null, 'tcgiant_sync_group' );
 			as_unschedule_all_actions( 'tcgiant_sync_fetch_delta_events', null, 'tcgiant_sync_group' );
 			as_unschedule_all_actions( 'tcgiant_sync_process_item_import', null, 'tcgiant_sync_group' );
+			as_unschedule_all_actions( 'tcgiant_sync_download_images', null, 'tcgiant_sync_group' );
 		}
 
 		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
@@ -187,6 +188,7 @@ class TCGiant_Sync_Importer {
 			as_unschedule_all_actions( 'tcgiant_sync_fetch_listings', null, 'tcgiant_sync_group' );
 			as_unschedule_all_actions( 'tcgiant_sync_fetch_delta_events', null, 'tcgiant_sync_group' );
 			as_unschedule_all_actions( 'tcgiant_sync_process_item_import', null, 'tcgiant_sync_group' );
+			as_unschedule_all_actions( 'tcgiant_sync_download_images', null, 'tcgiant_sync_group' );
 		}
 
 		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
@@ -218,6 +220,123 @@ class TCGiant_Sync_Importer {
 			$mod_from_iso
 		) );
 		as_enqueue_async_action( 'tcgiant_sync_fetch_delta_events', array(), 'tcgiant_sync_group' );
+	}
+
+	/**
+	 * Start a sync for specific item IDs.
+	 *
+	 * @param array $item_ids List of eBay Item IDs to sync.
+	 */
+	public function start_specific_sync( $item_ids ) {
+		$license = TCGiant_Sync_License::instance();
+		if ( ! $license->can_import() ) {
+			self::update_sync_state( array( 'status' => 'limit_reached' ) );
+			return;
+		}
+
+		$state = self::get_sync_state();
+		$new_queued = $state['total_queued'] + count( $item_ids );
+
+		self::update_sync_state( array(
+			'status'       => 'importing',
+			'total_queued' => $new_queued,
+		) );
+
+		foreach ( $item_ids as $item_id ) {
+			as_enqueue_async_action( 'tcgiant_sync_process_item_import', array( 'item_id' => $item_id ), 'tcgiant_sync_group' );
+		}
+
+		TCGiant_Sync_Logger::log( sprintf( 'Manually queued %d specific item(s) for sync.', count( $item_ids ) ), 'success' );
+	}
+
+	/**
+	 * Re-sync images only for specific eBay Item IDs.
+	 *
+	 * Fetches image URLs from eBay via GetItem but does NOT update
+	 * product data (title, price, stock, etc). Only re-downloads images.
+	 *
+	 * @param array $item_ids List of eBay Item IDs.
+	 */
+	public function start_images_only_sync( $item_ids ) {
+		$api = TCGiant_Sync_API::instance();
+		$mapper = TCGiant_Sync_Mapper::instance();
+		$queued = 0;
+
+		foreach ( $item_ids as $item_id ) {
+			$item_id = trim( $item_id );
+			if ( empty( $item_id ) ) {
+				continue;
+			}
+
+			// Find the existing WooCommerce product for this eBay item.
+			global $wpdb;
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			$product_id = $wpdb->get_var( $wpdb->prepare(
+				"SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key = '_ebay_item_id' AND meta_value = %s LIMIT 1",
+				$item_id
+			) );
+
+			if ( ! $product_id ) {
+				TCGiant_Sync_Logger::warning( sprintf( 'Images-only sync: No WooCommerce product found for eBay Item %s. Skipping.', $item_id ) );
+				continue;
+			}
+
+			// Fetch the item from eBay to get current image URLs.
+			$ebay_response = $api->get_item( $item_id );
+			if ( is_wp_error( $ebay_response ) || ! isset( $ebay_response['Item'] ) ) {
+				$msg = is_wp_error( $ebay_response ) ? $ebay_response->get_error_message() : 'No item data returned';
+				TCGiant_Sync_Logger::error( sprintf( 'Images-only sync: Failed to fetch eBay Item %s: %s', $item_id, $msg ) );
+				continue;
+			}
+
+			$ebay_item = $ebay_response['Item'];
+
+			// Extract main product images.
+			$all_images = array();
+			if ( isset( $ebay_item['PictureDetails']['PictureURL'] ) ) {
+				$pics = $ebay_item['PictureDetails']['PictureURL'];
+				$all_images = is_array( $pics ) ? $pics : array( $pics );
+			}
+
+			// Extract variation-specific images — map them to WC variation IDs.
+			if ( isset( $ebay_item['Variations'] ) ) {
+				$product_data = $mapper->map_ebay_to_woo( $ebay_item );
+				// We need to call save_as_product to get variation_ids populated,
+				// but we don't want to update product data.
+				// Instead, match existing variations by SKU.
+				if ( ! empty( $product_data['variations'] ) ) {
+					foreach ( $product_data['variations'] as $var ) {
+						if ( ! empty( $var['image_url'] ) && ! empty( $var['sku'] ) ) {
+							$var_wc_id = wc_get_product_id_by_sku( $var['sku'] );
+							if ( $var_wc_id ) {
+								$all_images[] = array( $var['image_url'], $var_wc_id );
+							}
+						}
+					}
+				}
+			}
+
+			if ( empty( $all_images ) ) {
+				TCGiant_Sync_Logger::log( sprintf( 'Images-only sync: No images found on eBay for Item %s.', $item_id ) );
+				continue;
+			}
+
+			// Force overwrite by deleting existing images first.
+			// The download function will handle the rest.
+			as_enqueue_async_action( 'tcgiant_sync_download_images', array(
+				'product_id'     => (int) $product_id,
+				'image_urls'     => $all_images,
+				'is_first_batch' => true,
+			), 'tcgiant_sync_group' );
+
+			$queued++;
+			TCGiant_Sync_Logger::log( sprintf(
+				'Images-only sync: Queued %d image(s) for WC #%d (eBay %s).',
+				count( $all_images ), $product_id, $item_id
+			) );
+		}
+
+		TCGiant_Sync_Logger::log( sprintf( 'Images-only sync: Queued image downloads for %d product(s).', $queued ), 'success' );
 	}
 
 	/**
@@ -396,8 +515,21 @@ class TCGiant_Sync_Importer {
 				$product_id = $mapper->save_as_product( $product_data );
 
 				if ( $product_id ) {
+					// Append variation images to the download queue
+					if ( ! empty( $product_data['variations'] ) ) {
+						foreach ( $product_data['variations'] as $var ) {
+							if ( ! empty( $var['image_url'] ) && ! empty( $var['variation_id'] ) ) {
+								$product_data['images'][] = array( $var['image_url'], $var['variation_id'] );
+							}
+						}
+					}
+
 					if ( ! empty( $product_data['images'] ) ) {
-						$this->download_product_images( $product_id, $product_data['images'] );
+						as_enqueue_async_action( 'tcgiant_sync_download_images', array(
+							'product_id'     => $product_id,
+							'image_urls'     => $product_data['images'],
+							'is_first_batch' => true,
+						), 'tcgiant_sync_group' );
 					}
 					$processed++;
 
@@ -660,11 +792,21 @@ class TCGiant_Sync_Importer {
 					$product_id = $mapper->save_as_product( $product_data );
 
 					if ( $product_id ) {
+						// Append variation images to the download queue
+						if ( ! empty( $product_data['variations'] ) ) {
+							foreach ( $product_data['variations'] as $var ) {
+								if ( ! empty( $var['image_url'] ) && ! empty( $var['variation_id'] ) ) {
+									$product_data['images'][] = array( $var['image_url'], $var['variation_id'] );
+								}
+							}
+						}
+
 						// Schedule image downloads as async to avoid timeout.
 						if ( ! empty( $product_data['images'] ) ) {
 							as_enqueue_async_action( 'tcgiant_sync_download_images', array(
-								'product_id' => $product_id,
-								'image_urls' => $product_data['images'],
+								'product_id'     => $product_id,
+								'image_urls'     => $product_data['images'],
+								'is_first_batch' => true,
 							), 'tcgiant_sync_group' );
 						}
 
@@ -945,11 +1087,21 @@ class TCGiant_Sync_Importer {
 			$product_id = $mapper->save_as_product( $product_data );
 
 			if ( $product_id ) {
+				// Append variation images to the download queue
+				if ( ! empty( $product_data['variations'] ) ) {
+					foreach ( $product_data['variations'] as $var ) {
+						if ( ! empty( $var['image_url'] ) && ! empty( $var['variation_id'] ) ) {
+							$product_data['images'][] = array( $var['image_url'], $var['variation_id'] );
+						}
+					}
+				}
+
 				// Schedule image downloads as async to avoid blocking the Action Scheduler queue.
 				if ( ! empty( $product_data['images'] ) ) {
 					as_enqueue_async_action( 'tcgiant_sync_download_images', array(
-						'product_id' => $product_id,
-						'image_urls' => $product_data['images'],
+						'product_id'     => $product_id,
+						'image_urls'     => $product_data['images'],
+						'is_first_batch' => true,
 					), 'tcgiant_sync_group' );
 				}
 
@@ -1110,13 +1262,17 @@ class TCGiant_Sync_Importer {
 	}
 
 	/**
-	 * Download and attach images to product.
+	 * Download and attach images to product (Chunked).
+	 *
+	 * Images are processed in small batches (2 at a time) to prevent PHP
+	 * execution timeouts. Failed images get a single automatic retry.
 	 *
 	 * @param int   $product_id WooCommerce Product ID.
-	 * @param array $images     List of eBay image URLs.
+	 * @param array $images     List of eBay image URLs (strings or [url, variation_id] arrays).
+	 * @param bool  $is_first_batch True if this is the first batch of images for the product.
 	 */
-	public function download_product_images( $product_id, $images ) {
-		if ( empty( $images ) ) {
+	public function download_product_images( $product_id, $images, $is_first_batch = true ) {
+		if ( empty( $images ) || ! is_array( $images ) ) {
 			return;
 		}
 
@@ -1127,13 +1283,64 @@ class TCGiant_Sync_Importer {
 		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
 		$overwrite_images = ! empty( $settings['overwrite_images'] );
 
-		// Skip if product already has a thumbnail (re-import protection) and overwrite is disabled.
-		if ( has_post_thumbnail( $product_id ) ) {
+		// Process up to 2 images per batch to prevent PHP timeouts.
+		$batch_size = 2;
+		$current_batch = array_slice( $images, 0, $batch_size );
+		$remaining_images = array_slice( $images, $batch_size );
+
+		TCGiant_Sync_Logger::log( sprintf(
+			'Images: WC #%d — downloading batch of %d (%d remaining).',
+			$product_id, count( $current_batch ), count( $remaining_images )
+		) );
+
+		// Track image sync status on the product for diagnostics.
+		if ( $is_first_batch ) {
+			// Count only non-variation (main product) images.
+			$main_count = 0;
+			$var_count = 0;
+			foreach ( $images as $img ) {
+				if ( is_array( $img ) ) {
+					$var_count++;
+				} else {
+					$main_count++;
+				}
+			}
+			update_post_meta( $product_id, '_tcgiant_image_status', array(
+				'expected_main'      => $main_count,
+				'expected_variation' => $var_count,
+				'downloaded'         => 0,
+				'failed'             => 0,
+				'started_at'         => current_time( 'mysql' ),
+				'completed_at'       => '',
+			) );
+		}
+
+		// Lower the HTTP timeout for image downloads to 30s per file.
+		// WordPress default is 300s which is too generous and can stall the entire queue.
+		$timeout_filter = function( $timeout ) {
+			return 30;
+		};
+		add_filter( 'http_request_timeout', $timeout_filter );
+
+		// Temporarily bump memory limit for image processing (thumbnail generation is memory hungry).
+		if ( function_exists( 'wp_raise_memory_limit' ) ) {
+			wp_raise_memory_limit( 'image' );
+		}
+
+		// Handle clearing existing images only on the very first batch.
+		if ( $is_first_batch && has_post_thumbnail( $product_id ) ) {
 			if ( ! $overwrite_images ) {
+				// We don't overwrite images, so abort entirely (no need to schedule next batch).
+				remove_filter( 'http_request_timeout', $timeout_filter );
+				update_post_meta( $product_id, '_tcgiant_image_status', array(
+					'status'       => 'skipped',
+					'reason'       => 'overwrite_images is off and product already has images',
+					'completed_at' => current_time( 'mysql' ),
+				) );
 				return;
 			}
 
-			// User wants to overwrite: delete existing thumbnail to avoid media library bloat.
+			// Delete existing thumbnail.
 			$thumb_id = get_post_thumbnail_id( $product_id );
 			if ( $thumb_id ) {
 				wp_delete_attachment( $thumb_id, true );
@@ -1152,26 +1359,155 @@ class TCGiant_Sync_Importer {
 		}
 
 		$gallery_ids = array();
-		$first_image = true;
+		
+		// If it's not the first batch, we might need to append to an existing gallery.
+		if ( ! $is_first_batch ) {
+			$existing = get_post_meta( $product_id, '_product_image_gallery', true );
+			if ( ! empty( $existing ) ) {
+				$gallery_ids = explode( ',', $existing );
+			}
+		}
 
-		foreach ( $images as $image_url ) {
-			$id = media_sideload_image( $image_url, $product_id, null, 'id' );
+		// Keep track if we need to set the featured image (only if the product doesn't have one).
+		$needs_thumbnail = ! has_post_thumbnail( $product_id );
+		$failed_images = array();
+		$downloaded_count = 0;
 
-			if ( is_wp_error( $id ) ) {
-				TCGiant_Sync_Logger::warning( 'Image download failed: ' . $id->get_error_message() );
-				continue;
+		foreach ( $current_batch as $image_entry ) {
+			// variation images are passed as an array [url, variation_id].
+			$variation_id = false;
+			$image_url = $image_entry;
+			if ( is_array( $image_entry ) ) {
+				$variation_id = $image_entry[1] ?? false;
+				$image_url    = $image_entry[0] ?? '';
 			}
 
-			if ( $first_image ) {
-				set_post_thumbnail( $product_id, $id );
-				$first_image = false;
+			if ( empty( $image_url ) ) continue;
+
+			// Assigning image to a variation.
+			if ( $variation_id ) {
+				// Check if variation already has thumbnail if we aren't overwriting.
+				if ( has_post_thumbnail( $variation_id ) ) {
+					if ( ! $overwrite_images && $is_first_batch ) {
+						continue; // skip
+					}
+					// Only delete variation thumbnail on the very first batch that includes this variation's photos.
+					if ( $is_first_batch ) {
+						$var_thumb_id = get_post_thumbnail_id( $variation_id );
+						if ( $var_thumb_id ) {
+							wp_delete_attachment( $var_thumb_id, true );
+							delete_post_thumbnail( $variation_id );
+						}
+					} elseif ( ! $overwrite_images ) {
+						// don't overwrite existing
+						continue;
+					}
+				}
+
+				$id = media_sideload_image( $image_url, $product_id, null, 'id' );
+				if ( is_wp_error( $id ) ) {
+					TCGiant_Sync_Logger::warning( sprintf(
+						'Variation image download failed for WC #%d (var #%d): %s — URL: %s',
+						$product_id, $variation_id, $id->get_error_message(), $image_url
+					) );
+					$failed_images[] = $image_entry; // keep the original [url, var_id] pair
+					continue;
+				}
+				set_post_thumbnail( $variation_id, $id );
+				$downloaded_count++;
+				
 			} else {
-				$gallery_ids[] = $id;
+				// Assigning image to the main product.
+				$id = media_sideload_image( $image_url, $product_id, null, 'id' );
+				if ( is_wp_error( $id ) ) {
+					TCGiant_Sync_Logger::warning( sprintf(
+						'Image download failed for WC #%d: %s — URL: %s',
+						$product_id, $id->get_error_message(), $image_url
+					) );
+					$failed_images[] = $image_entry;
+					continue;
+				}
+
+				if ( $needs_thumbnail ) {
+					set_post_thumbnail( $product_id, $id );
+					$needs_thumbnail = false;
+				} else {
+					$gallery_ids[] = $id;
+				}
+				$downloaded_count++;
 			}
 		}
 
 		if ( ! empty( $gallery_ids ) ) {
+			// Ensure unique IDs in case of any weird overlap.
+			$gallery_ids = array_unique( array_filter( $gallery_ids ) );
 			update_post_meta( $product_id, '_product_image_gallery', implode( ',', $gallery_ids ) );
+		}
+
+		// Remove the timeout filter.
+		remove_filter( 'http_request_timeout', $timeout_filter );
+
+		// Update running download count in status meta.
+		$img_status = get_post_meta( $product_id, '_tcgiant_image_status', true );
+		if ( is_array( $img_status ) ) {
+			$img_status['downloaded'] = ( $img_status['downloaded'] ?? 0 ) + $downloaded_count;
+			$img_status['failed'] = ( $img_status['failed'] ?? 0 ) + count( $failed_images );
+			update_post_meta( $product_id, '_tcgiant_image_status', $img_status );
+		}
+
+		// Schedule retry for failed images (one attempt only, after 60s delay).
+		if ( ! empty( $failed_images ) ) {
+			// Check if these are already retries (marked with a __retry flag).
+			$retryable = array();
+			foreach ( $failed_images as $entry ) {
+				$is_retry = false;
+				if ( is_array( $entry ) && isset( $entry['__retry'] ) ) {
+					$is_retry = true;
+				}
+				if ( ! $is_retry ) {
+					// Mark as retry so we don't retry infinitely.
+					if ( is_array( $entry ) ) {
+						$entry['__retry'] = true;
+					} else {
+						$entry = array( $entry, false, '__retry' => true );
+					}
+					$retryable[] = $entry;
+				}
+			}
+
+			if ( ! empty( $retryable ) ) {
+				TCGiant_Sync_Logger::log( sprintf(
+					'Images: WC #%d — %d image(s) failed. Scheduling 1 retry in 60s.',
+					$product_id, count( $retryable )
+				), 'warning' );
+				as_schedule_single_action( time() + 60, 'tcgiant_sync_download_images', array(
+					'product_id'     => $product_id,
+					'image_urls'     => $retryable,
+					'is_first_batch' => false,
+				), 'tcgiant_sync_group' );
+			}
+		}
+
+		// If there are more images to process, schedule the next batch.
+		if ( ! empty( $remaining_images ) ) {
+			as_enqueue_async_action( 'tcgiant_sync_download_images', array(
+				'product_id'     => $product_id,
+				'image_urls'     => $remaining_images,
+				'is_first_batch' => false,
+			), 'tcgiant_sync_group' );
+		} elseif ( empty( $failed_images ) ) {
+			// Mark completion in status meta.
+			$img_status = get_post_meta( $product_id, '_tcgiant_image_status', true );
+			if ( is_array( $img_status ) ) {
+				$img_status['completed_at'] = current_time( 'mysql' );
+				$img_status['status'] = ( $img_status['failed'] ?? 0 ) > 0 ? 'partial' : 'complete';
+				update_post_meta( $product_id, '_tcgiant_image_status', $img_status );
+			}
+
+			TCGiant_Sync_Logger::log( sprintf(
+				'Images: WC #%d — all images downloaded successfully.',
+				$product_id
+			), 'success' );
 		}
 	}
 }

@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.7.1
+Stable tag: 1.7.2
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -91,6 +91,19 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 1.7.2 - 2026-07-18 =
+* Fix: Resolved image import timeouts for products with many variants. Image downloads are now processed in chunked batches (2 at a time) to prevent PHP execution limits from silently killing the process.
+* Feature: Variation-specific images from eBay are now imported and assigned to the correct WooCommerce variation thumbnail.
+* Feature: New "Sync Specific Items" tool on the Import page — enter eBay Item IDs to sync individual products without running a full catalog scan.
+* Feature: New "Re-sync images only" checkbox — re-download images for specific products without touching titles, prices, or stock.
+* Feature: Auto-retry for failed image downloads — transient network failures get a single automatic retry after 60 seconds.
+* Improvement: Image download error logs now include the product ID, variation ID, and the full URL that failed for easier debugging.
+* Improvement: Each product now tracks image sync status (`_tcgiant_image_status` meta) with expected vs actual download counts to detect partial imports.
+* Improvement: HTTP timeout for image downloads capped at 30s (down from WordPress default 300s) to prevent queue stalls on slow connections.
+* Improvement: Memory limit bumped during image processing to handle large eBay photos on shared hosting.
+* Fix: Emergency Stop now also cancels pending image download jobs (previously orphaned chunked chains would keep running).
+* Fix: Starting a new full/delta sync now clears any leftover image download jobs from previous syncs.
 
 = 1.7.1 - 2026-07-17 =
 * Fix: Export <Country>, <Currency>, and <Site> XML tags now use marketplace-derived values instead of hardcoded US/USD.
@@ -291,6 +304,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 1.7.2 =
+Critical fix for sellers with multi-variant products: image imports were silently timing out for products with many variant photos. Images are now downloaded in safe chunks with automatic retry on failure. Also adds "Sync Specific Items" and "Re-sync Images Only" tools for fine-grained control over what gets updated. Recommended for all users, especially international sellers.
 
 = 1.7.0 =
 Major UX rework for Push to eBay! The old "Grading & Condition" and "TCGiant Sync" tabs are merged into a single "eBay Listing" tab with a guided 4-step wizard. New features include category auto-suggestion from your product title, visual card selectors, a pre-push readiness checklist, and smart validation that catches errors before they hit eBay. Plus performance improvements with smarter AJAX polling and transient caching.
