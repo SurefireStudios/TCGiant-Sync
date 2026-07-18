@@ -3,7 +3,7 @@
  * Plugin Name: TCGiant Sync
  * Plugin URI:  https://github.com/SurefireStudios/TCGiant-Sync
  * Description: Sync your eBay store to WooCommerce — import listings, images, and inventory with automated stock updates.
- * Version:     1.7.2
+ * Version:     1.7.3
  * Author:      TCGiant Team
  * Author URI:  https://surefirestudios.io
  * Text Domain: tcgiant-sync
@@ -24,7 +24,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define constants.
-define('TCGIANT_SYNC_VERSION', '1.7.2');
+define('TCGIANT_SYNC_VERSION', '1.7.3');
 define('TCGIANT_SYNC_FILE', __FILE__);
 define('TCGIANT_SYNC_PATH', plugin_dir_path(__FILE__));
 define('TCGIANT_SYNC_URL', plugin_dir_url(__FILE__));

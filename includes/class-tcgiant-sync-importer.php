@@ -524,7 +524,8 @@ class TCGiant_Sync_Importer {
 						}
 					}
 
-					if ( ! empty( $product_data['images'] ) ) {
+					// URL-hash dedup: skip if images haven't changed since last sync.
+					if ( ! empty( $product_data['images'] ) && $this->should_download_images( $product_id, $product_data['images'] ) ) {
 						as_enqueue_async_action( 'tcgiant_sync_download_images', array(
 							'product_id'     => $product_id,
 							'image_urls'     => $product_data['images'],
@@ -802,7 +803,8 @@ class TCGiant_Sync_Importer {
 						}
 
 						// Schedule image downloads as async to avoid timeout.
-						if ( ! empty( $product_data['images'] ) ) {
+						// URL-hash dedup: skip if images haven't changed since last sync.
+						if ( ! empty( $product_data['images'] ) && $this->should_download_images( $product_id, $product_data['images'] ) ) {
 							as_enqueue_async_action( 'tcgiant_sync_download_images', array(
 								'product_id'     => $product_id,
 								'image_urls'     => $product_data['images'],
@@ -1097,7 +1099,8 @@ class TCGiant_Sync_Importer {
 				}
 
 				// Schedule image downloads as async to avoid blocking the Action Scheduler queue.
-				if ( ! empty( $product_data['images'] ) ) {
+				// URL-hash dedup: skip if images haven't changed since last sync.
+				if ( ! empty( $product_data['images'] ) && $this->should_download_images( $product_id, $product_data['images'] ) ) {
 					as_enqueue_async_action( 'tcgiant_sync_download_images', array(
 						'product_id'     => $product_id,
 						'image_urls'     => $product_data['images'],
@@ -1262,10 +1265,139 @@ class TCGiant_Sync_Importer {
 	}
 
 	/**
+	 * Check if image downloads are needed by comparing URL hashes.
+	 *
+	 * Computes an MD5 hash of the incoming image URL list and compares it
+	 * against the stored hash from the last successful download. If the URLs
+	 * haven't changed and the product already has a featured image, the
+	 * download is skipped entirely — saving bandwidth and Action Scheduler
+	 * capacity on large stores (5,000+ items).
+	 *
+	 * @param int   $product_id WooCommerce Product ID.
+	 * @param array $image_urls List of image URLs (strings or [url, variation_id] arrays).
+	 * @return bool True if images should be downloaded, false if unchanged.
+	 */
+	private function should_download_images( $product_id, $image_urls ) {
+		// Extract plain URLs from the mixed array for hashing.
+		$plain_urls = array();
+		foreach ( $image_urls as $entry ) {
+			if ( is_array( $entry ) ) {
+				$plain_urls[] = $entry[0] ?? '';
+			} else {
+				$plain_urls[] = $entry;
+			}
+		}
+		$plain_urls = array_filter( $plain_urls );
+		if ( empty( $plain_urls ) ) {
+			return false;
+		}
+
+		sort( $plain_urls );
+		$new_hash = md5( implode( '|', $plain_urls ) );
+
+		$stored_hash = get_post_meta( $product_id, '_tcgiant_image_urls_hash', true );
+
+		// If hash matches and product already has a featured image, skip download.
+		if ( $new_hash === $stored_hash && has_post_thumbnail( $product_id ) ) {
+			return false;
+		}
+
+		// Store the new hash for future comparisons.
+		update_post_meta( $product_id, '_tcgiant_image_urls_hash', $new_hash );
+		return true;
+	}
+
+	/**
+	 * Check if an image download failure is permanent (should not be retried).
+	 *
+	 * Permanent failures include HTTP 404/403/410 (expired or deleted eBay images)
+	 * and empty file responses. Transient failures (timeouts, 5xx, DNS) are worth
+	 * retrying after a delay.
+	 *
+	 * @param WP_Error $wp_error The error returned by media_sideload_image.
+	 * @return bool True if the failure is permanent and should not be retried.
+	 */
+	private function is_permanent_image_failure( $wp_error ) {
+		$message = strtolower( $wp_error->get_error_message() );
+		$code    = $wp_error->get_error_code();
+
+		// HTTP status code patterns indicating permanent failures.
+		$permanent_patterns = array(
+			'404',
+			'403',
+			'410',
+			'not found',
+			'forbidden',
+			'gone',
+			'file is empty',
+			'invalid url',
+			'invalid image',
+			'not an accepted',
+			'could not calculate',
+		);
+
+		foreach ( $permanent_patterns as $pattern ) {
+			if ( strpos( $message, $pattern ) !== false ) {
+				return true;
+			}
+		}
+
+		// Also check error code for 'http_request_failed' with permanent status.
+		if ( 'http_request_failed' === $code ) {
+			// Check for status code in message.
+			if ( preg_match( '/\b(404|403|410)\b/', $message ) ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Find an existing WordPress attachment by its eBay source URL.
+	 *
+	 * Each sideloaded image stores its original eBay URL in `_tcgiant_source_url`
+	 * attachment meta. This allows us to skip re-downloading images that are
+	 * already attached to the product.
+	 *
+	 * @param int    $product_id The WooCommerce product ID.
+	 * @param string $image_url  The eBay image URL to search for.
+	 * @return int|false Attachment ID if found, false otherwise.
+	 */
+	private function find_existing_attachment_by_url( $product_id, $image_url ) {
+		// Normalize the URL for comparison (strip query strings from eBay CDN URLs).
+		$normalized = preg_replace( '/\?.*$/', '', $image_url );
+
+		global $wpdb;
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$attachment_id = $wpdb->get_var( $wpdb->prepare(
+			"SELECT pm.post_id
+			FROM {$wpdb->postmeta} pm
+			JOIN {$wpdb->posts} p ON p.ID = pm.post_id
+			WHERE pm.meta_key = '_tcgiant_source_url'
+			AND pm.meta_value = %s
+			AND p.post_parent = %d
+			AND p.post_type = 'attachment'
+			LIMIT 1",
+			$normalized,
+			$product_id
+		) );
+
+		return $attachment_id ? (int) $attachment_id : false;
+	}
+
+	/**
 	 * Download and attach images to product (Chunked).
 	 *
 	 * Images are processed in small batches (2 at a time) to prevent PHP
-	 * execution timeouts. Failed images get a single automatic retry.
+	 * execution timeouts. Failed images get a single automatic retry
+	 * (transient failures only — permanent 404/403 failures are not retried).
+	 *
+	 * Large store optimizations (v1.7.3):
+	 * - Per-image source URL dedup: skips images already attached to the product.
+	 * - Smart failure classification: only retries transient network failures.
+	 * - Smart clearing: only removes attachments whose source URL is no longer in
+	 *   the incoming set (instead of deleting all existing images).
 	 *
 	 * @param int   $product_id WooCommerce Product ID.
 	 * @param array $images     List of eBay image URLs (strings or [url, variation_id] arrays).
@@ -1309,7 +1441,9 @@ class TCGiant_Sync_Importer {
 				'expected_main'      => $main_count,
 				'expected_variation' => $var_count,
 				'downloaded'         => 0,
+				'skipped_existing'   => 0,
 				'failed'             => 0,
+				'failed_permanent'   => 0,
 				'started_at'         => current_time( 'mysql' ),
 				'completed_at'       => '',
 			) );
@@ -1340,21 +1474,44 @@ class TCGiant_Sync_Importer {
 				return;
 			}
 
-			// Delete existing thumbnail.
-			$thumb_id = get_post_thumbnail_id( $product_id );
-			if ( $thumb_id ) {
-				wp_delete_attachment( $thumb_id, true );
-				delete_post_thumbnail( $product_id );
+			// Smart clearing: only delete attachments whose source URL is NOT in
+			// the incoming image set. This prevents re-downloading unchanged images.
+			$incoming_urls = array();
+			foreach ( $images as $entry ) {
+				$url = is_array( $entry ) ? ( $entry[0] ?? '' ) : $entry;
+				if ( $url ) {
+					$incoming_urls[] = preg_replace( '/\?.*$/', '', $url );
+				}
 			}
 
-			// Delete existing gallery images.
+			// Delete thumbnail if its source URL is no longer in the incoming set.
+			$thumb_id = get_post_thumbnail_id( $product_id );
+			if ( $thumb_id ) {
+				$thumb_source = get_post_meta( $thumb_id, '_tcgiant_source_url', true );
+				if ( empty( $thumb_source ) || ! in_array( $thumb_source, $incoming_urls, true ) ) {
+					wp_delete_attachment( $thumb_id, true );
+					delete_post_thumbnail( $product_id );
+				}
+			}
+
+			// Delete gallery images whose source URL is no longer in the incoming set.
 			$gallery = get_post_meta( $product_id, '_product_image_gallery', true );
 			if ( ! empty( $gallery ) ) {
-				$gallery_ids = explode( ',', $gallery );
-				foreach ( $gallery_ids as $g_id ) {
-					wp_delete_attachment( $g_id, true );
+				$gallery_ids_existing = explode( ',', $gallery );
+				$keep_ids = array();
+				foreach ( $gallery_ids_existing as $g_id ) {
+					$g_source = get_post_meta( (int) $g_id, '_tcgiant_source_url', true );
+					if ( ! empty( $g_source ) && in_array( $g_source, $incoming_urls, true ) ) {
+						$keep_ids[] = $g_id;
+					} else {
+						wp_delete_attachment( (int) $g_id, true );
+					}
 				}
-				delete_post_meta( $product_id, '_product_image_gallery' );
+				if ( ! empty( $keep_ids ) ) {
+					update_post_meta( $product_id, '_product_image_gallery', implode( ',', $keep_ids ) );
+				} else {
+					delete_post_meta( $product_id, '_product_image_gallery' );
+				}
 			}
 		}
 
@@ -1371,18 +1528,43 @@ class TCGiant_Sync_Importer {
 		// Keep track if we need to set the featured image (only if the product doesn't have one).
 		$needs_thumbnail = ! has_post_thumbnail( $product_id );
 		$failed_images = array();
+		$permanent_failures = 0;
 		$downloaded_count = 0;
+		$skipped_existing = 0;
 
 		foreach ( $current_batch as $image_entry ) {
 			// variation images are passed as an array [url, variation_id].
 			$variation_id = false;
 			$image_url = $image_entry;
 			if ( is_array( $image_entry ) ) {
+				// Filter out the __retry flag when reading entries.
 				$variation_id = $image_entry[1] ?? false;
 				$image_url    = $image_entry[0] ?? '';
+				if ( '__retry' === $variation_id ) {
+					$variation_id = false;
+				}
 			}
 
 			if ( empty( $image_url ) ) continue;
+
+			// Per-image source URL dedup: check if this exact image is already attached.
+			$target_id = $variation_id ? $variation_id : $product_id;
+			$existing_attachment = $this->find_existing_attachment_by_url( $product_id, $image_url );
+
+			if ( $existing_attachment ) {
+				// Image already downloaded — reuse it.
+				if ( $variation_id ) {
+					if ( ! has_post_thumbnail( $variation_id ) ) {
+						set_post_thumbnail( $variation_id, $existing_attachment );
+					}
+				} elseif ( $needs_thumbnail ) {
+					set_post_thumbnail( $product_id, $existing_attachment );
+					$needs_thumbnail = false;
+				}
+				// No need to add to gallery — it's already there from the previous sync.
+				$skipped_existing++;
+				continue;
+			}
 
 			// Assigning image to a variation.
 			if ( $variation_id ) {
@@ -1406,13 +1588,23 @@ class TCGiant_Sync_Importer {
 
 				$id = media_sideload_image( $image_url, $product_id, null, 'id' );
 				if ( is_wp_error( $id ) ) {
-					TCGiant_Sync_Logger::warning( sprintf(
-						'Variation image download failed for WC #%d (var #%d): %s — URL: %s',
-						$product_id, $variation_id, $id->get_error_message(), $image_url
-					) );
-					$failed_images[] = $image_entry; // keep the original [url, var_id] pair
+					if ( $this->is_permanent_image_failure( $id ) ) {
+						TCGiant_Sync_Logger::warning( sprintf(
+							'[PERMANENT] Variation image failed for WC #%d (var #%d): %s — URL: %s — will not retry.',
+							$product_id, $variation_id, $id->get_error_message(), $image_url
+						) );
+						$permanent_failures++;
+					} else {
+						TCGiant_Sync_Logger::warning( sprintf(
+							'Variation image download failed for WC #%d (var #%d): %s — URL: %s',
+							$product_id, $variation_id, $id->get_error_message(), $image_url
+						) );
+						$failed_images[] = $image_entry; // keep the original [url, var_id] pair
+					}
 					continue;
 				}
+				// Store source URL on the attachment for future dedup.
+				update_post_meta( $id, '_tcgiant_source_url', preg_replace( '/\?.*$/', '', $image_url ) );
 				set_post_thumbnail( $variation_id, $id );
 				$downloaded_count++;
 				
@@ -1420,13 +1612,24 @@ class TCGiant_Sync_Importer {
 				// Assigning image to the main product.
 				$id = media_sideload_image( $image_url, $product_id, null, 'id' );
 				if ( is_wp_error( $id ) ) {
-					TCGiant_Sync_Logger::warning( sprintf(
-						'Image download failed for WC #%d: %s — URL: %s',
-						$product_id, $id->get_error_message(), $image_url
-					) );
-					$failed_images[] = $image_entry;
+					if ( $this->is_permanent_image_failure( $id ) ) {
+						TCGiant_Sync_Logger::warning( sprintf(
+							'[PERMANENT] Image failed for WC #%d: %s — URL: %s — will not retry.',
+							$product_id, $id->get_error_message(), $image_url
+						) );
+						$permanent_failures++;
+					} else {
+						TCGiant_Sync_Logger::warning( sprintf(
+							'Image download failed for WC #%d: %s — URL: %s',
+							$product_id, $id->get_error_message(), $image_url
+						) );
+						$failed_images[] = $image_entry;
+					}
 					continue;
 				}
+
+				// Store source URL on the attachment for future dedup.
+				update_post_meta( $id, '_tcgiant_source_url', preg_replace( '/\?.*$/', '', $image_url ) );
 
 				if ( $needs_thumbnail ) {
 					set_post_thumbnail( $product_id, $id );
@@ -1451,11 +1654,14 @@ class TCGiant_Sync_Importer {
 		$img_status = get_post_meta( $product_id, '_tcgiant_image_status', true );
 		if ( is_array( $img_status ) ) {
 			$img_status['downloaded'] = ( $img_status['downloaded'] ?? 0 ) + $downloaded_count;
+			$img_status['skipped_existing'] = ( $img_status['skipped_existing'] ?? 0 ) + $skipped_existing;
 			$img_status['failed'] = ( $img_status['failed'] ?? 0 ) + count( $failed_images );
+			$img_status['failed_permanent'] = ( $img_status['failed_permanent'] ?? 0 ) + $permanent_failures;
 			update_post_meta( $product_id, '_tcgiant_image_status', $img_status );
 		}
 
-		// Schedule retry for failed images (one attempt only, after 60s delay).
+		// Schedule retry for transient failures only (one attempt, after 60s delay).
+		// Permanent failures (404/403/410) are NOT retried.
 		if ( ! empty( $failed_images ) ) {
 			// Check if these are already retries (marked with a __retry flag).
 			$retryable = array();
@@ -1477,7 +1683,7 @@ class TCGiant_Sync_Importer {
 
 			if ( ! empty( $retryable ) ) {
 				TCGiant_Sync_Logger::log( sprintf(
-					'Images: WC #%d — %d image(s) failed. Scheduling 1 retry in 60s.',
+					'Images: WC #%d — %d transient failure(s). Scheduling 1 retry in 60s.',
 					$product_id, count( $retryable )
 				), 'warning' );
 				as_schedule_single_action( time() + 60, 'tcgiant_sync_download_images', array(
@@ -1500,13 +1706,16 @@ class TCGiant_Sync_Importer {
 			$img_status = get_post_meta( $product_id, '_tcgiant_image_status', true );
 			if ( is_array( $img_status ) ) {
 				$img_status['completed_at'] = current_time( 'mysql' );
-				$img_status['status'] = ( $img_status['failed'] ?? 0 ) > 0 ? 'partial' : 'complete';
+				$total_failures = ( $img_status['failed'] ?? 0 ) + ( $img_status['failed_permanent'] ?? 0 );
+				$img_status['status'] = $total_failures > 0 ? 'partial' : 'complete';
 				update_post_meta( $product_id, '_tcgiant_image_status', $img_status );
 			}
 
+			$skipped_total = ( $img_status['skipped_existing'] ?? 0 );
+			$skip_label = $skipped_total > 0 ? sprintf( ' (%d reused)', $skipped_total ) : '';
 			TCGiant_Sync_Logger::log( sprintf(
-				'Images: WC #%d — all images downloaded successfully.',
-				$product_id
+				'Images: WC #%d — all images processed successfully%s.',
+				$product_id, $skip_label
 			), 'success' );
 		}
 	}

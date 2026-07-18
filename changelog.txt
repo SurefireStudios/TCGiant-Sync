@@ -1,5 +1,13 @@
 *** TCGiant Sync Changelog ***
 
+2026-07-18 - version 1.7.3
+- Performance: URL-hash dedup — on re-syncs, image URLs are hashed and compared against the previous sync. If images haven't changed, the entire download is skipped. A 7,000-item re-sync where 95% of images are unchanged now skips ~6,650 unnecessary downloads and Action Scheduler jobs.
+- Performance: Per-image source URL dedup — each downloaded image stores its eBay source URL as attachment meta. Before re-downloading, the plugin checks if an attachment with the same source URL already exists and reuses it, avoiding duplicate files and wasted bandwidth.
+- Performance: Smart image clearing — when overwrite_images is enabled, only attachments whose source URL is no longer in the incoming eBay set are deleted. Unchanged images are preserved and reused instead of deleted-then-re-downloaded.
+- Improvement: Smart failure classification — permanent image failures (HTTP 404, 403, 410, expired URLs) are no longer retried. Only transient failures (timeouts, 5xx, DNS) trigger the 60-second auto-retry. Permanent failures are logged with a [PERMANENT] label.
+- Improvement: Image status tracking now includes skipped_existing and failed_permanent counters for better large-store diagnostics.
+- Improvement: Completion log now shows reuse count (e.g., "all images processed successfully (3 reused)").
+
 2026-07-17 - version 1.7.1
 - Fix: Export <Country>, <Currency>, and <Site> XML tags now use marketplace-derived values instead of hardcoded US/USD.
 - Fix: Full sync inline processing now requires ItemSpecifics and PictureDetails before processing inline. Products missing either are routed to GetItem fallback, ensuring attributes and images import reliably.
