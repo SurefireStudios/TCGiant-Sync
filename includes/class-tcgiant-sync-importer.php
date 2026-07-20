@@ -525,7 +525,10 @@ class TCGiant_Sync_Importer {
 					}
 
 					// URL-hash dedup: skip if images haven't changed since last sync.
-					if ( ! empty( $product_data['images'] ) && $this->should_download_images( $product_id, $product_data['images'] ) ) {
+					// When overwrite_images is enabled, always re-download.
+					$settings_for_img = TCGiant_Sync_OAuth::instance()->get_settings();
+					$force_overwrite = ! empty( $settings_for_img['overwrite_images'] );
+					if ( ! empty( $product_data['images'] ) && $this->should_download_images( $product_id, $product_data['images'], $force_overwrite ) ) {
 						as_enqueue_async_action( 'tcgiant_sync_download_images', array(
 							'product_id'     => $product_id,
 							'image_urls'     => $product_data['images'],
@@ -650,7 +653,7 @@ class TCGiant_Sync_Importer {
 		$api = TCGiant_Sync_API::instance();
 		$state_for_mode = self::get_sync_state();
 		$mod_time_from = ( 'delta' === ( $state_for_mode['sync_mode'] ?? 'full' ) ) ? ( $state_for_mode['delta_mod_from'] ?? '' ) : '';
-		$response = $api->get_active_listings( $page_number, 100, $mod_time_from );
+		$response = $api->get_active_listings( $page_number, 200, $mod_time_from );
 
 		// Handle rate limiting: pause and schedule retry instead of aborting.
 		if ( is_wp_error( $response ) && 'rate_limited' === $response->get_error_code() ) {
@@ -804,7 +807,10 @@ class TCGiant_Sync_Importer {
 
 						// Schedule image downloads as async to avoid timeout.
 						// URL-hash dedup: skip if images haven't changed since last sync.
-						if ( ! empty( $product_data['images'] ) && $this->should_download_images( $product_id, $product_data['images'] ) ) {
+						// When overwrite_images is enabled, always re-download.
+						$settings_for_img = TCGiant_Sync_OAuth::instance()->get_settings();
+						$force_overwrite = ! empty( $settings_for_img['overwrite_images'] );
+						if ( ! empty( $product_data['images'] ) && $this->should_download_images( $product_id, $product_data['images'], $force_overwrite ) ) {
 							as_enqueue_async_action( 'tcgiant_sync_download_images', array(
 								'product_id'     => $product_id,
 								'image_urls'     => $product_data['images'],
@@ -1100,7 +1106,10 @@ class TCGiant_Sync_Importer {
 
 				// Schedule image downloads as async to avoid blocking the Action Scheduler queue.
 				// URL-hash dedup: skip if images haven't changed since last sync.
-				if ( ! empty( $product_data['images'] ) && $this->should_download_images( $product_id, $product_data['images'] ) ) {
+				// When overwrite_images is enabled, always re-download.
+				$settings_for_img = TCGiant_Sync_OAuth::instance()->get_settings();
+				$force_overwrite = ! empty( $settings_for_img['overwrite_images'] );
+				if ( ! empty( $product_data['images'] ) && $this->should_download_images( $product_id, $product_data['images'], $force_overwrite ) ) {
 					as_enqueue_async_action( 'tcgiant_sync_download_images', array(
 						'product_id'     => $product_id,
 						'image_urls'     => $product_data['images'],
@@ -1275,9 +1284,10 @@ class TCGiant_Sync_Importer {
 	 *
 	 * @param int   $product_id WooCommerce Product ID.
 	 * @param array $image_urls List of image URLs (strings or [url, variation_id] arrays).
+	 * @param bool  $force_overwrite If true, always download images (overwrite_images is enabled).
 	 * @return bool True if images should be downloaded, false if unchanged.
 	 */
-	private function should_download_images( $product_id, $image_urls ) {
+	private function should_download_images( $product_id, $image_urls, $force_overwrite = false ) {
 		// Extract plain URLs from the mixed array for hashing.
 		$plain_urls = array();
 		foreach ( $image_urls as $entry ) {
@@ -1294,6 +1304,13 @@ class TCGiant_Sync_Importer {
 
 		sort( $plain_urls );
 		$new_hash = md5( implode( '|', $plain_urls ) );
+
+		// When overwrite is enabled, always re-download regardless of hash match.
+		// Store the hash so future non-overwrite syncs can still benefit from dedup.
+		if ( $force_overwrite ) {
+			update_post_meta( $product_id, '_tcgiant_image_urls_hash', $new_hash );
+			return true;
+		}
 
 		$stored_hash = get_post_meta( $product_id, '_tcgiant_image_urls_hash', true );
 
@@ -1415,8 +1432,9 @@ class TCGiant_Sync_Importer {
 		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
 		$overwrite_images = ! empty( $settings['overwrite_images'] );
 
-		// Process up to 2 images per batch to prevent PHP timeouts.
-		$batch_size = 2;
+		// Process up to 5 images per batch to prevent PHP timeouts.
+		// Bumped from 2 to reduce Action Scheduler job count and gallery state fragmentation.
+		$batch_size = 5;
 		$current_batch = array_slice( $images, 0, $batch_size );
 		$remaining_images = array_slice( $images, $batch_size );
 
@@ -1516,6 +1534,15 @@ class TCGiant_Sync_Importer {
 		}
 
 		$gallery_ids = array();
+
+		// After smart clearing, initialize gallery_ids from the retained gallery
+		// so that preserved images aren't overwritten when the first batch saves.
+		if ( $is_first_batch && $overwrite_images ) {
+			$retained_gallery = get_post_meta( $product_id, '_product_image_gallery', true );
+			if ( ! empty( $retained_gallery ) ) {
+				$gallery_ids = array_filter( explode( ',', $retained_gallery ) );
+			}
+		}
 		
 		// If it's not the first batch, we might need to append to an existing gallery.
 		if ( ! $is_first_batch ) {

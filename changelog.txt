@@ -1,5 +1,12 @@
 *** TCGiant Sync Changelog ***
 
+2026-07-20 - version 1.7.4
+- Fix: Image overwrite now works correctly on re-syncs. When "Overwrite Images" is enabled, the URL-hash dedup optimization is bypassed so images are always re-downloaded from eBay, even if the URLs haven't changed.
+- Fix: Gallery images are no longer lost during re-syncs with overwrite enabled. Preserved images from smart clearing are now correctly merged with newly downloaded images instead of being silently discarded.
+- Fix: Full syncs now capture all active Good 'Til Cancelled (GTC) listings. The EndTime scan window was expanded from 120 days to 10 years, resolving an issue where stores with 13,000+ items would only import ~1,200 items.
+- Performance: Increased GetSellerList page size from 100 to 200 items per page (eBay's maximum with DetailLevel=ReturnAll), halving the number of API calls needed for large store imports.
+- Performance: Image download batch size increased from 2 to 5 per Action Scheduler job, reducing job count and gallery state fragmentation.
+
 2026-07-18 - version 1.7.3
 - Performance: URL-hash dedup — on re-syncs, image URLs are hashed and compared against the previous sync. If images haven't changed, the entire download is skipped. A 7,000-item re-sync where 95% of images are unchanged now skips ~6,650 unnecessary downloads and Action Scheduler jobs.
 - Performance: Per-image source URL dedup — each downloaded image stores its eBay source URL as attachment meta. Before re-downloading, the plugin checks if an attachment with the same source URL already exists and reuses it, avoiding duplicate files and wasted bandwidth.

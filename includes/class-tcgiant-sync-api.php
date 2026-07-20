@@ -263,7 +263,7 @@ class TCGiant_Sync_API {
 		} else {
 			// Full scan mode: all active listings.
 			$end_from = gmdate( 'Y-m-d\TH:i:s.000\Z' );
-			$end_to   = gmdate( 'Y-m-d\TH:i:s.000\Z', strtotime( '+120 days' ) );
+			$end_to   = gmdate( 'Y-m-d\TH:i:s.000\Z', strtotime( '+3650 days' ) );
 			$xml = '
 <EndTimeFrom>' . $end_from . '</EndTimeFrom>
 <EndTimeTo>' . $end_to . '</EndTimeTo>';
