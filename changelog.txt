@@ -1,5 +1,12 @@
 *** TCGiant Sync Changelog ***
 
+2026-07-21 - version 1.7.5
+- Improvement: eBay daily API call limit updated from 5,000 to 50,000 following Application Growth Check approval.
+- Feature: Centralized API usage tracking — each site now reports its daily API call count to the relay server during token refreshes, enabling global usage monitoring across all connected installations.
+- Feature: Dashboard now displays an "API Calls Today" stat card with a color-coded progress bar (green/amber/red), per-site API usage in the sites table, and an "API Usage vs. Capacity" chart.
+- Improvement: Budget exhaustion checks now use the relay-provided global budget (all client sites combined) before falling back to local tracking, preventing individual sites from unknowingly exhausting the shared quota.
+- Improvement: Relay server is now the single source of truth for the daily API limit, automatically informing each client of remaining capacity on every token refresh.
+
 2026-07-20 - version 1.7.4
 - Fix: Image overwrite now works correctly on re-syncs. When "Overwrite Images" is enabled, the URL-hash dedup optimization is bypassed so images are always re-downloaded from eBay, even if the URLs haven't changed.
 - Fix: Gallery images are no longer lost during re-syncs with overwrite enabled. Preserved images from smart clearing are now correctly merged with newly downloaded images instead of being silently discarded.

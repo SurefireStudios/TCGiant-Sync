@@ -131,10 +131,16 @@ class TCGiant_Sync_OAuth {
 			return false;
 		}
 
+		// Include the site's API call count so the relay can compute global budget.
+		$api = TCGiant_Sync_API::instance();
+
 		$response = wp_remote_post( 'https://tcgiant.com/syncconnect/relay.php', array(
-			'body'    => array(
-				'action'        => 'refresh',
-				'refresh_token' => $settings['refresh_token'],
+			'body' => array(
+				'action'          => 'refresh',
+				'refresh_token'   => $settings['refresh_token'],
+				'site_url'        => get_site_url(),
+				'api_calls_today' => $api->get_daily_call_count(),
+				'api_calls_date'  => gmdate( 'Y-m-d' ),
 			),
 		) );
 
@@ -149,6 +155,18 @@ class TCGiant_Sync_OAuth {
 			$settings['access_token'] = $body['access_token'];
 			$settings['token_expiry'] = time() + (int) $body['expires_in'];
 			update_option( 'tcgiant_sync_ebay_settings', $settings );
+
+			// Store the relay-provided global budget so the API class can use it.
+			if ( isset( $body['remaining_budget'] ) ) {
+				$date_key = gmdate( 'Y-m-d' );
+				set_transient( 'tcgiant_relay_budget_' . $date_key, array(
+					'remaining'    => (int) $body['remaining_budget'],
+					'global_calls' => (int) ( $body['global_api_calls'] ?? 0 ),
+					'daily_limit'  => (int) ( $body['daily_limit'] ?? 50000 ),
+					'updated_at'   => time(),
+				), DAY_IN_SECONDS );
+			}
+
 			return $body['access_token'];
 		}
 

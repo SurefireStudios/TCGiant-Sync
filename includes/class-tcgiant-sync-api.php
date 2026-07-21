@@ -28,6 +28,17 @@ class TCGiant_Sync_API {
 	const BASE_URL_PRODUCTION = 'https://api.ebay.com/';
 
 	/**
+	 * Default daily Trading API call limit.
+	 *
+	 * eBay approved our Application Growth Check on 2026-07-21, raising
+	 * the Trading API limit from 5K to 50K calls/day for our production
+	 * AppID. We use 80% of this as a soft ceiling so that manual
+	 * operations and delta syncs still have room.
+	 */
+	const DAILY_CALL_LIMIT = 50000;
+	const DAILY_CALL_SOFT_CEILING = 0.80;
+
+	/**
 	 * Supported Marketplaces.
 	 */
 	const MARKETPLACES = array(
@@ -134,6 +145,17 @@ class TCGiant_Sync_API {
 	 * @param string $xml_body  The inner XML body.
 	 */
 	public function trading_api_request( $call_name, $xml_body ) {
+		// Pre-flight: check if we're approaching the daily call limit.
+		if ( $this->is_daily_budget_exhausted() ) {
+			$used  = $this->get_daily_call_count();
+			$limit = (int) ( self::DAILY_CALL_LIMIT * self::DAILY_CALL_SOFT_CEILING );
+			TCGiant_Sync_Logger::log( sprintf(
+				'eBay daily API budget reached (%d/%d calls used today, %d%% ceiling). Blocking %s to preserve remaining quota.',
+				$used, self::DAILY_CALL_LIMIT, (int) ( self::DAILY_CALL_SOFT_CEILING * 100 ), $call_name
+			), 'warning' );
+			return new WP_Error( 'rate_limited', 'Daily API call budget exhausted. Will resume tomorrow.', array( 'daily_budget' => true ) );
+		}
+
 		$token = TCGiant_Sync_OAuth::instance()->get_access_token();
 
 		if ( ! $token ) {
@@ -164,6 +186,9 @@ class TCGiant_Sync_API {
 		);
 
 		$response = wp_remote_request( $url, $args );
+
+		// Track the call regardless of outcome — eBay counts it either way.
+		$this->increment_daily_call_count();
 
 		if ( is_wp_error( $response ) ) {
 			TCGiant_Sync_Logger::error( 'eBay Trading API Request Failed: ' . $response->get_error_message() );
@@ -229,7 +254,11 @@ class TCGiant_Sync_API {
 			}
 
 			if ( $is_rate_limited ) {
-				TCGiant_Sync_Logger::log( sprintf( 'eBay API rate limit reached during %s. Will retry later.', $call_name ), 'warning' );
+				$daily_count = $this->get_daily_call_count();
+				TCGiant_Sync_Logger::log( sprintf(
+					'eBay API rate limit reached during %s (%d calls today). Will retry later.',
+					$call_name, $daily_count
+				), 'warning' );
 				return new WP_Error( 'rate_limited', is_string( $error_msg ) ? $error_msg : 'API call limit exceeded', $array );
 			}
 
@@ -238,6 +267,95 @@ class TCGiant_Sync_API {
 		}
 
 		return $array;
+	}
+
+	/**
+	 * Get the number of Trading API calls made today.
+	 *
+	 * @return int Number of calls made today.
+	 */
+	public function get_daily_call_count() {
+		$key = 'tcgiant_api_calls_' . gmdate( 'Y-m-d' );
+		return (int) get_transient( $key );
+	}
+
+	/**
+	 * Increment the daily Trading API call counter.
+	 */
+	private function increment_daily_call_count() {
+		$key   = 'tcgiant_api_calls_' . gmdate( 'Y-m-d' );
+		$count = (int) get_transient( $key );
+		set_transient( $key, $count + 1, DAY_IN_SECONDS );
+	}
+
+	/**
+	 * Check if the daily API call budget is exhausted.
+	 *
+	 * Checks the relay-provided global budget first (all client sites combined).
+	 * Falls back to local-only tracking when relay data is unavailable.
+	 *
+	 * @return bool True if the daily budget is exhausted.
+	 */
+	public function is_daily_budget_exhausted() {
+		// 1. Check global budget from relay (preferred — covers all client sites).
+		$relay = $this->get_relay_budget();
+		if ( false !== $relay ) {
+			$global_remaining = (int) $relay['remaining'];
+			$global_ceiling   = (int) ( $relay['daily_limit'] * self::DAILY_CALL_SOFT_CEILING );
+			$global_used      = (int) $relay['global_calls'];
+			return $global_used >= $global_ceiling;
+		}
+
+		// 2. Fallback: local-only tracking (no relay data available).
+		$count   = $this->get_daily_call_count();
+		$ceiling = (int) ( self::DAILY_CALL_LIMIT * self::DAILY_CALL_SOFT_CEILING );
+		return $count >= $ceiling;
+	}
+
+	/**
+	 * Get remaining daily API call budget.
+	 *
+	 * Uses relay-provided global data when available, otherwise local estimate.
+	 *
+	 * @return int Estimated remaining calls before soft ceiling.
+	 */
+	public function get_remaining_daily_budget() {
+		// 1. Relay-informed global budget.
+		$relay = $this->get_relay_budget();
+		if ( false !== $relay ) {
+			$ceiling = (int) ( $relay['daily_limit'] * self::DAILY_CALL_SOFT_CEILING );
+			$used    = (int) $relay['global_calls'];
+			return max( 0, $ceiling - $used );
+		}
+
+		// 2. Fallback: local-only.
+		$count   = $this->get_daily_call_count();
+		$ceiling = (int) ( self::DAILY_CALL_LIMIT * self::DAILY_CALL_SOFT_CEILING );
+		return max( 0, $ceiling - $count );
+	}
+
+	/**
+	 * Get the relay-provided global API budget data.
+	 *
+	 * Returns the cached budget array from the last token refresh, or false
+	 * if no relay data is available or the data is older than 2 hours.
+	 *
+	 * @return array|false Budget array with keys: remaining, global_calls, daily_limit, updated_at.
+	 */
+	public function get_relay_budget() {
+		$date_key = gmdate( 'Y-m-d' );
+		$budget   = get_transient( 'tcgiant_relay_budget_' . $date_key );
+
+		if ( ! is_array( $budget ) || empty( $budget['updated_at'] ) ) {
+			return false;
+		}
+
+		// Treat relay data as stale after 2 hours to avoid acting on outdated info.
+		if ( ( time() - (int) $budget['updated_at'] ) > 2 * HOUR_IN_SECONDS ) {
+			return false;
+		}
+
+		return $budget;
 	}
 
 	/**
