@@ -70,6 +70,7 @@ class TCGiant_Sync_Importer {
 			'last_completed'          => '',
 			'last_item_title'         => '',
 			'last_successful_sync_at' => '',           // ISO 8601 UTC timestamp of last successful sync (used as ModTimeFrom for next delta)
+			'rate_limit_retries'      => 0,            // Number of consecutive rate limit hits (for escalating backoff)
 		) );
 	}
 
@@ -133,24 +134,29 @@ class TCGiant_Sync_Importer {
 
 		// Reset sync state.
 		self::update_sync_state( array(
-			'status'          => 'scanning',
-			'sync_mode'       => 'full',
-			'delta_mod_from'  => '',
-			'total_found'     => 0,
-			'total_queued'    => 0,
-			'total_processed' => 0,
-			'total_errors'    => 0,
-			'current_page'    => 1,
-			'total_pages'     => 0,
-			'filter_name'     => $filter_name,
-			'started_at'      => current_time( 'mysql' ),
-			'last_item_title' => '',
+			'status'              => 'scanning',
+			'sync_mode'           => 'full',
+			'delta_mod_from'      => '',
+			'total_found'         => 0,
+			'total_queued'        => 0,
+			'total_processed'     => 0,
+			'total_errors'        => 0,
+			'current_page'        => 1,
+			'total_pages'         => 0,
+			'filter_name'         => $filter_name,
+			'started_at'          => current_time( 'mysql' ),
+			'last_item_title'     => '',
+			'rate_limit_retries'  => 0,
 		) );
 
 		// Clear active IDs list for pruning orphaned items.
 		delete_option( 'tcgiant_sync_active_ids' );
 
-		TCGiant_Sync_Logger::log( sprintf( 'Starting full sync for: %s', $filter_name ) );
+		$api = TCGiant_Sync_API::instance();
+		TCGiant_Sync_Logger::log( sprintf(
+			'Starting full sync for: %s (API budget: %d/%d calls remaining today)',
+			$filter_name, $api->get_remaining_daily_budget(), TCGiant_Sync_API::DAILY_CALL_LIMIT
+		) );
 		as_enqueue_async_action( 'tcgiant_sync_fetch_listings', array( 'page_number' => 1 ), 'tcgiant_sync_group' );
 	}
 
@@ -381,9 +387,18 @@ class TCGiant_Sync_Importer {
 
 		// Handle rate limiting.
 		if ( is_wp_error( $response ) && 'rate_limited' === $response->get_error_code() ) {
-			self::update_sync_state( array( 'status' => 'rate_limited' ) );
-			TCGiant_Sync_Logger::log( 'eBay API rate limit hit during delta events fetch. Auto-retry in 5 min.', 'warning' );
-			as_schedule_single_action( time() + 300, 'tcgiant_sync_fetch_delta_events', array(), 'tcgiant_sync_group' );
+			$state_for_retry = self::get_sync_state();
+			$retries = (int) ( $state_for_retry['rate_limit_retries'] ?? 0 );
+			$retry_delay = $this->get_rate_limit_backoff_delay( $retries );
+			self::update_sync_state( array(
+				'status'             => 'rate_limited',
+				'rate_limit_retries' => $retries + 1,
+			) );
+			TCGiant_Sync_Logger::log( sprintf(
+				'eBay API rate limit hit during delta events fetch (attempt %d). Auto-retry in %d minutes.',
+				$retries + 1, $retry_delay / 60
+			), 'warning' );
+			as_schedule_single_action( time() + $retry_delay, 'tcgiant_sync_fetch_delta_events', array(), 'tcgiant_sync_group' );
 			return;
 		}
 
@@ -577,6 +592,23 @@ class TCGiant_Sync_Importer {
 	}
 
 	/**
+	 * Calculate the retry delay for rate-limited operations using exponential backoff.
+	 *
+	 * Starts at 15 minutes and doubles on each consecutive rate limit hit,
+	 * capped at 2 hours. This prevents burning through the daily API budget
+	 * when eBay is actively throttling the account.
+	 *
+	 * @param int $retry_count Number of consecutive rate limit retries so far.
+	 * @return int Delay in seconds before the next retry.
+	 */
+	private function get_rate_limit_backoff_delay( $retry_count ) {
+		$base_delay = 900;  // 15 minutes
+		$max_delay  = 7200; // 2 hours
+		$delay = $base_delay * pow( 2, min( $retry_count, 4 ) );
+		return min( $delay, $max_delay );
+	}
+
+	/**
 	 * Resume a sync that was paused due to API rate limiting.
 	 *
 	 * Unlike start_full_sync(), this preserves existing totals and continues
@@ -606,6 +638,9 @@ class TCGiant_Sync_Importer {
 
 		$resume_page = max( 1, (int) $state['current_page'] );
 		$total_pages = (int) $state['total_pages'];
+
+		// Reset backoff counter on manual resume.
+		self::update_sync_state( array( 'rate_limit_retries' => 0 ) );
 
 		// If we still have pages to scan, resume scanning.
 		if ( $total_pages === 0 || $resume_page <= $total_pages ) {
@@ -646,8 +681,9 @@ class TCGiant_Sync_Importer {
 	 */
 	public function fetch_listings_page( $page_number ) {
 		self::update_sync_state( array(
-			'status'       => 'scanning',
-			'current_page' => $page_number,
+			'status'              => 'scanning',
+			'current_page'        => $page_number,
+			'rate_limit_retries'  => 0, // Reset backoff on successful page fetch.
 		) );
 
 		$api = TCGiant_Sync_API::instance();
@@ -655,16 +691,22 @@ class TCGiant_Sync_Importer {
 		$mod_time_from = ( 'delta' === ( $state_for_mode['sync_mode'] ?? 'full' ) ) ? ( $state_for_mode['delta_mod_from'] ?? '' ) : '';
 		$response = $api->get_active_listings( $page_number, 200, $mod_time_from );
 
-		// Handle rate limiting: pause and schedule retry instead of aborting.
+		// Handle rate limiting: pause and schedule retry with escalating backoff.
 		if ( is_wp_error( $response ) && 'rate_limited' === $response->get_error_code() ) {
-			$retry_delay = 300; // 5 minutes
+			$state_for_retry = self::get_sync_state();
+			$retries = (int) ( $state_for_retry['rate_limit_retries'] ?? 0 );
+			$retry_delay = $this->get_rate_limit_backoff_delay( $retries );
 			self::update_sync_state( array(
-				'status'       => 'rate_limited',
-				'current_page' => $page_number, // preserve the page we failed on
+				'status'             => 'rate_limited',
+				'current_page'       => $page_number, // preserve the page we failed on
+				'rate_limit_retries' => $retries + 1,
 			) );
+			$api_instance = TCGiant_Sync_API::instance();
 			TCGiant_Sync_Logger::log( sprintf(
-				'eBay API rate limit hit on page %d. Pausing scan. Auto-retry scheduled in %d minutes. You can also click "Resume Import" later.',
+				'eBay API rate limit hit on page %d (attempt %d, %d API calls today). Pausing scan. Auto-retry in %d minutes. You can also click "Resume Import" later.',
 				$page_number,
+				$retries + 1,
+				$api_instance->get_daily_call_count(),
 				$retry_delay / 60
 			), 'warning' );
 			as_schedule_single_action( time() + $retry_delay, 'tcgiant_sync_fetch_listings', array( 'page_number' => $page_number ), 'tcgiant_sync_group' );
@@ -840,7 +882,8 @@ class TCGiant_Sync_Importer {
 				}
 			} else {
 				// Queue for GetItem fallback — critical data is missing from GetSellerList response.
-				$delay = 1 * $queued_count;
+				// 3s stagger per item to avoid burst-firing dozens of GetItem calls.
+				$delay = 3 * $queued_count;
 				as_schedule_single_action( time() + $delay, 'tcgiant_sync_process_item_import', array( 'item_id' => $item_id ), 'tcgiant_sync_group' );
 				$queued_count++;
 			}
@@ -882,9 +925,13 @@ class TCGiant_Sync_Importer {
 			) );
 		}
 
-		// Schedule next page — minimal delay since inline processing is done, only wait for queued items.
+		// Schedule next page with adaptive delay:
+		// - Small stores (< 10 pages): 5s base delay.
+		// - Large stores (10+ pages): 10s base delay to avoid rate limiting.
+		// - Plus extra time if GetItem fallbacks were queued (3s per item).
 		if ( $page_number < $total_pages ) {
-			$delay_next_page = $queued_count > 0 ? $queued_count + 5 : 2;
+			$base_delay = $total_pages >= 10 ? 10 : 5;
+			$delay_next_page = $queued_count > 0 ? ( $queued_count * 3 ) + $base_delay : $base_delay;
 			as_schedule_single_action( time() + $delay_next_page, 'tcgiant_sync_fetch_listings', array( 'page_number' => $page_number + 1 ), 'tcgiant_sync_group' );
 		} else {
 			if ( $new_total_queued > 0 ) {
@@ -1064,13 +1111,19 @@ class TCGiant_Sync_Importer {
 			$api = TCGiant_Sync_API::instance();
 			$ebay_response = $api->get_item( $item_id );
 
-			// Handle rate limiting: reschedule this item for later instead of counting as error.
+			// Handle rate limiting: reschedule this item for later with escalating backoff.
 			if ( is_wp_error( $ebay_response ) && 'rate_limited' === $ebay_response->get_error_code() ) {
-				$retry_delay = 300; // 5 minutes
-				self::update_sync_state( array( 'status' => 'rate_limited' ) );
+				$state_for_retry = self::get_sync_state();
+				$retries = (int) ( $state_for_retry['rate_limit_retries'] ?? 0 );
+				$retry_delay = $this->get_rate_limit_backoff_delay( $retries );
+				self::update_sync_state( array(
+					'status'             => 'rate_limited',
+					'rate_limit_retries' => $retries + 1,
+				) );
 				TCGiant_Sync_Logger::log( sprintf(
-					'eBay API rate limit hit while importing item %s. Rescheduled for %d minutes later.',
+					'eBay API rate limit hit while importing item %s (attempt %d). Rescheduled for %d minutes later.',
 					$item_id,
+					$retries + 1,
 					$retry_delay / 60
 				), 'warning' );
 				as_schedule_single_action( time() + $retry_delay, 'tcgiant_sync_process_item_import', array( 'item_id' => $item_id ), 'tcgiant_sync_group' );
@@ -1187,6 +1240,7 @@ class TCGiant_Sync_Importer {
 				'status'                  => 'complete',
 				'last_completed'          => current_time( 'mysql' ),
 				'last_successful_sync_at' => gmdate( 'Y-m-d\TH:i:s.000\Z' ),
+				'rate_limit_retries'      => 0,
 			) );
 			TCGiant_Sync_Logger::log( sprintf(
 				'%s complete! %d imported, %d errors out of %d total.',

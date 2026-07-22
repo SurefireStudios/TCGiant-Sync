@@ -190,14 +190,24 @@ if ( $sync_state['total_queued'] > 0 ) {
 			<?php endif; ?>
 
 			<?php if ( 'rate_limited' === $sync_state['status'] ) : ?>
+			<?php
+				$api_for_display = TCGiant_Sync_API::instance();
+				$daily_calls = $api_for_display->get_daily_call_count();
+				$retries = absint( $sync_state['rate_limit_retries'] ?? 0 );
+				// Mirror the backoff logic: 15min base, doubling, capped at 2hr.
+				$base_delay_min = 15;
+				$backoff_min = min( $base_delay_min * pow( 2, min( max( $retries - 1, 0 ), 4 ) ), 120 );
+			?>
 				<div class="tc-limit-reached-card" style="border-left:4px solid var(--tc-warning);background:#fff8e1;">
 					<p style="margin:0 0 8px;"><strong><?php esc_html_e( '⏸ eBay API Rate Limit Reached', 'tcgiant-sync' ); ?></strong></p>
 					<p style="margin:0 0 12px;font-size:13px;color:#555;"><?php
 						printf(
-							esc_html__( 'The import paused at page %1$d (of %2$d) after importing %3$d products. eBay limits how many API calls can be made per day. An automatic retry has been scheduled in 5 minutes, or you can resume manually below.', 'tcgiant-sync' ),
+							esc_html__( 'The import paused at page %1$d (of %2$d) after importing %3$d products. eBay limits how many API calls can be made per day (%4$d calls used today). An automatic retry has been scheduled in ~%5$d minutes, or you can resume manually below.', 'tcgiant-sync' ),
 							absint( $sync_state['current_page'] ),
 							absint( $sync_state['total_pages'] ?: '?' ),
-							absint( $sync_state['total_processed'] )
+							absint( $sync_state['total_processed'] ),
+							$daily_calls,
+							$backoff_min
 						);
 					?></p>
 					<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">

@@ -1,11 +1,19 @@
 *** TCGiant Sync Changelog ***
 
-2026-07-21 - version 1.7.5
+2026-07-22 - version 1.7.5
 - Improvement: eBay daily API call limit updated from 5,000 to 50,000 following Application Growth Check approval.
 - Feature: Centralized API usage tracking — each site now reports its daily API call count to the relay server during token refreshes, enabling global usage monitoring across all connected installations.
 - Feature: Dashboard now displays an "API Calls Today" stat card with a color-coded progress bar (green/amber/red), per-site API usage in the sites table, and an "API Usage vs. Capacity" chart.
 - Improvement: Budget exhaustion checks now use the relay-provided global budget (all client sites combined) before falling back to local tracking, preventing individual sites from unknowingly exhausting the shared quota.
 - Improvement: Relay server is now the single source of truth for the daily API limit, automatically informing each client of remaining capacity on every token refresh.
+- Feature: Per-product Listing Type (Fixed Price or Auction) and Duration (GTC, 30, 10, 7, 5, 3, 1 days) overrides. Set defaults on the Settings page and override per-product in the new "Listing Options" step.
+- Feature: Per-product Shipping Policy override — select a different fulfillment policy for individual products instead of using the global default.
+- Feature: New "All Other" item type for non-collectible products (electronics, clothing, etc.). Skips grading/ConditionDescriptor fields and uses simple condition (New, Like New, etc.) for any eBay category.
+- Feature: Global default Listing Type and Duration dropdowns added to the Export Settings page.
+- Improvement: Auction listings automatically enforce Quantity = 1 and validate duration compatibility (auctions: 1-10 days; fixed price: GTC or 30 days).
+- Improvement: Duration dropdown dynamically filters to show only valid options based on the selected listing type.
+- Fix: Adaptive throttling for large store imports (10,000+ items) — inter-page delay increased to 10s, GetItem fallback stagger increased to 3s per item.
+- Fix: Rate limit retry now uses exponential backoff (15 min → 30 min → 1 hr → 2 hr) instead of a flat 5-minute delay, preventing repeated API hammering.
 
 2026-07-20 - version 1.7.4
 - Fix: Image overwrite now works correctly on re-syncs. When "Overwrite Images" is enabled, the URL-hash dedup optimization is bypassed so images are always re-downloaded from eBay, even if the URLs haven't changed.

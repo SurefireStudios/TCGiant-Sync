@@ -121,7 +121,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 					}
 				}
 				// Preserve export settings too so they aren't wiped by this form.
-				$export_preserve = array( 'export_category_id', 'export_category_name', 'export_condition_id', 'export_condition_type', 'export_grader_id', 'export_grade_value', 'export_cert_number', 'export_ungraded_condition', 'export_location', 'export_postal_code', 'export_fulfillment_policy', 'export_return_policy', 'export_payment_policy' );
+				$export_preserve = array( 'export_category_id', 'export_category_name', 'export_condition_id', 'export_condition_type', 'export_grader_id', 'export_grade_value', 'export_cert_number', 'export_ungraded_condition', 'export_location', 'export_postal_code', 'export_fulfillment_policy', 'export_return_policy', 'export_payment_policy', 'export_listing_type', 'export_listing_duration' );
 				foreach ( $export_preserve as $key ) {
 					if ( ! empty( $settings[ $key ] ) ) {
 						echo '<input type="hidden" name="tcgiant_sync_ebay_settings[' . esc_attr( $key ) . ']" value="' . esc_attr( $settings[ $key ] ) . '">';
@@ -555,7 +555,35 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						</div>
 						<?php endforeach; ?>
 					</div>
-					<p class="tc-hint" style="margin-top:8px;"><?php esc_html_e( 'Fixed Price listings · Good Till Cancelled · Regional marketplace based on settings.', 'tcgiant-sync' ); ?></p>
+					<p class="tc-hint" style="margin-top:8px;"><?php esc_html_e( 'Select your eBay Business Policies. Per-product overrides available in the product editor.', 'tcgiant-sync' ); ?></p>
+				</div>
+
+				<!-- Listing Type & Duration -->
+				<div class="tc-field">
+					<label class="tc-label"><?php esc_html_e( 'Default Listing Type & Duration', 'tcgiant-sync' ); ?></label>
+					<div style="display:flex;gap:12px;flex-wrap:wrap;">
+						<div style="flex:1;min-width:180px;">
+							<label style="font-size:12px;color:#555;display:block;margin-bottom:3px;"><?php esc_html_e( 'Listing Type', 'tcgiant-sync' ); ?></label>
+							<select class="tc-select" name="tcgiant_sync_ebay_settings[export_listing_type]" id="export_listing_type">
+								<?php foreach ( TCGiant_Sync_Exporter::LISTING_TYPES as $lt_val => $lt_label ) : ?>
+									<option value="<?php echo esc_attr( $lt_val ); ?>" <?php selected( $settings['export_listing_type'] ?? 'FixedPriceItem', $lt_val ); ?>>
+										<?php echo esc_html( $lt_label ); ?>
+									</option>
+								<?php endforeach; ?>
+							</select>
+						</div>
+						<div style="flex:1;min-width:180px;">
+							<label style="font-size:12px;color:#555;display:block;margin-bottom:3px;"><?php esc_html_e( 'Listing Duration', 'tcgiant-sync' ); ?></label>
+							<select class="tc-select" name="tcgiant_sync_ebay_settings[export_listing_duration]" id="export_listing_duration">
+								<?php foreach ( TCGiant_Sync_Exporter::LISTING_DURATIONS as $ld_val => $ld_label ) : ?>
+									<option value="<?php echo esc_attr( $ld_val ); ?>" <?php selected( $settings['export_listing_duration'] ?? 'GTC', $ld_val ); ?>>
+										<?php echo esc_html( $ld_label ); ?>
+									</option>
+								<?php endforeach; ?>
+							</select>
+						</div>
+					</div>
+					<p class="tc-hint"><?php esc_html_e( 'Default for all listings. Can be overridden per-product. Fixed Price supports GTC & 30 Days. Auctions support 1-10 Days.', 'tcgiant-sync' ); ?></p>
 				</div>
 
 				<div class="tc-form-footer" style="padding-top:16px;margin-top:16px;border-top:1px solid var(--tc-border);">

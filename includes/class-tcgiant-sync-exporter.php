@@ -263,6 +263,38 @@ class TCGiant_Sync_Exporter {
 	const MAX_IMAGES = 12;
 
 	/**
+	 * Listing types supported by the Trading API.
+	 */
+	const LISTING_TYPES = array(
+		'FixedPriceItem' => 'Fixed Price',
+		'Chinese'        => 'Auction',
+	);
+
+	/**
+	 * Valid listing durations.
+	 * Keys are the eBay API values; values are human labels.
+	 */
+	const LISTING_DURATIONS = array(
+		'GTC'     => 'Good Til Cancelled',
+		'Days_1'  => '1 Day',
+		'Days_3'  => '3 Days',
+		'Days_5'  => '5 Days',
+		'Days_7'  => '7 Days',
+		'Days_10' => '10 Days',
+		'Days_30' => '30 Days',
+		'Days_60' => '60 Days',
+		'Days_90' => '90 Days',
+	);
+
+	/**
+	 * Valid durations per listing type (eBay rules).
+	 */
+	const DURATIONS_BY_TYPE = array(
+		'FixedPriceItem' => array( 'GTC', 'Days_30' ),
+		'Chinese'        => array( 'Days_1', 'Days_3', 'Days_5', 'Days_7', 'Days_10' ),
+	);
+
+	/**
 	 * Get categories, including user-defined custom saved categories.
 	 *
 	 * @return array Map of category ID => label.
@@ -634,9 +666,13 @@ class TCGiant_Sync_Exporter {
 		$xml .= '<Description><![CDATA[' . $description . ']]></Description>' . "\n";
 		$xml .= '<PrimaryCategory><CategoryID>' . esc_attr( $settings['category_id'] ) . '</CategoryID></PrimaryCategory>' . "\n";
 		
+	
 		if ( ! $product->is_type( 'variable' ) ) {
+			// Auctions are always quantity 1 on eBay.
+			$is_auction = 'Chinese' === ( $settings['listing_type'] ?? 'FixedPriceItem' );
+			$qty = $is_auction ? 1 : (int) $quantity;
 			$xml .= '<StartPrice>' . esc_attr( $price ) . '</StartPrice>' . "\n";
-			$xml .= '<Quantity>' . (int) $quantity . '</Quantity>' . "\n";
+			$xml .= '<Quantity>' . $qty . '</Quantity>' . "\n";
 			if ( ! empty( $sku ) ) {
 				$xml .= '<SKU>' . esc_xml( $sku ) . '</SKU>' . "\n";
 			}
@@ -674,8 +710,19 @@ class TCGiant_Sync_Exporter {
 		}
 		$xml .= '<Currency>' . esc_attr( $marketplace['currency'] ) . '</Currency>' . "\n";
 		$xml .= '<DispatchTimeMax>3</DispatchTimeMax>' . "\n";
-		$xml .= '<ListingDuration>GTC</ListingDuration>' . "\n";
-		$xml .= '<ListingType>FixedPriceItem</ListingType>' . "\n";
+
+		// Listing type and duration: default to FixedPriceItem/GTC, overridable per-product.
+		$listing_type     = $settings['listing_type'] ?? 'FixedPriceItem';
+		$listing_duration = $settings['listing_duration'] ?? 'GTC';
+
+		// Validate duration is compatible with listing type.
+		$valid_durations = self::DURATIONS_BY_TYPE[ $listing_type ] ?? array( 'GTC' );
+		if ( ! in_array( $listing_duration, $valid_durations, true ) ) {
+			$listing_duration = $valid_durations[0]; // Fall back to first valid duration.
+		}
+
+		$xml .= '<ListingDuration>' . esc_attr( $listing_duration ) . '</ListingDuration>' . "\n";
+		$xml .= '<ListingType>' . esc_attr( $listing_type ) . '</ListingType>' . "\n";
 		$xml .= '<Site>' . esc_attr( $marketplace['site'] ) . '</Site>' . "\n";
 
 		if ( $product->is_type( 'variable' ) ) {
@@ -762,6 +809,8 @@ class TCGiant_Sync_Exporter {
 			'fulfillment_policy_id' => $global['export_fulfillment_policy'] ?? '',
 			'return_policy_id'      => $global['export_return_policy'] ?? '',
 			'payment_policy_id'     => $global['export_payment_policy'] ?? '',
+			'listing_type'          => $global['export_listing_type'] ?? 'FixedPriceItem',
+			'listing_duration'      => $global['export_listing_duration'] ?? 'GTC',
 		);
 
 		if ( $product ) {
@@ -805,6 +854,23 @@ class TCGiant_Sync_Exporter {
 			$override_ungraded = $product->get_meta( '_ebay_export_ungraded_condition' );
 			if ( ! empty( $override_ungraded ) ) {
 				$settings['ungraded_condition'] = $override_ungraded;
+			}
+
+			// Listing type & duration per-product overrides.
+			$override_listing_type = $product->get_meta( '_ebay_export_listing_type' );
+			if ( ! empty( $override_listing_type ) ) {
+				$settings['listing_type'] = $override_listing_type;
+			}
+
+			$override_listing_duration = $product->get_meta( '_ebay_export_listing_duration' );
+			if ( ! empty( $override_listing_duration ) ) {
+				$settings['listing_duration'] = $override_listing_duration;
+			}
+
+			// Per-product shipping/fulfillment policy override.
+			$override_fulfillment = $product->get_meta( '_ebay_export_fulfillment_policy' );
+			if ( ! empty( $override_fulfillment ) ) {
+				$settings['fulfillment_policy_id'] = $override_fulfillment;
 			}
 		}
 
@@ -882,6 +948,23 @@ class TCGiant_Sync_Exporter {
 				'missing_export_settings',
 				/* translators: %s: comma-separated list of missing settings */
 				sprintf( __( 'Cannot push to eBay — missing required settings: %s', 'tcgiant-sync' ), implode( ', ', $missing ) )
+			);
+		}
+
+		// Validate listing duration compatibility with listing type.
+		$listing_type     = $settings['listing_type'] ?? 'FixedPriceItem';
+		$listing_duration = $settings['listing_duration'] ?? 'GTC';
+		$valid_durations  = self::DURATIONS_BY_TYPE[ $listing_type ] ?? array( 'GTC' );
+		if ( ! in_array( $listing_duration, $valid_durations, true ) ) {
+			$type_label = self::LISTING_TYPES[ $listing_type ] ?? $listing_type;
+			$valid_labels = array_map( function( $d ) { return self::LISTING_DURATIONS[ $d ] ?? $d; }, $valid_durations );
+			return new WP_Error(
+				'invalid_duration',
+				sprintf(
+					__( 'Invalid listing duration for %1$s listings. Valid options: %2$s', 'tcgiant-sync' ),
+					$type_label,
+					implode( ', ', $valid_labels )
+				)
 			);
 		}
 
@@ -981,6 +1064,10 @@ class TCGiant_Sync_Exporter {
 	 * @return bool True if the category requires descriptors.
 	 */
 	public static function is_descriptor_category( $category_id, $item_type = '' ) {
+		// "All Other" items never use ConditionDescriptors.
+		if ( 'other' === $item_type ) {
+			return false;
+		}
 		if ( in_array( $item_type, array( 'tcg', 'coins' ), true ) ) {
 			return true;
 		}

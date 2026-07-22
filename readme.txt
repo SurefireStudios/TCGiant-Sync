@@ -28,6 +28,9 @@ TCGiant Sync bridges your eBay store and WooCommerce, enabling automatic import 
 * **Visual card selectors** for Item Type (Trading Cards / Coins) and Condition (Graded / Ungraded)
 * **Pre-push readiness checklist** validates category, condition, policies, images, and title length
 * Per-product eBay Category and Condition overrides
+* **Per-product Listing Type & Duration** — choose Fixed Price or Auction, with duration from 1 day to GTC, per product or as global defaults
+* **Per-product Shipping Policy** — override the default fulfillment policy on individual products
+* **"All Other" item type** — list non-collectible products (electronics, clothing, etc.) with simple conditions, no grading required
 * eBay ConditionDescriptor support — Graded (PSA, BGS, SGC, CGC, etc.) and Ungraded conditions for Trading Cards and Coins categories
 * Business Policy management (Shipping, Returns, Payments) with one-click fetch
 
@@ -91,6 +94,17 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 1.7.5 - 2026-07-22 =
+* Improvement: eBay daily API call limit updated from 5,000 to 50,000 following Application Growth Check approval.
+* Feature: Centralized API usage tracking — sites report daily call counts to the relay server, enabling global usage monitoring.
+* Feature: Dashboard "API Calls Today" stat card with color-coded progress bar and usage chart.
+* Feature: Per-product Listing Type (Fixed Price / Auction) and Duration (GTC, 30, 10, 7, 5, 3, 1 days) overrides with global defaults on Settings page.
+* Feature: Per-product Shipping Policy override — select a different fulfillment policy for individual products.
+* Feature: "All Other" item type for non-collectible products — skips grading fields, uses simple conditions.
+* Improvement: Auction listings enforce Quantity = 1 and validate duration compatibility.
+* Improvement: Duration dropdown dynamically filters to valid options based on listing type.
+* Fix: Adaptive throttling for large store imports (10,000+ items) with exponential backoff on rate limits.
 
 = 1.7.2 - 2026-07-18 =
 * Fix: Resolved image import timeouts for products with many variants. Image downloads are now processed in chunked batches (2 at a time) to prevent PHP execution limits from silently killing the process.
