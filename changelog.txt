@@ -1,5 +1,10 @@
 *** TCGiant Sync Changelog ***
 
+2026-07-22 - version 1.7.7
+- Fix: Increased token refresh HTTP timeout from 5 seconds to 30 seconds to prevent transient cURL error 28 timeouts during relay authentication.
+- Fix: Fixed false-positive rate limit classification. Broad matching on the word "exceeded" previously misidentified non-rate-limit errors (such as "Token expiration time exceeded") as rate limit hits, causing unnecessary 15-minute pauses.
+- Feature: Added automatic token refresh retry — if eBay returns an expired/invalid token error during an API call, the plugin now automatically refreshes the access token and retries the request inline.
+
 2026-07-22 - version 1.7.6
 - Feature: Text-based coin grade aliases — "Gem BU", "Choice BU", "Superb Gem BU", "Gem Proof", "Choice Proof", "Superb Gem Proof", "Choice AU", "Choice XF", and "Choice VF" are now available in the graded coin dropdown. Each alias maps to its Sheldon-scale numeric equivalent (e.g. "Gem BU" → MS/PR 65) for correct eBay ConditionDescriptor submission. Addresses client feedback for holders with text-based grades instead of numeric.
 - Fix: UUID duplicate prevention — every AddItem request now includes a unique v4 UUID. If a network timeout or retry sends the same request twice, eBay deduplicates using the UUID and returns the original ItemID instead of creating a duplicate listing.

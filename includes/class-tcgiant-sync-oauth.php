@@ -135,13 +135,14 @@ class TCGiant_Sync_OAuth {
 		$api = TCGiant_Sync_API::instance();
 
 		$response = wp_remote_post( 'https://tcgiant.com/syncconnect/relay.php', array(
-			'body' => array(
+			'body'    => array(
 				'action'          => 'refresh',
 				'refresh_token'   => $settings['refresh_token'],
 				'site_url'        => get_site_url(),
 				'api_calls_today' => $api->get_daily_call_count(),
 				'api_calls_date'  => gmdate( 'Y-m-d' ),
 			),
+			'timeout' => 30,
 		) );
 
 		if ( is_wp_error( $response ) ) {

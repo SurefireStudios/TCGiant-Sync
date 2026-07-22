@@ -141,10 +141,12 @@ class TCGiant_Sync_API {
 	/**
 	 * Send XML request to eBay Trading API.
 	 *
-	 * @param string $call_name Name of the Trading API call.
-	 * @param string $xml_body  The inner XML body.
+	 * @param string $call_name   Name of the Trading API call.
+	 * @param string $xml_body    The inner XML body.
+	 * @param bool   $allow_retry Whether to allow a single retry on token expiration.
+	 * @return array|WP_Error Parsed API response or error.
 	 */
-	public function trading_api_request( $call_name, $xml_body ) {
+	public function trading_api_request( $call_name, $xml_body, $allow_retry = true ) {
 		// Pre-flight: check if we're approaching the daily call limit.
 		if ( $this->is_daily_budget_exhausted() ) {
 			$used  = $this->get_daily_call_count();
@@ -225,10 +227,26 @@ class TCGiant_Sync_API {
 				$error_code = isset( $array['Errors']['ErrorCode'] ) ? (string) $array['Errors']['ErrorCode'] : '';
 			}
 
+			// Check for token expiration / invalid token errors:
+			// 21916013 / 21917053 = "IAF token expired" or "Token expiration time exceeded"
+			$token_error_codes = array( '21916013', '21917053', '21916017', '21917054' );
+			$error_str = is_string( $error_msg ) ? strtolower( $error_msg ) : '';
+			$is_token_expired = in_array( $error_code, $token_error_codes, true )
+				|| false !== strpos( $error_str, 'token expiration' )
+				|| false !== strpos( $error_str, 'token expired' )
+				|| false !== strpos( $error_str, 'iaf token' );
+
+			if ( $is_token_expired && $allow_retry ) {
+				TCGiant_Sync_Logger::log( sprintf( 'eBay token expired during %s (%s). Refreshing token and retrying...', $call_name, $error_msg ), 'info' );
+				$new_token = TCGiant_Sync_OAuth::instance()->refresh_access_token();
+				if ( $new_token ) {
+					return $this->trading_api_request( $call_name, $xml_body, false );
+				}
+			}
+
 			// eBay rate limit error codes:
-			// 518  = "Calls to this call have exceeded the call limit."
+			// 518   = "Calls to this call have exceeded the call limit."
 			// 10007 = "Internal error to the application." (daily limit)
-			// Also check for multiple errors returned as an array.
 			$rate_limit_codes = array( '518', '10007' );
 			$is_rate_limited = false;
 
@@ -245,10 +263,10 @@ class TCGiant_Sync_API {
 				}
 			}
 
-			// Also detect rate limiting from HTTP 429 or known error messages.
+			// Also detect rate limiting from HTTP 429 or specific rate limit error messages.
+			// Note: Do not match plain "exceeded" as it causes false positives on token/item errors.
 			if ( ! $is_rate_limited ) {
-				$error_str = is_string( $error_msg ) ? strtolower( $error_msg ) : '';
-				if ( false !== strpos( $error_str, 'call limit' ) || false !== strpos( $error_str, 'rate limit' ) || false !== strpos( $error_str, 'exceeded' ) ) {
+				if ( false !== strpos( $error_str, 'call limit' ) || false !== strpos( $error_str, 'rate limit' ) || false !== strpos( $error_str, 'limit exceeded' ) || false !== strpos( $error_str, 'quota exceeded' ) ) {
 					$is_rate_limited = true;
 				}
 			}

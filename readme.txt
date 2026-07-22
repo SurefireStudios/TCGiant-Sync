@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.7.6
+Stable tag: 1.7.7
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,11 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 1.7.7 - 2026-07-22 =
+* Fix: Token refresh timeout increased from 5s to 30s to prevent transient cURL error 28 timeouts on relay requests.
+* Fix: Corrected false-positive rate limit classification where generic eBay error messages containing the word "exceeded" (e.g. token expiration) were misidentified as rate limit hits.
+* Feature: Automatic token refresh retry when eBay returns an expired or invalid IAF token during API requests.
 
 = 1.7.6 - 2026-07-22 =
 * Feature: Text-based coin grade aliases — "Gem BU", "Choice BU", "Superb Gem", "Gem Proof", "Choice Proof", "Choice AU", "Choice XF", and "Choice VF" are now available in the graded coin dropdown. Each maps to its Sheldon-scale equivalent (e.g. Gem BU ≈ MS 65) for eBay submission.
