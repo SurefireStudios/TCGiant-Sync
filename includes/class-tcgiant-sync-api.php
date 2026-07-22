@@ -633,8 +633,9 @@ class TCGiant_Sync_API {
 	 */
 	public function add_item( $item_xml ) {
 		// Inject UUID for duplicate prevention — insert right after <Item>.
-		$uuid     = wp_generate_uuid4();
-		$uuid_tag = '<UUID>' . esc_attr( $uuid ) . '</UUID>' . "\n";
+		// eBay requires exactly 32 hex characters (no hyphens).
+		$uuid     = str_replace( '-', '', wp_generate_uuid4() );
+		$uuid_tag = '<UUID>' . $uuid . '</UUID>' . "\n";
 		$item_xml = preg_replace( '/(<Item>\s*\n?)/', '$1' . $uuid_tag, $item_xml, 1 );
 
 		$xml = '<ErrorLanguage>en_US</ErrorLanguage>

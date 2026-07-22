@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.7.9
+Stable tag: 1.8.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 1.8.0 - 2026-07-22 =
+* Fix: UUID format corrected — eBay requires exactly 32 hex characters (no hyphens). `wp_generate_uuid4()` produces 36 characters with hyphens; the fix strips them. This was blocking ALL listing pushes with the error "The UUID can only contain Numbers and Letters from A to F and must be 32 characters long."
 
 = 1.7.9 - 2026-07-22 =
 * Feature: Added explicit "Disconnect" button on the Settings page to easily clear stored OAuth tokens when switching eBay seller accounts.

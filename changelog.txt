@@ -1,5 +1,8 @@
 *** TCGiant Sync Changelog ***
 
+2026-07-22 - version 1.8.0
+- Fix: UUID format corrected — eBay requires exactly 32 hex characters (no hyphens). wp_generate_uuid4() returns 36-character standard UUIDs with hyphens; the fix strips them. This was blocking ALL listing pushes with the error "The UUID can only contain Numbers and Letters from A to F and must be 32 characters long."
+
 2026-07-22 - version 1.7.9
 - Feature: Added one-click "Disconnect" button on Settings page to wipe stored OAuth access and refresh tokens, making it seamless to disconnect or switch connected eBay seller accounts.
 
