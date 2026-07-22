@@ -45,6 +45,7 @@ class TCGiant_Sync_Admin {
 		add_action( 'admin_post_tcgiant_stop_sync', array( $this, 'handle_stop_sync' ) );
 		add_action( 'admin_post_tcgiant_clear_log', array( $this, 'handle_clear_log' ) );
 		add_action( 'admin_post_tcgiant_clear_recent_sales', array( $this, 'handle_clear_recent_sales' ) );
+		add_action( 'admin_post_tcgiant_sync_disconnect', array( $this, 'handle_disconnect' ) );
 		add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_admin_assets' ) );
 		
 		// AJAX endpoints — Import.
@@ -372,6 +373,25 @@ class TCGiant_Sync_Admin {
 		}
 
 		wp_safe_redirect( admin_url( 'admin.php?page=tcgiant-sync&sales_cleared=1' ) );
+		exit;
+	}
+
+	/**
+	 * Handle disconnecting eBay account (clearing stored OAuth tokens).
+	 */
+	public function handle_disconnect() {
+		check_admin_referer( 'tcgiant_sync_disconnect' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'Unauthorized.', 'tcgiant-sync' ) );
+		}
+
+		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
+		unset( $settings['access_token'], $settings['refresh_token'], $settings['token_expiry'], $settings['store_name'], $settings['store_username'], $settings['store_id'] );
+		update_option( 'tcgiant_sync_ebay_settings', $settings );
+
+		TCGiant_Sync_Logger::log( 'eBay account disconnected by user.', 'warning' );
+
+		wp_safe_redirect( admin_url( 'admin.php?page=tcgiant-settings&disconnected=1' ) );
 		exit;
 	}
 

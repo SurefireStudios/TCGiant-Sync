@@ -1,5 +1,8 @@
 *** TCGiant Sync Changelog ***
 
+2026-07-22 - version 1.7.9
+- Feature: Added one-click "Disconnect" button on Settings page to wipe stored OAuth access and refresh tokens, making it seamless to disconnect or switch connected eBay seller accounts.
+
 2026-07-22 - version 1.7.8
 - Fix: GetSellerList date range error fix — adjusted the EndTime scan window from 3650 days to 120 days. eBay Trading API enforces a strict 120-day maximum limit on date ranges; setting it to 120 days resolves the "The time range between time from and time to has exceeded 121 days" error while capturing 100% of active GTC and auction listings (since GTC listings renew every 30 days).
 

@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.7.8
+Stable tag: 1.7.9
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 1.7.9 - 2026-07-22 =
+* Feature: Added explicit "Disconnect" button on the Settings page to easily clear stored OAuth tokens when switching eBay seller accounts.
 
 = 1.7.8 - 2026-07-22 =
 * Fix: Adjusted GetSellerList EndTime scan range from 3650 days to 120 days to comply with eBay Trading API maximum date range restrictions, resolving "time range has exceeded 121 days" error during full syncs.

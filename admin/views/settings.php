@@ -40,6 +40,9 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 	<?php if ( isset( $_GET['settings-updated'] ) ) : // phpcs:ignore ?>
 		<div class="notice notice-success is-dismissible"><p><?php esc_html_e( 'Settings saved.', 'tcgiant-sync' ); ?></p></div>
 	<?php endif; ?>
+	<?php if ( isset( $_GET['disconnected'] ) ) : // phpcs:ignore ?>
+		<div class="notice notice-warning is-dismissible"><p><?php esc_html_e( 'eBay account disconnected.', 'tcgiant-sync' ); ?></p></div>
+	<?php endif; ?>
 	<?php if ( isset( $_GET['auth'] ) && 'success' === $_GET['auth'] ) : // phpcs:ignore ?>
 		<div class="notice notice-success is-dismissible"><p><?php esc_html_e( 'Successfully authenticated with eBay.', 'tcgiant-sync' ); ?></p></div>
 	<?php elseif ( isset( $_GET['auth'] ) && 'failed' === $_GET['auth'] ) : // phpcs:ignore ?>
@@ -64,9 +67,10 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 					<?php endif; ?>
 				</div>
 			</div>
-			<div class="tc-top-card-right">
+			<div class="tc-top-card-right" style="display:flex;gap:6px;">
 				<?php if ( $is_authenticated ) : ?>
 					<a href="<?php echo esc_url( $auth_url ); ?>" class="tc-button secondary"><?php esc_html_e( 'Reconnect', 'tcgiant-sync' ); ?></a>
+					<a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin-post.php?action=tcgiant_sync_disconnect' ), 'tcgiant_sync_disconnect' ) ); ?>" class="tc-button danger" onclick="return confirm('<?php esc_attr_e( 'Disconnect eBay account? This will stop synchronization until reconnected.', 'tcgiant-sync' ); ?>');"><?php esc_html_e( 'Disconnect', 'tcgiant-sync' ); ?></a>
 				<?php else : ?>
 					<a href="<?php echo esc_url( $auth_url ); ?>" class="tc-button success"><?php esc_html_e( 'Connect to eBay', 'tcgiant-sync' ); ?></a>
 				<?php endif; ?>
