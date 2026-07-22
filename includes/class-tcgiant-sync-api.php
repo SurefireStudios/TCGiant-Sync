@@ -398,8 +398,10 @@ class TCGiant_Sync_API {
 <ModTimeTo>' . gmdate( 'Y-m-d\TH:i:s.000\Z' ) . '</ModTimeTo>';
 		} else {
 			// Full scan mode: all active listings.
+			// eBay limits EndTimeFrom to EndTimeTo range to a maximum of 120 days.
+			// Active GTC listings renew every 30 days, so +120 days captures all active items.
 			$end_from = gmdate( 'Y-m-d\TH:i:s.000\Z' );
-			$end_to   = gmdate( 'Y-m-d\TH:i:s.000\Z', strtotime( '+3650 days' ) );
+			$end_to   = gmdate( 'Y-m-d\TH:i:s.000\Z', strtotime( '+120 days' ) );
 			$xml = '
 <EndTimeFrom>' . $end_from . '</EndTimeFrom>
 <EndTimeTo>' . $end_to . '</EndTimeTo>';
