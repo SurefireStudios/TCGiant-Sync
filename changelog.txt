@@ -1,5 +1,9 @@
 *** TCGiant Sync Changelog ***
 
+2026-07-22 - version 1.7.6
+- Feature: Text-based coin grade aliases — "Gem BU", "Choice BU", "Superb Gem BU", "Gem Proof", "Choice Proof", "Superb Gem Proof", "Choice AU", "Choice XF", and "Choice VF" are now available in the graded coin dropdown. Each alias maps to its Sheldon-scale numeric equivalent (e.g. "Gem BU" → MS/PR 65) for correct eBay ConditionDescriptor submission. Addresses client feedback for holders with text-based grades instead of numeric.
+- Fix: UUID duplicate prevention — every AddItem request now includes a unique v4 UUID. If a network timeout or retry sends the same request twice, eBay deduplicates using the UUID and returns the original ItemID instead of creating a duplicate listing.
+
 2026-07-22 - version 1.7.5
 - Improvement: eBay daily API call limit updated from 5,000 to 50,000 following Application Growth Check approval.
 - Feature: Centralized API usage tracking — each site now reports its daily API call count to the relay server during token refreshes, enabling global usage monitoring across all connected installations.

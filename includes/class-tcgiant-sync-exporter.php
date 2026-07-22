@@ -136,9 +136,11 @@ class TCGiant_Sync_Exporter {
 
 	/**
 	 * Grade values available for graded Coins.
-	 * Format: 'LETTER NUM' => display label (kept for UI dropdowns).
+	 * Includes standard Sheldon-scale grades plus text-based aliases
+	 * (Gem BU, Choice BU, etc.) that some grading holders use.
 	 */
 	const GRADES_COINS = array(
+		// --- Standard Sheldon Scale ---
 		'MS/PR 70', 'MS/PR 69', 'MS/PR 68', 'MS/PR 67', 'MS/PR 66', 'MS/PR 65',
 		'MS/PR 64', 'MS/PR 63', 'MS/PR 62', 'MS/PR 61', 'MS/PR 60',
 		'AU 58', 'AU 55', 'AU 53', 'AU 50',
@@ -150,6 +152,32 @@ class TCGiant_Sync_Exporter {
 		'AG 3',
 		'FR 2',
 		'P 1',
+		// --- Text-Based Grade Aliases ---
+		'Superb Gem BU (≈MS 67)',
+		'Gem BU (≈MS 65)',
+		'Choice BU (≈MS 63)',
+		'Superb Gem Proof (≈PR 67)',
+		'Gem Proof (≈PR 65)',
+		'Choice Proof (≈PR 63)',
+		'Choice AU (≈AU 55)',
+		'Choice XF (≈XF 45)',
+		'Choice VF (≈VF 35)',
+	);
+
+	/**
+	 * Maps text-based grade aliases to their canonical 'LETTER NUM' Sheldon values.
+	 * Used during XML generation to resolve human-readable labels to eBay descriptor IDs.
+	 */
+	const TEXT_GRADE_ALIASES = array(
+		'Superb Gem BU (≈MS 67)'     => 'MS/PR 67',
+		'Gem BU (≈MS 65)'            => 'MS/PR 65',
+		'Choice BU (≈MS 63)'         => 'MS/PR 63',
+		'Superb Gem Proof (≈PR 67)'  => 'MS/PR 67',
+		'Gem Proof (≈PR 65)'         => 'MS/PR 65',
+		'Choice Proof (≈PR 63)'      => 'MS/PR 63',
+		'Choice AU (≈AU 55)'         => 'AU 55',
+		'Choice XF (≈XF 45)'         => 'XF 45',
+		'Choice VF (≈VF 35)'         => 'VF 35',
 	);
 
 	/**
@@ -1147,8 +1175,17 @@ class TCGiant_Sync_Exporter {
 				// Grade (split into Letter [Descriptor 3] and Numeric [Descriptor 4])
 				// User selects e.g. "MS/PR 65" — split into letter "MS/PR" and number "65",
 				// then look up the eBay conditionDescriptorValueId for each.
+				// Text aliases like "Gem BU (≈MS 65)" are resolved to their canonical
+				// Sheldon-scale value before splitting.
 				if ( ! empty( $settings['grade_value'] ) ) {
-					$parts = explode( ' ', $settings['grade_value'], 2 );
+					$grade_raw = $settings['grade_value'];
+
+					// Resolve text-based aliases to canonical Sheldon grades.
+					if ( isset( self::TEXT_GRADE_ALIASES[ $grade_raw ] ) ) {
+						$grade_raw = self::TEXT_GRADE_ALIASES[ $grade_raw ];
+					}
+
+					$parts = explode( ' ', $grade_raw, 2 );
 					if ( count( $parts ) === 2 ) {
 						$letter_label = $parts[0];
 						$number_label = $parts[1];

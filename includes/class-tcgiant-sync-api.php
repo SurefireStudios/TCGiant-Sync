@@ -604,10 +604,19 @@ class TCGiant_Sync_API {
 	/**
 	 * Create a new eBay listing via Trading API AddItem.
 	 *
+	 * A UUID (v4) is injected into the request to prevent duplicate listings.
+	 * If the same UUID is sent twice (e.g. due to network timeout + retry),
+	 * eBay will return the original ItemID instead of creating a duplicate.
+	 *
 	 * @param string $item_xml The <Item>...</Item> XML block to wrap in the request.
 	 * @return array|WP_Error Parsed API response or error. On success, contains 'ItemID'.
 	 */
 	public function add_item( $item_xml ) {
+		// Inject UUID for duplicate prevention — insert right after <Item>.
+		$uuid     = wp_generate_uuid4();
+		$uuid_tag = '<UUID>' . esc_attr( $uuid ) . '</UUID>' . "\n";
+		$item_xml = preg_replace( '/(<Item>\s*\n?)/', '$1' . $uuid_tag, $item_xml, 1 );
+
 		$xml = '<ErrorLanguage>en_US</ErrorLanguage>
 <WarningLevel>High</WarningLevel>
 ' . $item_xml;
