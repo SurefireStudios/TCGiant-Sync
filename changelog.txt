@@ -1,8 +1,5 @@
 *** TCGiant Sync Changelog ***
 
-2026-07-22 - version 1.7.10
-- UX: Added an admin helper tip under the eBay Connection status card: "Tip: Use an Incognito window when connecting client sites to avoid linking your active browser session." Prevents accidentally linking personal eBay accounts when managing client WordPress installations.
-
 2026-07-22 - version 1.7.9
 - Feature: Added one-click "Disconnect" button on Settings page to wipe stored OAuth access and refresh tokens, making it seamless to disconnect or switch connected eBay seller accounts.
 

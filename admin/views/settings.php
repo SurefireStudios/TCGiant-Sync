@@ -65,7 +65,6 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						<p><span class="dashicons dashicons-warning" style="color:var(--tc-warning);font-size:13px;width:13px;height:13px;vertical-align:text-bottom;"></span>
 						<?php esc_html_e( 'Not Connected', 'tcgiant-sync' ); ?></p>
 					<?php endif; ?>
-					<p style="font-size:11px;color:#888;margin-top:3px;margin-bottom:0;line-height:1.3;"><?php esc_html_e( 'Tip: Use an Incognito window when connecting client sites to avoid linking your active browser session.', 'tcgiant-sync' ); ?></p>
 				</div>
 			</div>
 			<div class="tc-top-card-right" style="display:flex;gap:6px;">
