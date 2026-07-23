@@ -882,8 +882,8 @@ class TCGiant_Sync_Importer {
 				}
 			} else {
 				// Queue for GetItem fallback — critical data is missing from GetSellerList response.
-				// 3s stagger per item to avoid burst-firing dozens of GetItem calls.
-				$delay = 3 * $queued_count;
+				// Stagger by 1s per item to avoid burst-firing, cap at 60s total stagger.
+				$delay = min( $queued_count, 60 );
 				as_schedule_single_action( time() + $delay, 'tcgiant_sync_process_item_import', array( 'item_id' => $item_id ), 'tcgiant_sync_group' );
 				$queued_count++;
 			}
@@ -926,12 +926,13 @@ class TCGiant_Sync_Importer {
 		}
 
 		// Schedule next page with adaptive delay:
-		// - Small stores (< 10 pages): 5s base delay.
-		// - Large stores (10+ pages): 10s base delay to avoid rate limiting.
-		// - Plus extra time if GetItem fallbacks were queued (3s per item).
+		// - Base: 5s for small stores, 10s for large (10+ pages).
+		// - If GetItem fallbacks were queued, add a small buffer (capped at 30s).
+		//   Fallbacks run in the background; we don't need to wait for all of them.
 		if ( $page_number < $total_pages ) {
 			$base_delay = $total_pages >= 10 ? 10 : 5;
-			$delay_next_page = $queued_count > 0 ? ( $queued_count * 3 ) + $base_delay : $base_delay;
+			$fallback_buffer = $queued_count > 0 ? min( $queued_count, 20 ) : 0;
+			$delay_next_page = $base_delay + $fallback_buffer;
 			as_schedule_single_action( time() + $delay_next_page, 'tcgiant_sync_fetch_listings', array( 'page_number' => $page_number + 1 ), 'tcgiant_sync_group' );
 		} else {
 			if ( $new_total_queued > 0 ) {

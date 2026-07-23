@@ -1,5 +1,8 @@
 *** TCGiant Sync Changelog ***
 
+2026-07-23 - version 1.8.4
+- Performance: Dramatically faster page scanning for large stores (47+ pages). Old logic: next page waited `queued_count * 3` seconds (e.g. 100 items = 310s = 5+ minutes per page). New logic: next page waits at most 30s. GetItem fallback stagger capped at 60s. Fallbacks run in background via Action Scheduler — the scan no longer blocks on them.
+
 2026-07-23 - version 1.8.3
 - Feature: Dashboard now shows full live sync status — replacing the minimal "Scanning..." label with the same detailed view from the Import page: status label, page progress (e.g. "Page 5/47 - All Categories"), Products/Queued/Pending Jobs counters, progress bar, and a spinning "Sync in Progress" indicator. All stats auto-update via AJAX polling every 5 seconds during active syncs.
 
