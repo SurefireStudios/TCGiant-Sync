@@ -1,5 +1,8 @@
 *** TCGiant Sync Changelog ***
 
+2026-07-23 - version 1.8.3
+- Feature: Dashboard now shows full live sync status — replacing the minimal "Scanning..." label with the same detailed view from the Import page: status label, page progress (e.g. "Page 5/47 - All Categories"), Products/Queued/Pending Jobs counters, progress bar, and a spinning "Sync in Progress" indicator. All stats auto-update via AJAX polling every 5 seconds during active syncs.
+
 2026-07-23 - version 1.8.2
 - Feature: "Import All Listings" toggle added to Settings → Import Filters. A prominent green switch at the top makes it immediately obvious how to import everything. When ON, category filters are hidden and all active eBay listings are imported. Toggle OFF to reveal Custom and Standard category filters for selective imports.
 

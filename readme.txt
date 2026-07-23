@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.8.2
+Stable tag: 1.8.3
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 1.8.3 - 2026-07-23 =
+* Feature: Dashboard now shows full live sync status — page progress (e.g. "Page 5/47 - All Categories"), Products/Queued/Pending Jobs counters, progress bar during import phase, and a spinning "Sync in Progress" indicator. All stats auto-update via AJAX polling.
 
 = 1.8.2 - 2026-07-23 =
 * Feature: Added "Import All Listings" toggle to the Settings page. A prominent green switch at the top of Import Filters makes it clear and easy to import every active eBay listing regardless of category. Toggling it off reveals the Custom and Standard category filter sections for selective imports.

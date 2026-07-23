@@ -145,23 +145,93 @@ if ( empty( $settings['redirect_uri'] ) ) {
 					<p style="font-size: 24px; font-weight: bold; margin: 5px 0; color: var(--tc-text);">
 						<?php echo esc_html( $stats['synced_products'] ); ?>
 					</p>
-					<p style="font-size: 12px; color: var(--tc-text-muted);">
-						<span class="tc-sync-dot <?php echo esc_attr( $sync_state['status'] ); ?>" style="display:inline-block;width:8px;height:8px;border-radius:50%;vertical-align:middle;"></span>
-						<?php
-						$import_labels = array(
-							'scanning'      => 'Scanning...',
-							'importing'     => 'Importing...',
-							'complete'      => 'Idle',
-							'stopped'       => 'Idle',
-							'error'         => 'Error',
-							'limit_reached' => 'Limit Reached',
-						);
-						echo esc_html( $import_labels[ $sync_state['status'] ] ?? 'Idle' );
-						?>
-					</p>
+					<div class="tc-sync-indicator" style="margin-top:4px;">
+						<div class="tc-sync-dot <?php echo esc_attr( $sync_state['status'] ); ?>" style="width:8px;height:8px;"></div>
+						<div style="flex:1;">
+							<div id="tc-hero-status" style="font-size:13px;font-weight:600;color:var(--tc-text);">
+								<?php
+								$status_labels = array(
+									'scanning'      => 'Scanning eBay…',
+									'importing'     => 'Importing…',
+									'complete'      => 'Complete',
+									'stopped'       => 'Stopped',
+									'error'         => 'Error',
+									'rate_limited'  => 'Rate Limited — Paused',
+									'limit_reached' => 'Import Limit Reached',
+								);
+								echo esc_html( $status_labels[ $sync_state['status'] ] ?? 'Idle' );
+								?>
+							</div>
+							<div id="tc-hero-detail" style="font-size:11px;color:var(--tc-text-muted);margin-top:1px;">
+								<?php
+								if ( 'scanning' === $sync_state['status'] ) {
+									$settings_for_filter = TCGiant_Sync_OAuth::instance()->get_settings();
+									$filter_name = ! empty( $settings_for_filter['category_ids'] ) ? $settings_for_filter['category_ids'] : 'All Categories';
+									echo 'Page ' . esc_html( $sync_state['current_page'] ) . ( $sync_state['total_pages'] ? '/' . esc_html( $sync_state['total_pages'] ) : '' ) . ' - ' . esc_html( $filter_name );
+								} elseif ( 'importing' === $sync_state['status'] ) {
+									echo esc_html( $sync_state['total_processed'] ) . '/' . esc_html( $sync_state['total_queued'] ) . ' items';
+								} elseif ( 'complete' === $sync_state['status'] ) {
+									echo esc_html( $sync_state['total_processed'] ) . ' imported, ' . esc_html( $sync_state['total_errors'] ) . ' errors';
+								} elseif ( 'rate_limited' === $sync_state['status'] ) {
+									printf(
+										'Page %d%s — %d imported. Auto-retry scheduled.',
+										absint( $sync_state['current_page'] ),
+										$sync_state['total_pages'] ? '/' . absint( $sync_state['total_pages'] ) : '',
+										absint( $sync_state['total_processed'] )
+									);
+								} elseif ( ! empty( $sync_state['last_completed'] ) ) {
+									echo 'Last: ' . esc_html( $sync_state['last_completed'] );
+								} else {
+									echo 'No sync has run yet.';
+								}
+								?>
+							</div>
+						</div>
+					</div>
 				</div>
 			</div>
 		</div>
+
+		<?php
+		// Compute progress percentage for dashboard display.
+		$dash_is_active = in_array( $sync_state['status'], array( 'scanning', 'importing', 'rate_limited' ), true );
+		?>
+
+		<?php if ( $dash_is_active ) : ?>
+		<!-- Live Sync Detail (only visible while sync is active) -->
+		<div class="tc-top-card" style="flex:2;" id="tc-dash-sync-detail">
+			<div style="width:100%;">
+				<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
+					<span class="dashicons dashicons-update-alt" style="color:var(--tc-primary);font-size:16px;animation:spin 2s linear infinite;"></span>
+					<span style="font-size:12px;font-weight:600;color:var(--tc-text);text-transform:uppercase;letter-spacing:.5px;"><?php esc_html_e( 'Sync in Progress', 'tcgiant-sync' ); ?></span>
+				</div>
+				<?php if ( 'importing' === $sync_state['status'] && $sync_state['total_queued'] > 0 ) :
+					$dash_pct = round( ( ( $sync_state['total_processed'] + $sync_state['total_errors'] ) / $sync_state['total_queued'] ) * 100 );
+				?>
+				<div id="tc-progress" class="tc-progress-wrap" style="display:block;margin-bottom:10px;">
+					<div class="tc-progress-bar">
+						<div class="tc-progress-fill" style="width:<?php echo esc_attr( $dash_pct ); ?>%;"></div>
+					</div>
+					<div class="tc-progress-text"><?php echo esc_html( $dash_pct ); ?>%</div>
+				</div>
+				<?php endif; ?>
+				<div class="tc-sync-stats" style="margin-top:0;">
+					<div class="tc-mini-stat">
+						<span class="tc-mini-val" id="tc-stat-synced"><?php echo esc_html( $stats['synced_products'] ); ?></span>
+						<span class="tc-mini-label">Products</span>
+					</div>
+					<div class="tc-mini-stat">
+						<span class="tc-mini-val" id="tc-stat-queued"><?php echo esc_html( $sync_state['total_queued'] ?: '0' ); ?></span>
+						<span class="tc-mini-label">Queued</span>
+					</div>
+					<div class="tc-mini-stat">
+						<span class="tc-mini-val" id="tc-stat-pending"><?php echo esc_html( $stats['pending_jobs'] ); ?></span>
+						<span class="tc-mini-label">Pending Jobs</span>
+					</div>
+				</div>
+			</div>
+		</div>
+		<?php endif; ?>
 
 		<!-- Export Status Card -->
 		<div class="tc-top-card" style="flex:1;">
