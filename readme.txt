@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.8.0
+Stable tag: 1.8.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,10 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 1.8.1 - 2026-07-23 =
+* Fix: Per-product shipping policy dropdown now correctly reads cached policies from eBay — previously empty due to a transient key mismatch.
+* Feature: Added "Year" field for Coins & Paper Money listings. eBay requires the Year item specific for all coin categories; a new text input appears when the item type is set to Coins (both graded and ungraded).
 
 = 1.8.0 - 2026-07-22 =
 * Fix: UUID format corrected — eBay requires exactly 32 hex characters (no hyphens). `wp_generate_uuid4()` produces 36 characters with hyphens; the fix strips them. This was blocking ALL listing pushes with the error "The UUID can only contain Numbers and Letters from A to F and must be 32 characters long."

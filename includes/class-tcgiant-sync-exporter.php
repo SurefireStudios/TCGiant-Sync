@@ -831,6 +831,7 @@ class TCGiant_Sync_Exporter {
 			'grader_id'             => $global['export_grader_id'] ?? '',
 			'grade_value'           => $global['export_grade_value'] ?? '',
 			'cert_number'           => $global['export_cert_number'] ?? '',
+			'coin_year'             => $global['export_coin_year'] ?? '',
 			'ungraded_condition'    => $global['export_ungraded_condition'] ?? '',
 			'location'              => $global['export_location'] ?? '',
 			'postal_code'           => $global['export_postal_code'] ?? '',
@@ -877,6 +878,11 @@ class TCGiant_Sync_Exporter {
 			$override_cert = $product->get_meta( '_ebay_export_cert_number' );
 			if ( ! empty( $override_cert ) ) {
 				$settings['cert_number'] = $override_cert;
+			}
+
+			$override_coin_year = $product->get_meta( '_ebay_export_coin_year' );
+			if ( ! empty( $override_coin_year ) ) {
+				$settings['coin_year'] = $override_coin_year;
 			}
 
 			$override_ungraded = $product->get_meta( '_ebay_export_ungraded_condition' );
@@ -1047,7 +1053,15 @@ class TCGiant_Sync_Exporter {
 		}
 
 		if ( empty( $specifics ) ) {
-			return '';
+			// Year is required for all Coins categories, even if no other specifics are set.
+			if ( empty( $settings['coin_year'] ) ) {
+				return '';
+			}
+		}
+
+		// Year: required by eBay for all Coins & Paper Money categories.
+		if ( ! empty( $settings['coin_year'] ) ) {
+			$specifics['Year'] = $settings['coin_year'];
 		}
 
 		$xml = '<ItemSpecifics>' . "\n";

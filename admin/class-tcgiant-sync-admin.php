@@ -907,6 +907,7 @@ class TCGiant_Sync_Admin {
 			'override_grader_id'          => '_ebay_export_grader_id',
 			'override_grade_value'        => '_ebay_export_grade_value',
 			'override_cert_number'        => '_ebay_export_cert_number',
+			'override_coin_year'          => '_ebay_export_coin_year',
 			'override_ungraded_condition' => '_ebay_export_ungraded_condition',
 			'override_listing_type'       => '_ebay_export_listing_type',
 			'override_listing_duration'   => '_ebay_export_listing_duration',
@@ -1176,6 +1177,7 @@ class TCGiant_Sync_Admin {
 			'_ebay_export_item_type',
 			'_ebay_export_condition_type',
 			'_ebay_export_cert_number',
+			'_ebay_export_coin_year',
 			'_ebay_export_listing_type',
 			'_ebay_export_listing_duration',
 			'_ebay_export_fulfillment_policy',
@@ -1264,6 +1266,7 @@ class TCGiant_Sync_Admin {
 		$grader_id      = get_post_meta( $product_id, '_ebay_export_grader_id', true );
 		$grade_val      = get_post_meta( $product_id, '_ebay_export_grade_value', true );
 		$cert_num       = get_post_meta( $product_id, '_ebay_export_cert_number', true );
+		$coin_year      = get_post_meta( $product_id, '_ebay_export_coin_year', true );
 		$ungraded       = get_post_meta( $product_id, '_ebay_export_ungraded_condition', true );
 		$listing_type_override   = get_post_meta( $product_id, '_ebay_export_listing_type', true );
 		$listing_dur_override    = get_post_meta( $product_id, '_ebay_export_listing_duration', true );
@@ -1453,6 +1456,9 @@ class TCGiant_Sync_Admin {
 					<div id="tcgiant-graded-shared-fields" style="<?php echo ( 'graded' !== $cond_type || empty( $item_type ) ) ? 'display:none;' : ''; ?>"><?php
 						woocommerce_wp_text_input( array( 'id' => '_ebay_export_cert_number', 'label' => __( 'Cert Number', 'tcgiant-sync' ), 'placeholder' => __( 'e.g. 12345678', 'tcgiant-sync' ), 'value' => $cert_num, 'desc_tip' => true, 'description' => __( 'The certification/slab number from the grading company.', 'tcgiant-sync' ) ) );
 					?></div>
+					<div id="tcgiant-coins-year-field" style="<?php echo 'coins' !== $item_type ? 'display:none;' : ''; ?>"><?php
+						woocommerce_wp_text_input( array( 'id' => '_ebay_export_coin_year', 'label' => __( 'Year', 'tcgiant-sync' ), 'placeholder' => __( 'e.g. 1921', 'tcgiant-sync' ), 'value' => $coin_year, 'desc_tip' => true, 'description' => __( 'The year of the coin. Required by eBay for all Coins & Paper Money categories.', 'tcgiant-sync' ) ) );
+					?></div>
 					<div id="tcgiant-ungraded-tcg-fields" style="<?php echo ( 'ungraded' !== $cond_type || 'tcg' !== $item_type ) ? 'display:none;' : ''; ?>"><?php
 						$uo1 = array( '' => __( '-- Select condition --', 'tcgiant-sync' ) );
 						foreach ( TCGiant_Sync_Exporter::UNGRADED_TCG as $uid => $ul ) { $uo1[ $uid ] = $ul; }
@@ -1506,7 +1512,7 @@ class TCGiant_Sync_Admin {
 
 				// Shipping Policy Override.
 				$fulfillment_policies = array( '' => __( '-- use profile setting --', 'tcgiant-sync' ) );
-				$cached_policies = get_transient( 'tcgiant_ebay_policies' );
+				$cached_policies = array( 'fulfillment' => get_transient( 'tcgiant_export_policies_fulfillment' ) );
 				if ( ! empty( $cached_policies['fulfillment'] ) && is_array( $cached_policies['fulfillment'] ) ) {
 					foreach ( $cached_policies['fulfillment'] as $fp ) {
 						if ( ! empty( $fp['id'] ) ) {
@@ -1637,7 +1643,7 @@ class TCGiant_Sync_Admin {
 			// Condition Type cards
 			$('#tc-section-condition .tc-card-selector .tc-card-option').on('click',function(){var v=$(this).data('value');$('#tc-section-condition .tc-card-selector .tc-card-option').removeClass('selected');$(this).addClass('selected');$('#_ebay_export_condition_type').val(v);tcGradingToggle();});
 			// Grading toggle
-			function tcGradingToggle(){var it=$('#_ebay_export_item_type').val(),ct=$('#_ebay_export_condition_type').val();if(it==='other'){$('#tcgiant-graded-tcg-fields,#tcgiant-graded-coins-fields,#tcgiant-graded-shared-fields,#tcgiant-ungraded-tcg-fields,#tcgiant-ungraded-coins-fields').hide();$('#tc-condition-type-wrapper').hide();return;}$('#tcgiant-graded-tcg-fields').toggle(it==='tcg'&&ct==='graded');$('#tcgiant-graded-coins-fields').toggle(it==='coins'&&ct==='graded');$('#tcgiant-graded-shared-fields').toggle(it!==''&&ct==='graded');$('#tcgiant-ungraded-tcg-fields').toggle(it==='tcg'&&ct==='ungraded');$('#tcgiant-ungraded-coins-fields').toggle(it==='coins'&&ct==='ungraded');}
+			function tcGradingToggle(){var it=$('#_ebay_export_item_type').val(),ct=$('#_ebay_export_condition_type').val();if(it==='other'){$('#tcgiant-graded-tcg-fields,#tcgiant-graded-coins-fields,#tcgiant-graded-shared-fields,#tcgiant-ungraded-tcg-fields,#tcgiant-ungraded-coins-fields,#tcgiant-coins-year-field').hide();$('#tc-condition-type-wrapper').hide();return;}$('#tcgiant-graded-tcg-fields').toggle(it==='tcg'&&ct==='graded');$('#tcgiant-graded-coins-fields').toggle(it==='coins'&&ct==='graded');$('#tcgiant-graded-shared-fields').toggle(it!==''&&ct==='graded');$('#tcgiant-ungraded-tcg-fields').toggle(it==='tcg'&&ct==='ungraded');$('#tcgiant-ungraded-coins-fields').toggle(it==='coins'&&ct==='ungraded');$('#tcgiant-coins-year-field').toggle(it==='coins');}
 			// Category dropdown
 			$('#_ebay_export_category_id_select').on('change',function(){$('#_ebay_export_category_id_custom').toggle($(this).val()==='custom');});
 			// Category browser
@@ -1652,7 +1658,7 @@ class TCGiant_Sync_Admin {
 			// Dismiss error
 			$('#tcgiant-dismiss-export-error').on('click',function(e){e.preventDefault();$.post(ajaxUrl,{action:'tcgiant_clear_export_error',product_id:$(this).data('product-id'),_ajax_nonce:nonce});$('#tcgiant-export-error-notice').slideUp(200);});
 			// Push
-			$('#tcgiant-push-btn').on('click',function(){var btn=$(this),st=$('#tcgiant-push-status');btn.prop('disabled',true);st.css('color','#555').text('Saving & validating...');var cs=$('#_ebay_export_category_id_select').val()||'',cc=$('#_ebay_export_category_id_custom').val()||'',catId=(cs==='custom')?cc:cs,it=$('#_ebay_export_item_type').val()||'',sf=(it&&it!=='other')?'_'+it:'',gid=$('#_ebay_export_grader_id'+sf).val()||'',gv=$('#_ebay_export_grade_value'+sf).val()||'',uc=$('#_ebay_export_ungraded_condition'+sf).val()||'';$.post(ajaxUrl,{action:'tcgiant_push_product',product_id:btn.data('product-id'),override_category_id:catId,override_condition_id:$('#_ebay_export_condition_id').val()||'',override_item_type:it,override_condition_type:$('#_ebay_export_condition_type').val()||'',override_grader_id:gid,override_grade_value:gv,override_cert_number:$('[name="_ebay_export_cert_number"]').val()||'',override_ungraded_condition:uc,override_listing_type:$('#_ebay_export_listing_type').val()||'',override_listing_duration:$('#_ebay_export_listing_duration').val()||'',override_fulfillment_policy:$('#_ebay_export_fulfillment_policy').val()||'',_ajax_nonce:nonce},function(r){if(r.success){st.css('color','#2a8a2a').text('OK - '+r.data.message);}else{st.css('color','#cc1818').text('Error: '+(r.data?r.data.message:'Unknown error'));btn.prop('disabled',false);}});});
+			$('#tcgiant-push-btn').on('click',function(){var btn=$(this),st=$('#tcgiant-push-status');btn.prop('disabled',true);st.css('color','#555').text('Saving & validating...');var cs=$('#_ebay_export_category_id_select').val()||'',cc=$('#_ebay_export_category_id_custom').val()||'',catId=(cs==='custom')?cc:cs,it=$('#_ebay_export_item_type').val()||'',sf=(it&&it!=='other')?'_'+it:'',gid=$('#_ebay_export_grader_id'+sf).val()||'',gv=$('#_ebay_export_grade_value'+sf).val()||'',uc=$('#_ebay_export_ungraded_condition'+sf).val()||'';$.post(ajaxUrl,{action:'tcgiant_push_product',product_id:btn.data('product-id'),override_category_id:catId,override_condition_id:$('#_ebay_export_condition_id').val()||'',override_item_type:it,override_condition_type:$('#_ebay_export_condition_type').val()||'',override_grader_id:gid,override_grade_value:gv,override_cert_number:$('[name="_ebay_export_cert_number"]').val()||'',override_coin_year:$('[name="_ebay_export_coin_year"]').val()||'',override_ungraded_condition:uc,override_listing_type:$('#_ebay_export_listing_type').val()||'',override_listing_duration:$('#_ebay_export_listing_duration').val()||'',override_fulfillment_policy:$('#_ebay_export_fulfillment_policy').val()||'',_ajax_nonce:nonce},function(r){if(r.success){st.css('color','#2a8a2a').text('OK - '+r.data.message);}else{st.css('color','#cc1818').text('Error: '+(r.data?r.data.message:'Unknown error'));btn.prop('disabled',false);}});});
 			// Duration filtering based on listing type.
 			var fpDurations={'FixedPriceItem':['GTC','Days_30'],'Chinese':['Days_1','Days_3','Days_5','Days_7','Days_10']};
 			$('#_ebay_export_listing_type').on('change',function(){var lt=$(this).val(),$dur=$('#_ebay_export_listing_duration');if(!lt){$dur.find('option').show();return;}var valid=fpDurations[lt]||[];$dur.find('option').each(function(){var v=$(this).val();if(!v){$(this).show();}else{$(this).toggle(valid.indexOf(v)>=0);}});if(valid.indexOf($dur.val())<0){$dur.val('');}});
