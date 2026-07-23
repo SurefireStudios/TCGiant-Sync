@@ -163,36 +163,61 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 				<!-- Category Filter -->
 				<div class="tc-section">
 					<h3 class="tc-section-title"><?php esc_html_e( 'Import Filters', 'tcgiant-sync' ); ?></h3>
-					<div class="tc-field">
-						<label class="tc-label"><?php esc_html_e( 'eBay Custom Store Categories to Import', 'tcgiant-sync' ); ?></label>
-						<div class="tc-category-selector" id="tc-category-selector">
-							<div class="tc-category-tags" id="tc-category-tags"></div>
-							<input type="hidden" name="tcgiant_sync_ebay_settings[category_ids]" id="tc-category-hidden" value="<?php echo esc_attr( $settings['category_ids'] ?? '' ); ?>">
-							<div style="display:flex;gap:6px;">
-								<select class="tc-select" id="tc-category-dropdown" style="display:none;"></select>
-								<button type="button" class="tc-button secondary" id="tc-load-categories" style="white-space:nowrap;flex-shrink:0;font-size:12px;"><?php esc_html_e( 'Load Store Categories', 'tcgiant-sync' ); ?></button>
-							</div>
-							<p class="tc-hint"><?php esc_html_e( 'Load your custom eBay store categories, then select which ones to import. Leave empty to import all.', 'tcgiant-sync' ); ?></p>
-						</div>
+
+					<?php
+					// Determine if "import all" mode is active (no filters selected).
+					$has_custom_cats   = ! empty( $settings['category_ids'] );
+					$has_standard_cats = ! empty( $settings['import_standard_category_ids'] ) && is_array( $settings['import_standard_category_ids'] ) && count( $settings['import_standard_category_ids'] ) > 0;
+					$import_all        = ! $has_custom_cats && ! $has_standard_cats;
+					?>
+
+					<!-- Import All Toggle -->
+					<div class="tc-field" style="margin-bottom:16px;">
+						<label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-size:14px;font-weight:600;">
+							<span style="position:relative;display:inline-block;width:44px;height:24px;">
+								<input type="checkbox" id="tc-import-all-toggle" <?php checked( $import_all ); ?> style="opacity:0;width:0;height:0;position:absolute;">
+								<span class="tc-toggle-slider" style="position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:<?php echo $import_all ? '#16a34a' : '#ccc'; ?>;border-radius:24px;transition:.3s;">
+									<span style="position:absolute;content:'';height:18px;width:18px;left:<?php echo $import_all ? '22px' : '3px'; ?>;bottom:3px;background:#fff;border-radius:50%;transition:.3s;box-shadow:0 1px 3px rgba(0,0,0,.2);"></span>
+								</span>
+							</span>
+							<?php esc_html_e( 'Import All Listings', 'tcgiant-sync' ); ?>
+						</label>
+						<p class="tc-hint" style="margin-top:6px;"><?php esc_html_e( 'When enabled, every active eBay listing is imported regardless of category. Turn off to filter by specific Custom or Standard categories.', 'tcgiant-sync' ); ?></p>
 					</div>
 
-					<div class="tc-field" style="margin-top:24px;">
-						<label class="tc-label"><?php esc_html_e( 'eBay Standard Categories to Import', 'tcgiant-sync' ); ?></label>
-						<?php
-						$standard_cats = TCGiant_Sync_Exporter::get_categories();
-						$selected_standard_cats = isset( $settings['import_standard_category_ids'] ) && is_array( $settings['import_standard_category_ids'] ) ? $settings['import_standard_category_ids'] : array();
-						?>
-						<div class="tc-checkbox-group" style="max-height:160px;overflow-y:auto;border:1px solid var(--tc-border);padding:12px;border-radius:4px;background:#fff;">
-							<?php foreach ( $standard_cats as $id => $label ) : 
-								if ( '' === $id || 'custom' === $id ) continue;
-							?>
-								<label style="display:block;margin-bottom:6px;font-weight:normal;cursor:pointer;">
-									<input type="checkbox" name="tcgiant_sync_ebay_settings[import_standard_category_ids][]" value="<?php echo esc_attr( $id ); ?>" <?php checked( in_array( $id, $selected_standard_cats ) ); ?>>
-									<?php echo esc_html( $label . ' (' . $id . ')' ); ?>
-								</label>
-							<?php endforeach; ?>
+					<!-- Category filters (hidden when Import All is ON) -->
+					<div id="tc-category-filters" style="<?php echo $import_all ? 'display:none;' : ''; ?>">
+						<div class="tc-field">
+							<label class="tc-label"><?php esc_html_e( 'eBay Custom Store Categories to Import', 'tcgiant-sync' ); ?></label>
+							<div class="tc-category-selector" id="tc-category-selector">
+								<div class="tc-category-tags" id="tc-category-tags"></div>
+								<input type="hidden" name="tcgiant_sync_ebay_settings[category_ids]" id="tc-category-hidden" value="<?php echo esc_attr( $settings['category_ids'] ?? '' ); ?>">
+								<div style="display:flex;gap:6px;">
+									<select class="tc-select" id="tc-category-dropdown" style="display:none;"></select>
+									<button type="button" class="tc-button secondary" id="tc-load-categories" style="white-space:nowrap;flex-shrink:0;font-size:12px;"><?php esc_html_e( 'Load Store Categories', 'tcgiant-sync' ); ?></button>
+								</div>
+								<p class="tc-hint"><?php esc_html_e( 'Load your custom eBay store categories, then select which ones to import.', 'tcgiant-sync' ); ?></p>
+							</div>
 						</div>
-						<p class="tc-hint" style="margin-top:8px;"><?php esc_html_e( 'Only import items that belong to these standard eBay categories. If neither Custom nor Standard categories are selected, ALL active listings will be imported.', 'tcgiant-sync' ); ?></p>
+
+						<div class="tc-field" style="margin-top:24px;">
+							<label class="tc-label"><?php esc_html_e( 'eBay Standard Categories to Import', 'tcgiant-sync' ); ?></label>
+							<?php
+							$standard_cats = TCGiant_Sync_Exporter::get_categories();
+							$selected_standard_cats = isset( $settings['import_standard_category_ids'] ) && is_array( $settings['import_standard_category_ids'] ) ? $settings['import_standard_category_ids'] : array();
+							?>
+							<div class="tc-checkbox-group" style="max-height:160px;overflow-y:auto;border:1px solid var(--tc-border);padding:12px;border-radius:4px;background:#fff;">
+								<?php foreach ( $standard_cats as $id => $label ) : 
+									if ( '' === $id || 'custom' === $id ) continue;
+								?>
+									<label style="display:block;margin-bottom:6px;font-weight:normal;cursor:pointer;">
+										<input type="checkbox" name="tcgiant_sync_ebay_settings[import_standard_category_ids][]" value="<?php echo esc_attr( $id ); ?>" <?php checked( in_array( $id, $selected_standard_cats ) ); ?>>
+										<?php echo esc_html( $label . ' (' . $id . ')' ); ?>
+									</label>
+								<?php endforeach; ?>
+							</div>
+							<p class="tc-hint" style="margin-top:8px;"><?php esc_html_e( 'Only import items that belong to these standard eBay categories.', 'tcgiant-sync' ); ?></p>
+						</div>
 					</div>
 
 					<div class="tc-field" style="margin-top:24px;">

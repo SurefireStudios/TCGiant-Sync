@@ -16,7 +16,36 @@
         initLicenseManager();
         initPolicyFetcher();
         initOrderSync();
+        initImportAllToggle();
     });
+
+    /* ─── Import All Toggle ─── */
+    function initImportAllToggle() {
+        var $toggle  = $('#tc-import-all-toggle');
+        var $filters = $('#tc-category-filters');
+        if (!$toggle.length) return;
+
+        $toggle.on('change', function() {
+            var on = $(this).is(':checked');
+            var $slider = $(this).next('.tc-toggle-slider');
+            var $knob   = $slider.find('span');
+
+            // Animate the slider.
+            $slider.css('background', on ? '#16a34a' : '#ccc');
+            $knob.css('left', on ? '22px' : '3px');
+
+            if (on) {
+                $filters.slideUp(200);
+                // Clear custom category selections so the importer imports everything.
+                $('#tc-category-hidden').val('');
+                $('#tc-category-tags').empty();
+                // Uncheck all standard category checkboxes.
+                $filters.find('input[type="checkbox"]').prop('checked', false);
+            } else {
+                $filters.slideDown(200);
+            }
+        });
+    }
 
     /* ─── Status Polling ─── */
     var statusTimer = null;
