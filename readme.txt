@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.8.5
+Stable tag: 1.9.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,13 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 1.9.0 - 2026-07-24 =
+* Feature: Persistent shipping policies — eBay policies now stored permanently in wp_options instead of 1-hour transients. No more "forgetting" after an hour.
+* Feature: Sortable & filterable eBay column — dropdown filter above the WooCommerce Products list with options: Listed on eBay, Not on eBay, Ended, Auctions Only, Fixed Price Only. Column is also sortable.
+* Feature: Listing type badges — each product now displays its eBay listing type (Auction/Fixed Price), duration (GTC, 10 Days, etc.), and end date directly in the product list column.
+* Feature: Automatic ended-listing detection — hourly cron checks for products whose eBay end time has passed and marks them as "Ended" with a red ⛔ indicator.
+* Data: eBay listing metadata (ListingType, ListingDuration, EndTime, ListingStatus) now stored during import for all future syncs.
 
 = 1.8.5 - 2026-07-24 =
 * Performance: Critical fix — image downloads now run in a separate Action Scheduler group ('tcgiant_sync_images') so they no longer block page scanning and product imports. Previously, 700+ image download jobs would queue ahead of the next page scan, causing the sync to stall for hours. Page scanning and image downloads now run in parallel.

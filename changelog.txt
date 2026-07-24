@@ -1,5 +1,12 @@
 *** TCGiant Sync Changelog ***
 
+2026-07-24 - version 1.9.0
+- Feature: Persistent shipping policies — stored in wp_options instead of 1-hour transients. No more "forgetting."
+- Feature: Sortable & filterable eBay column — dropdown filter (Listed, Not Listed, Ended, Auctions, Fixed Price). Column is sortable.
+- Feature: Listing type badges — Auction (orange) / Fixed Price (blue) badges with duration and end date displayed in the product list.
+- Feature: Automatic ended-listing detection — hourly cron marks products whose eBay end time has passed as "Ended" with red ⛔ indicator.
+- Data: Mapper now stores _ebay_listing_type, _ebay_listing_duration, _ebay_end_time, _ebay_listing_status during import.
+
 2026-07-24 - version 1.8.5
 - Performance: CRITICAL FIX — Image downloads moved to separate Action Scheduler group ('tcgiant_sync_images'). Root cause of the 12-hour sync stall: all actions (page scans, product imports, AND image downloads) were in the same group. Action Scheduler processes one action at a time per group, so 700+ image download jobs were blocking the next page scan. Now page scanning and image downloads run in parallel.
 

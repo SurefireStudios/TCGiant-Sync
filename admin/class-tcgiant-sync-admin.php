@@ -82,10 +82,22 @@ class TCGiant_Sync_Admin {
 		add_action( 'woocommerce_save_product_variation', array( $this, 'save_variation_bin_location_field' ), 10, 2 );
 
 
+
 		// eBay column on WooCommerce Products list.
 		add_filter( 'manage_edit-product_columns', array( $this, 'add_ebay_column' ) );
 		add_action( 'manage_product_posts_custom_column', array( $this, 'render_ebay_column' ), 10, 2 );
 		add_action( 'admin_footer-edit.php', array( $this, 'render_product_list_inline_assets' ) );
+
+		// Sortable eBay column + filter dropdown.
+		add_filter( 'manage_edit-product_sortable_columns', array( $this, 'make_ebay_column_sortable' ) );
+		add_action( 'restrict_manage_posts', array( $this, 'render_ebay_status_filter' ) );
+		add_action( 'pre_get_posts', array( $this, 'handle_ebay_status_filter' ) );
+
+		// Cron: detect ended eBay listings.
+		add_action( 'tcgiant_sync_check_ended_listings', array( $this, 'check_ended_listings_cron' ) );
+		if ( ! wp_next_scheduled( 'tcgiant_sync_check_ended_listings' ) ) {
+			wp_schedule_event( time(), 'hourly', 'tcgiant_sync_check_ended_listings' );
+		}
 	}
 
 	/**
@@ -1512,7 +1524,7 @@ class TCGiant_Sync_Admin {
 
 				// Shipping Policy Override.
 				$fulfillment_policies = array( '' => __( '-- use profile setting --', 'tcgiant-sync' ) );
-				$cached_policies = array( 'fulfillment' => get_transient( 'tcgiant_export_policies_fulfillment' ) );
+				$cached_policies = array( 'fulfillment' => get_option( 'tcgiant_export_policies_fulfillment', array() ) );
 				if ( ! empty( $cached_policies['fulfillment'] ) && is_array( $cached_policies['fulfillment'] ) ) {
 					foreach ( $cached_policies['fulfillment'] as $fp ) {
 						if ( ! empty( $fp['id'] ) ) {
@@ -1809,6 +1821,52 @@ class TCGiant_Sync_Admin {
 			echo '<div class="tc-ebay-itemid"><a href="https://www.ebay.com/itm/' . esc_attr( $ebay_item_id ) . '" target="_blank" rel="noopener" title="View on eBay">Item ' . esc_html( $ebay_item_id ) . ' ↗</a></div>';
 		}
 
+		// Listing type, duration, and end time badges.
+		$listing_type   = get_post_meta( $post_id, '_ebay_listing_type', true );
+		$listing_dur    = get_post_meta( $post_id, '_ebay_listing_duration', true );
+		$end_time       = get_post_meta( $post_id, '_ebay_end_time', true );
+		$listing_status = get_post_meta( $post_id, '_ebay_listing_status', true );
+
+		if ( ! empty( $listing_type ) ) {
+			// Type badge.
+			$type_labels = array(
+				'Chinese'        => array( 'Auction', 'tc-badge-auction' ),
+				'FixedPriceItem' => array( 'Fixed Price', 'tc-badge-fixed' ),
+			);
+			$type_info = $type_labels[ $listing_type ] ?? array( $listing_type, 'tc-badge-fixed' );
+
+			// Duration label.
+			$dur_labels = array(
+				'Days_1'  => '1 Day',
+				'Days_3'  => '3 Days',
+				'Days_5'  => '5 Days',
+				'Days_7'  => '7 Days',
+				'Days_10' => '10 Days',
+				'Days_30' => '30 Days',
+				'GTC'     => 'GTC',
+			);
+			$dur_label = $dur_labels[ $listing_dur ] ?? $listing_dur;
+
+			echo '<div class="tc-ebay-listing-info">';
+			echo '<span class="tc-ebay-badge ' . esc_attr( $type_info[1] ) . '">' . esc_html( $type_info[0] ) . '</span>';
+			if ( ! empty( $dur_label ) ) {
+				echo ' <span class="tc-ebay-duration">' . esc_html( $dur_label ) . '</span>';
+			}
+			echo '</div>';
+
+			// End time / status.
+			if ( ! empty( $end_time ) ) {
+				$end_ts   = strtotime( $end_time );
+				$is_ended = ( 'Ended' === $listing_status ) || ( $end_ts && $end_ts < time() );
+
+				if ( $is_ended ) {
+					echo '<div class="tc-ebay-end tc-ended">⛔ Ended ' . esc_html( date_i18n( 'M j, Y', $end_ts ) ) . '</div>';
+				} else {
+					echo '<div class="tc-ebay-end">⏰ Ends ' . esc_html( date_i18n( 'M j, Y', $end_ts ) ) . '</div>';
+				}
+			}
+		}
+
 		// Error notice — show actual error message and link to logs.
 		if ( 'error' === $export_status && ! empty( $export_error ) ) {
 			$log_url = admin_url( 'admin.php?page=tcgiant-export' );
@@ -1845,7 +1903,7 @@ class TCGiant_Sync_Admin {
 		?>
 		<style>
 			/* eBay column styling */
-			.column-tcgiant_ebay { width: 160px; }
+			.column-tcgiant_ebay { width: 190px; }
 			.tc-ebay-col { font-size: 12px; line-height: 1.5; }
 			.tc-ebay-cat {
 				color: #1d2327;
@@ -1915,6 +1973,42 @@ class TCGiant_Sync_Admin {
 			}
 			.tc-ebay-btn-status.is-success { color: #00a32a; }
 			.tc-ebay-btn-status.is-error { color: #d63638; }
+
+			/* Listing type badges */
+			.tc-ebay-listing-info { margin: 3px 0 2px; }
+			.tc-ebay-badge {
+				display: inline-block;
+				padding: 1px 6px;
+				font-size: 10px;
+				font-weight: 600;
+				text-transform: uppercase;
+				border-radius: 3px;
+				letter-spacing: 0.3px;
+			}
+			.tc-badge-auction {
+				background: #fef0e5;
+				color: #b35c00;
+				border: 1px solid #f0c8a0;
+			}
+			.tc-badge-fixed {
+				background: #e7f5ff;
+				color: #0a6abf;
+				border: 1px solid #a0d0f0;
+			}
+			.tc-ebay-duration {
+				font-size: 10px;
+				color: #757575;
+				margin-left: 2px;
+			}
+			.tc-ebay-end {
+				font-size: 11px;
+				color: #646970;
+				margin-bottom: 2px;
+			}
+			.tc-ebay-end.tc-ended {
+				color: #d63638;
+				font-weight: 600;
+			}
 		</style>
 		<script>
 		(function($){
@@ -1958,5 +2052,161 @@ class TCGiant_Sync_Admin {
 		})(jQuery);
 		</script>
 		<?php
+	}
+
+	/**
+	 * Make the eBay column sortable.
+	 */
+	public function make_ebay_column_sortable( $columns ) {
+		$columns['tcgiant_ebay'] = 'tcgiant_ebay';
+		return $columns;
+	}
+
+	/**
+	 * Render dropdown filter for eBay status on the Products list.
+	 */
+	public function render_ebay_status_filter( $post_type ) {
+		if ( 'product' !== $post_type ) {
+			return;
+		}
+		$current = isset( $_GET['tc_ebay_status'] ) ? sanitize_text_field( wp_unslash( $_GET['tc_ebay_status'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		?>
+		<select name="tc_ebay_status">
+			<option value=""><?php esc_html_e( 'All eBay Statuses', 'tcgiant-sync' ); ?></option>
+			<option value="listed" <?php selected( $current, 'listed' ); ?>><?php esc_html_e( '✅ Listed on eBay', 'tcgiant-sync' ); ?></option>
+			<option value="not_listed" <?php selected( $current, 'not_listed' ); ?>><?php esc_html_e( '⬜ Not on eBay', 'tcgiant-sync' ); ?></option>
+			<option value="ended" <?php selected( $current, 'ended' ); ?>><?php esc_html_e( '⛔ Ended', 'tcgiant-sync' ); ?></option>
+			<option value="auction" <?php selected( $current, 'auction' ); ?>><?php esc_html_e( '🏷 Auctions Only', 'tcgiant-sync' ); ?></option>
+			<option value="fixed" <?php selected( $current, 'fixed' ); ?>><?php esc_html_e( '💰 Fixed Price Only', 'tcgiant-sync' ); ?></option>
+		</select>
+		<?php
+	}
+
+	/**
+	 * Handle the eBay status filter and sortable column in pre_get_posts.
+	 */
+	public function handle_ebay_status_filter( $query ) {
+		if ( ! is_admin() || ! $query->is_main_query() ) {
+			return;
+		}
+
+		global $pagenow;
+		if ( 'edit.php' !== $pagenow || 'product' !== ( $query->get( 'post_type' ) ?: '' ) ) {
+			return;
+		}
+
+		// Filter by eBay status.
+		$status = isset( $_GET['tc_ebay_status'] ) ? sanitize_text_field( wp_unslash( $_GET['tc_ebay_status'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+
+		if ( ! empty( $status ) ) {
+			$meta_query = $query->get( 'meta_query' ) ?: array();
+
+			switch ( $status ) {
+				case 'listed':
+					$meta_query[] = array(
+						'key'     => '_ebay_item_id',
+						'value'   => '',
+						'compare' => '!=',
+					);
+					$meta_query[] = array(
+						'relation' => 'OR',
+						array(
+							'key'     => '_ebay_listing_status',
+							'value'   => 'Active',
+							'compare' => '=',
+						),
+						array(
+							'key'     => '_ebay_listing_status',
+							'compare' => 'NOT EXISTS',
+						),
+					);
+					break;
+				case 'not_listed':
+					$meta_query[] = array(
+						'relation' => 'OR',
+						array(
+							'key'     => '_ebay_item_id',
+							'compare' => 'NOT EXISTS',
+						),
+						array(
+							'key'     => '_ebay_item_id',
+							'value'   => '',
+							'compare' => '=',
+						),
+					);
+					break;
+				case 'ended':
+					$meta_query[] = array(
+						'key'     => '_ebay_listing_status',
+						'value'   => 'Ended',
+						'compare' => '=',
+					);
+					break;
+				case 'auction':
+					$meta_query[] = array(
+						'key'     => '_ebay_listing_type',
+						'value'   => 'Chinese',
+						'compare' => '=',
+					);
+					break;
+				case 'fixed':
+					$meta_query[] = array(
+						'key'     => '_ebay_listing_type',
+						'value'   => 'FixedPriceItem',
+						'compare' => '=',
+					);
+					break;
+			}
+
+			$query->set( 'meta_query', $meta_query );
+		}
+
+		// Handle sortable column.
+		if ( 'tcgiant_ebay' === $query->get( 'orderby' ) ) {
+			$query->set( 'meta_key', '_ebay_item_id' );
+			$query->set( 'orderby', 'meta_value' );
+		}
+	}
+
+	/**
+	 * Hourly cron: detect ended eBay listings.
+	 *
+	 * Scans products that have an _ebay_end_time in the past and marks
+	 * their _ebay_listing_status as 'Ended'.
+	 */
+	public function check_ended_listings_cron() {
+		global $wpdb;
+
+		$now_utc = gmdate( 'Y-m-d\TH:i:s.000\Z' );
+
+		// Find products with end time in the past that aren't already marked Ended.
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$product_ids = $wpdb->get_col( $wpdb->prepare(
+			"SELECT DISTINCT p.ID
+			 FROM {$wpdb->posts} p
+			 INNER JOIN {$wpdb->postmeta} pm_end ON p.ID = pm_end.post_id AND pm_end.meta_key = '_ebay_end_time'
+			 LEFT JOIN {$wpdb->postmeta} pm_status ON p.ID = pm_status.post_id AND pm_status.meta_key = '_ebay_listing_status'
+			 WHERE p.post_type = 'product'
+			   AND p.post_status != 'trash'
+			   AND pm_end.meta_value != ''
+			   AND pm_end.meta_value < %s
+			   AND (pm_status.meta_value IS NULL OR pm_status.meta_value != 'Ended')
+			 LIMIT 500",
+			$now_utc
+		) );
+
+		if ( empty( $product_ids ) ) {
+			return;
+		}
+
+		$count = 0;
+		foreach ( $product_ids as $pid ) {
+			update_post_meta( $pid, '_ebay_listing_status', 'Ended' );
+			$count++;
+		}
+
+		if ( $count > 0 ) {
+			TCGiant_Sync_Logger::log( sprintf( 'Ended listing check: marked %d product(s) as Ended.', $count ) );
+		}
 	}
 }

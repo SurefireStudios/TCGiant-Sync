@@ -1385,16 +1385,19 @@ class TCGiant_Sync_Exporter {
 	}
 
 	/**
-	 * Get cached business policies from a transient, or fetch fresh from eBay.
+	 * Get cached business policies, or fetch fresh from eBay.
+	 *
+	 * Policies are stored permanently in wp_options. They only refresh when
+	 * the user explicitly clicks "Fetch eBay Policies" (which calls clear_policy_cache()).
 	 *
 	 * @param string $type One of 'fulfillment', 'return', 'payment'.
 	 * @return array|WP_Error Array of policy objects, or WP_Error on failure.
 	 */
 	public static function get_policies( $type ) {
-		$transient_key = 'tcgiant_export_policies_' . $type;
-		$cached        = get_transient( $transient_key );
+		$option_key = 'tcgiant_export_policies_' . $type;
+		$cached     = get_option( $option_key, false );
 
-		if ( false !== $cached ) {
+		if ( false !== $cached && is_array( $cached ) && ! empty( $cached ) ) {
 			return $cached;
 		}
 
@@ -1434,8 +1437,8 @@ class TCGiant_Sync_Exporter {
 			}
 		}
 
-		// Cache for 1 hour.
-		set_transient( $transient_key, $policies, HOUR_IN_SECONDS );
+		// Store permanently — only refreshed when user clicks "Fetch eBay Policies".
+		update_option( $option_key, $policies, false );
 
 		return $policies;
 	}
@@ -1444,9 +1447,9 @@ class TCGiant_Sync_Exporter {
 	 * Bust the cached business policies (called after user clicks "Refresh Policies").
 	 */
 	public static function clear_policy_cache() {
-		delete_transient( 'tcgiant_export_policies_fulfillment' );
-		delete_transient( 'tcgiant_export_policies_return' );
-		delete_transient( 'tcgiant_export_policies_payment' );
+		delete_option( 'tcgiant_export_policies_fulfillment' );
+		delete_option( 'tcgiant_export_policies_return' );
+		delete_option( 'tcgiant_export_policies_payment' );
 	}
 
 	// -------------------------------------------------------------------------

@@ -218,9 +218,13 @@ class TCGiant_Sync_Mapper {
 
 		// Product Meta.
 		$product_data['meta'] = array(
-			'_ebay_sku'          => $product_data['sku'],
-			'_ebay_item_id'      => $item_id,
-			'_sync_last_updated' => current_time( 'mysql' ),
+			'_ebay_sku'              => $product_data['sku'],
+			'_ebay_item_id'          => $item_id,
+			'_sync_last_updated'     => current_time( 'mysql' ),
+			'_ebay_listing_type'     => $ebay_item['ListingType'] ?? '',
+			'_ebay_listing_duration' => $ebay_item['ListingDuration'] ?? '',
+			'_ebay_end_time'         => $ebay_item['ListingDetails']['EndTime'] ?? '',
+			'_ebay_listing_status'   => $ebay_item['SellingStatus']['ListingStatus'] ?? 'Active',
 		);
 
 		// Map Variations.
