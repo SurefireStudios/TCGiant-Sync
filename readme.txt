@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.8.4
+Stable tag: 1.8.5
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 1.8.5 - 2026-07-24 =
+* Performance: Critical fix — image downloads now run in a separate Action Scheduler group ('tcgiant_sync_images') so they no longer block page scanning and product imports. Previously, 700+ image download jobs would queue ahead of the next page scan, causing the sync to stall for hours. Page scanning and image downloads now run in parallel.
 
 = 1.8.4 - 2026-07-23 =
 * Performance: Dramatically faster page scanning for large stores. Previous logic waited up to 5+ minutes between pages (3s × queued items). Now caps next-page delay at 30s max and GetItem fallback stagger at 60s. A 47-page store that previously took hours to scan now completes much faster.

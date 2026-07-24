@@ -1,5 +1,8 @@
 *** TCGiant Sync Changelog ***
 
+2026-07-24 - version 1.8.5
+- Performance: CRITICAL FIX — Image downloads moved to separate Action Scheduler group ('tcgiant_sync_images'). Root cause of the 12-hour sync stall: all actions (page scans, product imports, AND image downloads) were in the same group. Action Scheduler processes one action at a time per group, so 700+ image download jobs were blocking the next page scan. Now page scanning and image downloads run in parallel.
+
 2026-07-23 - version 1.8.4
 - Performance: Dramatically faster page scanning for large stores (47+ pages). Old logic: next page waited `queued_count * 3` seconds (e.g. 100 items = 310s = 5+ minutes per page). New logic: next page waits at most 30s. GetItem fallback stagger capped at 60s. Fallbacks run in background via Action Scheduler — the scan no longer blocks on them.
 

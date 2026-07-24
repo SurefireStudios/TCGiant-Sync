@@ -806,13 +806,13 @@ class TCGiant_Sync_Admin {
 			 AND pm.meta_value != ''"
 		);
 
-		// Pending Action Scheduler jobs.
+		// Pending Action Scheduler jobs (both sync and image groups).
 		$pending_jobs = 0;
 		if ( class_exists( 'ActionScheduler' ) ) {
 			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 			$pending_jobs = (int) $wpdb->get_var(
 				"SELECT COUNT(*) FROM {$wpdb->prefix}actionscheduler_actions
-				 WHERE `group_id` IN (SELECT group_id FROM {$wpdb->prefix}actionscheduler_groups WHERE slug = 'tcgiant_sync_group')
+				 WHERE `group_id` IN (SELECT group_id FROM {$wpdb->prefix}actionscheduler_groups WHERE slug IN ('tcgiant_sync_group', 'tcgiant_sync_images'))
 				 AND status = 'pending'"
 			);
 		}

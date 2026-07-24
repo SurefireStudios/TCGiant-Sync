@@ -121,7 +121,7 @@ class TCGiant_Sync_Importer {
 			as_unschedule_all_actions( 'tcgiant_sync_fetch_listings', null, 'tcgiant_sync_group' );
 			as_unschedule_all_actions( 'tcgiant_sync_fetch_delta_events', null, 'tcgiant_sync_group' );
 			as_unschedule_all_actions( 'tcgiant_sync_process_item_import', null, 'tcgiant_sync_group' );
-			as_unschedule_all_actions( 'tcgiant_sync_download_images', null, 'tcgiant_sync_group' );
+			as_unschedule_all_actions( 'tcgiant_sync_download_images', null, 'tcgiant_sync_images' );
 		}
 
 		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
@@ -194,7 +194,7 @@ class TCGiant_Sync_Importer {
 			as_unschedule_all_actions( 'tcgiant_sync_fetch_listings', null, 'tcgiant_sync_group' );
 			as_unschedule_all_actions( 'tcgiant_sync_fetch_delta_events', null, 'tcgiant_sync_group' );
 			as_unschedule_all_actions( 'tcgiant_sync_process_item_import', null, 'tcgiant_sync_group' );
-			as_unschedule_all_actions( 'tcgiant_sync_download_images', null, 'tcgiant_sync_group' );
+			as_unschedule_all_actions( 'tcgiant_sync_download_images', null, 'tcgiant_sync_images' );
 		}
 
 		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
@@ -333,7 +333,7 @@ class TCGiant_Sync_Importer {
 				'product_id'     => (int) $product_id,
 				'image_urls'     => $all_images,
 				'is_first_batch' => true,
-			), 'tcgiant_sync_group' );
+			), 'tcgiant_sync_images' );
 
 			$queued++;
 			TCGiant_Sync_Logger::log( sprintf(
@@ -548,7 +548,7 @@ class TCGiant_Sync_Importer {
 							'product_id'     => $product_id,
 							'image_urls'     => $product_data['images'],
 							'is_first_batch' => true,
-						), 'tcgiant_sync_group' );
+						), 'tcgiant_sync_images' );
 					}
 					$processed++;
 
@@ -857,7 +857,7 @@ class TCGiant_Sync_Importer {
 								'product_id'     => $product_id,
 								'image_urls'     => $product_data['images'],
 								'is_first_batch' => true,
-							), 'tcgiant_sync_group' );
+							), 'tcgiant_sync_images' );
 						}
 
 						$inline_processed++;
@@ -1168,7 +1168,7 @@ class TCGiant_Sync_Importer {
 						'product_id'     => $product_id,
 						'image_urls'     => $product_data['images'],
 						'is_first_batch' => true,
-					), 'tcgiant_sync_group' );
+					), 'tcgiant_sync_images' );
 				}
 
 				$state = self::get_sync_state();
@@ -1772,7 +1772,7 @@ class TCGiant_Sync_Importer {
 					'product_id'     => $product_id,
 					'image_urls'     => $retryable,
 					'is_first_batch' => false,
-				), 'tcgiant_sync_group' );
+				), 'tcgiant_sync_images' );
 			}
 		}
 
@@ -1782,7 +1782,7 @@ class TCGiant_Sync_Importer {
 				'product_id'     => $product_id,
 				'image_urls'     => $remaining_images,
 				'is_first_batch' => false,
-			), 'tcgiant_sync_group' );
+			), 'tcgiant_sync_images' );
 		} elseif ( empty( $failed_images ) ) {
 			// Mark completion in status meta.
 			$img_status = get_post_meta( $product_id, '_tcgiant_image_status', true );
