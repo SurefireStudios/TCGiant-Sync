@@ -120,7 +120,7 @@ class TCGiant_Sync_Importer {
 		if ( function_exists( 'as_unschedule_all_actions' ) ) {
 			as_unschedule_all_actions( 'tcgiant_sync_fetch_listings', null, 'tcgiant_sync_group' );
 			as_unschedule_all_actions( 'tcgiant_sync_fetch_delta_events', null, 'tcgiant_sync_group' );
-			as_unschedule_all_actions( 'tcgiant_sync_process_item_import', null, 'tcgiant_sync_group' );
+			as_unschedule_all_actions( 'tcgiant_sync_process_item_import', null, 'tcgiant_sync_imports' );
 			as_unschedule_all_actions( 'tcgiant_sync_download_images', null, 'tcgiant_sync_images' );
 		}
 
@@ -193,7 +193,7 @@ class TCGiant_Sync_Importer {
 		if ( function_exists( 'as_unschedule_all_actions' ) ) {
 			as_unschedule_all_actions( 'tcgiant_sync_fetch_listings', null, 'tcgiant_sync_group' );
 			as_unschedule_all_actions( 'tcgiant_sync_fetch_delta_events', null, 'tcgiant_sync_group' );
-			as_unschedule_all_actions( 'tcgiant_sync_process_item_import', null, 'tcgiant_sync_group' );
+			as_unschedule_all_actions( 'tcgiant_sync_process_item_import', null, 'tcgiant_sync_imports' );
 			as_unschedule_all_actions( 'tcgiant_sync_download_images', null, 'tcgiant_sync_images' );
 		}
 
@@ -249,7 +249,7 @@ class TCGiant_Sync_Importer {
 		) );
 
 		foreach ( $item_ids as $item_id ) {
-			as_enqueue_async_action( 'tcgiant_sync_process_item_import', array( 'item_id' => $item_id ), 'tcgiant_sync_group' );
+			as_enqueue_async_action( 'tcgiant_sync_process_item_import', array( 'item_id' => $item_id ), 'tcgiant_sync_imports' );
 		}
 
 		TCGiant_Sync_Logger::log( sprintf( 'Manually queued %d specific item(s) for sync.', count( $item_ids ) ), 'success' );
@@ -633,7 +633,7 @@ class TCGiant_Sync_Importer {
 		// Clear any stale scheduled actions.
 		if ( function_exists( 'as_unschedule_all_actions' ) ) {
 			as_unschedule_all_actions( 'tcgiant_sync_fetch_listings', null, 'tcgiant_sync_group' );
-			as_unschedule_all_actions( 'tcgiant_sync_process_item_import', null, 'tcgiant_sync_group' );
+			as_unschedule_all_actions( 'tcgiant_sync_process_item_import', null, 'tcgiant_sync_imports' );
 		}
 
 		$resume_page = max( 1, (int) $state['current_page'] );
@@ -884,7 +884,7 @@ class TCGiant_Sync_Importer {
 				// Queue for GetItem fallback — critical data is missing from GetSellerList response.
 				// Stagger by 1s per item to avoid burst-firing, cap at 60s total stagger.
 				$delay = min( $queued_count, 60 );
-				as_schedule_single_action( time() + $delay, 'tcgiant_sync_process_item_import', array( 'item_id' => $item_id ), 'tcgiant_sync_group' );
+				as_schedule_single_action( time() + $delay, 'tcgiant_sync_process_item_import', array( 'item_id' => $item_id ), 'tcgiant_sync_imports' );
 				$queued_count++;
 			}
 		}
@@ -1104,7 +1104,7 @@ class TCGiant_Sync_Importer {
 				);
 				// Cancel remaining queued jobs to avoid wasting API calls.
 				if ( function_exists( 'as_unschedule_all_actions' ) ) {
-					as_unschedule_all_actions( 'tcgiant_sync_process_item_import', null, 'tcgiant_sync_group' );
+					as_unschedule_all_actions( 'tcgiant_sync_process_item_import', null, 'tcgiant_sync_imports' );
 				}
 				return;
 			}
@@ -1127,7 +1127,7 @@ class TCGiant_Sync_Importer {
 					$retries + 1,
 					$retry_delay / 60
 				), 'warning' );
-				as_schedule_single_action( time() + $retry_delay, 'tcgiant_sync_process_item_import', array( 'item_id' => $item_id ), 'tcgiant_sync_group' );
+				as_schedule_single_action( time() + $retry_delay, 'tcgiant_sync_process_item_import', array( 'item_id' => $item_id ), 'tcgiant_sync_imports' );
 				return;
 			}
 
@@ -1226,7 +1226,7 @@ class TCGiant_Sync_Importer {
 		if ( ! $is_done && function_exists( 'as_get_scheduled_actions' ) ) {
 			$pending = as_get_scheduled_actions( array(
 				'hook'   => 'tcgiant_sync_process_item_import',
-				'group'  => 'tcgiant_sync_group',
+				'group'  => 'tcgiant_sync_imports',
 				'status' => ActionScheduler_Store::STATUS_PENDING,
 				'per_page' => 1,
 			) );

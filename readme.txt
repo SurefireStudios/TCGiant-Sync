@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.9.0
+Stable tag: 1.9.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 1.9.1 - 2026-07-24 =
+* Performance: GetItem fallback imports moved to separate Action Scheduler group ('tcgiant_sync_imports'). This was the second bottleneck — 600 GetItem calls were blocking the page scan from advancing. Now three fully parallel queues: page scanning, product imports, and image downloads.
 
 = 1.9.0 - 2026-07-24 =
 * Feature: Persistent shipping policies — eBay policies now stored permanently in wp_options instead of 1-hour transients. No more "forgetting" after an hour.

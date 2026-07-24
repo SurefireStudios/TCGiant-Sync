@@ -1,5 +1,8 @@
 *** TCGiant Sync Changelog ***
 
+2026-07-24 - version 1.9.1
+- Performance: CRITICAL — GetItem fallback imports moved to separate Action Scheduler group ('tcgiant_sync_imports'). 600 GetItem calls were blocking page scanning (same root cause as v1.8.5 image fix). Now 3 fully parallel queues: page scanning (tcgiant_sync_group), product imports (tcgiant_sync_imports), image downloads (tcgiant_sync_images).
+
 2026-07-24 - version 1.9.0
 - Feature: Persistent shipping policies — stored in wp_options instead of 1-hour transients. No more "forgetting."
 - Feature: Sortable & filterable eBay column — dropdown filter (Listed, Not Listed, Ended, Auctions, Fixed Price). Column is sortable.
