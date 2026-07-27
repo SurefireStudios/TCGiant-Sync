@@ -43,6 +43,7 @@ class TCGiant_Sync_Importer {
 	public function __construct() {
 		add_action( 'tcgiant_sync_process_item_import', array( $this, 'process_item_import' ), 10, 1 );
 		add_action( 'tcgiant_sync_fetch_listings', array( $this, 'fetch_listings_page' ), 10, 1 );
+		add_action( 'tcgiant_sync_scan_all_pages', array( $this, 'scan_all_pages' ) );
 		add_action( 'tcgiant_sync_fetch_delta_events', array( $this, 'fetch_delta_events' ) );
 		add_action( 'tcgiant_sync_download_images', array( $this, 'download_product_images' ), 10, 3 );
 		add_action( 'tcgiant_sync_prune_orphans', array( $this, 'prune_orphaned_items' ) );
@@ -119,6 +120,7 @@ class TCGiant_Sync_Importer {
 		// Clear any previous pending sync jobs to prevent stacking.
 		if ( function_exists( 'as_unschedule_all_actions' ) ) {
 			as_unschedule_all_actions( 'tcgiant_sync_fetch_listings', null, 'tcgiant_sync_group' );
+			as_unschedule_all_actions( 'tcgiant_sync_scan_all_pages', null, 'tcgiant_sync_group' );
 			as_unschedule_all_actions( 'tcgiant_sync_fetch_delta_events', null, 'tcgiant_sync_group' );
 			as_unschedule_all_actions( 'tcgiant_sync_process_item_import', null, 'tcgiant_sync_imports' );
 			as_unschedule_all_actions( 'tcgiant_sync_download_images', null, 'tcgiant_sync_images' );
@@ -157,7 +159,7 @@ class TCGiant_Sync_Importer {
 			'Starting full sync for: %s (API budget: %d/%d calls remaining today)',
 			$filter_name, $api->get_remaining_daily_budget(), TCGiant_Sync_API::DAILY_CALL_LIMIT
 		) );
-		as_enqueue_async_action( 'tcgiant_sync_fetch_listings', array( 'page_number' => 1 ), 'tcgiant_sync_group' );
+		as_enqueue_async_action( 'tcgiant_sync_scan_all_pages', array(), 'tcgiant_sync_group' );
 	}
 
 	/**
@@ -192,6 +194,7 @@ class TCGiant_Sync_Importer {
 		// Clear any previous pending sync jobs.
 		if ( function_exists( 'as_unschedule_all_actions' ) ) {
 			as_unschedule_all_actions( 'tcgiant_sync_fetch_listings', null, 'tcgiant_sync_group' );
+			as_unschedule_all_actions( 'tcgiant_sync_scan_all_pages', null, 'tcgiant_sync_group' );
 			as_unschedule_all_actions( 'tcgiant_sync_fetch_delta_events', null, 'tcgiant_sync_group' );
 			as_unschedule_all_actions( 'tcgiant_sync_process_item_import', null, 'tcgiant_sync_imports' );
 			as_unschedule_all_actions( 'tcgiant_sync_download_images', null, 'tcgiant_sync_images' );
@@ -633,6 +636,7 @@ class TCGiant_Sync_Importer {
 		// Clear any stale scheduled actions.
 		if ( function_exists( 'as_unschedule_all_actions' ) ) {
 			as_unschedule_all_actions( 'tcgiant_sync_fetch_listings', null, 'tcgiant_sync_group' );
+			as_unschedule_all_actions( 'tcgiant_sync_scan_all_pages', null, 'tcgiant_sync_group' );
 			as_unschedule_all_actions( 'tcgiant_sync_process_item_import', null, 'tcgiant_sync_imports' );
 		}
 
@@ -653,7 +657,7 @@ class TCGiant_Sync_Importer {
 				$state['total_queued'],
 				$state['total_processed']
 			), 'success' );
-			as_enqueue_async_action( 'tcgiant_sync_fetch_listings', array( 'page_number' => $resume_page ), 'tcgiant_sync_group' );
+			as_enqueue_async_action( 'tcgiant_sync_scan_all_pages', array(), 'tcgiant_sync_group' );
 		} else {
 			// All pages were scanned but import phase was interrupted.
 			// Transition to importing — any pending item imports will be re-processed.
@@ -675,7 +679,344 @@ class TCGiant_Sync_Importer {
 	}
 
 	/**
-	 * Fetch a single page of listings via Trading API.
+	 * Scan ALL eBay listing pages in a single execution.
+	 *
+	 * Instead of scheduling each page as a separate Action Scheduler action
+	 * (which gets stuck behind thousands of import/image jobs), this method
+	 * loops through all pages directly with sleep() between API calls.
+	 *
+	 * A 47-page store completes scanning in ~3 minutes instead of 4+ days.
+	 *
+	 * On timeout or error, it updates current_page so the next invocation
+	 * (via resume or re-schedule) continues from where it left off.
+	 */
+	public function scan_all_pages() {
+		// Allow up to 10 minutes for the full scan loop.
+		// Most hosts allow this via set_time_limit; if not, the shutdown handler below handles it.
+		@set_time_limit( 600 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+
+		$state = self::get_sync_state();
+		$start_page = max( 1, (int) ( $state['current_page'] ?? 1 ) );
+
+		// If resuming from a completed page, start on the next one.
+		if ( $start_page > 1 && 'scanning' === ( $state['status'] ?? '' ) ) {
+			// current_page was already processed, move to next.
+			// But only if it was set by a previous scan_all_pages that completed that page.
+		}
+
+		$api = TCGiant_Sync_API::instance();
+		$state_for_mode = self::get_sync_state();
+		$mod_time_from = ( 'delta' === ( $state_for_mode['sync_mode'] ?? 'full' ) ) ? ( $state_for_mode['delta_mod_from'] ?? '' ) : '';
+
+		TCGiant_Sync_Logger::log( sprintf(
+			'Starting direct page scan from page %d. (API budget: %d/%d)',
+			$start_page, $api->get_remaining_daily_budget(), TCGiant_Sync_API::DAILY_CALL_LIMIT
+		) );
+
+		$total_pages = 0;
+		$current_page = $start_page;
+
+		// Register a shutdown handler so we can save progress if PHP times out.
+		$shutdown_page = &$current_page;
+		register_shutdown_function( function() use ( &$shutdown_page ) {
+			$error = error_get_last();
+			if ( $error && in_array( $error['type'], array( E_ERROR, E_CORE_ERROR, E_COMPILE_ERROR ), true ) ) {
+				self::update_sync_state( array(
+					'status'       => 'scanning',
+					'current_page' => $shutdown_page,
+				) );
+				TCGiant_Sync_Logger::log( sprintf(
+					'Scan interrupted at page %d (PHP timeout/fatal). Will auto-resume on next run.',
+					$shutdown_page
+				), 'warning' );
+				// Schedule a resume action.
+				if ( function_exists( 'as_schedule_single_action' ) ) {
+					as_schedule_single_action( time() + 30, 'tcgiant_sync_scan_all_pages', array(), 'tcgiant_sync_group' );
+				}
+			}
+		} );
+
+		while ( true ) {
+			self::update_sync_state( array(
+				'status'              => 'scanning',
+				'current_page'        => $current_page,
+				'rate_limit_retries'  => 0,
+			) );
+
+			$response = $api->get_active_listings( $current_page, 200, $mod_time_from );
+
+			// Handle rate limiting — pause and schedule a retry.
+			if ( is_wp_error( $response ) && 'rate_limited' === $response->get_error_code() ) {
+				$retries = (int) ( self::get_sync_state()['rate_limit_retries'] ?? 0 );
+				$retry_delay = $this->get_rate_limit_backoff_delay( $retries );
+				self::update_sync_state( array(
+					'status'             => 'rate_limited',
+					'current_page'       => $current_page,
+					'rate_limit_retries' => $retries + 1,
+				) );
+				TCGiant_Sync_Logger::log( sprintf(
+					'eBay API rate limit hit on page %d (attempt %d). Auto-retry in %d minutes.',
+					$current_page, $retries + 1, $retry_delay / 60
+				), 'warning' );
+				as_schedule_single_action( time() + $retry_delay, 'tcgiant_sync_scan_all_pages', array(), 'tcgiant_sync_group' );
+				return;
+			}
+
+			// Handle API error or empty response — scan is done.
+			if ( is_wp_error( $response ) || ! isset( $response['ItemArray']['Item'] ) ) {
+				$state = self::get_sync_state();
+				if ( $state['total_queued'] > 0 ) {
+					self::update_sync_state( array( 'status' => 'importing' ) );
+					TCGiant_Sync_Logger::log( sprintf( 'Scan complete. %d items queued for import.', $state['total_queued'] ) );
+				} else {
+					self::update_sync_state( array(
+						'status'                  => 'complete',
+						'last_completed'          => current_time( 'mysql' ),
+						'last_successful_sync_at' => gmdate( 'Y-m-d\TH:i:s.000\Z' ),
+					) );
+					TCGiant_Sync_Logger::log( 'Scan complete. No matching items found.' );
+					as_enqueue_async_action( 'tcgiant_sync_prune_orphans', array(), 'tcgiant_sync_group' );
+				}
+				return;
+			}
+
+			// Parse items from the response.
+			$items = $response['ItemArray']['Item'];
+			if ( ! isset( $items[0] ) ) {
+				$items = array( $items );
+			}
+
+			$total_pages = isset( $response['PaginationResult']['TotalNumberOfPages'] ) ? (int) $response['PaginationResult']['TotalNumberOfPages'] : 1;
+			self::update_sync_state( array( 'total_pages' => $total_pages ) );
+
+			// Process all items on this page inline.
+			$this->process_page_items( $items, $current_page, $total_pages );
+
+			TCGiant_Sync_Logger::log( sprintf(
+				'Page %d/%d scanned in direct loop.',
+				$current_page, $total_pages
+			) );
+
+			// Check if we've reached the last page.
+			if ( $current_page >= $total_pages ) {
+				$state = self::get_sync_state();
+				if ( $state['total_queued'] > 0 ) {
+					self::update_sync_state( array( 'status' => 'importing' ) );
+					TCGiant_Sync_Logger::log( sprintf(
+						'Scan complete. %d total items queued for import across %d pages.',
+						$state['total_queued'], $total_pages
+					) );
+				} else {
+					self::update_sync_state( array(
+						'status'                  => 'complete',
+						'last_completed'          => current_time( 'mysql' ),
+						'last_successful_sync_at' => gmdate( 'Y-m-d\TH:i:s.000\Z' ),
+					) );
+					TCGiant_Sync_Logger::log( 'Scan complete. No matching items found.' );
+					as_enqueue_async_action( 'tcgiant_sync_prune_orphans', array(), 'tcgiant_sync_group' );
+				}
+				return;
+			}
+
+			$current_page++;
+
+			// Rate-limit pause between pages — 2 seconds to avoid hammering eBay.
+			sleep( 2 );
+		}
+	}
+
+	/**
+	 * Process all items from a single page of eBay listings.
+	 *
+	 * Extracted from fetch_listings_page() so it can be called from both the
+	 * direct loop (scan_all_pages) and the legacy per-page method.
+	 *
+	 * @param array $items       Array of eBay item arrays.
+	 * @param int   $page_number Current page number.
+	 * @param int   $total_pages Total pages available.
+	 */
+	private function process_page_items( $items, $page_number, $total_pages ) {
+		$queued_count = 0;
+		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
+		$is_custom_filtering = ! empty( $settings['category_ids'] );
+		$standard_cats       = ! empty( $settings['import_standard_category_ids'] ) && is_array( $settings['import_standard_category_ids'] ) ? $settings['import_standard_category_ids'] : array();
+		$is_filtering        = $is_custom_filtering || ! empty( $standard_cats );
+
+		$valid_custom_ids = $is_custom_filtering ? $this->get_allowed_category_ids() : array();
+
+		// Debug: log resolved category IDs on the first page.
+		if ( $page_number === 1 && $is_filtering ) {
+			TCGiant_Sync_Logger::log( sprintf(
+				'Category filter active. Custom IDs: [%s]. Standard IDs: [%s].',
+				implode( ', ', $valid_custom_ids ),
+				implode( ', ', $standard_cats )
+			) );
+			if ( ! empty( $items[0] ) ) {
+				$sample = $items[0];
+				TCGiant_Sync_Logger::log( sprintf(
+					'Sample item "%s": PrimaryCat=%s, StoreCat1=%s, StoreCat2=%s',
+					$sample['Title'] ?? '?',
+					$sample['PrimaryCategory']['CategoryID'] ?? 'n/a',
+					$sample['Storefront']['StoreCategoryID'] ?? 'n/a',
+					$sample['Storefront']['StoreCategory2ID'] ?? 'n/a'
+				) );
+			}
+		}
+
+		$active_ids_batch = array();
+		$mapper = TCGiant_Sync_Mapper::instance();
+		$license = TCGiant_Sync_License::instance();
+		$inline_processed = 0;
+		$inline_errors = 0;
+
+		foreach ( $items as $item ) {
+			$item_id = $item['ItemID'] ?? '';
+
+			if ( empty( $item_id ) ) {
+				continue;
+			}
+
+			$active_ids_batch[] = $item_id;
+
+			// Category pre-filter.
+			if ( $is_filtering ) {
+				$primary_cat = $item['PrimaryCategory']['CategoryID'] ?? '';
+				$store_cat1 = $item['Storefront']['StoreCategoryID'] ?? '';
+				$store_cat2 = $item['Storefront']['StoreCategory2ID'] ?? '';
+
+				$match = false;
+
+				if ( ! empty( $standard_cats ) ) {
+					if ( in_array( (string) $primary_cat, $standard_cats, true ) ) $match = true;
+				}
+
+				if ( ! empty( $valid_custom_ids ) ) {
+					if ( in_array( (string) $primary_cat, $valid_custom_ids, true ) ) $match = true;
+					if ( in_array( (string) $store_cat1, $valid_custom_ids, true ) ) $match = true;
+					if ( in_array( (string) $store_cat2, $valid_custom_ids, true ) ) $match = true;
+				}
+
+				if ( ! $match ) {
+					continue;
+				}
+			}
+
+			// License check per item.
+			if ( ! $license->can_import() ) {
+				self::update_sync_state( array( 'status' => 'limit_reached' ) );
+				TCGiant_Sync_Logger::log( 'Import limit reached. Remaining items skipped.', 'warning' );
+				break;
+			}
+
+			// Determine if this item needs a GetItem fallback.
+			$has_variations = isset( $item['Variations'] );
+			$missing_critical = ! isset( $item['Title'] ) || ! isset( $item['SellingStatus'] );
+			$missing_specs_or_images = ! isset( $item['ItemSpecifics'] ) || ! isset( $item['PictureDetails'] );
+
+			$can_inline = ! $missing_critical && ! $missing_specs_or_images;
+			if ( $has_variations && $can_inline ) {
+				$can_inline = isset( $item['Variations']['Variation'] ) && ! empty( $item['Variations']['Variation'] );
+			}
+
+			if ( $can_inline ) {
+				try {
+					$title = $item['Title'] ?? 'Unknown';
+					$product_data = $mapper->map_ebay_to_woo( $item );
+					$product_id = $mapper->save_as_product( $product_data );
+
+					if ( $product_id ) {
+						if ( ! empty( $product_data['variations'] ) ) {
+							foreach ( $product_data['variations'] as $var ) {
+								if ( ! empty( $var['image_url'] ) && ! empty( $var['variation_id'] ) ) {
+									$product_data['images'][] = array( $var['image_url'], $var['variation_id'] );
+								}
+							}
+						}
+
+						$settings_for_img = TCGiant_Sync_OAuth::instance()->get_settings();
+						$force_overwrite = ! empty( $settings_for_img['overwrite_images'] );
+						if ( ! empty( $product_data['images'] ) && $this->should_download_images( $product_id, $product_data['images'], $force_overwrite ) ) {
+							as_enqueue_async_action( 'tcgiant_sync_download_images', array(
+								'product_id'     => $product_id,
+								'image_urls'     => $product_data['images'],
+								'is_first_batch' => true,
+							), 'tcgiant_sync_images' );
+						}
+
+						$inline_processed++;
+						$price_display = ! empty( $product_data['price'] ) ? '$' . $product_data['price'] : 'No price';
+						$attr_count = count( $product_data['attributes'] );
+						$weight_display = ! empty( $product_data['weight'] ) ? ', ' . $product_data['weight'] . get_option( 'woocommerce_weight_unit', 'lbs' ) : '';
+						$var_label = $has_variations ? ' [inline+vars]' : ' [inline]';
+						TCGiant_Sync_Logger::log( sprintf(
+							'Imported: "%s" -> WC #%d (%s, Qty: %d, %d attrs%s)%s',
+							$title, $product_id, $price_display, $product_data['stock_quantity'], $attr_count, $weight_display, $var_label
+						), 'success' );
+					} else {
+						$inline_errors++;
+						TCGiant_Sync_Logger::error( sprintf( 'Failed to save product for eBay Item: %s [inline]', $item_id ) );
+					}
+				} catch ( Exception $e ) {
+					$inline_errors++;
+					TCGiant_Sync_Logger::error( 'Inline import exception for ' . $item_id . ': ' . $e->getMessage() );
+				} catch ( Error $e ) {
+					$inline_errors++;
+					TCGiant_Sync_Logger::error( 'Inline import fatal for ' . $item_id . ': ' . $e->getMessage() );
+				}
+			} else {
+				// Queue for GetItem fallback.
+				$delay = min( $queued_count, 60 );
+				as_schedule_single_action( time() + $delay, 'tcgiant_sync_process_item_import', array( 'item_id' => $item_id ), 'tcgiant_sync_imports' );
+				$queued_count++;
+			}
+		}
+
+		if ( ! empty( $active_ids_batch ) ) {
+			$existing_active = get_option( 'tcgiant_sync_active_ids', array() );
+			$existing_active = is_array( $existing_active ) ? $existing_active : array();
+			update_option( 'tcgiant_sync_active_ids', array_unique( array_merge( $existing_active, $active_ids_batch ) ) );
+		}
+
+		// Update state with running totals.
+		$state = self::get_sync_state();
+		$new_total_found = $state['total_found'] + count( $items );
+		$new_total_queued = $state['total_queued'] + $queued_count;
+		$new_total_processed = $state['total_processed'] + $inline_processed;
+		$new_total_errors = $state['total_errors'] + $inline_errors;
+
+		$last_title = '';
+		if ( ! empty( $items ) ) {
+			$last_item = end( $items );
+			$last_title = $last_item['Title'] ?? '';
+		}
+
+		self::update_sync_state( array(
+			'current_page'    => $page_number,
+			'total_found'     => $new_total_found,
+			'total_queued'    => $new_total_queued,
+			'total_processed' => $new_total_processed,
+			'total_errors'    => $new_total_errors,
+			'last_item_title' => $last_title,
+		) );
+
+		// Log summary.
+		if ( $page_number <= $total_pages ) {
+			$matched_label = $is_filtering ? sprintf( ', %d matched filter', $inline_processed + $queued_count ) : '';
+			$inline_label = $inline_processed > 0 ? sprintf( ', %d imported inline', $inline_processed ) : '';
+			$queued_label = $queued_count > 0 ? sprintf( ', %d queued for GetItem', $queued_count ) : '';
+			$filter_label = '';
+			TCGiant_Sync_Logger::log( sprintf(
+				'Page %d/%d: Scanned %d items%s%s%s%s.',
+				$page_number, $total_pages, count( $items ), $matched_label, $inline_label, $queued_label, $filter_label
+			) );
+		}
+	}
+
+	/**
+	 * Fetch a single page of listings via Trading API (legacy method).
+	 *
+	 * Kept for backward compatibility. The primary scan method is now
+	 * scan_all_pages() which loops through all pages in a single execution.
 	 *
 	 * @param int $page_number Page number to fetch.
 	 */

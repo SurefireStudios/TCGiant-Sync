@@ -1,5 +1,10 @@
 *** TCGiant Sync Changelog ***
 
+2026-07-27 - version 2.0.0
+- ARCHITECTURE: Complete page scan overhaul. All pages now scanned in a single direct PHP loop instead of individual Action Scheduler jobs. A 47-page store completes in ~3 minutes instead of 4+ days.
+- Performance: GetSellerList API now requests IncludeVariationSpecifics + HideVariations=false, returning complete variation data inline and eliminating most GetItem fallback calls.
+- Reliability: Shutdown handler saves progress on PHP timeout and auto-resumes within 30 seconds.
+
 2026-07-24 - version 1.9.1
 - Performance: CRITICAL — GetItem fallback imports moved to separate Action Scheduler group ('tcgiant_sync_imports'). 600 GetItem calls were blocking page scanning (same root cause as v1.8.5 image fix). Now 3 fully parallel queues: page scanning (tcgiant_sync_group), product imports (tcgiant_sync_imports), image downloads (tcgiant_sync_images).
 

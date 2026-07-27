@@ -413,7 +413,9 @@ class TCGiant_Sync_API {
 	<EntriesPerPage>' . (int) $entries_per_page . '</EntriesPerPage>
 	<PageNumber>' . (int) $page_number . '</PageNumber>
 </Pagination>
-<IncludeItemSpecifics>true</IncludeItemSpecifics>';
+<IncludeItemSpecifics>true</IncludeItemSpecifics>
+<IncludeVariationSpecifics>true</IncludeVariationSpecifics>
+<HideVariations>false</HideVariations>';
 
 		return $this->trading_api_request( 'GetSellerList', $xml );
 	}
