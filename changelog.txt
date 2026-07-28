@@ -1,5 +1,13 @@
 *** TCGiant Sync Changelog ***
 
+2026-07-28 - version 2.1.0
+- CRITICAL FIX: Scan resume now uses WP-Cron instead of Action Scheduler. Resume was getting stuck behind 2,800+ image jobs in the AS queue.
+- Scan batching: 10 pages per execution with immediate WP-Cron resume. Works on hosts with 30s PHP time limits.
+- Feature: End eBay listings directly from WordPress (product list + edit screen).
+- Feature: SKU format setting — choose plain Item Number or EBAY- prefix for new imports.
+- Feature: Staging environment detection — blocks write API calls on staging/dev sites.
+- Fix: Relay User-Agent header (TCGiant-Sync-Relay/2.1) prevents Cloudflare/WAF blocking.
+
 2026-07-27 - version 2.0.0
 - ARCHITECTURE: Complete page scan overhaul. All pages now scanned in a single direct PHP loop instead of individual Action Scheduler jobs. A 47-page store completes in ~3 minutes instead of 4+ days.
 - Performance: GetSellerList API now requests IncludeVariationSpecifics + HideVariations=false, returning complete variation data inline and eliminating most GetItem fallback calls.

@@ -102,9 +102,11 @@ class TCGiant_Sync_Mapper {
 			}
 		}
 
-		// Fallback 3: use EBAY-{ItemID} if no other identifier exists.
+		// Fallback 3: use ItemID as SKU if no other identifier exists.
+		// The sku_prefix setting controls whether to add "EBAY-" prefix (default: no prefix).
 		if ( empty( $product_data['sku'] ) && ! empty( $item_id ) ) {
-			$product_data['sku'] = 'EBAY-' . $item_id;
+			$sku_prefix = ! empty( $settings['sku_prefix'] ) ? $settings['sku_prefix'] : 'none';
+			$product_data['sku'] = ( 'ebay' === $sku_prefix ) ? 'EBAY-' . $item_id : $item_id;
 		}
 
 		// Map Quantity (available = total - sold).

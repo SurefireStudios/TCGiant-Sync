@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 2.0.0
+Stable tag: 2.1.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,14 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 2.1.0 - 2026-07-28 =
+* CRITICAL FIX: Scan resume now uses WP-Cron instead of Action Scheduler. When PHP timed out, the resume action was getting stuck behind 2,800+ image/import jobs in the AS queue for hours. WP-Cron events fire directly on the next page load, bypassing the AS batch queue entirely.
+* Scan batching: Processes 10 pages per execution then immediately schedules the next batch. A 47-page store completes in ~5 minutes across 5 batches, regardless of PHP time limits.
+* Feature: End eBay listings directly from WordPress — new "⛔ End Listing" button on product list and edit screens with confirmation dialog.
+* Feature: SKU format setting — choose between plain Item Number (185727729088) or EBAY- prefix (EBAY-185727729088) for new imports. Default is now plain number.
+* Feature: Staging environment detection — automatically detects staging/dev sites and blocks write API calls (push, revise, end) to prevent accidental changes to live listings.
+* Fix: Relay server now sends User-Agent header (TCGiant-Sync-Relay/2.1) to prevent Cloudflare/WAF from blocking deletion notifications as bot traffic.
 
 = 2.0.0 - 2026-07-27 =
 * BREAKING: Complete page scan architecture overhaul. Scanning no longer uses per-page Action Scheduler jobs (which got stuck behind thousands of import/image jobs). Instead, all pages are scanned in a single direct PHP loop with sleep(2) between API calls. A 47-page store now completes scanning in ~3 minutes instead of 4+ days.

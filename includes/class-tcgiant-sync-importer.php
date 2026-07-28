@@ -44,6 +44,7 @@ class TCGiant_Sync_Importer {
 		add_action( 'tcgiant_sync_process_item_import', array( $this, 'process_item_import' ), 10, 1 );
 		add_action( 'tcgiant_sync_fetch_listings', array( $this, 'fetch_listings_page' ), 10, 1 );
 		add_action( 'tcgiant_sync_scan_all_pages', array( $this, 'scan_all_pages' ) );
+		add_action( 'tcgiant_sync_scan_resume', array( $this, 'scan_all_pages' ) ); // WP-Cron resume hook.
 		add_action( 'tcgiant_sync_fetch_delta_events', array( $this, 'fetch_delta_events' ) );
 		add_action( 'tcgiant_sync_download_images', array( $this, 'download_product_images' ), 10, 3 );
 		add_action( 'tcgiant_sync_prune_orphans', array( $this, 'prune_orphaned_items' ) );
@@ -121,6 +122,7 @@ class TCGiant_Sync_Importer {
 		if ( function_exists( 'as_unschedule_all_actions' ) ) {
 			as_unschedule_all_actions( 'tcgiant_sync_fetch_listings', null, 'tcgiant_sync_group' );
 			as_unschedule_all_actions( 'tcgiant_sync_scan_all_pages', null, 'tcgiant_sync_group' );
+			wp_clear_scheduled_hook( 'tcgiant_sync_scan_resume' );
 			as_unschedule_all_actions( 'tcgiant_sync_fetch_delta_events', null, 'tcgiant_sync_group' );
 			as_unschedule_all_actions( 'tcgiant_sync_process_item_import', null, 'tcgiant_sync_imports' );
 			as_unschedule_all_actions( 'tcgiant_sync_download_images', null, 'tcgiant_sync_images' );
@@ -195,6 +197,7 @@ class TCGiant_Sync_Importer {
 		if ( function_exists( 'as_unschedule_all_actions' ) ) {
 			as_unschedule_all_actions( 'tcgiant_sync_fetch_listings', null, 'tcgiant_sync_group' );
 			as_unschedule_all_actions( 'tcgiant_sync_scan_all_pages', null, 'tcgiant_sync_group' );
+			wp_clear_scheduled_hook( 'tcgiant_sync_scan_resume' );
 			as_unschedule_all_actions( 'tcgiant_sync_fetch_delta_events', null, 'tcgiant_sync_group' );
 			as_unschedule_all_actions( 'tcgiant_sync_process_item_import', null, 'tcgiant_sync_imports' );
 			as_unschedule_all_actions( 'tcgiant_sync_download_images', null, 'tcgiant_sync_images' );
@@ -637,6 +640,7 @@ class TCGiant_Sync_Importer {
 		if ( function_exists( 'as_unschedule_all_actions' ) ) {
 			as_unschedule_all_actions( 'tcgiant_sync_fetch_listings', null, 'tcgiant_sync_group' );
 			as_unschedule_all_actions( 'tcgiant_sync_scan_all_pages', null, 'tcgiant_sync_group' );
+			wp_clear_scheduled_hook( 'tcgiant_sync_scan_resume' );
 			as_unschedule_all_actions( 'tcgiant_sync_process_item_import', null, 'tcgiant_sync_imports' );
 		}
 
@@ -679,64 +683,45 @@ class TCGiant_Sync_Importer {
 	}
 
 	/**
-	 * Scan ALL eBay listing pages in a single execution.
+	 * Scan eBay listing pages in batches with WP-Cron resume.
 	 *
-	 * Instead of scheduling each page as a separate Action Scheduler action
-	 * (which gets stuck behind thousands of import/image jobs), this method
-	 * loops through all pages directly with sleep() between API calls.
+	 * Processes up to PAGES_PER_BATCH pages per execution, then schedules
+	 * an immediate WP-Cron event to continue. This handles hosts with strict
+	 * 30-second PHP time limits where set_time_limit() is disabled.
 	 *
-	 * A 47-page store completes scanning in ~3 minutes instead of 4+ days.
+	 * Uses wp_schedule_single_event() (WordPress built-in cron) instead of
+	 * Action Scheduler for resumption. WP-Cron events fire directly on the
+	 * next page load — they don't compete with the AS batch queue.
 	 *
-	 * On timeout or error, it updates current_page so the next invocation
-	 * (via resume or re-schedule) continues from where it left off.
+	 * A 47-page store completes scanning in ~5 minutes across ~5 batches.
 	 */
+	const PAGES_PER_BATCH = 10;
+
 	public function scan_all_pages() {
-		// Allow up to 10 minutes for the full scan loop.
-		// Most hosts allow this via set_time_limit; if not, the shutdown handler below handles it.
-		@set_time_limit( 600 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+		// Try to extend the time limit, but don't rely on it.
+		@set_time_limit( 300 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+		ignore_user_abort( true );
 
 		$state = self::get_sync_state();
 		$start_page = max( 1, (int) ( $state['current_page'] ?? 1 ) );
 
-		// If resuming from a completed page, start on the next one.
-		if ( $start_page > 1 && 'scanning' === ( $state['status'] ?? '' ) ) {
-			// current_page was already processed, move to next.
-			// But only if it was set by a previous scan_all_pages that completed that page.
+		// If resuming, start from the NEXT page (current_page was already processed).
+		if ( $start_page > 1 && in_array( $state['status'] ?? '', array( 'scanning', 'rate_limited' ), true ) ) {
+			$start_page++;
 		}
 
 		$api = TCGiant_Sync_API::instance();
-		$state_for_mode = self::get_sync_state();
-		$mod_time_from = ( 'delta' === ( $state_for_mode['sync_mode'] ?? 'full' ) ) ? ( $state_for_mode['delta_mod_from'] ?? '' ) : '';
+		$mod_time_from = ( 'delta' === ( $state['sync_mode'] ?? 'full' ) ) ? ( $state['delta_mod_from'] ?? '' ) : '';
 
 		TCGiant_Sync_Logger::log( sprintf(
-			'Starting direct page scan from page %d. (API budget: %d/%d)',
-			$start_page, $api->get_remaining_daily_budget(), TCGiant_Sync_API::DAILY_CALL_LIMIT
+			'Scan batch starting from page %d (up to %d pages). API budget: %d/%d.',
+			$start_page, self::PAGES_PER_BATCH, $api->get_remaining_daily_budget(), TCGiant_Sync_API::DAILY_CALL_LIMIT
 		) );
 
-		$total_pages = 0;
-		$current_page = $start_page;
+		$total_pages = (int) ( $state['total_pages'] ?? 0 );
+		$pages_this_batch = 0;
 
-		// Register a shutdown handler so we can save progress if PHP times out.
-		$shutdown_page = &$current_page;
-		register_shutdown_function( function() use ( &$shutdown_page ) {
-			$error = error_get_last();
-			if ( $error && in_array( $error['type'], array( E_ERROR, E_CORE_ERROR, E_COMPILE_ERROR ), true ) ) {
-				self::update_sync_state( array(
-					'status'       => 'scanning',
-					'current_page' => $shutdown_page,
-				) );
-				TCGiant_Sync_Logger::log( sprintf(
-					'Scan interrupted at page %d (PHP timeout/fatal). Will auto-resume on next run.',
-					$shutdown_page
-				), 'warning' );
-				// Schedule a resume action.
-				if ( function_exists( 'as_schedule_single_action' ) ) {
-					as_schedule_single_action( time() + 30, 'tcgiant_sync_scan_all_pages', array(), 'tcgiant_sync_group' );
-				}
-			}
-		} );
-
-		while ( true ) {
+		for ( $current_page = $start_page; $pages_this_batch < self::PAGES_PER_BATCH; $current_page++ ) {
 			self::update_sync_state( array(
 				'status'              => 'scanning',
 				'current_page'        => $current_page,
@@ -745,38 +730,26 @@ class TCGiant_Sync_Importer {
 
 			$response = $api->get_active_listings( $current_page, 200, $mod_time_from );
 
-			// Handle rate limiting — pause and schedule a retry.
+			// Handle rate limiting — pause and schedule via WP-Cron.
 			if ( is_wp_error( $response ) && 'rate_limited' === $response->get_error_code() ) {
 				$retries = (int) ( self::get_sync_state()['rate_limit_retries'] ?? 0 );
 				$retry_delay = $this->get_rate_limit_backoff_delay( $retries );
 				self::update_sync_state( array(
 					'status'             => 'rate_limited',
-					'current_page'       => $current_page,
+					'current_page'       => $current_page - 1, // Last successful page.
 					'rate_limit_retries' => $retries + 1,
 				) );
 				TCGiant_Sync_Logger::log( sprintf(
 					'eBay API rate limit hit on page %d (attempt %d). Auto-retry in %d minutes.',
 					$current_page, $retries + 1, $retry_delay / 60
 				), 'warning' );
-				as_schedule_single_action( time() + $retry_delay, 'tcgiant_sync_scan_all_pages', array(), 'tcgiant_sync_group' );
+				wp_schedule_single_event( time() + $retry_delay, 'tcgiant_sync_scan_resume' );
 				return;
 			}
 
 			// Handle API error or empty response — scan is done.
 			if ( is_wp_error( $response ) || ! isset( $response['ItemArray']['Item'] ) ) {
-				$state = self::get_sync_state();
-				if ( $state['total_queued'] > 0 ) {
-					self::update_sync_state( array( 'status' => 'importing' ) );
-					TCGiant_Sync_Logger::log( sprintf( 'Scan complete. %d items queued for import.', $state['total_queued'] ) );
-				} else {
-					self::update_sync_state( array(
-						'status'                  => 'complete',
-						'last_completed'          => current_time( 'mysql' ),
-						'last_successful_sync_at' => gmdate( 'Y-m-d\TH:i:s.000\Z' ),
-					) );
-					TCGiant_Sync_Logger::log( 'Scan complete. No matching items found.' );
-					as_enqueue_async_action( 'tcgiant_sync_prune_orphans', array(), 'tcgiant_sync_group' );
-				}
+				$this->finalize_scan();
 				return;
 			}
 
@@ -791,37 +764,52 @@ class TCGiant_Sync_Importer {
 
 			// Process all items on this page inline.
 			$this->process_page_items( $items, $current_page, $total_pages );
+			$pages_this_batch++;
 
 			TCGiant_Sync_Logger::log( sprintf(
-				'Page %d/%d scanned in direct loop.',
-				$current_page, $total_pages
+				'Page %d/%d scanned (%d/%d in this batch).',
+				$current_page, $total_pages, $pages_this_batch, self::PAGES_PER_BATCH
 			) );
 
 			// Check if we've reached the last page.
 			if ( $current_page >= $total_pages ) {
-				$state = self::get_sync_state();
-				if ( $state['total_queued'] > 0 ) {
-					self::update_sync_state( array( 'status' => 'importing' ) );
-					TCGiant_Sync_Logger::log( sprintf(
-						'Scan complete. %d total items queued for import across %d pages.',
-						$state['total_queued'], $total_pages
-					) );
-				} else {
-					self::update_sync_state( array(
-						'status'                  => 'complete',
-						'last_completed'          => current_time( 'mysql' ),
-						'last_successful_sync_at' => gmdate( 'Y-m-d\TH:i:s.000\Z' ),
-					) );
-					TCGiant_Sync_Logger::log( 'Scan complete. No matching items found.' );
-					as_enqueue_async_action( 'tcgiant_sync_prune_orphans', array(), 'tcgiant_sync_group' );
-				}
+				$this->finalize_scan();
 				return;
 			}
 
-			$current_page++;
-
 			// Rate-limit pause between pages — 2 seconds to avoid hammering eBay.
 			sleep( 2 );
+		}
+
+		// Batch complete but more pages remain.
+		// Schedule immediate resume via WP-Cron (NOT Action Scheduler).
+		TCGiant_Sync_Logger::log( sprintf(
+			'Batch complete (%d pages). Scheduling immediate resume for page %d/%d via WP-Cron.',
+			$pages_this_batch, $current_page, $total_pages
+		) );
+		wp_schedule_single_event( time() - 1, 'tcgiant_sync_scan_resume' );
+		spawn_cron(); // Force WP-Cron to fire immediately.
+	}
+
+	/**
+	 * Finalize the scan — transition to importing or complete state.
+	 */
+	private function finalize_scan() {
+		$state = self::get_sync_state();
+		if ( $state['total_queued'] > 0 || $state['total_processed'] > 0 ) {
+			self::update_sync_state( array( 'status' => 'importing' ) );
+			TCGiant_Sync_Logger::log( sprintf(
+				'Scan complete. %d found, %d imported inline, %d queued for GetItem across %d pages.',
+				$state['total_found'], $state['total_processed'], $state['total_queued'], $state['total_pages']
+			) );
+		} else {
+			self::update_sync_state( array(
+				'status'                  => 'complete',
+				'last_completed'          => current_time( 'mysql' ),
+				'last_successful_sync_at' => gmdate( 'Y-m-d\TH:i:s.000\Z' ),
+			) );
+			TCGiant_Sync_Logger::log( 'Scan complete. No matching items found.' );
+			as_enqueue_async_action( 'tcgiant_sync_prune_orphans', array(), 'tcgiant_sync_group' );
 		}
 	}
 

@@ -270,6 +270,15 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						<p class="tc-hint"><?php esc_html_e( 'If your eBay SKU field contains a warehouse/shelf location (e.g., "A3-B7") rather than a product identifier, select "Bin Location" to store it as a custom field instead. Select "Both" if you want it assigned to both the WooCommerce SKU and the Bin Location field.', 'tcgiant-sync' ); ?></p>
 					</div>
 
+					<div class="tc-field">
+						<label class="tc-label" for="ebay_sku_prefix"><?php esc_html_e( 'SKU Format (Fallback)', 'tcgiant-sync' ); ?></label>
+						<select name="tcgiant_sync_ebay_settings[sku_prefix]" id="ebay_sku_prefix" class="tc-select">
+							<option value="none" <?php selected( $settings['sku_prefix'] ?? 'none', 'none' ); ?>><?php esc_html_e( 'Item Number Only (e.g., 185727729088)', 'tcgiant-sync' ); ?></option>
+							<option value="ebay" <?php selected( $settings['sku_prefix'] ?? 'none', 'ebay' ); ?>><?php esc_html_e( 'EBAY- Prefix (e.g., EBAY-185727729088)', 'tcgiant-sync' ); ?></option>
+						</select>
+						<p class="tc-hint"><?php esc_html_e( 'When an eBay listing has no SKU, UPC, or EAN, the Item ID is used as the WooCommerce SKU. This controls whether to add the "EBAY-" prefix. Only affects new imports.', 'tcgiant-sync' ); ?></p>
+					</div>
+
 					<div class="tc-field" style="margin-top:24px;">
 						<label class="tc-label"><?php esc_html_e( 'Preserve Categories (Do Not Trash)', 'tcgiant-sync' ); ?></label>
 						<?php
@@ -383,7 +392,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 				<?php settings_fields( 'tcgiant_sync_ebay_group' ); ?>
 				<?php
 				// Preserve all non-export fields.
-				$all_preserve = array_merge( $preserve_keys, array( 'custom_saved_categories', 'category_ids', 'woo_category_ids', 'preserve_woo_category_ids', 'import_specs_as_tags', 'bake_shipping_into_price', 'sku_maps_to', 'sync_interval', 'enable_order_sync', 'overwrite_title', 'overwrite_desc', 'overwrite_price', 'overwrite_images', 'overwrite_taxonomy', 'overwrite_weight_dims' ) );
+				$all_preserve = array_merge( $preserve_keys, array( 'custom_saved_categories', 'category_ids', 'woo_category_ids', 'preserve_woo_category_ids', 'import_specs_as_tags', 'bake_shipping_into_price', 'sku_maps_to', 'sku_prefix', 'sync_interval', 'enable_order_sync', 'overwrite_title', 'overwrite_desc', 'overwrite_price', 'overwrite_images', 'overwrite_taxonomy', 'overwrite_weight_dims' ) );
 				// Note: export condition descriptor fields are handled by the export form itself.
 				foreach ( $all_preserve as $key ) {
 					$val = $settings[ $key ] ?? null;

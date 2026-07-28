@@ -147,6 +147,13 @@ class TCGiant_Sync_API {
 	 * @return array|WP_Error Parsed API response or error.
 	 */
 	public function trading_api_request( $call_name, $xml_body, $allow_retry = true ) {
+		// Block write operations on staging environments.
+		$write_calls = array( 'AddItem', 'AddFixedPriceItem', 'ReviseItem', 'ReviseFixedPriceItem', 'ReviseInventoryStatus', 'EndItem', 'RelistItem', 'RelistFixedPriceItem' );
+		if ( defined( 'TCGIANT_SYNC_IS_STAGING' ) && TCGIANT_SYNC_IS_STAGING && in_array( $call_name, $write_calls, true ) ) {
+			TCGiant_Sync_Logger::log( sprintf( 'Blocked %s on staging environment.', $call_name ), 'warning' );
+			return new WP_Error( 'staging_blocked', __( 'eBay write operations are disabled on staging/dev environments.', 'tcgiant-sync' ) );
+		}
+
 		// Pre-flight: check if we're approaching the daily call limit.
 		if ( $this->is_daily_budget_exhausted() ) {
 			$used  = $this->get_daily_call_count();

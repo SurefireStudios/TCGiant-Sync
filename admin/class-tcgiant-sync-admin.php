@@ -57,6 +57,7 @@ class TCGiant_Sync_Admin {
 
 		// AJAX endpoints — Export.
 		add_action( 'wp_ajax_tcgiant_push_product', array( $this, 'ajax_push_product' ) );
+		add_action( 'wp_ajax_tcgiant_end_listing', array( $this, 'ajax_end_listing' ) );
 		add_action( 'wp_ajax_tcgiant_fetch_policies', array( $this, 'ajax_fetch_policies' ) );
 		add_action( 'wp_ajax_tcgiant_export_status', array( $this, 'ajax_export_status' ) );
 		add_action( 'wp_ajax_tcgiant_browse_categories', array( $this, 'ajax_browse_categories' ) );
@@ -67,6 +68,7 @@ class TCGiant_Sync_Admin {
 		add_filter( 'bulk_actions-edit-product', array( $this, 'register_bulk_push_action' ) );
 		add_filter( 'handle_bulk_actions-edit-product', array( $this, 'handle_bulk_push_action' ), 10, 3 );
 		add_action( 'admin_notices', array( $this, 'bulk_push_admin_notice' ) );
+		add_action( 'admin_notices', array( $this, 'staging_admin_notice' ) );
 
 		// Save per-product export overrides.
 		add_action( 'woocommerce_process_product_meta', array( $this, 'save_product_export_meta' ) );
@@ -993,6 +995,45 @@ class TCGiant_Sync_Admin {
 	}
 
 	/**
+	 * AJAX: End an eBay listing from the product edit screen.
+	 */
+	public function ajax_end_listing() {
+		check_ajax_referer( 'tcgiant_sync_ajax' );
+
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'Insufficient permissions.' ) );
+		}
+
+		$product_id = absint( $_POST['product_id'] ?? 0 );
+		if ( ! $product_id ) {
+			wp_send_json_error( array( 'message' => 'Missing product ID.' ) );
+		}
+
+		$ebay_item_id = get_post_meta( $product_id, '_ebay_item_id', true );
+		if ( empty( $ebay_item_id ) ) {
+			wp_send_json_error( array( 'message' => 'No eBay Item ID found for this product.' ) );
+		}
+
+		$api = TCGiant_Sync_API::instance();
+		$result = $api->end_item( $ebay_item_id );
+
+		if ( is_wp_error( $result ) ) {
+			wp_send_json_error( array( 'message' => $result->get_error_message() ) );
+		}
+
+		// Update product meta to reflect ended status.
+		update_post_meta( $product_id, '_ebay_listing_status', 'Ended' );
+		update_post_meta( $product_id, '_ebay_end_time', gmdate( 'Y-m-d\TH:i:s.000\Z' ) );
+
+		TCGiant_Sync_Logger::log( sprintf(
+			'eBay listing %s ended from WordPress (product #%d).',
+			$ebay_item_id, $product_id
+		), 'success' );
+
+		wp_send_json_success( array( 'message' => sprintf( 'Listing %s ended on eBay.', $ebay_item_id ) ) );
+	}
+
+	/**
 	 * AJAX: Fetch business policies from eBay and return as JSON.
 	 */
 	public function ajax_fetch_policies() {
@@ -1156,6 +1197,28 @@ class TCGiant_Sync_Admin {
 			(int) $count
 		);
 		echo ' <a href="' . esc_url( admin_url( 'admin.php?page=tcgiant-sync' ) ) . '">' . esc_html__( 'View progress →', 'tcgiant-sync' ) . '</a></p></div>';
+	}
+
+	/**
+	 * Show admin notice on staging/dev environments.
+	 */
+	public function staging_admin_notice() {
+		if ( ! defined( 'TCGIANT_SYNC_IS_STAGING' ) || ! TCGIANT_SYNC_IS_STAGING ) {
+			return;
+		}
+		// Only show on TCGiant Sync pages or WooCommerce product pages.
+		$screen = get_current_screen();
+		if ( ! $screen ) {
+			return;
+		}
+		$show_on = array( 'toplevel_page_tcgiant-sync', 'edit-product', 'product' );
+		if ( ! in_array( $screen->id, $show_on, true ) && strpos( $screen->id, 'tcgiant' ) === false ) {
+			return;
+		}
+		echo '<div class="notice notice-warning"><p>';
+		echo '<strong>⚠ TCGiant Sync — Staging Mode:</strong> ';
+		esc_html_e( 'This appears to be a staging or development environment. eBay write operations (push, revise, end listing) are disabled to prevent accidental changes to live listings.', 'tcgiant-sync' );
+		echo '</p></div>';
 	}
 
 	/**
@@ -1888,6 +1951,12 @@ class TCGiant_Sync_Admin {
 		echo '<button type="button" class="' . esc_attr( $btn_class ) . '" data-product-id="' . esc_attr( $post_id ) . '">' . esc_html( $btn_label ) . '</button>';
 		echo '<span class="tc-ebay-btn-status" data-product-id="' . esc_attr( $post_id ) . '"></span>';
 
+		// End Listing button — only show for active (non-ended) listings.
+		$is_ended = ( 'Ended' === $listing_status ) || ( ! empty( $end_time ) && strtotime( $end_time ) && strtotime( $end_time ) < time() );
+		if ( ! empty( $ebay_item_id ) && ! $is_ended ) {
+			echo '<button type="button" class="tc-ebay-btn tc-ebay-btn-end" data-product-id="' . esc_attr( $post_id ) . '" title="End this listing on eBay">⛔ End Listing</button>';
+		}
+
 		echo '</div>';
 	}
 
@@ -1965,6 +2034,17 @@ class TCGiant_Sync_Admin {
 				color: #135e96;
 				border-color: #135e96;
 			}
+			.tc-ebay-btn-end {
+				background: #fff;
+				color: #d63638;
+				border-color: #d63638;
+				margin-top: 4px;
+			}
+			.tc-ebay-btn-end:hover {
+				background: #fcf0f1;
+				color: #b32d2e;
+				border-color: #b32d2e;
+			}
 			.tc-ebay-btn-status {
 				display: block;
 				font-size: 11px;
@@ -2015,7 +2095,7 @@ class TCGiant_Sync_Admin {
 			var nonce = '<?php echo esc_js( wp_create_nonce( 'tcgiant_sync_ajax' ) ); ?>';
 			var ajaxUrl = '<?php echo esc_js( admin_url( 'admin-ajax.php' ) ); ?>';
 
-			$(document).on('click', '.tc-ebay-btn', function(e) {
+			$(document).on('click', '.tc-ebay-btn:not(.tc-ebay-btn-end)', function(e) {
 				e.preventDefault();
 				var btn = $(this);
 				var productId = btn.data('product-id');
@@ -2039,6 +2119,36 @@ class TCGiant_Sync_Admin {
 							btn.prop('disabled', false);
 							statusEl.text('');
 						}, 5000);
+					} else {
+						var msg = res.data && res.data.message ? res.data.message : 'Unknown error';
+						statusEl.addClass('is-error').text('✖ ' + msg);
+						btn.prop('disabled', false);
+					}
+				}).fail(function() {
+					statusEl.addClass('is-error').text('✖ Request failed');
+					btn.prop('disabled', false);
+				});
+			});
+
+			// End Listing button handler (product list page).
+			$(document).on('click', '.tc-ebay-btn-end', function(e) {
+				e.preventDefault();
+				if (!confirm('Are you sure you want to end this eBay listing? This cannot be undone.')) return;
+				var btn = $(this);
+				var productId = btn.data('product-id');
+				var statusEl = $('.tc-ebay-btn-status[data-product-id="' + productId + '"]');
+
+				btn.prop('disabled', true);
+				statusEl.removeClass('is-success is-error').text('Ending…');
+
+				$.post(ajaxUrl, {
+					action: 'tcgiant_end_listing',
+					product_id: productId,
+					_ajax_nonce: nonce
+				}, function(res) {
+					if (res.success) {
+						statusEl.addClass('is-success').text('⛔ Ended');
+						btn.remove();
 					} else {
 						var msg = res.data && res.data.message ? res.data.message : 'Unknown error';
 						statusEl.addClass('is-error').text('✖ ' + msg);
