@@ -1,5 +1,17 @@
 *** TCGiant Sync Changelog ***
 
+2026-07-29 - version 3.1.0
+== New Features ==
+- UUID duplicate prevention: AddItem requests include <UUID> to prevent duplicate listings on network timeout/retry.
+- Auto-Relist Scheduler: Daily cron (3AM) checks for ended eBay listings with stock > 0 and relists up to 50/day. Off by default — enable in Settings.
+- Listing Type Meta Backfill: One-time migration on upgrade sets _ebay_listing_type = 'FixedPriceItem' for existing products.
+- Verify Button: "Verify" button on product edit page calls VerifyAddItem API — shows estimated fees and catches errors before listing.
+- eBay Order Column: "eBay" column on WooCommerce Orders list shows eBay Order ID badge for imported orders. HPOS + legacy compatible.
+- REST API: 5 endpoints under /tcgiant-sync/v1/ — listings, listing detail, sync status, start sync, orders.
+- Job Queue System: AJAX-driven batch processor with progress tracking for bulk operations.
+- Bulk Actions on Listings: Checkboxes + dropdown for bulk Push/End/Relist with modal progress bar.
+- Setup Wizard: Multi-step guided setup (Connect → Import → Export → Done) at admin.php?page=tcgiant-wizard.
+
 2026-07-29 - version 3.0.1
 - CRITICAL FIX: Products not matching by SKU when eBay changes the Item ID (e.g. old listing expired, seller created a new one). Sync was creating duplicate products with mangled SKUs like "SKU-123456789" instead of updating the existing product.
 - FIX: Trashed WooCommerce products were blocking SKU matching. A product in the trash still "held" its SKU, causing false "Duplicate SKU detected" warnings on active imports. Trashed products now have their SKU cleared automatically.
