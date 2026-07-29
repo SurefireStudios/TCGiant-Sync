@@ -319,6 +319,29 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 							<label><input type="radio" name="tcgiant_sync_ebay_settings[enable_order_sync]" value="1" <?php checked( $settings['enable_order_sync'] ?? '0', '1' ); ?>> Yes</label>
 							<label><input type="radio" name="tcgiant_sync_ebay_settings[enable_order_sync]" value="0" <?php checked( $settings['enable_order_sync'] ?? '0', '0' ); ?>> No</label>
 						</div>
+					<div class="tc-field">
+						<label class="tc-label"><?php esc_html_e( 'Import eBay orders into WooCommerce?', 'tcgiant-sync' ); ?></label>
+						<div class="tc-radio-group">
+							<label><input type="radio" name="tcgiant_sync_ebay_settings[enable_order_import]" value="1" <?php checked( $settings['enable_order_import'] ?? '0', '1' ); ?>> Yes</label>
+							<label><input type="radio" name="tcgiant_sync_ebay_settings[enable_order_import]" value="0" <?php checked( $settings['enable_order_import'] ?? '0', '0' ); ?>> No</label>
+						</div>
+						<p class="tc-hint"><?php esc_html_e( 'When enabled, eBay orders are imported as WooCommerce orders every 15 minutes. Tracking numbers are pushed back to eBay when orders are marked "Completed".', 'tcgiant-sync' ); ?></p>
+					</div>
+					<div class="tc-field">
+						<label class="tc-label"><?php esc_html_e( 'Auto-end listing when stock reaches 0?', 'tcgiant-sync' ); ?></label>
+						<div class="tc-radio-group">
+							<label><input type="radio" name="tcgiant_sync_ebay_settings[auto_end_zero_stock]" value="1" <?php checked( $settings['auto_end_zero_stock'] ?? '1', '1' ); ?>> Yes</label>
+							<label><input type="radio" name="tcgiant_sync_ebay_settings[auto_end_zero_stock]" value="0" <?php checked( $settings['auto_end_zero_stock'] ?? '1', '0' ); ?>> No</label>
+						</div>
+						<p class="tc-hint"><?php esc_html_e( 'Automatically ends the eBay listing when WooCommerce stock hits 0 (eBay rejects quantity=0 via API).', 'tcgiant-sync' ); ?></p>
+					</div>
+					<div class="tc-field">
+						<label class="tc-label"><?php esc_html_e( 'Disable background image localization?', 'tcgiant-sync' ); ?></label>
+						<div class="tc-radio-group">
+							<label><input type="radio" name="tcgiant_sync_ebay_settings[disable_image_localization]" value="1" <?php checked( $settings['disable_image_localization'] ?? '0', '1' ); ?>> Yes (keep eBay-hosted URLs)</label>
+							<label><input type="radio" name="tcgiant_sync_ebay_settings[disable_image_localization]" value="0" <?php checked( $settings['disable_image_localization'] ?? '0', '0' ); ?>> No (download to Media Library)</label>
+						</div>
+						<p class="tc-hint"><?php esc_html_e( 'When enabled, product images remain as eBay-hosted URLs and are never downloaded. This saves disk space and speeds up sync dramatically.', 'tcgiant-sync' ); ?></p>
 					</div>
 				</div>
 
@@ -392,7 +415,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 				<?php settings_fields( 'tcgiant_sync_ebay_group' ); ?>
 				<?php
 				// Preserve all non-export fields.
-				$all_preserve = array_merge( $preserve_keys, array( 'custom_saved_categories', 'category_ids', 'woo_category_ids', 'preserve_woo_category_ids', 'import_specs_as_tags', 'bake_shipping_into_price', 'sku_maps_to', 'sku_prefix', 'sync_interval', 'enable_order_sync', 'overwrite_title', 'overwrite_desc', 'overwrite_price', 'overwrite_images', 'overwrite_taxonomy', 'overwrite_weight_dims' ) );
+				$all_preserve = array_merge( $preserve_keys, array( 'custom_saved_categories', 'category_ids', 'woo_category_ids', 'preserve_woo_category_ids', 'import_specs_as_tags', 'bake_shipping_into_price', 'sku_maps_to', 'sku_prefix', 'sync_interval', 'enable_order_sync', 'enable_order_import', 'auto_end_zero_stock', 'disable_image_localization', 'overwrite_title', 'overwrite_desc', 'overwrite_price', 'overwrite_images', 'overwrite_taxonomy', 'overwrite_weight_dims' ) );
 				// Note: export condition descriptor fields are handled by the export form itself.
 				foreach ( $all_preserve as $key ) {
 					$val = $settings[ $key ] ?? null;

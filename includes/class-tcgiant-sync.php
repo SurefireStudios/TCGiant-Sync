@@ -129,6 +129,9 @@ final class TCGiant_Sync {
 
 		// Initialize Webhooks.
 		TCGiant_Sync_Webhooks::instance();
+
+		// Initialize Order Import.
+		TCGiant_Sync_Orders::instance();
 	}
 
 	/**
