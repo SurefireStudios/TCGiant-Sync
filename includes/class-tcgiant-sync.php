@@ -95,6 +95,9 @@ final class TCGiant_Sync {
 		// Initialize Logger.
 		TCGiant_Sync_Logger::instance();
 
+		// Initialize Database Manager (custom tables).
+		TCGiant_Sync_DB::instance();
+
 		// Initialize OAuth.
 		TCGiant_Sync_OAuth::instance();
 

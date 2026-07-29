@@ -443,6 +443,15 @@ class TCGiant_Sync_Admin {
 
 		add_submenu_page(
 			'tcgiant-sync',
+			__( 'Listings', 'tcgiant-sync' ),
+			__( 'Listings', 'tcgiant-sync' ),
+			'manage_options',
+			'tcgiant-listings',
+			array( $this, 'render_listings_page' )
+		);
+
+		add_submenu_page(
+			'tcgiant-sync',
 			__( 'Push to eBay', 'tcgiant-sync' ),
 			__( 'Push to eBay', 'tcgiant-sync' ),
 			'manage_options',
@@ -508,6 +517,13 @@ class TCGiant_Sync_Admin {
 	 */
 	public function render_import_page() {
 		include_once TCGIANT_SYNC_PATH . 'admin/views/import.php';
+	}
+
+	/**
+	 * Render Listings management page.
+	 */
+	public function render_listings_page() {
+		include_once TCGIANT_SYNC_PATH . 'admin/views/listings.php';
 	}
 
 	/**
