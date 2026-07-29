@@ -46,6 +46,7 @@ class TCGiant_Sync_Admin {
 		add_action( 'admin_post_tcgiant_clear_log', array( $this, 'handle_clear_log' ) );
 		add_action( 'admin_post_tcgiant_clear_recent_sales', array( $this, 'handle_clear_recent_sales' ) );
 		add_action( 'admin_post_tcgiant_sync_disconnect', array( $this, 'handle_disconnect' ) );
+		add_action( 'admin_post_tcgiant_wizard_save_import', array( $this, 'handle_wizard_save_import' ) );
 		add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_admin_assets' ) );
 		
 		// AJAX endpoints — Import.
@@ -484,6 +485,16 @@ class TCGiant_Sync_Admin {
 			'tcgiant-logs',
 			array( $this, 'render_logs_page' )
 		);
+
+		// Setup Wizard (hidden from menu).
+		add_submenu_page(
+			null, // Hidden from menu.
+			__( 'Setup Wizard', 'tcgiant-sync' ),
+			__( 'Setup Wizard', 'tcgiant-sync' ),
+			'manage_options',
+			'tcgiant-wizard',
+			array( $this, 'render_wizard_page' )
+		);
 	}
 
 	/**
@@ -553,6 +564,37 @@ class TCGiant_Sync_Admin {
 	 */
 	public function render_logs_page() {
 		require_once TCGIANT_SYNC_PATH . 'admin/views/logs.php';
+	}
+
+	/**
+	 * Render setup wizard page.
+	 */
+	public function render_wizard_page() {
+		require_once TCGIANT_SYNC_PATH . 'admin/views/wizard.php';
+	}
+
+	/**
+	 * Handle wizard step 2 import settings save.
+	 */
+	public function handle_wizard_save_import() {
+		check_admin_referer( 'tcgiant_wizard_save_import' );
+
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'Unauthorized.', 'tcgiant-sync' ) );
+		}
+
+		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
+		$fields   = array( 'marketplace', 'sync_interval', 'enable_order_import', 'disable_image_localization' );
+		foreach ( $fields as $field ) {
+			if ( isset( $_POST[ $field ] ) ) {
+				$settings[ $field ] = sanitize_text_field( wp_unslash( $_POST[ $field ] ) );
+			}
+		}
+
+		update_option( 'tcgiant_sync_ebay_settings', $settings );
+
+		wp_safe_redirect( admin_url( 'admin.php?page=tcgiant-wizard&step=3' ) );
+		exit;
 	}
 
 	/**
