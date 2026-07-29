@@ -132,6 +132,12 @@ final class TCGiant_Sync {
 
 		// Initialize Order Import.
 		TCGiant_Sync_Orders::instance();
+
+		// Initialize Job Queue.
+		TCGiant_Sync_Jobs::instance();
+
+		// Initialize REST API.
+		TCGiant_Sync_REST::instance();
 	}
 
 	/**
