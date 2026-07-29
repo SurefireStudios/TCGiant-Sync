@@ -597,6 +597,70 @@ class TCGiant_Sync_API {
 	}
 
 	/**
+	 * Verify an item before listing (dry run).
+	 *
+	 * Calls VerifyAddItem to check for errors and return estimated fees
+	 * without actually creating the listing.
+	 *
+	 * @param string $item_xml The <Item> XML body (same as AddItem).
+	 * @return array|WP_Error Fees array on success, WP_Error on failure.
+	 */
+	public function verify_add_item( $item_xml ) {
+		$result = $this->trading_api_request( 'VerifyAddItem', $item_xml );
+
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		// Parse fees from response.
+		$fees = array();
+		if ( isset( $result['Fees']['Fee'] ) ) {
+			$fee_list = isset( $result['Fees']['Fee']['Name'] ) ? array( $result['Fees']['Fee'] ) : $result['Fees']['Fee'];
+			foreach ( $fee_list as $fee ) {
+				$name   = $fee['Name'] ?? 'Unknown';
+				$amount = $fee['Fee'] ?? '0.0';
+				if ( is_array( $amount ) ) {
+					$amount = $amount['_'] ?? $amount['#'] ?? '0.0';
+				}
+				$fees[ $name ] = (float) $amount;
+			}
+		}
+
+		return array(
+			'success'  => true,
+			'fees'     => $fees,
+			'warnings' => $result['Errors'] ?? array(),
+		);
+	}
+
+	/**
+	 * Relist an ended eBay listing.
+	 *
+	 * @param string $item_id eBay Item ID of the ended listing.
+	 * @return array|WP_Error Response on success, WP_Error on failure.
+	 */
+	public function relist_item( $item_id ) {
+		$uuid = wp_generate_uuid4();
+		$xml = '
+<Item>
+<ItemID>' . esc_attr( $item_id ) . '</ItemID>
+<UUID>' . $uuid . '</UUID>
+</Item>';
+
+		$result = $this->trading_api_request( 'RelistItem', $xml );
+
+		if ( ! is_wp_error( $result ) ) {
+			$new_item_id = $result['ItemID'] ?? $item_id;
+			TCGiant_Sync_Logger::log(
+				sprintf( 'eBay listing %s relisted → new Item ID: %s', $item_id, $new_item_id ),
+				'success'
+			);
+		}
+
+		return $result;
+	}
+
+	/**
 	 * Look up the eBay Item ID from a WooCommerce product by its SKU.
 	 *
 	 * @param string $sku The product SKU.
