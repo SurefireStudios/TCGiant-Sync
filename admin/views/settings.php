@@ -647,6 +647,44 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 					<p class="tc-hint"><?php esc_html_e( 'Default for all listings. Can be overridden per-product. Fixed Price supports GTC & 30 Days. Auctions support 1-10 Days.', 'tcgiant-sync' ); ?></p>
 				</div>
 
+				<!-- Best Offer -->
+				<div class="tc-field">
+					<label class="tc-label"><?php esc_html_e( 'Best Offer', 'tcgiant-sync' ); ?></label>
+					<div class="tc-radio-group">
+						<label><input type="radio" name="tcgiant_sync_ebay_settings[best_offer_enabled]" value="1" <?php checked( $settings['best_offer_enabled'] ?? '0', '1' ); ?>> <?php esc_html_e( 'Enable Best Offer on new listings', 'tcgiant-sync' ); ?></label>
+						<label><input type="radio" name="tcgiant_sync_ebay_settings[best_offer_enabled]" value="0" <?php checked( $settings['best_offer_enabled'] ?? '0', '0' ); ?>> <?php esc_html_e( 'Disabled', 'tcgiant-sync' ); ?></label>
+					</div>
+					<div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;">
+						<div style="flex:1;min-width:160px;">
+							<label style="font-size:12px;color:#555;display:block;margin-bottom:3px;"><?php esc_html_e( 'Auto-Accept at (% or $)', 'tcgiant-sync' ); ?></label>
+							<input type="text" class="tc-input" name="tcgiant_sync_ebay_settings[best_offer_auto_accept]" value="<?php echo esc_attr( $settings['best_offer_auto_accept'] ?? '' ); ?>" placeholder="e.g. 0.95 or 49.99" style="width:100%;" />
+						</div>
+						<div style="flex:1;min-width:160px;">
+							<label style="font-size:12px;color:#555;display:block;margin-bottom:3px;"><?php esc_html_e( 'Auto-Decline below (% or $)', 'tcgiant-sync' ); ?></label>
+							<input type="text" class="tc-input" name="tcgiant_sync_ebay_settings[best_offer_auto_decline]" value="<?php echo esc_attr( $settings['best_offer_auto_decline'] ?? '' ); ?>" placeholder="e.g. 0.70 or 25.00" style="width:100%;" />
+						</div>
+					</div>
+					<p class="tc-hint"><?php esc_html_e( 'Use a decimal (0.95) for percentage of price, or a dollar amount (49.99) for a fixed threshold. Per-product overrides available.', 'tcgiant-sync' ); ?></p>
+				</div>
+
+				<!-- GPSR (EU Product Safety) -->
+				<div class="tc-field">
+					<label class="tc-label"><?php esc_html_e( 'GPSR Compliance (EU Product Safety)', 'tcgiant-sync' ); ?></label>
+					<div class="tc-radio-group">
+						<label><input type="radio" name="tcgiant_sync_ebay_settings[gpsr_enabled]" value="1" <?php checked( $settings['gpsr_enabled'] ?? '0', '1' ); ?>> <?php esc_html_e( 'Include GPSR fields on listings', 'tcgiant-sync' ); ?></label>
+						<label><input type="radio" name="tcgiant_sync_ebay_settings[gpsr_enabled]" value="0" <?php checked( $settings['gpsr_enabled'] ?? '0', '0' ); ?>> <?php esc_html_e( 'Disabled', 'tcgiant-sync' ); ?></label>
+					</div>
+					<div style="margin-top:8px;">
+						<label style="font-size:12px;color:#555;display:block;margin-bottom:3px;"><?php esc_html_e( 'Manufacturer Name', 'tcgiant-sync' ); ?></label>
+						<input type="text" class="tc-input" name="tcgiant_sync_ebay_settings[gpsr_manufacturer_name]" value="<?php echo esc_attr( $settings['gpsr_manufacturer_name'] ?? '' ); ?>" style="width:100%;margin-bottom:8px;" />
+						<label style="font-size:12px;color:#555;display:block;margin-bottom:3px;"><?php esc_html_e( 'Manufacturer Address', 'tcgiant-sync' ); ?></label>
+						<input type="text" class="tc-input" name="tcgiant_sync_ebay_settings[gpsr_manufacturer_address]" value="<?php echo esc_attr( $settings['gpsr_manufacturer_address'] ?? '' ); ?>" style="width:100%;margin-bottom:8px;" />
+						<label style="font-size:12px;color:#555;display:block;margin-bottom:3px;"><?php esc_html_e( 'EU Responsible Person (if different)', 'tcgiant-sync' ); ?></label>
+						<input type="text" class="tc-input" name="tcgiant_sync_ebay_settings[gpsr_eu_responsible]" value="<?php echo esc_attr( $settings['gpsr_eu_responsible'] ?? '' ); ?>" style="width:100%;" />
+					</div>
+					<p class="tc-hint"><?php esc_html_e( 'Required for EU sellers. Includes manufacturer info in eBay listing ProductSafety XML block.', 'tcgiant-sync' ); ?></p>
+				</div>
+
 				<div class="tc-form-footer" style="padding-top:16px;margin-top:16px;border-top:1px solid var(--tc-border);">
 					<button type="submit" class="tc-button full-width" style="font-size:14px;padding:12px 20px;"><?php esc_html_e( 'Save Export Settings', 'tcgiant-sync' ); ?></button>
 				</div>

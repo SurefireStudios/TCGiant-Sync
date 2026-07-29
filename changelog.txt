@@ -1,5 +1,41 @@
 *** TCGiant Sync Changelog ***
 
+2026-07-29 - version 3.0.0
+== Performance & Architecture ==
+- CRITICAL: Deferred image pipeline — products get eBay image URLs immediately during sync; images downloaded to media library in background via WP-Cron. Eliminates 7,600+ Action Scheduler image jobs that blocked scanning for days.
+- File-based concurrent execution lock with 10-minute stale detection. Prevents overlapping cron runs.
+- Cron rate limiting: 2-minute minimum interval between runs. Prevents rapid-fire stacking on high-traffic sites.
+- Daily maintenance cron (3 AM): auto-cleans logs older than 30 days, resets stuck syncs, purges old AS entries.
+- Custom `tcgiant_listings` database table with indexed columns. Migrates from post meta automatically.
+
+== Order Import (eBay → WooCommerce) ==
+- Full eBay order import via GetOrders API (polls every 15 minutes).
+- Creates WooCommerce orders with customer, billing/shipping address, and line items mapped to WC products.
+- Tracking number push: when WC order is marked "Completed", tracking is pushed to eBay via CompleteSale.
+- Deduplication by eBay Order ID (HPOS-compatible).
+- Circular-update guard prevents stock loops between WC and eBay.
+
+== Inventory & Stock Sync ==
+- Real-time WC→eBay stock sync: detects manual stock edits, CSV imports, REST API changes.
+- Auto-end listing when stock reaches 0 (eBay rejects qty=0 via API).
+- Weekly inventory reconciliation: compares WC vs eBay quantities, logs mismatches.
+
+== Listings Management ==
+- NEW: Listings admin page — filterable, sortable, searchable table of all eBay-linked products.
+- Status filters (All/Active/Ended), type filters (Fixed Price/Auction), search by title/ID.
+- VerifyAddItem API: dry-run listing with fee estimation before actual push.
+- RelistItem API: re-list ended eBay listings.
+
+== Export Enhancements ==
+- Best Offer support: enable/disable per listing with auto-accept and auto-decline thresholds.
+- GPSR compliance: EU General Product Safety Regulation fields (manufacturer, address, EU responsible person).
+- Per-product overrides for Best Offer thresholds.
+
+== Settings ==
+- New settings: Import eBay Orders, Auto-End on Zero Stock, Disable Image Localization.
+- Best Offer: auto-accept/decline thresholds (percentage or fixed dollar).
+- GPSR: manufacturer name, address, EU responsible person.
+
 2026-07-28 - version 2.1.0
 - CRITICAL FIX: Scan resume now uses WP-Cron instead of Action Scheduler. Resume was getting stuck behind 2,800+ image jobs in the AS queue.
 - Scan batching: 10 pages per execution with immediate WP-Cron resume. Works on hosts with 30s PHP time limits.

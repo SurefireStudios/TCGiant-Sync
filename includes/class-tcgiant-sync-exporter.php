@@ -807,6 +807,81 @@ class TCGiant_Sync_Exporter {
 			$xml .= $profiles_xml . "\n";
 		}
 
+		// Best Offer support (FixedPriceItem only).
+		if ( 'FixedPriceItem' === $listing_type ) {
+			$best_offer_enabled = ! empty( $settings['best_offer_enabled'] );
+			$product_bo         = $product->get_meta( '_tcgiant_best_offer_enabled' );
+			// Per-product override.
+			if ( '' !== $product_bo ) {
+				$best_offer_enabled = (bool) $product_bo;
+			}
+
+			if ( $best_offer_enabled ) {
+				$xml .= '<BestOfferDetails>' . "\n";
+				$xml .= "\t<BestOfferEnabled>true</BestOfferEnabled>\n";
+				$xml .= '</BestOfferDetails>' . "\n";
+
+				// Auto-accept/decline thresholds.
+				$auto_accept  = $settings['best_offer_auto_accept'] ?? '';
+				$auto_decline = $settings['best_offer_auto_decline'] ?? '';
+
+				// Allow per-product override.
+				$product_accept  = $product->get_meta( '_tcgiant_bo_auto_accept' );
+				$product_decline = $product->get_meta( '_tcgiant_bo_auto_decline' );
+				if ( '' !== $product_accept ) {
+					$auto_accept = $product_accept;
+				}
+				if ( '' !== $product_decline ) {
+					$auto_decline = $product_decline;
+				}
+
+				$bo_xml = '<ListingDetails>' . "\n";
+				if ( ! empty( $auto_accept ) && is_numeric( $auto_accept ) ) {
+					$accept_price = (float) $auto_accept > 1 ? $auto_accept : wc_format_decimal( (float) $price * (float) $auto_accept, 2 );
+					$bo_xml .= "\t<MinimumBestOfferPrice>" . esc_attr( $accept_price ) . "</MinimumBestOfferPrice>\n";
+				}
+				if ( ! empty( $auto_decline ) && is_numeric( $auto_decline ) ) {
+					$decline_price = (float) $auto_decline > 1 ? $auto_decline : wc_format_decimal( (float) $price * (float) $auto_decline, 2 );
+					$bo_xml .= "\t<BestOfferAutoDeclinePrice>" . esc_attr( $decline_price ) . "</BestOfferAutoDeclinePrice>\n";
+				}
+				$bo_xml .= '</ListingDetails>' . "\n";
+				$xml .= $bo_xml;
+			}
+		}
+
+		// GPSR (EU General Product Safety Regulation) compliance fields.
+		$gpsr_enabled = ! empty( $settings['gpsr_enabled'] );
+		if ( $gpsr_enabled ) {
+			$gpsr_xml = '';
+			$gpsr_mfg = $settings['gpsr_manufacturer_name'] ?? '';
+			$gpsr_address = $settings['gpsr_manufacturer_address'] ?? '';
+			$gpsr_eu_rep = $settings['gpsr_eu_responsible'] ?? '';
+
+			if ( ! empty( $gpsr_mfg ) || ! empty( $gpsr_address ) ) {
+				$gpsr_xml .= '<ProductSafety>' . "\n";
+				if ( ! empty( $gpsr_mfg ) ) {
+					$gpsr_xml .= '<Component>' . "\n";
+					$gpsr_xml .= "\t<Type>Manufacturer</Type>\n";
+					$gpsr_xml .= "\t<Value>" . esc_xml( $gpsr_mfg ) . "</Value>\n";
+					$gpsr_xml .= '</Component>' . "\n";
+				}
+				if ( ! empty( $gpsr_address ) ) {
+					$gpsr_xml .= '<Component>' . "\n";
+					$gpsr_xml .= "\t<Type>ManufacturerAddress</Type>\n";
+					$gpsr_xml .= "\t<Value>" . esc_xml( $gpsr_address ) . "</Value>\n";
+					$gpsr_xml .= '</Component>' . "\n";
+				}
+				if ( ! empty( $gpsr_eu_rep ) ) {
+					$gpsr_xml .= '<Component>' . "\n";
+					$gpsr_xml .= "\t<Type>ResponsiblePerson</Type>\n";
+					$gpsr_xml .= "\t<Value>" . esc_xml( $gpsr_eu_rep ) . "</Value>\n";
+					$gpsr_xml .= '</Component>' . "\n";
+				}
+				$gpsr_xml .= '</ProductSafety>' . "\n";
+				$xml .= $gpsr_xml;
+			}
+		}
+
 		return $xml;
 	}
 
