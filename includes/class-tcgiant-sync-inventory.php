@@ -286,23 +286,45 @@ class TCGiant_Sync_Inventory {
 		if ( $auto_end && (int) $quantity <= 0 ) {
 			$item_id = $this->find_ebay_item_id_by_sku( $sku );
 			if ( $item_id ) {
+				// Check if listing is already marked as ended locally.
+				$local_status = get_post_meta( $this->find_product_id_by_sku( $sku ) ?: 0, '_ebay_listing_status', true );
+				if ( 'Ended' === $local_status ) {
+					TCGiant_Sync_Logger::log( sprintf(
+						'SKU %s (eBay #%s) — listing already ended locally, skipping EndItem call.',
+						$sku, $item_id
+					) );
+					return;
+				}
+
 				TCGiant_Sync_Logger::log( sprintf(
 					'Auto-ending eBay listing %s (SKU: %s) — stock reached 0.',
 					$item_id, $sku
 				) );
 				$result = $api->end_item( $item_id );
 				if ( is_wp_error( $result ) ) {
-					TCGiant_Sync_Logger::error( sprintf(
-						'Failed to auto-end eBay listing %s: %s',
-						$item_id, $result->get_error_message()
-					) );
+					$err_msg = $result->get_error_message();
+					// eBay error 1047 = "The auction has already been closed" — treat as success.
+					if ( strpos( $err_msg, 'already been closed' ) !== false
+						|| strpos( $err_msg, 'ended' ) !== false
+						|| strpos( $err_msg, 'No changes allowed' ) !== false
+					) {
+						TCGiant_Sync_Logger::log( sprintf(
+							'eBay listing %s was already ended on eBay — updating local status.',
+							$item_id
+						) );
+					} else {
+						TCGiant_Sync_Logger::error( sprintf(
+							'Failed to auto-end eBay listing %s: %s',
+							$item_id, $err_msg
+						) );
+					}
 				} else {
 					TCGiant_Sync_Logger::log( sprintf( 'Successfully ended eBay listing %s.', $item_id ), 'success' );
-					// Update local product meta.
-					$product_id = $this->find_product_id_by_sku( $sku );
-					if ( $product_id ) {
-						update_post_meta( $product_id, '_ebay_listing_status', 'Ended' );
-					}
+				}
+				// Always mark local status as Ended when stock is 0.
+				$product_id = $this->find_product_id_by_sku( $sku );
+				if ( $product_id ) {
+					update_post_meta( $product_id, '_ebay_listing_status', 'Ended' );
 				}
 				return;
 			}
@@ -311,10 +333,26 @@ class TCGiant_Sync_Inventory {
 		$result = $api->update_inventory_item_availability( $sku, $quantity );
 
 		if ( is_wp_error( $result ) ) {
-			if ( 'not_found_on_ebay' === $result->get_error_code() ) {
+			$err_msg  = $result->get_error_message();
+			$err_code = $result->get_error_code();
+
+			if ( 'not_found_on_ebay' === $err_code ) {
 				TCGiant_Sync_Logger::log( sprintf( 'Skipped eBay sync for SKU %s: Item is not linked to eBay.', $sku ) );
+			} elseif ( strpos( $err_msg, 'No changes allowed' ) !== false
+				|| strpos( $err_msg, 'ended' ) !== false
+				|| strpos( $err_msg, 'already been closed' ) !== false
+			) {
+				// Listing ended on eBay — update local status silently.
+				TCGiant_Sync_Logger::log( sprintf(
+					'SKU %s: eBay listing is ended — skipping stock update, marking local status as Ended.',
+					$sku
+				) );
+				$product_id = $this->find_product_id_by_sku( $sku );
+				if ( $product_id ) {
+					update_post_meta( $product_id, '_ebay_listing_status', 'Ended' );
+				}
 			} else {
-				TCGiant_Sync_Logger::error( sprintf( 'Failed to sync stock to eBay for SKU %s. Error: %s', $sku, $result->get_error_message() ) );
+				TCGiant_Sync_Logger::error( sprintf( 'Failed to sync stock to eBay for SKU %s. Error: %s', $sku, $err_msg ) );
 			}
 		} else {
 			TCGiant_Sync_Logger::log( sprintf( 'Successfully synced stock to eBay for SKU %s', $sku ) );
@@ -330,15 +368,19 @@ class TCGiant_Sync_Inventory {
 	private function find_ebay_item_id_by_sku( $sku ) {
 		global $wpdb;
 
-		// Try _ebay_sku first, then WC SKU.
+		// Try _ebay_sku first, then WC SKU. Exclude trashed products.
 		$product_id = $wpdb->get_var( $wpdb->prepare(
-			"SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key = '_ebay_sku' AND meta_value = %s LIMIT 1",
+			"SELECT pm.post_id FROM {$wpdb->postmeta} pm
+			 INNER JOIN {$wpdb->posts} p ON pm.post_id = p.ID AND p.post_status != 'trash'
+			 WHERE pm.meta_key = '_ebay_sku' AND pm.meta_value = %s LIMIT 1",
 			$sku
 		) );
 
 		if ( ! $product_id ) {
 			$product_id = $wpdb->get_var( $wpdb->prepare(
-				"SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key = '_sku' AND meta_value = %s LIMIT 1",
+				"SELECT pm.post_id FROM {$wpdb->postmeta} pm
+				 INNER JOIN {$wpdb->posts} p ON pm.post_id = p.ID AND p.post_status != 'trash'
+				 WHERE pm.meta_key = '_sku' AND pm.meta_value = %s LIMIT 1",
 				$sku
 			) );
 		}
@@ -359,7 +401,9 @@ class TCGiant_Sync_Inventory {
 	private function find_product_id_by_sku( $sku ) {
 		global $wpdb;
 		$product_id = $wpdb->get_var( $wpdb->prepare(
-			"SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key = '_ebay_sku' AND meta_value = %s LIMIT 1",
+			"SELECT pm.post_id FROM {$wpdb->postmeta} pm
+			 INNER JOIN {$wpdb->posts} p ON pm.post_id = p.ID AND p.post_status != 'trash'
+			 WHERE pm.meta_key = '_ebay_sku' AND pm.meta_value = %s LIMIT 1",
 			$sku
 		) );
 		return $product_id ? (int) $product_id : false;
@@ -409,7 +453,9 @@ class TCGiant_Sync_Inventory {
 			// Find the WC product by eBay Item ID.
 			global $wpdb;
 			$product_id = $wpdb->get_var( $wpdb->prepare(
-				"SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key = '_ebay_item_id' AND meta_value = %s LIMIT 1",
+				"SELECT pm.post_id FROM {$wpdb->postmeta} pm
+				 INNER JOIN {$wpdb->posts} p ON pm.post_id = p.ID AND p.post_status != 'trash'
+				 WHERE pm.meta_key = '_ebay_item_id' AND pm.meta_value = %s LIMIT 1",
 				$item_id
 			) );
 
