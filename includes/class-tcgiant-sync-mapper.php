@@ -488,34 +488,85 @@ class TCGiant_Sync_Mapper {
 		$item_id = $product_data['meta']['_ebay_item_id'];
 		$product_id = false;
 
-		// 1. Check by exact eBay Item ID first.
+		// 1. Check by exact eBay Item ID first (exclude trashed products).
 		global $wpdb;
-		$found_by_meta = $wpdb->get_var( $wpdb->prepare( "SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key = '_ebay_item_id' AND meta_value = %s LIMIT 1", $item_id ) );
+		$found_by_meta = $wpdb->get_var( $wpdb->prepare(
+			"SELECT pm.post_id FROM {$wpdb->postmeta} pm
+			 INNER JOIN {$wpdb->posts} p ON pm.post_id = p.ID
+			 WHERE pm.meta_key = '_ebay_item_id' AND pm.meta_value = %s
+			   AND p.post_status != 'trash'
+			 LIMIT 1",
+			$item_id
+		) );
 		
 		if ( $found_by_meta ) {
 			$product_id = (int) $found_by_meta;
 		}
 
 		// 2. If not found by Item ID, check by SKU to link to existing WC product.
+		//    This handles the case where eBay changed the item number (e.g. old listing
+		//    expired and seller created a new listing with the same SKU).
 		if ( ! $product_id && ! empty( $product_data['sku'] ) ) {
 			$sku_product_id = wc_get_product_id_by_sku( $product_data['sku'] );
 			if ( $sku_product_id ) {
-				$existing_item_id = get_post_meta( $sku_product_id, '_ebay_item_id', true );
-				if ( empty( $existing_item_id ) || $existing_item_id === $item_id ) {
-					// Safe to link.
-					$product_id = $sku_product_id;
+				// Skip trashed products — they shouldn't block matching.
+				$post_status = get_post_status( $sku_product_id );
+				if ( 'trash' === $post_status ) {
+					// Trashed product holds this SKU. Clear its SKU so it doesn't
+					// block the active import, and continue as if not found.
+					$trashed_product = wc_get_product( $sku_product_id );
+					if ( $trashed_product ) {
+						$trashed_product->set_sku( '' );
+						$trashed_product->save();
+						TCGiant_Sync_Logger::log( sprintf(
+							'Cleared SKU from trashed product WC #%d to allow re-linking.',
+							$sku_product_id
+						), 'warning' );
+					}
+				} else {
+					$existing_item_id = get_post_meta( $sku_product_id, '_ebay_item_id', true );
+					if ( empty( $existing_item_id ) || $existing_item_id === $item_id ) {
+						// No eBay link or same item → safe to link.
+						$product_id = $sku_product_id;
+					} else {
+						// SKU matches but _ebay_item_id is different. This usually means
+						// eBay expired the old listing and the seller created a new one.
+						// Re-link the WC product to the new eBay listing.
+						TCGiant_Sync_Logger::log( sprintf(
+							'SKU "%s" matched WC #%d which has old eBay Item ID %s → re-linking to new eBay Item ID %s.',
+							$product_data['sku'], $sku_product_id, $existing_item_id, $item_id
+						) );
+						$product_id = $sku_product_id;
+						// Clear the old item ID so it gets replaced with the new one.
+						update_post_meta( $sku_product_id, '_ebay_item_id', $item_id );
+					}
 				}
 			}
 		}
 
 		// 3. Prevent SKU conflicts on save.
 		// Check if the intended SKU is already taken by a DIFFERENT product.
+		// Exclude trashed products from conflict detection.
 		if ( ! empty( $product_data['sku'] ) ) {
 			$conflict_id = wc_get_product_id_by_sku( $product_data['sku'] );
 			if ( $conflict_id && $conflict_id !== $product_id ) {
-				// SKU is taken by another product. We must make this one unique.
-				$product_data['sku'] .= '-' . $item_id;
-				TCGiant_Sync_Logger::log( sprintf( 'Duplicate SKU detected. Appending Item ID to ensure uniqueness: %s', $product_data['sku'] ), 'warning' );
+				$conflict_status = get_post_status( $conflict_id );
+				if ( 'trash' === $conflict_status ) {
+					// Conflict is a trashed product — clear its SKU instead of mangling ours.
+					$trashed = wc_get_product( $conflict_id );
+					if ( $trashed ) {
+						$trashed->set_sku( '' );
+						$trashed->save();
+						TCGiant_Sync_Logger::log( sprintf(
+							'Cleared SKU from trashed product WC #%d (was blocking SKU "%s").',
+							$conflict_id, $product_data['sku']
+						), 'warning' );
+					}
+				} else {
+					// SKU is taken by another active product. We must make this one unique.
+					$product_data['sku'] .= '-' . $item_id;
+					TCGiant_Sync_Logger::log( sprintf( 'Duplicate SKU detected. Appending Item ID to ensure uniqueness: %s', $product_data['sku'] ), 'warning' );
+				}
 			}
 		}
 		
