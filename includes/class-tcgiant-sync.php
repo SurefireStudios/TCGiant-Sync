@@ -115,6 +115,9 @@ final class TCGiant_Sync {
 		// Initialize Importer.
 		TCGiant_Sync_Importer::instance();
 
+		// Initialize Image Localizer (background image download).
+		TCGiant_Sync_Image_Localizer::instance();
+
 		// Initialize Exporter.
 		TCGiant_Sync_Exporter::instance();
 

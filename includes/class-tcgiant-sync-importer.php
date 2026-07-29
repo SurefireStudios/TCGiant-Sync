@@ -88,6 +88,67 @@ class TCGiant_Sync_Importer {
 		update_option( self::STATE_OPTION, $state );
 	}
 
+	// ───────────────────────────────────────────────────────────────────────────
+	// Concurrent execution lock — file-based with stale detection.
+	// ───────────────────────────────────────────────────────────────────────────
+
+	/**
+	 * Lock file path.
+	 */
+	private static function get_lock_file_path() {
+		$upload_dir = wp_upload_dir();
+		return trailingslashit( $upload_dir['basedir'] ) . 'tcgiant_sync.lock';
+	}
+
+	/**
+	 * Acquire the sync lock.
+	 *
+	 * @param string $operation Label for which operation is acquiring (for diagnostics).
+	 * @return bool True if lock acquired, false if already locked.
+	 */
+	private static function acquire_lock( $operation = 'sync' ) {
+		$lock_file = self::get_lock_file_path();
+
+		if ( file_exists( $lock_file ) ) {
+			$lock_time = (int) file_get_contents( $lock_file );
+			$age = time() - $lock_time;
+
+			// Stale detection: if lock is older than 10 minutes, break it.
+			if ( $age > 600 ) {
+				TCGiant_Sync_Logger::warning( sprintf(
+					'Lock: Stale lock detected (%d minutes old). Breaking lock for "%s".',
+					round( $age / 60 ), $operation
+				) );
+				@unlink( $lock_file );
+			} else {
+				TCGiant_Sync_Logger::log( sprintf(
+					'Lock: Cannot acquire for "%s" — already held (%d seconds ago).',
+					$operation, $age
+				) );
+				return false;
+			}
+		}
+
+		// Write lock file with current timestamp.
+		$written = @file_put_contents( $lock_file, (string) time() );
+		if ( false === $written ) {
+			TCGiant_Sync_Logger::warning( 'Lock: Failed to write lock file — proceeding without lock.' );
+			return true; // Proceed anyway; lock is advisory.
+		}
+
+		return true;
+	}
+
+	/**
+	 * Release the sync lock.
+	 */
+	private static function release_lock() {
+		$lock_file = self::get_lock_file_path();
+		if ( file_exists( $lock_file ) ) {
+			@unlink( $lock_file );
+		}
+	}
+
 	/**
 	 * Start a full sync.
 	 *
@@ -116,6 +177,11 @@ class TCGiant_Sync_Importer {
 				TCGiant_Sync_Logger::log( 'Sync already in progress - skipping duplicate request.' );
 				return;
 			}
+		}
+
+		// File lock: prevent concurrent execution from overlapping cron triggers.
+		if ( ! self::acquire_lock( 'full_sync' ) ) {
+			return;
 		}
 
 		// Clear any previous pending sync jobs to prevent stacking.
@@ -190,6 +256,11 @@ class TCGiant_Sync_Importer {
 		// Guard: don't restart if a sync is already in progress.
 		if ( in_array( $state['status'], array( 'scanning', 'importing' ), true ) ) {
 			TCGiant_Sync_Logger::log( 'Sync already in progress — skipping delta sync request.' );
+			return;
+		}
+
+		// File lock: prevent concurrent execution.
+		if ( ! self::acquire_lock( 'delta_sync' ) ) {
 			return;
 		}
 
@@ -333,13 +404,8 @@ class TCGiant_Sync_Importer {
 				continue;
 			}
 
-			// Force overwrite by deleting existing images first.
-			// The download function will handle the rest.
-			as_enqueue_async_action( 'tcgiant_sync_download_images', array(
-				'product_id'     => (int) $product_id,
-				'image_urls'     => $all_images,
-				'is_first_batch' => true,
-			), 'tcgiant_sync_images' );
+			// Set external eBay image URLs — localized in background.
+			TCGiant_Sync_Image_Localizer::set_external_images( (int) $product_id, $all_images );
 
 			$queued++;
 			TCGiant_Sync_Logger::log( sprintf(
@@ -545,16 +611,9 @@ class TCGiant_Sync_Importer {
 						}
 					}
 
-					// URL-hash dedup: skip if images haven't changed since last sync.
-					// When overwrite_images is enabled, always re-download.
-					$settings_for_img = TCGiant_Sync_OAuth::instance()->get_settings();
-					$force_overwrite = ! empty( $settings_for_img['overwrite_images'] );
-					if ( ! empty( $product_data['images'] ) && $this->should_download_images( $product_id, $product_data['images'], $force_overwrite ) ) {
-						as_enqueue_async_action( 'tcgiant_sync_download_images', array(
-							'product_id'     => $product_id,
-							'image_urls'     => $product_data['images'],
-							'is_first_batch' => true,
-						), 'tcgiant_sync_images' );
+					// Set external eBay image URLs — localized in background.
+					if ( ! empty( $product_data['images'] ) ) {
+						TCGiant_Sync_Image_Localizer::set_external_images( $product_id, $product_data['images'] );
 					}
 					$processed++;
 
@@ -811,6 +870,9 @@ class TCGiant_Sync_Importer {
 			TCGiant_Sync_Logger::log( 'Scan complete. No matching items found.' );
 			as_enqueue_async_action( 'tcgiant_sync_prune_orphans', array(), 'tcgiant_sync_group' );
 		}
+
+		// Release the concurrent execution lock.
+		self::release_lock();
 	}
 
 	/**
@@ -921,14 +983,9 @@ class TCGiant_Sync_Importer {
 							}
 						}
 
-						$settings_for_img = TCGiant_Sync_OAuth::instance()->get_settings();
-						$force_overwrite = ! empty( $settings_for_img['overwrite_images'] );
-						if ( ! empty( $product_data['images'] ) && $this->should_download_images( $product_id, $product_data['images'], $force_overwrite ) ) {
-							as_enqueue_async_action( 'tcgiant_sync_download_images', array(
-								'product_id'     => $product_id,
-								'image_urls'     => $product_data['images'],
-								'is_first_batch' => true,
-							), 'tcgiant_sync_images' );
+						// Set external eBay image URLs — localized in background.
+						if ( ! empty( $product_data['images'] ) ) {
+							TCGiant_Sync_Image_Localizer::set_external_images( $product_id, $product_data['images'] );
 						}
 
 						$inline_processed++;
@@ -1177,16 +1234,9 @@ class TCGiant_Sync_Importer {
 						}
 
 						// Schedule image downloads as async to avoid timeout.
-						// URL-hash dedup: skip if images haven't changed since last sync.
-						// When overwrite_images is enabled, always re-download.
-						$settings_for_img = TCGiant_Sync_OAuth::instance()->get_settings();
-						$force_overwrite = ! empty( $settings_for_img['overwrite_images'] );
-						if ( ! empty( $product_data['images'] ) && $this->should_download_images( $product_id, $product_data['images'], $force_overwrite ) ) {
-							as_enqueue_async_action( 'tcgiant_sync_download_images', array(
-								'product_id'     => $product_id,
-								'image_urls'     => $product_data['images'],
-								'is_first_batch' => true,
-							), 'tcgiant_sync_images' );
+						// Set external eBay image URLs — localized in background.
+						if ( ! empty( $product_data['images'] ) ) {
+							TCGiant_Sync_Image_Localizer::set_external_images( $product_id, $product_data['images'] );
 						}
 
 						$inline_processed++;
@@ -1487,17 +1537,9 @@ class TCGiant_Sync_Importer {
 					}
 				}
 
-				// Schedule image downloads as async to avoid blocking the Action Scheduler queue.
-				// URL-hash dedup: skip if images haven't changed since last sync.
-				// When overwrite_images is enabled, always re-download.
-				$settings_for_img = TCGiant_Sync_OAuth::instance()->get_settings();
-				$force_overwrite = ! empty( $settings_for_img['overwrite_images'] );
-				if ( ! empty( $product_data['images'] ) && $this->should_download_images( $product_id, $product_data['images'], $force_overwrite ) ) {
-					as_enqueue_async_action( 'tcgiant_sync_download_images', array(
-						'product_id'     => $product_id,
-						'image_urls'     => $product_data['images'],
-						'is_first_batch' => true,
-					), 'tcgiant_sync_images' );
+				// Set external eBay image URLs — localized in background.
+				if ( ! empty( $product_data['images'] ) ) {
+					TCGiant_Sync_Image_Localizer::set_external_images( $product_id, $product_data['images'] );
 				}
 
 				$state = self::get_sync_state();
