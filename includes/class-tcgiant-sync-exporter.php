@@ -633,8 +633,9 @@ class TCGiant_Sync_Exporter {
 			return array( 'item_id' => $returned_item_id, 'action' => 'updated' );
 
 		} else {
-			// New listing — add it.
-			$full_xml = '<Item>' . "\n" . $item_xml . "\n" . '</Item>';
+			// New listing — add it. UUID prevents duplicate creation on timeout/retry.
+			$uuid = wp_generate_uuid4();
+			$full_xml = '<Item>' . "\n" . '<UUID>' . $uuid . '</UUID>' . "\n" . $item_xml . "\n" . '</Item>';
 			$response = $api->add_item( $full_xml );
 
 			if ( is_wp_error( $response ) ) {

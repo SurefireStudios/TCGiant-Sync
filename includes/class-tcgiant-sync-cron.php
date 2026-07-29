@@ -46,7 +46,11 @@ class TCGiant_Sync_Cron {
 		add_action( 'tcgiant_sync_poll_ebay_cron', array( $this, 'sync_orders' ) );
 		add_action( 'tcgiant_sync_poll_ebay_cron', array( $this, 'ping_telemetry' ) );
 		add_action( 'tcgiant_sync_daily_maintenance', array( $this, 'daily_maintenance' ) );
+		add_action( 'tcgiant_sync_daily_maintenance', array( $this, 'auto_relist_ended_items' ) );
 		
+		// One-time listing type backfill on upgrade.
+		add_action( 'admin_init', array( $this, 'maybe_backfill_listing_type' ) );
+
 		add_action( 'init', array( $this, 'schedule_events' ) );
 	}
 
@@ -270,6 +274,139 @@ class TCGiant_Sync_Cron {
 			'Daily summary: Status=%s, Total found=%d, Processed=%d, Errors=%d, API calls today=%d',
 			$state['status'], $state['total_found'], $state['total_processed'], $state['total_errors'], $api_calls
 		) );
+	}
+
+	// ───────────────────────────────────────────────────────────────────────────
+	// Auto-Relist Scheduler
+	// ───────────────────────────────────────────────────────────────────────────
+
+	/**
+	 * Auto-relist ended eBay items that still have stock.
+	 * Runs daily as part of maintenance. Disabled by default.
+	 */
+	public function auto_relist_ended_items() {
+		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
+		if ( empty( $settings['auto_relist_enabled'] ) ) {
+			return;
+		}
+
+		TCGiant_Sync_Logger::log( 'Auto-Relist: Checking for ended listings with stock > 0...' );
+
+		global $wpdb;
+		$table = TCGiant_Sync_DB::table_name();
+
+		// Check if custom table exists.
+		if ( $wpdb->get_var( "SHOW TABLES LIKE '{$table}'" ) !== $table ) {
+			// Fall back to post meta query.
+			$ended_products = $wpdb->get_results(
+				"SELECT pm1.post_id, pm1.meta_value AS ebay_item_id
+				 FROM {$wpdb->postmeta} pm1
+				 INNER JOIN {$wpdb->postmeta} pm2 ON pm1.post_id = pm2.post_id AND pm2.meta_key = '_ebay_listing_status'
+				 INNER JOIN {$wpdb->posts} p ON pm1.post_id = p.ID
+				 WHERE pm1.meta_key = '_ebay_item_id'
+				   AND pm2.meta_value = 'Ended'
+				   AND p.post_status = 'publish'
+				 LIMIT 50",
+				ARRAY_A
+			);
+		} else {
+			$ended_products = $wpdb->get_results(
+				"SELECT product_id, ebay_item_id FROM {$table}
+				 WHERE listing_status = 'Ended'
+				 LIMIT 50",
+				ARRAY_A
+			);
+		}
+
+		if ( empty( $ended_products ) ) {
+			TCGiant_Sync_Logger::log( 'Auto-Relist: No ended listings found.' );
+			return;
+		}
+
+		$api = TCGiant_Sync_API::instance();
+		$relisted = 0;
+		$skipped = 0;
+
+		foreach ( $ended_products as $row ) {
+			$product_id   = (int) ( $row['product_id'] ?? $row['post_id'] ?? 0 );
+			$ebay_item_id = $row['ebay_item_id'] ?? '';
+
+			if ( empty( $ebay_item_id ) || ! $product_id ) {
+				continue;
+			}
+
+			// Only relist if WC stock > 0.
+			$product = wc_get_product( $product_id );
+			if ( ! $product || ( $product->managing_stock() && $product->get_stock_quantity() <= 0 ) ) {
+				$skipped++;
+				continue;
+			}
+
+			$result = $api->relist_item( $ebay_item_id );
+			if ( is_wp_error( $result ) ) {
+				TCGiant_Sync_Logger::error( sprintf(
+					'Auto-Relist: Failed to relist eBay #%s (WC #%d): %s',
+					$ebay_item_id, $product_id, $result->get_error_message()
+				) );
+			} else {
+				$new_item_id = $result['ItemID'] ?? $ebay_item_id;
+				update_post_meta( $product_id, '_ebay_item_id', $new_item_id );
+				update_post_meta( $product_id, '_ebay_listing_status', 'Active' );
+
+				// Update custom table if available.
+				TCGiant_Sync_DB::upsert( array(
+					'product_id'     => $product_id,
+					'ebay_item_id'   => $new_item_id,
+					'listing_status' => 'Active',
+					'last_synced'    => current_time( 'mysql' ),
+				) );
+
+				$relisted++;
+			}
+		}
+
+		TCGiant_Sync_Logger::log( sprintf(
+			'Auto-Relist: Complete. %d relisted, %d skipped (no stock).',
+			$relisted, $skipped
+		), $relisted > 0 ? 'success' : 'info' );
+	}
+
+	// ───────────────────────────────────────────────────────────────────────────
+	// Listing Type Meta Backfill
+	// ───────────────────────────────────────────────────────────────────────────
+
+	/**
+	 * One-time migration: backfill _ebay_listing_type for products that have
+	 * _ebay_item_id but no listing type set.
+	 */
+	public function maybe_backfill_listing_type() {
+		if ( get_option( 'tcgiant_listing_type_backfilled', false ) ) {
+			return;
+		}
+
+		global $wpdb;
+
+		// Find all products with _ebay_item_id but no _ebay_listing_type.
+		$products = $wpdb->get_col(
+			"SELECT pm.post_id FROM {$wpdb->postmeta} pm
+			 LEFT JOIN {$wpdb->postmeta} pm2 ON pm.post_id = pm2.post_id AND pm2.meta_key = '_ebay_listing_type'
+			 WHERE pm.meta_key = '_ebay_item_id'
+			   AND pm.meta_value != ''
+			   AND pm2.meta_id IS NULL
+			 LIMIT 500"
+		);
+
+		if ( ! empty( $products ) ) {
+			foreach ( $products as $product_id ) {
+				update_post_meta( (int) $product_id, '_ebay_listing_type', 'FixedPriceItem' );
+			}
+			TCGiant_Sync_Logger::log( sprintf(
+				'Listing type backfill: Set %d products to FixedPriceItem (default).',
+				count( $products )
+			) );
+		}
+
+		update_option( 'tcgiant_listing_type_backfilled', true );
 	}
 
 	/**
