@@ -657,6 +657,17 @@ class TCGiant_Sync_Exporter {
 	 * @param array      $settings Merged export settings.
 	 * @return string XML string.
 	 */
+	public function build_item_xml_public( WC_Product $product, array $settings ) {
+		return $this->build_item_xml( $product, $settings );
+	}
+
+	/**
+	 * Build the inner <Item> XML content (without the outer <Item> tags).
+	 *
+	 * @param WC_Product $product  The WooCommerce product.
+	 * @param array      $settings Merged export settings.
+	 * @return string XML string.
+	 */
 	private function build_item_xml( WC_Product $product, array $settings ) {
 		$title       = $this->sanitize_title( $product->get_name() );
 		$description = $this->build_description( $product );

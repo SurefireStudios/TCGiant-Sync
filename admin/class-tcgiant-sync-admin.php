@@ -57,12 +57,20 @@ class TCGiant_Sync_Admin {
 
 		// AJAX endpoints — Export.
 		add_action( 'wp_ajax_tcgiant_push_product', array( $this, 'ajax_push_product' ) );
+		add_action( 'wp_ajax_tcgiant_verify_product', array( $this, 'ajax_verify_product' ) );
 		add_action( 'wp_ajax_tcgiant_end_listing', array( $this, 'ajax_end_listing' ) );
 		add_action( 'wp_ajax_tcgiant_fetch_policies', array( $this, 'ajax_fetch_policies' ) );
 		add_action( 'wp_ajax_tcgiant_export_status', array( $this, 'ajax_export_status' ) );
 		add_action( 'wp_ajax_tcgiant_browse_categories', array( $this, 'ajax_browse_categories' ) );
 		add_action( 'wp_ajax_tcgiant_clear_export_error', array( $this, 'ajax_clear_export_error' ) );
 		add_action( 'wp_ajax_tcgiant_suggest_category', array( $this, 'ajax_suggest_category' ) );
+
+		// eBay column on WooCommerce Orders list (HPOS-compatible).
+		add_filter( 'manage_woocommerce_page_wc-orders_columns', array( $this, 'add_order_ebay_column' ) );
+		add_action( 'manage_woocommerce_page_wc-orders_custom_column', array( $this, 'render_order_ebay_column' ), 10, 2 );
+		// Legacy order table support.
+		add_filter( 'manage_edit-shop_order_columns', array( $this, 'add_order_ebay_column' ) );
+		add_action( 'manage_shop_order_posts_custom_column', array( $this, 'render_order_ebay_column_legacy' ), 10, 2 );
 
 		// Bulk action on WooCommerce Products list.
 		add_filter( 'bulk_actions-edit-product', array( $this, 'register_bulk_push_action' ) );
@@ -1689,8 +1697,13 @@ class TCGiant_Sync_Admin {
 					<?php endforeach; ?>
 				</div>
 				<?php $bl = ! empty( $ebay_item_id ) ? __( 'Update eBay Listing', 'tcgiant-sync' ) : __( 'Push to eBay', 'tcgiant-sync' ); ?>
-				<button type="button" id="tcgiant-push-btn" class="button button-primary" data-product-id="<?php echo esc_attr( $product_id ); ?>" style="margin-top:4px;font-size:13px;padding:4px 16px;"><span class="dashicons dashicons-upload" style="font-size:16px;width:16px;height:16px;vertical-align:middle;margin-right:4px;"></span><?php echo esc_html( $bl ); ?></button>
-				<span id="tcgiant-push-status" style="margin-left:8px;font-size:12px;color:#555;"></span>
+				<div style="display:flex;gap:8px;align-items:center;margin-top:4px;">
+					<button type="button" id="tcgiant-push-btn" class="button button-primary" data-product-id="<?php echo esc_attr( $product_id ); ?>" style="font-size:13px;padding:4px 16px;"><span class="dashicons dashicons-upload" style="font-size:16px;width:16px;height:16px;vertical-align:middle;margin-right:4px;"></span><?php echo esc_html( $bl ); ?></button>
+					<?php if ( empty( $ebay_item_id ) ) : ?>
+					<button type="button" id="tcgiant-verify-btn" class="button" data-product-id="<?php echo esc_attr( $product_id ); ?>" style="font-size:12px;padding:4px 12px;" title="<?php esc_attr_e( 'Test listing without creating it — shows fees and catches errors', 'tcgiant-sync' ); ?>"><span class="dashicons dashicons-visibility" style="font-size:14px;width:14px;height:14px;vertical-align:middle;margin-right:3px;"></span><?php esc_html_e( 'Verify', 'tcgiant-sync' ); ?></button>
+					<?php endif; ?>
+				</div>
+				<span id="tcgiant-push-status" style="display:block;margin-top:6px;font-size:12px;color:#555;"></span>
 			</div>
 		</div>
 
@@ -1753,6 +1766,8 @@ class TCGiant_Sync_Admin {
 			// Duration filtering based on listing type.
 			var fpDurations={'FixedPriceItem':['GTC','Days_30'],'Chinese':['Days_1','Days_3','Days_5','Days_7','Days_10']};
 			$('#_ebay_export_listing_type').on('change',function(){var lt=$(this).val(),$dur=$('#_ebay_export_listing_duration');if(!lt){$dur.find('option').show();return;}var valid=fpDurations[lt]||[];$dur.find('option').each(function(){var v=$(this).val();if(!v){$(this).show();}else{$(this).toggle(valid.indexOf(v)>=0);}});if(valid.indexOf($dur.val())<0){$dur.val('');}});
+			// Verify (dry run)
+			$('#tcgiant-verify-btn').on('click',function(){var btn=$(this),st=$('#tcgiant-push-status');btn.prop('disabled',true);st.css('color','#555').text('Verifying listing...');var cs=$('#_ebay_export_category_id_select').val()||'',cc=$('#_ebay_export_category_id_custom').val()||'',catId=(cs==='custom')?cc:cs,it=$('#_ebay_export_item_type').val()||'',sf=(it&&it!=='other')?'_'+it:'',gid=$('#_ebay_export_grader_id'+sf).val()||'',gv=$('#_ebay_export_grade_value'+sf).val()||'',uc=$('#_ebay_export_ungraded_condition'+sf).val()||'';$.post(ajaxUrl,{action:'tcgiant_verify_product',product_id:btn.data('product-id'),override_category_id:catId,override_condition_id:$('#_ebay_export_condition_id').val()||'',override_item_type:it,override_condition_type:$('#_ebay_export_condition_type').val()||'',override_grader_id:gid,override_grade_value:gv,override_cert_number:$('[name="_ebay_export_cert_number"]').val()||'',override_coin_year:$('[name="_ebay_export_coin_year"]').val()||'',override_ungraded_condition:uc,override_listing_type:$('#_ebay_export_listing_type').val()||'',override_listing_duration:$('#_ebay_export_listing_duration').val()||'',override_fulfillment_policy:$('#_ebay_export_fulfillment_policy').val()||'',_ajax_nonce:nonce},function(r){btn.prop('disabled',false);if(r.success){st.css('color','#2a8a2a').html(r.data.message.replace(/\n/g,'<br>'));}else{st.css('color','#cc1818').text('Verify failed: '+(r.data?r.data.message:'Unknown error'));}}).fail(function(){btn.prop('disabled',false);st.css('color','#cc1818').text('Verify request failed.');});});
 		})(jQuery);
 		</script>
 		<?php
@@ -2333,6 +2348,130 @@ class TCGiant_Sync_Admin {
 
 		if ( $count > 0 ) {
 			TCGiant_Sync_Logger::log( sprintf( 'Ended listing check: marked %d product(s) as Ended.', $count ) );
+		}
+	}
+
+	// ─────────────────────────────────────────────────────────────────────────
+	// Verify Product (Dry Run)
+	// ─────────────────────────────────────────────────────────────────────────
+
+	/**
+	 * AJAX: Verify a product listing without creating it (VerifyAddItem).
+	 */
+	public function ajax_verify_product() {
+		check_ajax_referer( 'tcgiant_sync_ajax' );
+
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'Unauthorized.' ) );
+		}
+
+		$product_id = isset( $_POST['product_id'] ) ? (int) $_POST['product_id'] : 0;
+		if ( ! $product_id ) {
+			wp_send_json_error( array( 'message' => 'Invalid product ID.' ) );
+		}
+
+		$exporter = TCGiant_Sync_Exporter::instance();
+		$settings = $exporter->get_export_settings( $product_id );
+		$valid    = $exporter->validate_export_settings( $settings );
+		if ( is_wp_error( $valid ) ) {
+			wp_send_json_error( array( 'message' => $valid->get_error_message() ) );
+		}
+
+		$product = wc_get_product( $product_id );
+		if ( ! $product ) {
+			wp_send_json_error( array( 'message' => 'Product not found.' ) );
+		}
+
+		// Build item XML and call VerifyAddItem.
+		$item_xml = $exporter->build_item_xml_public( $product, $settings );
+		$full_xml = '<Item>' . "\n" . $item_xml . "\n" . '</Item>';
+		$api      = TCGiant_Sync_API::instance();
+		$result   = $api->verify_add_item( $full_xml );
+
+		if ( is_wp_error( $result ) ) {
+			wp_send_json_error( array( 'message' => $result->get_error_message() ) );
+		}
+
+		// Parse fees.
+		$fees = array();
+		if ( ! empty( $result['Fees']['Fee'] ) ) {
+			foreach ( (array) $result['Fees']['Fee'] as $fee ) {
+				if ( ! empty( $fee['Fee'] ) && floatval( $fee['Fee'] ) > 0 ) {
+					$fees[] = $fee['Name'] . ': $' . number_format( floatval( $fee['Fee'] ), 2 );
+				}
+			}
+		}
+
+		$msg = __( '✅ Listing verified! No errors.', 'tcgiant-sync' );
+		if ( ! empty( $fees ) ) {
+			$msg .= "\n" . __( 'Estimated fees: ', 'tcgiant-sync' ) . implode( ', ', $fees );
+		}
+
+		wp_send_json_success( array( 'message' => $msg, 'fees' => $fees ) );
+	}
+
+	// ─────────────────────────────────────────────────────────────────────────
+	// eBay Column on WooCommerce Orders
+	// ─────────────────────────────────────────────────────────────────────────
+
+	/**
+	 * Add eBay column to WooCommerce Orders list.
+	 *
+	 * @param array $columns Existing columns.
+	 * @return array
+	 */
+	public function add_order_ebay_column( $columns ) {
+		$new_columns = array();
+		foreach ( $columns as $key => $label ) {
+			$new_columns[ $key ] = $label;
+			if ( 'order_number' === $key ) {
+				$new_columns['tcgiant_ebay_order'] = __( 'eBay', 'tcgiant-sync' );
+			}
+		}
+		return $new_columns;
+	}
+
+	/**
+	 * Render eBay column content (HPOS orders table).
+	 *
+	 * @param string   $column_name Column identifier.
+	 * @param WC_Order $order       Order object.
+	 */
+	public function render_order_ebay_column( $column_name, $order ) {
+		if ( 'tcgiant_ebay_order' !== $column_name ) {
+			return;
+		}
+
+		$ebay_order_id = $order->get_meta( '_ebay_order_id' );
+		if ( ! empty( $ebay_order_id ) ) {
+			echo '<span style="display:inline-flex;align-items:center;gap:4px;font-size:12px;">';
+			echo '<span style="color:#e53238;font-weight:600;">eBay</span> ';
+			echo '<span style="color:#555;">' . esc_html( $ebay_order_id ) . '</span>';
+			echo '</span>';
+		} else {
+			echo '<span style="color:#ccc;">—</span>';
+		}
+	}
+
+	/**
+	 * Render eBay column content (legacy post-based orders).
+	 *
+	 * @param string $column_name Column identifier.
+	 * @param int    $post_id     Post ID.
+	 */
+	public function render_order_ebay_column_legacy( $column_name, $post_id ) {
+		if ( 'tcgiant_ebay_order' !== $column_name ) {
+			return;
+		}
+
+		$ebay_order_id = get_post_meta( $post_id, '_ebay_order_id', true );
+		if ( ! empty( $ebay_order_id ) ) {
+			echo '<span style="display:inline-flex;align-items:center;gap:4px;font-size:12px;">';
+			echo '<span style="color:#e53238;font-weight:600;">eBay</span> ';
+			echo '<span style="color:#555;">' . esc_html( $ebay_order_id ) . '</span>';
+			echo '</span>';
+		} else {
+			echo '<span style="color:#ccc;">—</span>';
 		}
 	}
 }
