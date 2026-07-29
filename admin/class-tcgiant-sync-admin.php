@@ -2413,6 +2413,29 @@ class TCGiant_Sync_Admin {
 		}
 
 		$exporter = TCGiant_Sync_Exporter::instance();
+
+		// Save per-product override fields from the form before verifying.
+		$override_fields = array(
+			'override_category_id'        => '_ebay_export_category_id',
+			'override_condition_id'       => '_ebay_export_condition_id',
+			'override_item_type'          => '_ebay_export_item_type',
+			'override_condition_type'     => '_ebay_export_condition_type',
+			'override_grader_id'          => '_ebay_export_grader_id',
+			'override_grade_value'        => '_ebay_export_grade_value',
+			'override_cert_number'        => '_ebay_export_cert_number',
+			'override_coin_year'          => '_ebay_export_coin_year',
+			'override_ungraded_condition' => '_ebay_export_ungraded_condition',
+			'override_listing_type'       => '_ebay_export_listing_type',
+			'override_listing_duration'   => '_ebay_export_listing_duration',
+			'override_fulfillment_policy' => '_ebay_export_fulfillment_policy',
+		);
+		foreach ( $override_fields as $post_key => $meta_key ) {
+			if ( isset( $_POST[ $post_key ] ) ) {
+				$value = sanitize_text_field( wp_unslash( $_POST[ $post_key ] ) );
+				update_post_meta( $product_id, $meta_key, $value );
+			}
+		}
+
 		$settings = $exporter->get_export_settings( $product_id );
 		$valid    = $exporter->validate_export_settings( $settings );
 		if ( is_wp_error( $valid ) ) {
@@ -2434,12 +2457,12 @@ class TCGiant_Sync_Admin {
 			wp_send_json_error( array( 'message' => $result->get_error_message() ) );
 		}
 
-		// Parse fees.
+		// Parse fees from normalized API response (name => amount).
 		$fees = array();
-		if ( ! empty( $result['Fees']['Fee'] ) ) {
-			foreach ( (array) $result['Fees']['Fee'] as $fee ) {
-				if ( ! empty( $fee['Fee'] ) && floatval( $fee['Fee'] ) > 0 ) {
-					$fees[] = $fee['Name'] . ': $' . number_format( floatval( $fee['Fee'] ), 2 );
+		if ( ! empty( $result['fees'] ) ) {
+			foreach ( $result['fees'] as $name => $amount ) {
+				if ( $amount > 0 ) {
+					$fees[] = $name . ': $' . number_format( $amount, 2 );
 				}
 			}
 		}
