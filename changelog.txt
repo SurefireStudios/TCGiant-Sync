@@ -1,5 +1,10 @@
 *** TCGiant Sync Changelog ***
 
+2026-07-29 - version 3.0.1
+- CRITICAL FIX: Products not matching by SKU when eBay changes the Item ID (e.g. old listing expired, seller created a new one). Sync was creating duplicate products with mangled SKUs like "SKU-123456789" instead of updating the existing product.
+- FIX: Trashed WooCommerce products were blocking SKU matching. A product in the trash still "held" its SKU, causing false "Duplicate SKU detected" warnings on active imports. Trashed products now have their SKU cleared automatically.
+- FIX: Trashed products could be matched by _ebay_item_id meta query. The Item ID lookup now excludes products with post_status = 'trash'.
+
 2026-07-29 - version 3.0.0
 == Performance & Architecture ==
 - CRITICAL: Deferred image pipeline — products get eBay image URLs immediately during sync; images downloaded to media library in background via WP-Cron. Eliminates 7,600+ Action Scheduler image jobs that blocked scanning for days.
