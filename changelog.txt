@@ -1,5 +1,11 @@
 *** TCGiant Sync Changelog ***
 
+2026-07-29 - version 3.1.1
+- FIX: UUID format error on Push to eBay — eBay requires 32 hex characters without hyphens. wp_generate_uuid4() was sending 36 chars with hyphens causing "The UUID can only contain Numbers and Letters from A to F" error.
+- FIX: "No changes allowed on ended listings" error — when eBay auto-ends a sold-out listing, the stock sync now gracefully handles already-ended listings instead of showing an error. Local status is updated to Ended automatically.
+- FIX: Settings page two-column layout was broken — the CSS classes tc-card, tc-row-2col, and tc-row-3col had no CSS definitions. Added proper grid layout with responsive breakpoints.
+- FIX: Plugin was trying to sync stock to eBay for products that no longer exist in WooCommerce (trashed/deleted). All SKU finder queries now exclude trashed products.
+
 2026-07-29 - version 3.1.0
 == New Features ==
 - UUID duplicate prevention: AddItem requests include <UUID> to prevent duplicate listings on network timeout/retry.
