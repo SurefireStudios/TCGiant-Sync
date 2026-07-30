@@ -22,9 +22,10 @@ class TCGiant_Sync_Image_Localizer {
 
 	/**
 	 * Number of products to process per WP-Cron tick.
-	 * Each product can have 5-12 images, so 20 products ≈ 100-240 downloads.
+	 * Each product can have 1-12 images. Higher batch sizes reduce
+	 * total localization time for large stores (10k+ items).
 	 */
-	const PRODUCTS_PER_BATCH = 20;
+	const PRODUCTS_PER_BATCH = 50;
 
 	/**
 	 * WP-Cron hook name.
@@ -274,10 +275,10 @@ class TCGiant_Sync_Image_Localizer {
 
 		if ( (int) $remaining > 0 ) {
 			TCGiant_Sync_Logger::log( sprintf(
-				'Image localizer: %d products remaining. Scheduling next batch in 60s.',
+				'Image localizer: %d products remaining. Scheduling next batch in 30s.',
 				$remaining
 			) );
-			wp_schedule_single_event( time() + 60, self::CRON_HOOK );
+			wp_schedule_single_event( time() + 30, self::CRON_HOOK );
 		}
 	}
 
@@ -412,11 +413,17 @@ class TCGiant_Sync_Image_Localizer {
 	/**
 	 * Find an existing local (non-external) attachment by source URL.
 	 *
-	 * @param int    $product_id Product ID.
+	 * Searches globally across ALL attachments in the media library, not just
+	 * those attached to the current product. This allows re-imported products
+	 * (e.g., relisted with a new Item ID/SKU) to reuse images that were
+	 * already downloaded for a previous import of the same eBay listing.
+	 *
+	 * @param int    $product_id Product ID (used to check product-specific attachments first).
 	 * @param string $source_url Clean source URL (no query params).
 	 * @return int|false Attachment ID or false.
 	 */
 	private function find_existing_local_attachment( $product_id, $source_url ) {
+		// First, check attachments belonging to this specific product (fastest).
 		$attachments = get_posts( array(
 			'post_type'   => 'attachment',
 			'post_parent' => $product_id,
@@ -425,6 +432,18 @@ class TCGiant_Sync_Image_Localizer {
 			'fields'      => 'ids',
 			'numberposts' => 1,
 		) );
+
+		// If not found on this product, search globally across all attachments.
+		// This catches images from trashed/re-created products with new SKUs.
+		if ( empty( $attachments ) ) {
+			$attachments = get_posts( array(
+				'post_type'   => 'attachment',
+				'meta_key'    => '_tcgiant_source_url',
+				'meta_value'  => $source_url,
+				'fields'      => 'ids',
+				'numberposts' => 1,
+			) );
+		}
 
 		if ( empty( $attachments ) ) {
 			return false;
@@ -435,6 +454,30 @@ class TCGiant_Sync_Image_Localizer {
 		$is_external = get_post_meta( $att_id, '_tcgiant_external_url', true );
 		if ( ! empty( $is_external ) ) {
 			return false;
+		}
+
+		// Re-parent the attachment to the current product if it belongs to a different one.
+		$current_parent = (int) get_post_field( 'post_parent', $att_id );
+		if ( $current_parent !== $product_id ) {
+			// Don't move the original — duplicate the attachment record so both products
+			// can reference the same underlying file without breaking the original.
+			$original_meta = wp_get_attachment_metadata( $att_id );
+			$original_file = get_attached_file( $att_id );
+
+			$new_att_id = wp_insert_attachment( array(
+				'post_title'     => get_the_title( $att_id ),
+				'post_mime_type' => get_post_mime_type( $att_id ),
+				'post_status'    => 'inherit',
+				'guid'           => wp_get_attachment_url( $att_id ),
+			), $original_file, $product_id );
+
+			if ( $new_att_id && ! is_wp_error( $new_att_id ) ) {
+				if ( $original_meta ) {
+					wp_update_attachment_metadata( $new_att_id, $original_meta );
+				}
+				update_post_meta( $new_att_id, '_tcgiant_source_url', $source_url );
+				return $new_att_id;
+			}
 		}
 
 		return $att_id;

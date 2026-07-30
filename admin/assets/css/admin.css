@@ -54,59 +54,6 @@
     font-weight: 400;
 }
 
-/* ─── Layout: Cards & Grid ─── */
-.wrap.tc-dashboard-wrap .tc-card {
-    background: var(--tc-card-bg);
-    border: 1px solid var(--tc-border);
-    border-radius: var(--tc-radius);
-    padding: 24px;
-    margin-bottom: 20px;
-}
-
-.wrap.tc-dashboard-wrap .tc-card h2 {
-    font-size: 16px;
-    font-weight: 700;
-    margin: 0 0 16px;
-    padding: 0;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
-
-.wrap.tc-dashboard-wrap .tc-card h2 .dashicons {
-    color: var(--tc-primary);
-    font-size: 20px;
-    width: 20px;
-    height: 20px;
-}
-
-.wrap.tc-dashboard-wrap .tc-row-2col {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 20px;
-    align-items: start;
-}
-
-.wrap.tc-dashboard-wrap .tc-row-3col {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 20px;
-    align-items: start;
-}
-
-@media (max-width: 1200px) {
-    .wrap.tc-dashboard-wrap .tc-row-3col {
-        grid-template-columns: 1fr 1fr;
-    }
-}
-
-@media (max-width: 782px) {
-    .wrap.tc-dashboard-wrap .tc-row-2col,
-    .wrap.tc-dashboard-wrap .tc-row-3col {
-        grid-template-columns: 1fr;
-    }
-}
-
 /* ─── Section Headings & Spacing ─── */
 .wrap.tc-dashboard-wrap .tc-section {
     padding-top: 18px;
@@ -145,6 +92,7 @@
     display: grid !important;
     grid-template-columns: 1fr 1fr !important;
     gap: 20px !important;
+    align-items: start !important;
     margin-bottom: 20px;
 }
 
@@ -152,7 +100,8 @@
     display: grid !important;
     grid-template-columns: 1fr 1fr 1fr !important;
     gap: 20px !important;
-    margin-bottom: 20px; /* added for stacking */
+    align-items: start !important;
+    margin-bottom: 20px;
 }
 
 .wrap.tc-dashboard-wrap .tc-row-1col {
