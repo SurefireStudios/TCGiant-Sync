@@ -97,6 +97,8 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 
 = 3.2.0 - 2026-07-30 =
 **Data safety**
+* CRITICAL: Duplicating a product no longer copies its eBay listing link. WooCommerce copies all custom fields on duplicate, so the copy inherited the original's eBay Item ID and appeared already listed — while pointing at the original's live listing. Pressing Update on the copy would have overwritten the original's real listing, and End Listing would have closed it. Duplicates now start unlinked. Export settings (category, condition, grader, policies) are still copied.
+* CRITICAL: Products duplicated BEFORE this fix still carry the stale link. Push and End Listing are now blocked for any product sharing an eBay Item ID, an admin notice lists the affected products, and a new "Unlink from eBay" button clears the bad link. Unlinking is local only and never changes the eBay listing.
 * CHANGED: Variations that disappear from an eBay listing are no longer deleted — they are set to private and out of stock. A partial eBay response previously destroyed them permanently along with their links to past orders. Retiring is reversible; deleting was not.
 * FIX: eBay order values are parsed properly. Amounts arriving as structured values (whenever eBay includes a currency attribute) were cast directly to a number, silently producing $1.00 orders. Totals, shipping, line prices and quantities now share the product importer's normalizer.
 * FIX: Order import reads every page — it previously requested only the first 100 orders per day and ignored the rest.
@@ -478,7 +480,7 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 == Upgrade Notice ==
 
 = 3.2.0 =
-Data-safety and maintenance release. Variations removed from an eBay listing are now retired rather than deleted, so a bad eBay response can no longer destroy them. Fixes eBay order values being misread as $1.00 in some cases, order import missing anything past the first 100 per day, and the Listings page showing data frozen at install time. Also removes ~760 lines of dead code and hardens the activity log against public access on nginx.
+Data-safety and maintenance release. IMPORTANT: fixes product duplication copying the eBay listing link — duplicated products appeared already listed and pointed at the original's live eBay listing, so pressing Update or End Listing on a copy would have changed or closed the original's real listing. Products duplicated before this update are detected and blocked, with a new "Unlink from eBay" button to clear them. Variations removed from an eBay listing are now retired rather than deleted, so a bad eBay response can no longer destroy them. Fixes eBay order values being misread as $1.00 in some cases, order import missing anything past the first 100 per day, and the Listings page showing data frozen at install time. Also removes ~760 lines of dead code and hardens the activity log against public access on nginx.
 
 = 3.1.4 =
 Performance and reliability release, recommended for all stores and important for large ones. Adds a database index and removes several hot spots that made large syncs slow: a ~300KB option being autoloaded on every page request, duplicated media library records, and tens of thousands of individual log writes per import. eBay requests now retry transient network failures instead of failing an entire sync, and rate-limit responses are handled properly. Also fixes uninstall, which previously left all plugin data behind — including your stored eBay tokens.

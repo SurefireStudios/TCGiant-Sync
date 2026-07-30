@@ -70,6 +70,10 @@ class TCGiant_Sync_Admin {
 		add_action( 'wp_ajax_tcgiant_browse_categories', array( $this, 'ajax_browse_categories' ) );
 		add_action( 'wp_ajax_tcgiant_clear_export_error', array( $this, 'ajax_clear_export_error' ) );
 		add_action( 'wp_ajax_tcgiant_suggest_category', array( $this, 'ajax_suggest_category' ) );
+		add_action( 'wp_ajax_tcgiant_unlink_ebay', array( $this, 'ajax_unlink_ebay' ) );
+
+		// Warn when several products claim one eBay listing (duplicated products).
+		add_action( 'admin_notices', array( $this, 'shared_listing_admin_notice' ) );
 
 		// eBay column on WooCommerce Orders list (HPOS-compatible).
 		add_filter( 'manage_woocommerce_page_wc-orders_columns', array( $this, 'add_order_ebay_column' ) );
@@ -608,6 +612,100 @@ class TCGiant_Sync_Admin {
 
 		wp_safe_redirect( admin_url( 'admin.php?page=tcgiant-wizard&step=3' ) );
 		exit;
+	}
+
+	/**
+	 * AJAX: Sever a product's link to an eBay listing.
+	 *
+	 * Local only — the eBay listing itself is untouched. Used to clean up
+	 * products duplicated before the duplication fix, which inherited the
+	 * original's eBay Item ID and so appeared already listed.
+	 */
+	public function ajax_unlink_ebay() {
+		check_ajax_referer( 'tcgiant_sync_ajax' );
+
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'Insufficient permissions.' ) );
+		}
+
+		$product_id = absint( $_POST['product_id'] ?? 0 );
+		if ( ! $product_id || 'product' !== get_post_type( $product_id ) ) {
+			wp_send_json_error( array( 'message' => 'Invalid product.' ) );
+		}
+
+		$was = get_post_meta( $product_id, '_ebay_item_id', true );
+		TCGiant_Sync_Exporter::unlink_product_from_ebay( $product_id, 'unlinked by admin' );
+
+		wp_send_json_success( array(
+			'message' => $was
+				? sprintf( __( 'Unlinked from eBay listing %s. The eBay listing itself was not changed.', 'tcgiant-sync' ), $was )
+				: __( 'This product was not linked to an eBay listing.', 'tcgiant-sync' ),
+		) );
+	}
+
+	/**
+	 * Warn when more than one product claims the same eBay listing.
+	 *
+	 * Duplicating a product used to copy _ebay_item_id, leaving the copy
+	 * pointing at the original's live listing. Products duplicated before that
+	 * was fixed still carry the stale link, and pushing or ending either one
+	 * would act on the original's listing.
+	 */
+	public function shared_listing_admin_notice() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			return;
+		}
+
+		$screen = get_current_screen();
+		if ( ! $screen || ! in_array( $screen->id, array( 'edit-product', 'product', 'plugins' ), true )
+			&& strpos( (string) $screen->id, 'tcgiant' ) === false ) {
+			return;
+		}
+
+		$duplicates = get_transient( 'tcgiant_shared_item_ids' );
+		if ( false === $duplicates ) {
+			global $wpdb;
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			$duplicates = $wpdb->get_results(
+				"SELECT pm.meta_value AS item_id, COUNT(*) AS n, GROUP_CONCAT(pm.post_id) AS ids
+				 FROM {$wpdb->postmeta} pm
+				 INNER JOIN {$wpdb->posts} p ON pm.post_id = p.ID
+				 WHERE pm.meta_key = '_ebay_item_id'
+				   AND pm.meta_value != ''
+				   AND p.post_type = 'product'
+				   AND p.post_status != 'trash'
+				 GROUP BY pm.meta_value
+				 HAVING n > 1
+				 LIMIT 20"
+			);
+			set_transient( 'tcgiant_shared_item_ids', $duplicates, 10 * MINUTE_IN_SECONDS );
+		}
+
+		if ( empty( $duplicates ) ) {
+			return;
+		}
+
+		echo '<div class="notice notice-warning"><p><strong>'
+			. esc_html__( 'TCGiant Sync: some products share an eBay listing', 'tcgiant-sync' )
+			. '</strong></p><p>'
+			. esc_html__( 'These products are each linked to the same eBay Item ID, which happens when a product is duplicated. Pushing or ending a listing from the copy would change the original\'s live eBay listing, so those actions are blocked until it is resolved. Open the copy, go to the eBay Listing tab and choose "Unlink from eBay".', 'tcgiant-sync' )
+			. '</p><ul style="list-style:disc;margin-left:20px;">';
+
+		foreach ( $duplicates as $row ) {
+			$ids   = array_map( 'absint', explode( ',', $row->ids ) );
+			$links = array();
+			foreach ( $ids as $id ) {
+				$links[] = '<a href="' . esc_url( get_edit_post_link( $id ) ) . '">'
+					. esc_html( get_the_title( $id ) ?: '#' . $id ) . '</a>';
+			}
+			printf(
+				'<li>%s: %s</li>',
+				esc_html( sprintf( __( 'eBay Item %s', 'tcgiant-sync' ), $row->item_id ) ),
+				wp_kses_post( implode( ', ', $links ) )
+			);
+		}
+
+		echo '</ul></div>';
 	}
 
 	/**
@@ -1154,6 +1252,20 @@ class TCGiant_Sync_Admin {
 		$ebay_item_id = get_post_meta( $product_id, '_ebay_item_id', true );
 		if ( empty( $ebay_item_id ) ) {
 			wp_send_json_error( array( 'message' => 'No eBay Item ID found for this product.' ) );
+		}
+
+		// Do not end a listing that another product also claims — ending it
+		// from a duplicate would close the original's live listing.
+		$shared_with = TCGiant_Sync_Exporter::find_products_sharing_item_id( $product_id, $ebay_item_id );
+		if ( ! empty( $shared_with ) ) {
+			wp_send_json_error( array(
+				'message' => sprintf(
+					/* translators: 1: eBay Item ID, 2: comma-separated product IDs */
+					__( 'Refusing to end eBay listing %1$s: product(s) #%2$s are linked to the same listing, so this product was probably duplicated from one of them. Ending it here would close their live listing. Use "Unlink from eBay" on this product instead.', 'tcgiant-sync' ),
+					$ebay_item_id,
+					implode( ', ', $shared_with )
+				),
+			) );
 		}
 
 		$api = TCGiant_Sync_API::instance();
@@ -2106,6 +2218,24 @@ class TCGiant_Sync_Admin {
 			echo '<button type="button" class="tc-ebay-btn tc-ebay-btn-end" data-product-id="' . esc_attr( $post_id ) . '" title="End this listing on eBay">⛔ End Listing</button>';
 		}
 
+		// Unlink — for products that inherited another product's eBay Item ID
+		// through duplication. Local only; the eBay listing is not touched.
+		if ( ! empty( $ebay_item_id ) ) {
+			$shared = TCGiant_Sync_Exporter::find_products_sharing_item_id( $post_id, $ebay_item_id );
+			if ( ! empty( $shared ) ) {
+				echo '<button type="button" class="tc-ebay-btn tc-ebay-btn-unlink" data-product-id="' . esc_attr( $post_id ) . '" '
+					. 'title="' . esc_attr__( 'This product shares an eBay listing with another product. Unlink it so it can be listed separately. The eBay listing is not changed.', 'tcgiant-sync' ) . '">'
+					. '🔗 ' . esc_html__( 'Unlink from eBay', 'tcgiant-sync' ) . '</button>';
+				echo '<span class="tc-ebay-shared-warning" style="display:block;margin-top:4px;color:#b32d2e;font-size:11px;">'
+					. esc_html( sprintf(
+						/* translators: %s: comma-separated product IDs */
+						__( 'Shares eBay listing with product #%s — push and end are blocked until unlinked.', 'tcgiant-sync' ),
+						implode( ', #', $shared )
+					) )
+					. '</span>';
+			}
+		}
+
 		echo '</div>';
 	}
 
@@ -2298,6 +2428,37 @@ class TCGiant_Sync_Admin {
 					if (res.success) {
 						statusEl.addClass('is-success').text('⛔ Ended');
 						btn.remove();
+					} else {
+						var msg = res.data && res.data.message ? res.data.message : 'Unknown error';
+						statusEl.addClass('is-error').text('✖ ' + msg);
+						btn.prop('disabled', false);
+					}
+				}).fail(function() {
+					statusEl.addClass('is-error').text('✖ Request failed');
+					btn.prop('disabled', false);
+				});
+			});
+
+			// Unlink handler — severs the local link only, eBay is untouched.
+			$(document).on('click', '.tc-ebay-btn-unlink', function(e) {
+				e.preventDefault();
+				if (!confirm('Unlink this product from its eBay listing?\n\nThis only removes the link stored in WordPress. The eBay listing itself is NOT changed or ended.')) return;
+				var btn = $(this);
+				var productId = btn.data('product-id');
+				var statusEl = $('.tc-ebay-btn-status[data-product-id="' + productId + '"]');
+
+				btn.prop('disabled', true);
+				statusEl.removeClass('is-success is-error').text('Unlinking…');
+
+				$.post(ajaxUrl, {
+					action: 'tcgiant_unlink_ebay',
+					product_id: productId,
+					_ajax_nonce: nonce
+				}, function(res) {
+					if (res.success) {
+						statusEl.addClass('is-success').text('✔ Unlinked');
+						btn.remove();
+						$('.tc-ebay-shared-warning').remove();
 					} else {
 						var msg = res.data && res.data.message ? res.data.message : 'Unknown error';
 						statusEl.addClass('is-error').text('✖ ' + msg);
