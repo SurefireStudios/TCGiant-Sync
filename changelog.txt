@@ -1,5 +1,10 @@
 *** TCGiant Sync Changelog ***
 
+2026-07-30 - version 3.2.1
+- Re-release of 3.2.0 to guarantee every install receives the complete update.
+- The 3.2.0 release was published a few minutes before its final two fixes landed, so a small number of sites may have downloaded a 3.2.0 build missing the product-duplication fix and the Settings page two-column layout fix. Because the version number was identical, those sites would never have been offered a correction.
+- No functional changes beyond 3.2.0. If you already have a complete 3.2.0, this update is a no-op. If you are unsure, install it — that is the point of the release.
+
 2026-07-30 - version 3.2.0
 == Data Safety ==
 - CRITICAL: Duplicating a product no longer copies its eBay listing link. WooCommerce copies all custom fields when you duplicate, so the copy inherited the original's eBay Item ID and appeared to already be listed — while actually pointing at the original's live listing. Pressing Update on the copy would have overwritten the original's real eBay listing with the copy's title, price and images, and End Listing would have closed it. Duplicates now start unlinked, as a product that has never been listed. Per-product export settings (category, condition, grader, policies) are still copied, since that is the point of duplicating.

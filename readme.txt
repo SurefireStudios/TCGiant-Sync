@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.2.0
+Stable tag: 3.2.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,10 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.2.1 - 2026-07-30 =
+* Re-release of 3.2.0 so every install receives the complete update. The 3.2.0 release went out a few minutes before its final two fixes landed, so some sites may have downloaded a 3.2.0 build missing the product-duplication fix and the Settings page layout fix — and with an identical version number, would never have been offered a correction.
+* No functional changes beyond 3.2.0. Harmless if you already have a complete 3.2.0.
 
 = 3.2.0 - 2026-07-30 =
 **Data safety**
@@ -478,6 +482,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.2.1 =
+Install this even if you already updated to 3.2.0. A small number of sites may have downloaded an incomplete 3.2.0 during a brief window, missing the product-duplication fix and the Settings layout fix, and would never have been offered a correction because the version number was the same. No other changes.
 
 = 3.2.0 =
 Data-safety and maintenance release. IMPORTANT: fixes product duplication copying the eBay listing link — duplicated products appeared already listed and pointed at the original's live eBay listing, so pressing Update or End Listing on a copy would have changed or closed the original's real listing. Products duplicated before this update are detected and blocked, with a new "Unlink from eBay" button to clear them. Variations removed from an eBay listing are now retired rather than deleted, so a bad eBay response can no longer destroy them. Fixes eBay order values being misread as $1.00 in some cases, order import missing anything past the first 100 per day, and the Listings page showing data frozen at install time. Also removes ~760 lines of dead code and hardens the activity log against public access on nginx.
