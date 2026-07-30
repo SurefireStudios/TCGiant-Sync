@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.2.1
+Stable tag: 3.3.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,17 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.3.0 - 2026-07-30 =
+**New**
+* NEW: Listings created from WooCommerce now include your product attributes as eBay item specifics. Previously they went up with almost none, which eBay penalises in search — and for categories with mandatory aspects, rejects.
+* NEW: Required item specifics are checked before pushing, naming exactly which are missing instead of failing at eBay with a generic error. Skipped if eBay's metadata service is unreachable, so an outage can never block listing.
+* NEW: "Host listing images on eBay?" setting. Listings normally reference images on your own site, which requires eBay to reach it — that fails on password-protected sites, behind bot protection, and breaks on a domain change. Uploads to eBay Picture Services instead, cached per image, with fallback to the site URL if an upload fails.
+
+**Background tasks**
+* FIX: Page scanning no longer stalls between batches — the immediate-continue request was being ignored because the scanner runs from cron itself, so each batch waited for the next scheduled tick.
+* FIX: Background work now runs on hosts that disable WP-Cron. Those sites never ran image localization at all, leaving products on eBay-hosted images that stop working when the listing ends.
+* NEW: "Background Tasks" indicator in System Health, so a misconfigured host is visible instead of silently doing nothing.
 
 = 3.2.1 - 2026-07-30 =
 * Re-release of 3.2.0 so every install receives the complete update. The 3.2.0 release went out a few minutes before its final two fixes landed, so some sites may have downloaded a 3.2.0 build missing the product-duplication fix and the Settings page layout fix — and with an identical version number, would never have been offered a correction.
@@ -482,6 +493,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.3.0 =
+Adds product attributes as eBay item specifics on push — listings previously went up with almost none, hurting search placement and causing rejections in categories with required aspects. Required aspects are now checked before pushing and named if missing. Adds optional image hosting on eBay for sites eBay cannot reach. Also fixes background tasks stalling between scan batches, and never running at all on hosts with WP-Cron disabled.
 
 = 3.2.1 =
 Install this even if you already updated to 3.2.0. A small number of sites may have downloaded an incomplete 3.2.0 during a brief window, missing the product-duplication fix and the Settings layout fix, and would never have been offered a correction because the version number was the same. No other changes.

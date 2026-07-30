@@ -799,6 +799,20 @@ class TCGiant_Sync_Exporter {
 			);
 		}
 
+		// Fail locally with the specific missing aspects rather than sending a
+		// request eBay will reject with a generic error.
+		$missing_aspects = $this->find_missing_required_aspects( $product, $settings );
+		if ( ! empty( $missing_aspects ) ) {
+			return new WP_Error(
+				'missing_required_aspects',
+				sprintf(
+					/* translators: %s: comma-separated list of eBay aspect names */
+					__( 'eBay requires these item specifics for the selected category and they are empty: %s. Add them as product attributes (Product data → Attributes), then push again.', 'tcgiant-sync' ),
+					implode( ', ', $missing_aspects )
+				)
+			);
+		}
+
 		$item_xml  = $this->build_item_xml( $product, $settings );
 		$api       = TCGiant_Sync_API::instance();
 		$ebay_item_id = $product->get_meta( '_ebay_item_id' );
@@ -947,8 +961,9 @@ class TCGiant_Sync_Exporter {
 			$xml .= '<ConditionID>' . esc_attr( $settings['condition_id'] ) . '</ConditionID>' . "\n";
 		}
 
-		// ItemSpecifics: required for Coins categories (e.g. Certification, Grade).
-		$item_specifics_xml = $this->build_item_specifics_xml( $settings );
+		// ItemSpecifics: the product's WooCommerce attributes, plus the
+		// configured grading/coin fields.
+		$item_specifics_xml = $this->build_item_specifics_xml( $product, $settings );
 		if ( ! empty( $item_specifics_xml ) ) {
 			$xml .= $item_specifics_xml . "\n";
 		}
@@ -1323,12 +1338,131 @@ class TCGiant_Sync_Exporter {
 	 * @param array $settings Merged export settings.
 	 * @return string XML string or empty.
 	 */
-	private function build_item_specifics_xml( array $settings ) {
+	/**
+	 * eBay limits on item specifics.
+	 */
+	const MAX_SPECIFICS      = 30;
+	const MAX_SPECIFIC_NAME  = 40;
+	const MAX_SPECIFIC_VALUE = 65;
+
+	/**
+	 * Collect item specifics from a product's WooCommerce attributes.
+	 *
+	 * The importer maps eBay item specifics into product attributes, but until
+	 * now nothing mapped them back on push — so listings created from
+	 * WooCommerce went up with almost no item specifics, which eBay penalises
+	 * in search and, for required aspects, rejects outright.
+	 *
+	 * @param WC_Product $product Product being listed.
+	 * @return array<string,string> Name => value.
+	 */
+	private function collect_attribute_specifics( WC_Product $product ) {
+		$specifics = array();
+
+		foreach ( $product->get_attributes() as $attribute ) {
+			if ( ! $attribute instanceof WC_Product_Attribute ) {
+				continue;
+			}
+
+			// Variation axes are described per-variation, not as item specifics.
+			if ( $attribute->get_variation() ) {
+				continue;
+			}
+
+			$name = wc_attribute_label( $attribute->get_name(), $product );
+			if ( '' === trim( (string) $name ) ) {
+				continue;
+			}
+
+			if ( $attribute->is_taxonomy() ) {
+				$values = wc_get_product_terms( $product->get_id(), $attribute->get_name(), array( 'fields' => 'names' ) );
+			} else {
+				$values = $attribute->get_options();
+			}
+
+			$values = array_filter( array_map( 'trim', (array) $values ) );
+			if ( empty( $values ) ) {
+				continue;
+			}
+
+			// eBay accepts repeated names for multi-value aspects, but a single
+			// joined value is safer across categories with MULTI disabled.
+			$value = implode( ', ', $values );
+
+			$name  = mb_substr( $name, 0, self::MAX_SPECIFIC_NAME );
+			$value = mb_substr( $value, 0, self::MAX_SPECIFIC_VALUE );
+
+			$specifics[ $name ] = $value;
+		}
+
+		return $specifics;
+	}
+
+	/**
+	 * Check a product against the aspects eBay requires for its category.
+	 *
+	 * @param WC_Product $product  Product being listed.
+	 * @param array      $settings Merged export settings.
+	 * @return string[] Names of required aspects with no value. Empty when fine.
+	 */
+	public function find_missing_required_aspects( WC_Product $product, array $settings ) {
+		$category_id = $settings['category_id'] ?? '';
+		if ( empty( $category_id ) ) {
+			return array();
+		}
+
+		$aspects = TCGiant_Sync_API::instance()->get_category_aspects( $category_id );
+		if ( is_wp_error( $aspects ) || empty( $aspects ) ) {
+			// Never block a push because eBay's metadata call failed — that
+			// would turn an eBay outage into an inability to list anything.
+			return array();
+		}
+
+		$provided = array_change_key_case( $this->build_specifics_map( $product, $settings ), CASE_LOWER );
+
+		$missing = array();
+		foreach ( $aspects as $aspect ) {
+			if ( empty( $aspect['required'] ) || empty( $aspect['name'] ) ) {
+				continue;
+			}
+			$key = strtolower( $aspect['name'] );
+			if ( ! isset( $provided[ $key ] ) || '' === trim( (string) $provided[ $key ] ) ) {
+				$missing[] = $aspect['name'];
+			}
+		}
+
+		return $missing;
+	}
+
+	/**
+	 * Build the full name => value map of item specifics for a product.
+	 *
+	 * Product attributes first, then the grading/coin fields, which win on a
+	 * clash because they are explicitly configured for this listing.
+	 *
+	 * @param WC_Product $product  Product being listed.
+	 * @param array      $settings Merged export settings.
+	 * @return array<string,string>
+	 */
+	private function build_specifics_map( WC_Product $product, array $settings ) {
+		return array_merge(
+			$this->collect_attribute_specifics( $product ),
+			$this->collect_configured_specifics( $settings )
+		);
+	}
+
+	/**
+	 * Item specifics derived from the per-product grading/coin configuration.
+	 *
+	 * @param array $settings Merged export settings.
+	 * @return array<string,string>
+	 */
+	private function collect_configured_specifics( array $settings ) {
 		$item_type = $settings['item_type'] ?? '';
 
 		// Only generate ItemSpecifics for Coins categories.
 		if ( ! self::is_coins_category( $settings['category_id'] ?? '', $item_type ) ) {
-			return '';
+			return array();
 		}
 
 		$specifics = array();
@@ -1356,23 +1490,39 @@ class TCGiant_Sync_Exporter {
 			$specifics['Certification'] = 'Uncertified';
 		}
 
-		if ( empty( $specifics ) ) {
-			// Year is required for all Coins categories, even if no other specifics are set.
-			if ( empty( $settings['coin_year'] ) ) {
-				return '';
-			}
-		}
-
 		// Year: required by eBay for all Coins & Paper Money categories.
 		if ( ! empty( $settings['coin_year'] ) ) {
 			$specifics['Year'] = $settings['coin_year'];
 		}
 
+		return $specifics;
+	}
+
+	/**
+	 * Build <ItemSpecifics> XML for the listing.
+	 *
+	 * @param WC_Product $product  Product being listed.
+	 * @param array      $settings Merged export settings.
+	 * @return string XML, or '' when there is nothing to send.
+	 */
+	private function build_item_specifics_xml( WC_Product $product, array $settings ) {
+		$specifics = $this->build_specifics_map( $product, $settings );
+
+		if ( empty( $specifics ) ) {
+			return '';
+		}
+
+		// eBay caps the number of name/value pairs per listing.
+		$specifics = array_slice( $specifics, 0, self::MAX_SPECIFICS, true );
+
 		$xml = '<ItemSpecifics>' . "\n";
 		foreach ( $specifics as $name => $value ) {
+			if ( '' === trim( (string) $value ) ) {
+				continue;
+			}
 			$xml .= "\t<NameValueList>\n";
-			$xml .= "\t\t<Name>" . esc_xml( $name ) . "</Name>\n";
-			$xml .= "\t\t<Value>" . esc_xml( $value ) . "</Value>\n";
+			$xml .= "\t\t<Name>" . esc_xml( mb_substr( (string) $name, 0, self::MAX_SPECIFIC_NAME ) ) . "</Name>\n";
+			$xml .= "\t\t<Value>" . esc_xml( mb_substr( (string) $value, 0, self::MAX_SPECIFIC_VALUE ) ) . "</Value>\n";
 			$xml .= "\t</NameValueList>\n";
 		}
 		$xml .= '</ItemSpecifics>';
@@ -1661,13 +1811,74 @@ class TCGiant_Sync_Exporter {
 	 * @param WC_Product $product The WooCommerce product.
 	 * @return string[] Array of image URLs.
 	 */
+	/**
+	 * How long an uploaded eBay Picture Services URL stays valid for reuse.
+	 *
+	 * eBay keeps unreferenced pictures for a limited period, so the cache is
+	 * refreshed well inside that window rather than kept indefinitely.
+	 */
+	const EPS_URL_TTL = 20 * DAY_IN_SECONDS;
+
+	/**
+	 * Resolve an attachment to a picture URL for the listing.
+	 *
+	 * Prefers an eBay-hosted (EPS) copy when the "Host images on eBay" setting
+	 * is enabled, falling back to the site's own URL if the upload fails, so a
+	 * transient eBay problem can never block a listing.
+	 *
+	 * @param int $attachment_id Attachment ID.
+	 * @return string URL, or '' when unavailable.
+	 */
+	private function resolve_picture_url( $attachment_id ) {
+		$attachment_id = (int) $attachment_id;
+		$local         = wp_get_attachment_image_url( $attachment_id, 'full' );
+
+		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
+		if ( empty( $settings['host_images_on_ebay'] ) ) {
+			return $local ? $local : '';
+		}
+
+		// Reuse a previous upload while it is still fresh, keyed to the file so
+		// replacing the image invalidates it.
+		$file    = get_attached_file( $attachment_id );
+		$stamp   = $file && file_exists( $file ) ? (string) filemtime( $file ) : '0';
+		$cached  = get_post_meta( $attachment_id, '_tcgiant_eps_url', true );
+		$cached_key = get_post_meta( $attachment_id, '_tcgiant_eps_key', true );
+		$cached_at  = (int) get_post_meta( $attachment_id, '_tcgiant_eps_time', true );
+
+		if ( $cached && $cached_key === $stamp && ( time() - $cached_at ) < self::EPS_URL_TTL ) {
+			return $cached;
+		}
+
+		if ( ! $file || ! file_exists( $file ) ) {
+			return $local ? $local : '';
+		}
+
+		$uploaded = TCGiant_Sync_API::instance()->upload_picture( $file, get_the_title( $attachment_id ) );
+
+		if ( is_wp_error( $uploaded ) ) {
+			TCGiant_Sync_Logger::warning( sprintf(
+				'eBay picture upload failed for attachment #%d (%s). Falling back to the site URL.',
+				$attachment_id,
+				$uploaded->get_error_message()
+			) );
+			return $local ? $local : '';
+		}
+
+		update_post_meta( $attachment_id, '_tcgiant_eps_url', $uploaded );
+		update_post_meta( $attachment_id, '_tcgiant_eps_key', $stamp );
+		update_post_meta( $attachment_id, '_tcgiant_eps_time', time() );
+
+		return $uploaded;
+	}
+
 	private function get_product_image_urls( WC_Product $product ) {
 		$urls = array();
 
 		// Featured image.
 		$thumb_id = (int) $product->get_image_id();
 		if ( $thumb_id ) {
-			$src = wp_get_attachment_image_url( $thumb_id, 'full' );
+			$src = $this->resolve_picture_url( $thumb_id );
 			if ( $src ) {
 				$urls[] = $src;
 			}
@@ -1679,7 +1890,7 @@ class TCGiant_Sync_Exporter {
 			if ( count( $urls ) >= self::MAX_IMAGES ) {
 				break;
 			}
-			$src = wp_get_attachment_image_url( $img_id, 'full' );
+			$src = $this->resolve_picture_url( $img_id );
 			if ( $src ) {
 				$urls[] = $src;
 			}

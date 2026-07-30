@@ -316,6 +316,14 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						</select>
 					</div>
 					<div class="tc-field">
+						<label class="tc-label"><?php esc_html_e( 'Host listing images on eBay?', 'tcgiant-sync' ); ?></label>
+						<div class="tc-radio-group">
+							<label><input type="radio" name="tcgiant_sync_ebay_settings[host_images_on_ebay]" value="1" <?php checked( $settings['host_images_on_ebay'] ?? '0', '1' ); ?>> Yes</label>
+							<label><input type="radio" name="tcgiant_sync_ebay_settings[host_images_on_ebay]" value="0" <?php checked( $settings['host_images_on_ebay'] ?? '0', '0' ); ?>> No</label>
+						</div>
+						<p class="description"><?php esc_html_e( 'By default, listings point at images on this site, which means eBay has to be able to reach it. Turn this on to upload each image to eBay Picture Services instead — necessary if your site is password-protected, behind bot protection, or may change domain. Uploads are cached, so repeat pushes do not re-upload.', 'tcgiant-sync' ); ?></p>
+					</div>
+					<div class="tc-field">
 						<label class="tc-label" for="ebay_log_level"><?php esc_html_e( 'Log Detail', 'tcgiant-sync' ); ?></label>
 						<select name="tcgiant_sync_ebay_settings[log_level]" id="ebay_log_level" class="tc-select">
 							<option value="info" <?php selected( $settings['log_level'] ?? 'info', 'info' ); ?>><?php esc_html_e( 'Everything (default)', 'tcgiant-sync' ); ?></option>

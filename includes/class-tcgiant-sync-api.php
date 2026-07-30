@@ -1051,6 +1051,169 @@ class TCGiant_Sync_API {
 	}
 
 	/**
+	 * Upload an image to eBay Picture Services (EPS) and return its eBay URL.
+	 *
+	 * Listings normally reference PictureURL values pointing back at the
+	 * WooCommerce site, which requires eBay's fetcher to reach it. That fails
+	 * on password-protected sites, behind Cloudflare bot protection, on
+	 * staging, and breaks retroactively whenever the domain changes. Hosting
+	 * the picture on eBay removes that dependency entirely.
+	 *
+	 * @param string $file_path Absolute path to a local image file.
+	 * @param string $name      Picture name shown in Seller Hub.
+	 * @return string|WP_Error EPS FullURL on success.
+	 */
+	public function upload_picture( $file_path, $name = '' ) {
+		if ( ! file_exists( $file_path ) || ! is_readable( $file_path ) ) {
+			return new WP_Error( 'file_missing', __( 'Image file could not be read.', 'tcgiant-sync' ) );
+		}
+
+		$token = TCGiant_Sync_OAuth::instance()->get_access_token();
+		if ( ! $token ) {
+			return new WP_Error( 'no_token', __( 'No valid eBay token.', 'tcgiant-sync' ) );
+		}
+
+		if ( $this->is_daily_budget_exhausted() ) {
+			return new WP_Error( 'rate_limited', 'Daily API call budget exhausted.' );
+		}
+
+		if ( defined( 'TCGIANT_SYNC_IS_STAGING' ) && TCGIANT_SYNC_IS_STAGING ) {
+			return new WP_Error( 'staging_blocked', __( 'eBay write operations are disabled on staging/dev environments.', 'tcgiant-sync' ) );
+		}
+
+		$config   = $this->get_marketplace_config();
+		$boundary = 'TCGIANT' . wp_generate_password( 16, false );
+		$name     = $name ? mb_substr( $name, 0, 80 ) : basename( $file_path );
+
+		// UploadSiteHostedPictures takes a multipart body: the XML request
+		// first, then the raw image bytes.
+		$xml = '<?xml version="1.0" encoding="utf-8"?>' . "\n"
+			. '<UploadSiteHostedPicturesRequest xmlns="urn:ebay:apis:eBLBaseComponents">' . "\n"
+			. '<PictureName>' . esc_xml( $name ) . '</PictureName>' . "\n"
+			. '<PictureSet>Supersize</PictureSet>' . "\n"
+			. '</UploadSiteHostedPicturesRequest>';
+
+		$eol  = "\r\n";
+		$body = '--' . $boundary . $eol
+			. 'Content-Disposition: form-data; name="XML Payload"' . $eol
+			. 'Content-Type: text/xml;charset=utf-8' . $eol . $eol
+			. $xml . $eol
+			. '--' . $boundary . $eol
+			. 'Content-Disposition: form-data; name="dummy"; filename="' . basename( $file_path ) . '"' . $eol
+			. 'Content-Transfer-Encoding: binary' . $eol
+			. 'Content-Type: application/octet-stream' . $eol . $eol
+			. file_get_contents( $file_path ) . $eol
+			. '--' . $boundary . '--' . $eol;
+
+		$response = $this->request_with_retry( 'https://api.ebay.com/ws/api.dll', array(
+			'method'  => 'POST',
+			'headers' => array(
+				'X-EBAY-API-SITEID'              => $config['site_id'],
+				'X-EBAY-API-COMPATIBILITY-LEVEL' => '1323',
+				'X-EBAY-API-CALL-NAME'           => 'UploadSiteHostedPictures',
+				'X-EBAY-API-IAF-TOKEN'           => $token,
+				'Content-Type'                   => 'multipart/form-data; boundary=' . $boundary,
+			),
+			'body'    => $body,
+			'timeout' => 60,
+		) );
+
+		$this->increment_daily_call_count();
+
+		if ( is_wp_error( $response ) ) {
+			return $response;
+		}
+
+		$xml_body = simplexml_load_string( wp_remote_retrieve_body( $response ), 'SimpleXMLElement', LIBXML_NOCDATA );
+		if ( ! $xml_body ) {
+			return new WP_Error( 'invalid_xml', 'Invalid XML from UploadSiteHostedPictures.' );
+		}
+
+		$parsed = json_decode( wp_json_encode( $xml_body ), true );
+
+		if ( isset( $parsed['Ack'] ) && in_array( $parsed['Ack'], array( 'Failure', 'PartialFailure' ), true ) ) {
+			$errors = $parsed['Errors'] ?? array();
+			$first  = isset( $errors[0] ) ? $errors[0] : $errors;
+			$msg    = $first['LongMessage'] ?? $first['ShortMessage'] ?? 'Unknown upload error';
+			return new WP_Error( 'upload_failed', is_string( $msg ) ? $msg : 'Picture upload failed.' );
+		}
+
+		$url = $parsed['SiteHostedPictureDetails']['FullURL'] ?? '';
+		if ( empty( $url ) ) {
+			return new WP_Error( 'no_url', 'eBay did not return a picture URL.' );
+		}
+
+		return $url;
+	}
+
+	/**
+	 * Get the item aspects (item specifics) eBay defines for a category.
+	 *
+	 * eBay rejects or downranks listings that omit an aspect marked REQUIRED,
+	 * and until now the exporter sent whatever specifics a product happened to
+	 * carry with no idea which were mandatory. This is the Taxonomy API
+	 * equivalent of the Trading API's GetCategorySpecifics.
+	 *
+	 * Cached for 7 days — eBay's aspect definitions change rarely, and this is
+	 * consulted on every product edit screen.
+	 *
+	 * @param string $category_id eBay leaf category ID.
+	 * @return array|WP_Error List of aspects, each with name/required/cardinality/values.
+	 */
+	public function get_category_aspects( $category_id ) {
+		$category_id = trim( (string) $category_id );
+		if ( '' === $category_id ) {
+			return new WP_Error( 'no_category', __( 'No eBay category set.', 'tcgiant-sync' ) );
+		}
+
+		$config  = $this->get_marketplace_config();
+		$tree_id = self::CATEGORY_TREE_IDS[ $config['marketplace_id'] ] ?? '0';
+
+		$transient_key = 'tcgiant_aspects_' . $tree_id . '_' . $category_id;
+		$cached = get_transient( $transient_key );
+		if ( false !== $cached ) {
+			return $cached;
+		}
+
+		$response = $this->request(
+			'commerce/taxonomy/v1/category_tree/' . $tree_id . '/get_item_aspects_for_category',
+			'GET',
+			array(),
+			array( 'category_id' => $category_id ),
+			false
+		);
+
+		if ( is_wp_error( $response ) ) {
+			return $response;
+		}
+
+		$aspects = array();
+		foreach ( $response['aspects'] ?? array() as $aspect ) {
+			$constraint = $aspect['aspectConstraint'] ?? array();
+
+			// Suggested values, where eBay provides a closed or guided list.
+			$values = array();
+			foreach ( $aspect['aspectValues'] ?? array() as $value ) {
+				if ( ! empty( $value['localizedValue'] ) ) {
+					$values[] = $value['localizedValue'];
+				}
+			}
+
+			$aspects[] = array(
+				'name'        => $aspect['localizedAspectName'] ?? '',
+				'required'    => ! empty( $constraint['aspectRequired'] ),
+				'multi'       => ( 'MULTI' === ( $constraint['itemToAspectCardinality'] ?? '' ) ),
+				'mode'        => $constraint['aspectMode'] ?? 'FREE_TEXT',
+				'selection'   => $constraint['aspectUsage'] ?? '',
+				'values'      => $values,
+			);
+		}
+
+		set_transient( $transient_key, $aspects, 7 * DAY_IN_SECONDS );
+		return $aspects;
+	}
+
+	/**
 	 * Get condition policies for a category via the Metadata API.
 	 *
 	 * Returns the full condition descriptor schema including valid

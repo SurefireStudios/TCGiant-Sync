@@ -1031,6 +1031,39 @@ class TCGiant_Sync_Admin {
 			'text'   => $cron_active ? sprintf( __( 'Next: %s', 'tcgiant-sync' ), human_time_diff( time(), $cron_active ) ) : __( 'Disabled', 'tcgiant-sync' ),
 		);
 
+		// Background task health.
+		//
+		// Everything the plugin does out of band — page scanning, image
+		// localization, order import — depends on scheduled tasks actually
+		// running. On a host that sets DISABLE_WP_CRON without a replacement,
+		// they silently never fire, and the usual symptom is "my images never
+		// downloaded" with nothing in the log to explain it.
+		$cron_health = TCGiant_Sync_Cron::get_cron_health();
+
+		if ( ! empty( $cron_health['overdue'] ) ) {
+			$health['background'] = array(
+				'label'  => __( 'Background Tasks', 'tcgiant-sync' ),
+				'status' => 'warning',
+				'text'   => sprintf(
+					/* translators: %d: number of overdue scheduled tasks */
+					_n( '%d task overdue — cron may not be running', '%d tasks overdue — cron may not be running', count( $cron_health['overdue'] ), 'tcgiant-sync' ),
+					count( $cron_health['overdue'] )
+				),
+			);
+		} elseif ( $cron_health['disabled'] ) {
+			$health['background'] = array(
+				'label'  => __( 'Background Tasks', 'tcgiant-sync' ),
+				'status' => 'active',
+				'text'   => __( 'WP-Cron disabled — running via admin activity', 'tcgiant-sync' ),
+			);
+		} else {
+			$health['background'] = array(
+				'label'  => __( 'Background Tasks', 'tcgiant-sync' ),
+				'status' => 'active',
+				'text'   => __( 'Up to date', 'tcgiant-sync' ),
+			);
+		}
+
 		return $health;
 	}
 

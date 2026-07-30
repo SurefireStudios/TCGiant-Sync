@@ -225,6 +225,13 @@ class TCGiant_Sync_Image_Localizer {
 			// Schedule for 5 minutes from now to batch up products.
 			wp_schedule_single_event( time() + 300, self::CRON_HOOK );
 		}
+
+		// Scheduling alone is not enough on hosts that disable WP-Cron without
+		// configuring a replacement — the event would simply never fire and
+		// products would keep pointing at eBay-hosted images indefinitely.
+		if ( class_exists( 'TCGiant_Sync_Cron' ) ) {
+			TCGiant_Sync_Cron::request_dispatch();
+		}
 	}
 
 	/**

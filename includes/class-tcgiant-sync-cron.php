@@ -61,6 +61,10 @@ class TCGiant_Sync_Cron {
 		// One-time listing type backfill on upgrade.
 		add_action( 'admin_init', array( $this, 'maybe_backfill_listing_type' ) );
 
+		// Keep background work moving on hosts where WP-Cron is disabled or
+		// unreliable — admin page views act as the heartbeat.
+		add_action( 'admin_init', array( __CLASS__, 'maybe_dispatch_overdue' ) );
+
 		add_action( 'init', array( $this, 'schedule_events' ) );
 	}
 
@@ -153,6 +157,151 @@ class TCGiant_Sync_Cron {
 			'display'  => did_action( 'wp_loaded' ) ? esc_html__( 'Hourly', 'tcgiant-sync' ) : 'Hourly',
 		);
 		return $schedules;
+	}
+
+	// ───────────────────────────────────────────────────────────────────────────
+	// Cron dispatch — works where WordPress's own spawn_cron() does not
+	// ───────────────────────────────────────────────────────────────────────────
+
+	/**
+	 * Whether a loopback dispatch has been queued for this request.
+	 *
+	 * @var bool
+	 */
+	private static $dispatch_queued = false;
+
+	/**
+	 * Plugin cron hooks that background work depends on.
+	 */
+	const BACKGROUND_HOOKS = array(
+		'tcgiant_sync_scan_resume',
+		'tcgiant_sync_localize_images',
+		'tcgiant_sync_poll_ebay_cron',
+		'tcgiant_sync_import_orders',
+		'tcgiant_sync_check_ended_listings',
+	);
+
+	/**
+	 * Ask for WP-Cron to be poked at the end of this request.
+	 *
+	 * WordPress's spawn_cron() returns immediately when DOING_CRON is defined,
+	 * which is precisely the situation the page scanner is in when it chains
+	 * its next batch — so the kick never happened and resumption waited for the
+	 * next natural tick. It also does nothing useful mid-request, because
+	 * wp-cron.php would just hit the still-held "doing_cron" lock.
+	 *
+	 * Deferring to shutdown solves both: by then the current cron run has
+	 * released its lock, so the loopback is actually able to pick up work.
+	 *
+	 * @return void
+	 */
+	public static function request_dispatch() {
+		if ( self::$dispatch_queued ) {
+			return;
+		}
+		self::$dispatch_queued = true;
+		add_action( 'shutdown', array( __CLASS__, 'dispatch_now' ), 100 );
+	}
+
+	/**
+	 * Fire a non-blocking loopback request at wp-cron.php.
+	 *
+	 * Unlike spawn_cron(), this works with DISABLE_WP_CRON set: that constant
+	 * only stops WordPress spawning cron automatically on page loads, it does
+	 * not stop wp-cron.php running when something asks it to.
+	 *
+	 * @return void
+	 */
+	public static function dispatch_now() {
+		self::$dispatch_queued = false;
+
+		// Respect the same lock core uses, so we never stampede an in-flight run.
+		$now  = microtime( true );
+		$lock = (float) get_transient( 'doing_cron' );
+		$timeout = defined( 'WP_CRON_LOCK_TIMEOUT' ) ? WP_CRON_LOCK_TIMEOUT : 60;
+
+		if ( $lock > $now + 10 * MINUTE_IN_SECONDS ) {
+			$lock = 0; // Nonsensical future value; treat as stale.
+		}
+		if ( $lock + $timeout > $now ) {
+			return; // A cron run is already in progress.
+		}
+
+		$doing_wp_cron = sprintf( '%.22F', $now );
+		set_transient( 'doing_cron', $doing_wp_cron );
+
+		$cron_request = apply_filters(
+			'cron_request',
+			array(
+				'url'  => add_query_arg( 'doing_wp_cron', $doing_wp_cron, site_url( 'wp-cron.php' ) ),
+				'key'  => $doing_wp_cron,
+				'args' => array(
+					'timeout'   => 0.01,
+					'blocking'  => false,
+					'sslverify' => apply_filters( 'https_local_ssl_verify', false ),
+				),
+			),
+			$doing_wp_cron
+		);
+
+		wp_remote_post( $cron_request['url'], $cron_request['args'] );
+	}
+
+	/**
+	 * Opportunistically poke cron when the plugin has overdue background work.
+	 *
+	 * Hosts that set DISABLE_WP_CRON without configuring a replacement system
+	 * cron leave every scheduled task stranded — most visibly image
+	 * localization, so products keep pointing at eBay-hosted images that die
+	 * when the listing ends. Admin page views are a reliable source of requests
+	 * on an active store, so they are used to keep things moving.
+	 *
+	 * Throttled, and only when something is actually overdue.
+	 *
+	 * @return void
+	 */
+	public static function maybe_dispatch_overdue() {
+		if ( wp_doing_ajax() || ( defined( 'DOING_CRON' ) && DOING_CRON ) ) {
+			return;
+		}
+
+		if ( get_transient( 'tcgiant_cron_heartbeat' ) ) {
+			return;
+		}
+		set_transient( 'tcgiant_cron_heartbeat', 1, MINUTE_IN_SECONDS );
+
+		$now = time();
+		foreach ( self::BACKGROUND_HOOKS as $hook ) {
+			$next = wp_next_scheduled( $hook );
+			if ( $next && $next <= $now ) {
+				self::request_dispatch();
+				return;
+			}
+		}
+	}
+
+	/**
+	 * Report on how healthy scheduled background work looks.
+	 *
+	 * @return array{disabled:bool, overdue:string[], alternate:bool}
+	 */
+	public static function get_cron_health() {
+		$overdue = array();
+		$now     = time();
+
+		foreach ( self::BACKGROUND_HOOKS as $hook ) {
+			$next = wp_next_scheduled( $hook );
+			// More than 15 minutes late is well beyond normal cron jitter.
+			if ( $next && ( $now - $next ) > 15 * MINUTE_IN_SECONDS ) {
+				$overdue[] = $hook;
+			}
+		}
+
+		return array(
+			'disabled'  => defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON,
+			'overdue'   => $overdue,
+			'alternate' => defined( 'ALTERNATE_WP_CRON' ) && ALTERNATE_WP_CRON,
+		);
 	}
 
 	/**

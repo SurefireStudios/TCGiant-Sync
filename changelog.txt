@@ -1,5 +1,16 @@
 *** TCGiant Sync Changelog ***
 
+2026-07-30 - version 3.3.0
+== New ==
+- NEW: Listings created from WooCommerce now include your product attributes as eBay item specifics. Previously they were sent with almost none, which eBay penalises in search results — and for categories with mandatory aspects, rejects outright.
+- NEW: Required item specifics are checked before pushing. If eBay requires an aspect for the chosen category and it is empty, the push stops and names exactly which ones are missing, instead of failing at eBay with a generic error. If eBay's metadata service is unreachable the check is skipped rather than blocking the listing.
+- NEW: "Host listing images on eBay?" setting (Settings → Push to eBay). Listings normally reference images on your own site, which requires eBay to be able to reach it — that fails on password-protected sites, sites behind bot protection, and breaks if you ever change domain. Turn this on to upload images to eBay Picture Services instead. Uploads are cached per image, so repeat pushes do not re-upload, and if an upload fails the listing falls back to the site URL rather than failing.
+
+== Background Tasks ==
+- FIX: Page scanning no longer stalls between batches. The scanner asked WordPress to run cron immediately, but that request is ignored when the scanner is itself running from cron — which it always is — so each batch waited for the next scheduled tick instead of continuing straight away.
+- FIX: Background work now runs on hosts that disable WP-Cron. Sites with WP-Cron switched off and no replacement scheduler never ran image localization at all, leaving products pointing at eBay-hosted images that stop working when the listing ends. Admin activity now keeps the queue moving.
+- NEW: "Background Tasks" indicator in System Health showing whether scheduled work is running on time, so a misconfigured host is visible rather than silently doing nothing.
+
 2026-07-30 - version 3.2.1
 - Re-release of 3.2.0 to guarantee every install receives the complete update.
 - The 3.2.0 release was published a few minutes before its final two fixes landed, so a small number of sites may have downloaded a 3.2.0 build missing the product-duplication fix and the Settings page two-column layout fix. Because the version number was identical, those sites would never have been offered a correction.

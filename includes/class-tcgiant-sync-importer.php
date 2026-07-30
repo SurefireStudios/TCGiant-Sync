@@ -971,7 +971,13 @@ class TCGiant_Sync_Importer {
 			$pages_this_batch, $current_page, $total_pages
 		) );
 		wp_schedule_single_event( time() - 1, 'tcgiant_sync_scan_resume' );
-		spawn_cron(); // Force WP-Cron to fire immediately.
+
+		// spawn_cron() was a no-op here: it returns immediately when DOING_CRON
+		// is defined, which it is, because this scan is itself running from
+		// cron. Dispatching on shutdown instead means the loopback fires once
+		// this run has released the cron lock, so the next batch starts in
+		// seconds rather than waiting for the next natural tick.
+		TCGiant_Sync_Cron::request_dispatch();
 	}
 
 	/**
