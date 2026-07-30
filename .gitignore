@@ -18,3 +18,5 @@ phpstan-baseline.neon
 
 # Internal audit notes — contains exploitation detail, keep out of the public repo.
 AUDIT-*.md
+# Composer binary, kept locally for the dev scripts.
+/composer.phar

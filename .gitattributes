@@ -12,6 +12,7 @@
 /tools              export-ignore
 /composer.json      export-ignore
 /composer.lock      export-ignore
+/composer.phar      export-ignore
 /phpstan.neon       export-ignore
 /phpstan-bootstrap.php export-ignore
 
@@ -31,3 +32,4 @@
 *.css text eol=lf
 *.txt text eol=lf
 *.md  text eol=lf
+*.bat text eol=crlf
