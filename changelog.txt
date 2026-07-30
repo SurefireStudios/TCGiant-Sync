@@ -7,6 +7,7 @@
 - FIX: Order import now reads every page. It requested only the first 100 orders of the last 24 hours and ignored the rest, so busy stores silently lost orders.
 
 == Fixed ==
+- FIX: Settings page two-column layout. "Import Settings" and "Push to eBay Settings" were stacking vertically instead of sitting side by side — the Import card was missing its closing tag, so the Push card nested inside it and the grid saw a single column. This is the same underlying markup fault the 3.1.1 and 3.1.2 CSS changes were chasing.
 - FIX: The Listings page and the auto-relist scheduler were reading a snapshot frozen at install time. The plugin's listings table was created and migrated but never written to afterwards, so neither reflected anything that had been synced since. It is now kept current on every import.
 - FIX: Store categories are no longer lost for an hour after a failed lookup. An empty result was being cached for the full hour, so every product imported in that window came in uncategorised.
 - FIX: Bulk "Push to eBay" no longer reports success before contacting eBay. Queuing a product was being counted as a completed listing, so the progress bar reached 100% immediately and genuine failures never surfaced. Queued and completed are now reported separately.

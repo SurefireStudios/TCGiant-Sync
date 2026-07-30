@@ -26,6 +26,9 @@ jobs:
       - name: Syntax check (php -l)
         run: php tools/lint.php
 
+      - name: Admin view markup
+        run: php tools/check-views.php
+
       # PHPStan itself needs a modern PHP; the analysis still targets 7.4 via
       # the platform setting in composer.json.
       - name: Set up PHP for analysis

@@ -22,6 +22,11 @@ php tools\lint.php
 if errorlevel 1 goto failed
 
 echo.
+echo === View markup ===
+php tools\check-views.php
+if errorlevel 1 goto failed
+
+echo.
 echo === Static analysis ===
 if not exist "vendor\phpstan\phpstan\phpstan.phar" (
     echo PHPStan is not installed. Installing dependencies...

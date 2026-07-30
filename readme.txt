@@ -102,6 +102,7 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * FIX: Order import reads every page — it previously requested only the first 100 orders per day and ignored the rest.
 
 **Fixed**
+* FIX: Settings page two-column layout — "Import Settings" and "Push to eBay Settings" were stacking vertically instead of sitting side by side. The Import card was missing its closing tag, so the Push card nested inside it. This is the same markup fault the 3.1.1 and 3.1.2 CSS changes were chasing.
 * FIX: The Listings page and auto-relist scheduler were reading a snapshot frozen at install time; the listings table was never written to after the initial migration. It is now kept current on every import.
 * FIX: Store categories are no longer lost for an hour after a failed lookup, which caused products to import uncategorised.
 * FIX: Bulk "Push to eBay" no longer reports success before contacting eBay. Queued and completed are now counted separately.

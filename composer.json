@@ -24,14 +24,17 @@
         "analyse-baseline": "@php vendor/phpstan/phpstan/phpstan.phar analyse --memory-limit=3G --generate-baseline",
         "check": [
             "@lint",
+            "@check-views",
             "@analyse"
         ],
-        "build": "@php tools/build-zip.php"
+        "build": "@php tools/build-zip.php",
+        "check-views": "@php tools/check-views.php"
     },
     "scripts-descriptions": {
         "lint": "Run php -l over every plugin source file.",
         "analyse": "Run PHPStan static analysis (level 5).",
         "check": "Run lint then analyse \u2014 use this before tagging a release.",
-        "build": "Build a distributable plugin zip into zips/."
+        "build": "Build a distributable plugin zip into zips/.",
+        "check-views": "Verify admin view markup is balanced and grid layouts have their columns."
     }
 }

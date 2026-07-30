@@ -394,6 +394,9 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 				</div>
 			</form>
 		</div>
+		</div><!-- /.tc-card — Import Settings. Without this the Push card
+		            nested inside it, so the two-column grid saw a single child
+		            and stacked them. -->
 
 		<!-- Push to eBay Settings -->
 		<div class="tc-card">
@@ -712,7 +715,6 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 		</div>
 	</div>
 </div>
-</div><!-- /.wrap.tc-dashboard-wrap (opened at the top of this file) -->
 
 <script>
 (function($){
