@@ -245,7 +245,49 @@ class TCGiant_Sync_OAuth {
 			return $body['access_token'];
 		}
 
-		TCGiant_Sync_Logger::error( 'Token Refresh Error Body: ' . wp_json_encode( $body ) );
+		TCGiant_Sync_Logger::error( 'Token Refresh Error Body: ' . wp_json_encode( self::redact_secrets( $body ) ) );
 		return false;
+	}
+
+	/**
+	 * Replace credential-like values before anything is written to the log.
+	 *
+	 * This path logs whatever the relay returned when a refresh did not yield
+	 * an access token. A partial or unexpected response can still carry a
+	 * token or the relay signing key, and the activity log is a plaintext file
+	 * that ends up in support bundles and site backups.
+	 *
+	 * @param mixed $data Decoded response body.
+	 * @return mixed Same shape, with secret values replaced.
+	 */
+	private static function redact_secrets( $data ) {
+		if ( ! is_array( $data ) ) {
+			return $data;
+		}
+
+		$secret_keys = array(
+			'access_token',
+			'refresh_token',
+			'token',
+			'relay_key',
+			'relay_secret',
+			'client_secret',
+			'cert_id',
+			'authorization',
+		);
+
+		$clean = array();
+		foreach ( $data as $key => $value ) {
+			if ( is_array( $value ) ) {
+				$clean[ $key ] = self::redact_secrets( $value );
+				continue;
+			}
+
+			$clean[ $key ] = in_array( strtolower( (string) $key ), $secret_keys, true )
+				? '[redacted]'
+				: $value;
+		}
+
+		return $clean;
 	}
 }

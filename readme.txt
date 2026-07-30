@@ -96,6 +96,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 == Changelog ==
 
 = 3.3.0 - 2026-07-30 =
+**Security**
+* Credentials are no longer written to the activity log. A failed token refresh logged the relay's full response verbatim, which could place an access token, refresh token or the relay signing key into a plaintext file that ends up in support bundles and backups.
+
 **New**
 * NEW: Listings created from WooCommerce now include your product attributes as eBay item specifics. Previously they went up with almost none, which eBay penalises in search — and for categories with mandatory aspects, rejects.
 * NEW: Required item specifics are checked before pushing, naming exactly which are missing instead of failing at eBay with a generic error. Skipped if eBay's metadata service is unreachable, so an outage can never block listing.

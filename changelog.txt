@@ -1,6 +1,9 @@
 *** TCGiant Sync Changelog ***
 
 2026-07-30 - version 3.3.0
+== Security ==
+- Credentials are no longer written to the activity log. When a token refresh failed, the relay's full response was logged verbatim — an unexpected or partial response could put an access token, refresh token or the relay signing key into a plaintext file that ends up in support bundles and backups. Those values are now replaced with [redacted].
+
 == New ==
 - NEW: Listings created from WooCommerce now include your product attributes as eBay item specifics. Previously they were sent with almost none, which eBay penalises in search results — and for categories with mandatory aspects, rejects outright.
 - NEW: Required item specifics are checked before pushing. If eBay requires an aspect for the chosen category and it is empty, the push stops and names exactly which ones are missing, instead of failing at eBay with a generic error. If eBay's metadata service is unreachable the check is skipped rather than blocking the listing.
