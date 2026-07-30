@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.3.0
+Stable tag: 3.3.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -95,7 +95,7 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 
 == Changelog ==
 
-= 3.3.0 - 2026-07-30 =
+= 3.3.1 - 2026-07-30 =
 **Security**
 * Credentials are no longer written to the activity log. A failed token refresh logged the relay's full response verbatim, which could place an access token, refresh token or the relay signing key into a plaintext file that ends up in support bundles and backups.
 
@@ -497,7 +497,7 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 
 == Upgrade Notice ==
 
-= 3.3.0 =
+= 3.3.1 =
 Adds product attributes as eBay item specifics on push — listings previously went up with almost none, hurting search placement and causing rejections in categories with required aspects. Required aspects are now checked before pushing and named if missing. Adds optional image hosting on eBay for sites eBay cannot reach. Also fixes background tasks stalling between scan batches, and never running at all on hosts with WP-Cron disabled.
 
 = 3.2.1 =

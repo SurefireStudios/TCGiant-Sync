@@ -1,6 +1,6 @@
 *** TCGiant Sync Changelog ***
 
-2026-07-30 - version 3.3.0
+2026-07-30 - version 3.3.1
 == Security ==
 - Credentials are no longer written to the activity log. When a token refresh failed, the relay's full response was logged verbatim — an unexpected or partial response could put an access token, refresh token or the relay signing key into a plaintext file that ends up in support bundles and backups. Those values are now replaced with [redacted].
 
