@@ -17,11 +17,15 @@ class TCGiant_Sync_Admin {
 
 	/**
 	 * Instance of this class.
+	 *
+	 * @var self|null
 	 */
 	private static $_instance = null;
 
 	/**
 	 * Main instance.
+	 *
+	 * @return self
 	 */
 	public static function instance() {
 		if ( is_null( self::$_instance ) ) {
@@ -105,11 +109,10 @@ class TCGiant_Sync_Admin {
 		add_action( 'restrict_manage_posts', array( $this, 'render_ebay_status_filter' ) );
 		add_action( 'pre_get_posts', array( $this, 'handle_ebay_status_filter' ) );
 
-		// Cron: detect ended eBay listings.
-		add_action( 'tcgiant_sync_check_ended_listings', array( $this, 'check_ended_listings_cron' ) );
-		if ( ! wp_next_scheduled( 'tcgiant_sync_check_ended_listings' ) ) {
-			wp_schedule_event( time(), 'hourly', 'tcgiant_sync_check_ended_listings' );
-		}
+		// Ended-listing detection lives in TCGiant_Sync_Cron. Registering it
+		// here meant the callback only existed on admin requests, while the
+		// event fires from wp-cron.php — which is not is_admin() — so it never
+		// actually ran.
 	}
 
 	/**
@@ -342,13 +345,16 @@ class TCGiant_Sync_Admin {
 			wp_die( esc_html__( 'Unauthorized.', 'tcgiant-sync' ) );
 		}
 
-		if ( function_exists( 'as_unschedule_all_actions' ) ) {
-			as_unschedule_all_actions( 'tcgiant_sync_fetch_listings', null, 'tcgiant_sync_group' );
-			as_unschedule_all_actions( 'tcgiant_sync_process_item_import', null, 'tcgiant_sync_group' );
-			as_unschedule_all_actions( 'tcgiant_sync_download_images', null, 'tcgiant_sync_group' );
-		}
+		// Cancels every queue with its correct group, clears the WP-Cron
+		// scan-resume event and releases the concurrency lock. Doing this
+		// inline with the wrong group names meant Stop reported success while
+		// imports and image downloads carried on.
+		TCGiant_Sync_Importer::stop_all();
 
-		TCGiant_Sync_Importer::update_sync_state( array( 'status' => 'stopped' ) );
+		TCGiant_Sync_Importer::update_sync_state( array(
+			'status'              => 'stopped',
+			'scan_complete_clean' => false,
+		) );
 		TCGiant_Sync_Logger::log( 'Emergency Stop: All sync jobs cleared.', 'warning' );
 
 		wp_safe_redirect( admin_url( 'admin.php?page=tcgiant-sync' ) );
@@ -728,9 +734,12 @@ class TCGiant_Sync_Admin {
 
 		// Self-heal: if status says 'importing' but no pending jobs remain, auto-complete.
 		if ( 'importing' === $state['status'] && function_exists( 'as_get_scheduled_actions' ) ) {
+			// Item imports live in GROUP_IMPORTS. Querying the scan group here
+			// always came back empty, so an in-progress sync was flipped to
+			// "complete" the first time the dashboard polled.
 			$pending = as_get_scheduled_actions( array(
 				'hook'     => 'tcgiant_sync_process_item_import',
-				'group'    => 'tcgiant_sync_group',
+				'group'    => TCGiant_Sync_Importer::GROUP_IMPORTS,
 				'status'   => ActionScheduler_Store::STATUS_PENDING,
 				'per_page' => 1,
 			) );
@@ -2407,48 +2416,6 @@ class TCGiant_Sync_Admin {
 		if ( 'tcgiant_ebay' === $query->get( 'orderby' ) ) {
 			$query->set( 'meta_key', '_ebay_item_id' );
 			$query->set( 'orderby', 'meta_value' );
-		}
-	}
-
-	/**
-	 * Hourly cron: detect ended eBay listings.
-	 *
-	 * Scans products that have an _ebay_end_time in the past and marks
-	 * their _ebay_listing_status as 'Ended'.
-	 */
-	public function check_ended_listings_cron() {
-		global $wpdb;
-
-		$now_utc = gmdate( 'Y-m-d\TH:i:s.000\Z' );
-
-		// Find products with end time in the past that aren't already marked Ended.
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-		$product_ids = $wpdb->get_col( $wpdb->prepare(
-			"SELECT DISTINCT p.ID
-			 FROM {$wpdb->posts} p
-			 INNER JOIN {$wpdb->postmeta} pm_end ON p.ID = pm_end.post_id AND pm_end.meta_key = '_ebay_end_time'
-			 LEFT JOIN {$wpdb->postmeta} pm_status ON p.ID = pm_status.post_id AND pm_status.meta_key = '_ebay_listing_status'
-			 WHERE p.post_type = 'product'
-			   AND p.post_status != 'trash'
-			   AND pm_end.meta_value != ''
-			   AND pm_end.meta_value < %s
-			   AND (pm_status.meta_value IS NULL OR pm_status.meta_value != 'Ended')
-			 LIMIT 500",
-			$now_utc
-		) );
-
-		if ( empty( $product_ids ) ) {
-			return;
-		}
-
-		$count = 0;
-		foreach ( $product_ids as $pid ) {
-			update_post_meta( $pid, '_ebay_listing_status', 'Ended' );
-			$count++;
-		}
-
-		if ( $count > 0 ) {
-			TCGiant_Sync_Logger::log( sprintf( 'Ended listing check: marked %d product(s) as Ended.', $count ) );
 		}
 	}
 

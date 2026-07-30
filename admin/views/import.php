@@ -31,13 +31,14 @@ if ( 'limit_reached' === $sync_state['status'] && $license_ui['can_import'] ) {
 if ( 'rate_limited' === $sync_state['status'] && function_exists( 'as_get_scheduled_actions' ) ) {
 	$pending_scans = as_get_scheduled_actions( array(
 		'hook'   => 'tcgiant_sync_fetch_listings',
-		'group'  => 'tcgiant_sync_group',
+		'group'  => TCGiant_Sync_Importer::GROUP_SCAN,
 		'status' => ActionScheduler_Store::STATUS_PENDING,
 		'per_page' => 1,
 	) );
+	// Item imports are queued in GROUP_IMPORTS, not the scan group.
 	$pending_imports = as_get_scheduled_actions( array(
 		'hook'   => 'tcgiant_sync_process_item_import',
-		'group'  => 'tcgiant_sync_group',
+		'group'  => TCGiant_Sync_Importer::GROUP_IMPORTS,
 		'status' => ActionScheduler_Store::STATUS_PENDING,
 		'per_page' => 1,
 	) );

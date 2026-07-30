@@ -19,6 +19,8 @@ class TCGiant_Sync_Mapper {
 
 	/**
 	 * Instance.
+	 *
+	 * @var self|null
 	 */
 	private static $_instance = null;
 
@@ -36,6 +38,8 @@ class TCGiant_Sync_Mapper {
 
 	/**
 	 * Main instance.
+	 *
+	 * @return self
 	 */
 	public static function instance() {
 		if ( is_null( self::$_instance ) ) {
@@ -507,7 +511,7 @@ class TCGiant_Sync_Mapper {
 		//    This handles the case where eBay changed the item number (e.g. old listing
 		//    expired and seller created a new listing with the same SKU).
 		if ( ! $product_id && ! empty( $product_data['sku'] ) ) {
-			$sku_product_id = wc_get_product_id_by_sku( $product_data['sku'] );
+			$sku_product_id = $this->find_matchable_product_id_by_sku( $product_data['sku'] );
 			if ( $sku_product_id ) {
 				// Skip trashed products — they shouldn't block matching.
 				$post_status = get_post_status( $sku_product_id );
@@ -801,6 +805,38 @@ class TCGiant_Sync_Mapper {
 		}
 
 		return $saved_id;
+	}
+
+	/**
+	 * Look up a product by SKU, ignoring variations.
+	 *
+	 * wc_get_product_id_by_sku() searches wc_product_meta_lookup, which
+	 * includes product variations. An incoming simple eBay listing whose SKU
+	 * happens to match an existing variation would otherwise be "matched" to
+	 * that variation, and the importer would then write a title, description,
+	 * categories, attributes and status onto it — corrupting both the variation
+	 * and its parent product.
+	 *
+	 * @param string $sku SKU to look up.
+	 * @return int|false Product ID of a non-variation product, or false.
+	 */
+	private function find_matchable_product_id_by_sku( $sku ) {
+		$found_id = wc_get_product_id_by_sku( $sku );
+		if ( ! $found_id ) {
+			return false;
+		}
+
+		// Trashed products are handled by the caller, and wc_get_product()
+		// returns false for some trashed rows, so check the post type directly.
+		if ( 'product_variation' === get_post_type( $found_id ) ) {
+			TCGiant_Sync_Logger::warning( sprintf(
+				'SKU "%s" is held by variation #%d, not a product. Skipping SKU match to avoid overwriting it.',
+				$sku, $found_id
+			) );
+			return false;
+		}
+
+		return (int) $found_id;
 	}
 
 	/**

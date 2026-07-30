@@ -22,6 +22,8 @@ class TCGiant_Sync_License
 
 	/**
 	 * Instance.
+	 *
+	 * @var self|null
 	 */
 	private static $_instance = null;
 
@@ -52,6 +54,8 @@ class TCGiant_Sync_License
 
 	/**
 	 * Main instance.
+	 *
+	 * @return self
 	 */
 	public static function instance()
 	{

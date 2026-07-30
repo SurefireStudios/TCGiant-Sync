@@ -47,11 +47,15 @@ class TCGiant_Sync_Image_Localizer {
 
 	/**
 	 * Instance.
+	 *
+	 * @var self|null
 	 */
 	private static $_instance = null;
 
 	/**
 	 * Main instance.
+	 *
+	 * @return self
 	 */
 	public static function instance() {
 		if ( is_null( self::$_instance ) ) {
@@ -123,19 +127,32 @@ class TCGiant_Sync_Image_Localizer {
 		update_post_meta( $product_id, '_tcgiant_image_urls_hash', $new_hash );
 		update_post_meta( $product_id, '_tcgiant_external_image_urls', $image_entries );
 
-		// If images changed, mark as not localized so the background process picks it up.
-		// This is a fresh set of URLs, so any retry state from the previous set
-		// must be cleared — otherwise a product that had exhausted its attempts
+		// Mark as not localized so the background process picks it up when
+		// either the image set changed OR the product has no thumbnail.
+		//
+		// The thumbnail condition matters: if the hash matched and the product
+		// was already flagged localized but its thumbnail had since been
+		// removed, the flag was never reset. The code below then attached a
+		// placeholder pointing at eBay's CDN, and the localizer — which only
+		// selects products flagged '0' — never looked at the product again. The
+		// store was left with images that die when the eBay listing ends.
+		$has_thumbnail = has_post_thumbnail( $product_id );
+
+		if ( $new_hash !== $stored_hash || ! $has_thumbnail ) {
+			update_post_meta( $product_id, '_tcgiant_images_localized', 0 );
+		}
+
+		// A changed image set is a fresh start, so clear any retry state —
+		// otherwise a product that had exhausted its attempts on the old URLs
 		// would be given up on immediately, and a stale backoff would delay it.
 		if ( $new_hash !== $stored_hash ) {
-			update_post_meta( $product_id, '_tcgiant_images_localized', 0 );
 			delete_post_meta( $product_id, '_tcgiant_localize_attempts' );
 			delete_post_meta( $product_id, '_tcgiant_localize_retry_after' );
 		}
 
 		// Only set external image URLs if the product doesn't already have local images.
 		// If it does have images and the hash matches, keep the local copies.
-		if ( ! has_post_thumbnail( $product_id ) && ! empty( $main_urls ) ) {
+		if ( ! $has_thumbnail && ! empty( $main_urls ) ) {
 			// Use the first URL as the product's external image via WC's image setter.
 			// WooCommerce doesn't natively support external image URLs on products,
 			// so we attach a placeholder and store the external URL for front-end use.
@@ -405,6 +422,12 @@ class TCGiant_Sync_Image_Localizer {
 				} elseif ( $needs_thumbnail ) {
 					set_post_thumbnail( $product_id, $existing_attachment );
 					$needs_thumbnail = false;
+				} else {
+					// Reused images still belong in the gallery. Skipping this
+					// step meant every re-localization (hash change, relist,
+					// images-only sync) dropped already-downloaded images from
+					// _product_image_gallery, so galleries shrank over time.
+					$gallery_ids[] = $existing_attachment;
 				}
 				$result['skipped']++;
 				continue;
@@ -584,36 +607,23 @@ class TCGiant_Sync_Image_Localizer {
 		}
 
 		// Ensure it's a real local attachment, not an external placeholder.
-		$att_id = $attachments[0];
+		$att_id = (int) $attachments[0];
 		$is_external = get_post_meta( $att_id, '_tcgiant_external_url', true );
 		if ( ! empty( $is_external ) ) {
 			return false;
 		}
 
-		// Re-parent the attachment to the current product if it belongs to a different one.
-		$current_parent = (int) get_post_field( 'post_parent', $att_id );
-		if ( $current_parent !== $product_id ) {
-			// Don't move the original — duplicate the attachment record so both products
-			// can reference the same underlying file without breaking the original.
-			$original_meta = wp_get_attachment_metadata( $att_id );
-			$original_file = get_attached_file( $att_id );
-
-			$new_att_id = wp_insert_attachment( array(
-				'post_title'     => get_the_title( $att_id ),
-				'post_mime_type' => get_post_mime_type( $att_id ),
-				'post_status'    => 'inherit',
-				'guid'           => wp_get_attachment_url( $att_id ),
-			), $original_file, $product_id );
-
-			if ( $new_att_id && ! is_wp_error( $new_att_id ) ) {
-				if ( $original_meta ) {
-					wp_update_attachment_metadata( $new_att_id, $original_meta );
-				}
-				update_post_meta( $new_att_id, '_tcgiant_source_url', $source_url );
-				return $new_att_id;
-			}
-		}
-
+		// Share the attachment as-is, whatever it is parented to.
+		//
+		// WordPress attachments are referenced by ID from _thumbnail_id and
+		// _product_image_gallery; post_parent is only a bookkeeping hint, so
+		// several products may safely point at one attachment.
+		//
+		// Previously this duplicated the attachment post whenever the parent
+		// differed, which (a) grew the media library by one row plus full
+		// metadata for every product reusing an image, and (b) left duplicates
+		// pointing at a file that wp_delete_attachment( $id, true ) on the
+		// original would delete out from under them.
 		return $att_id;
 	}
 

@@ -24,11 +24,15 @@ class TCGiant_Sync_Webhooks {
 
 	/**
 	 * Instance.
+	 *
+	 * @var self|null
 	 */
 	private static $_instance = null;
 
 	/**
 	 * Main instance.
+	 *
+	 * @return self
 	 */
 	public static function instance() {
 		if ( is_null( self::$_instance ) ) {

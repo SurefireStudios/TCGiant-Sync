@@ -19,6 +19,8 @@ class TCGiant_Sync_Exporter {
 
 	/**
 	 * Instance.
+	 *
+	 * @var self|null
 	 */
 	private static $_instance = null;
 
@@ -372,6 +374,8 @@ class TCGiant_Sync_Exporter {
 
 	/**
 	 * Main instance.
+	 *
+	 * @return self
 	 */
 	public static function instance() {
 		if ( is_null( self::$_instance ) ) {
@@ -615,6 +619,19 @@ class TCGiant_Sync_Exporter {
 			return $validation;
 		}
 
+		// Refuse to list a stock-managed product with nothing available.
+		// build_item_xml() floors the quantity at 1 so that Verify still
+		// produces valid XML, which meant pushing an out-of-stock product
+		// created a live eBay listing offering one unit that cannot be
+		// fulfilled — and, with auto-end-on-zero-stock enabled, the stock
+		// listener then immediately ended the listing it had just created.
+		if ( ! $product->is_type( 'variable' ) && $product->managing_stock() && (int) $product->get_stock_quantity() < 1 ) {
+			return new WP_Error(
+				'out_of_stock',
+				__( 'Cannot list on eBay: this product has no stock available. Add stock, or turn off stock management for it, then push again.', 'tcgiant-sync' )
+			);
+		}
+
 		$item_xml  = $this->build_item_xml( $product, $settings );
 		$api       = TCGiant_Sync_API::instance();
 		$ebay_item_id = $product->get_meta( '_ebay_item_id' );
@@ -672,6 +689,9 @@ class TCGiant_Sync_Exporter {
 		$title       = $this->sanitize_title( $product->get_name() );
 		$description = $this->build_description( $product );
 		$price       = wc_format_decimal( $product->get_regular_price(), 2 );
+		// Floored at 1 so VerifyAddItem still gets valid XML for a zero-stock
+		// product. do_push() blocks the real listing separately — do not rely
+		// on this clamp to prevent overselling.
 		$quantity    = max( 1, (int) $product->get_stock_quantity() );
 		$sku         = $product->get_sku();
 		$images      = $this->get_product_image_urls( $product );
@@ -703,7 +723,11 @@ class TCGiant_Sync_Exporter {
 		}
 
 		$xml  = '<Title>' . esc_xml( $title ) . '</Title>' . "\n";
-		$xml .= '<Description><![CDATA[' . $description . ']]></Description>' . "\n";
+		// Split any literal "]]>" in the description so it cannot terminate the
+		// CDATA section early. Unescaped, a description containing that
+		// sequence (common in code snippets) either breaks the request or
+		// injects raw XML into the AddItem payload.
+		$xml .= '<Description><![CDATA[' . str_replace( ']]>', ']]]]><![CDATA[>', $description ) . ']]></Description>' . "\n";
 		$xml .= '<PrimaryCategory><CategoryID>' . esc_attr( $settings['category_id'] ) . '</CategoryID></PrimaryCategory>' . "\n";
 		
 	
@@ -1562,7 +1586,7 @@ class TCGiant_Sync_Exporter {
 		if ( ! $is_done && function_exists( 'as_get_scheduled_actions' ) ) {
 			$pending = as_get_scheduled_actions( array(
 				'hook'     => self::PUSH_ACTION,
-				'group'    => 'tcgiant_sync_group',
+				'group'    => TCGiant_Sync_Importer::GROUP_SCAN,
 				'status'   => ActionScheduler_Store::STATUS_PENDING,
 				'per_page' => 1,
 			) );

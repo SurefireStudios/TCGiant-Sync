@@ -24,11 +24,15 @@ class TCGiant_Sync_Cron {
 
 	/**
 	 * Instance.
+	 *
+	 * @var self|null
 	 */
 	private static $_instance = null;
 
 	/**
 	 * Main instance.
+	 *
+	 * @return self
 	 */
 	public static function instance() {
 		if ( is_null( self::$_instance ) ) {
@@ -47,6 +51,12 @@ class TCGiant_Sync_Cron {
 		add_action( 'tcgiant_sync_poll_ebay_cron', array( $this, 'ping_telemetry' ) );
 		add_action( 'tcgiant_sync_daily_maintenance', array( $this, 'daily_maintenance' ) );
 		add_action( 'tcgiant_sync_daily_maintenance', array( $this, 'auto_relist_ended_items' ) );
+
+		// Hourly ended-listing detection. This must be registered outside the
+		// admin class: TCGiant_Sync_Admin is only instantiated when is_admin(),
+		// and wp-cron.php requests are not is_admin(), so the event fired with
+		// no callback attached and the check never ran.
+		add_action( 'tcgiant_sync_check_ended_listings', array( $this, 'check_ended_listings' ) );
 		
 		// One-time listing type backfill on upgrade.
 		add_action( 'admin_init', array( $this, 'maybe_backfill_listing_type' ) );
@@ -77,6 +87,56 @@ class TCGiant_Sync_Cron {
 			// Run at 3 AM server time to avoid peak hours.
 			$next_3am = strtotime( 'tomorrow 03:00:00' );
 			wp_schedule_event( $next_3am, 'daily', 'tcgiant_sync_daily_maintenance' );
+		}
+
+		// Hourly ended-listing detection.
+		if ( ! wp_next_scheduled( 'tcgiant_sync_check_ended_listings' ) ) {
+			wp_schedule_event( time(), 'hourly', 'tcgiant_sync_check_ended_listings' );
+		}
+	}
+
+	/**
+	 * Hourly cron: detect ended eBay listings.
+	 *
+	 * Marks products whose _ebay_end_time has passed as 'Ended'.
+	 *
+	 * Moved here from TCGiant_Sync_Admin, which is only loaded on admin
+	 * requests — the scheduled event fires from wp-cron.php, so the callback
+	 * was never registered when it ran.
+	 */
+	public function check_ended_listings() {
+		global $wpdb;
+
+		$now_utc = gmdate( 'Y-m-d\TH:i:s.000\Z' );
+
+		// Find products with end time in the past that aren't already marked Ended.
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$product_ids = $wpdb->get_col( $wpdb->prepare(
+			"SELECT DISTINCT p.ID
+			 FROM {$wpdb->posts} p
+			 INNER JOIN {$wpdb->postmeta} pm_end ON p.ID = pm_end.post_id AND pm_end.meta_key = '_ebay_end_time'
+			 LEFT JOIN {$wpdb->postmeta} pm_status ON p.ID = pm_status.post_id AND pm_status.meta_key = '_ebay_listing_status'
+			 WHERE p.post_type = 'product'
+			   AND p.post_status != 'trash'
+			   AND pm_end.meta_value != ''
+			   AND pm_end.meta_value < %s
+			   AND (pm_status.meta_value IS NULL OR pm_status.meta_value != 'Ended')
+			 LIMIT 500",
+			$now_utc
+		) );
+
+		if ( empty( $product_ids ) ) {
+			return;
+		}
+
+		$count = 0;
+		foreach ( $product_ids as $pid ) {
+			update_post_meta( (int) $pid, '_ebay_listing_status', 'Ended' );
+			$count++;
+		}
+
+		if ( $count > 0 ) {
+			TCGiant_Sync_Logger::log( sprintf( 'Ended listing check: marked %d product(s) as Ended.', $count ) );
 		}
 	}
 
@@ -190,7 +250,10 @@ class TCGiant_Sync_Cron {
 	 * Remove log files older than 30 days.
 	 */
 	private function clean_old_logs() {
-		$log_dir = TCGIANT_SYNC_PATH . 'logs/';
+		// The logger writes to wp-content/uploads/tcgiant-sync/, not to a
+		// "logs" directory inside the plugin folder. Pointing at the wrong
+		// path meant this rotation task had never deleted anything.
+		$log_dir = trailingslashit( TCGiant_Sync_Logger::get_log_dir() );
 		if ( ! is_dir( $log_dir ) ) {
 			return;
 		}
@@ -396,6 +459,8 @@ class TCGiant_Sync_Cron {
 			 LIMIT 500"
 		);
 
+		$batch_size = 500;
+
 		if ( ! empty( $products ) ) {
 			foreach ( $products as $product_id ) {
 				update_post_meta( (int) $product_id, '_ebay_listing_type', 'FixedPriceItem' );
@@ -406,7 +471,14 @@ class TCGiant_Sync_Cron {
 			) );
 		}
 
-		update_option( 'tcgiant_listing_type_backfilled', true );
+		// Only declare the migration finished once a batch comes back short.
+		// Marking it done after the first 500 rows left every store with more
+		// than 500 eBay-linked products permanently half-backfilled — the
+		// remainder never got a listing type, so they were excluded from the
+		// listing-type filters and the auto-relist query.
+		if ( count( $products ) < $batch_size ) {
+			update_option( 'tcgiant_listing_type_backfilled', true );
+		}
 	}
 
 	/**
@@ -415,6 +487,10 @@ class TCGiant_Sync_Cron {
 	public static function deactivate() {
 		wp_clear_scheduled_hook( 'tcgiant_sync_poll_ebay_cron' );
 		wp_clear_scheduled_hook( 'tcgiant_sync_daily_maintenance' );
+		wp_clear_scheduled_hook( 'tcgiant_sync_check_ended_listings' );
+		wp_clear_scheduled_hook( 'tcgiant_sync_reconcile_inventory' );
+		wp_clear_scheduled_hook( 'tcgiant_sync_import_orders' );
+		wp_clear_scheduled_hook( 'tcgiant_sync_scan_resume' );
 		TCGiant_Sync_Image_Localizer::deactivate();
 	}
 }

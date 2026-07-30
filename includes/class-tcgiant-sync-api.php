@@ -19,6 +19,8 @@ class TCGiant_Sync_API {
 
 	/**
 	 * Instance of this class.
+	 *
+	 * @var self|null
 	 */
 	private static $_instance = null;
 
@@ -54,6 +56,8 @@ class TCGiant_Sync_API {
 
 	/**
 	 * Main instance.
+	 *
+	 * @return self
 	 */
 	public static function instance() {
 		if ( is_null( self::$_instance ) ) {
@@ -118,10 +122,12 @@ class TCGiant_Sync_API {
 			$args['body'] = json_encode( $body );
 		}
 
-		$response = wp_remote_request( $url, $args );
+		$response = $this->request_with_retry( $url, $args );
 
 		if ( is_wp_error( $response ) ) {
-			TCGiant_Sync_Logger::error( 'eBay API Request Failed: ' . $response->get_error_message() );
+			if ( 'rate_limited' !== $response->get_error_code() ) {
+				TCGiant_Sync_Logger::error( 'eBay API Request Failed: ' . $response->get_error_message() );
+			}
 			return $response;
 		}
 
@@ -148,7 +154,22 @@ class TCGiant_Sync_API {
 	 */
 	public function trading_api_request( $call_name, $xml_body, $allow_retry = true ) {
 		// Block write operations on staging environments.
-		$write_calls = array( 'AddItem', 'AddFixedPriceItem', 'ReviseItem', 'ReviseFixedPriceItem', 'ReviseInventoryStatus', 'EndItem', 'RelistItem', 'RelistFixedPriceItem' );
+		// CompleteSale is included: it marks an order shipped and pushes a
+		// tracking number to the seller's LIVE eBay account, so a staging clone
+		// completing an order would notify the real buyer.
+		$write_calls = array(
+			'AddItem',
+			'AddFixedPriceItem',
+			'ReviseItem',
+			'ReviseFixedPriceItem',
+			'ReviseInventoryStatus',
+			'EndItem',
+			'RelistItem',
+			'RelistFixedPriceItem',
+			'CompleteSale',
+			'SetNotificationPreferences',
+			'SetUserPreferences',
+		);
 		if ( defined( 'TCGIANT_SYNC_IS_STAGING' ) && TCGIANT_SYNC_IS_STAGING && in_array( $call_name, $write_calls, true ) ) {
 			TCGiant_Sync_Logger::log( sprintf( 'Blocked %s on staging environment.', $call_name ), 'warning' );
 			return new WP_Error( 'staging_blocked', __( 'eBay write operations are disabled on staging/dev environments.', 'tcgiant-sync' ) );
@@ -194,10 +215,16 @@ class TCGiant_Sync_API {
 			'timeout' => 45,
 		);
 
-		$response = wp_remote_request( $url, $args );
+		$response = $this->request_with_retry( $url, $args );
 
 		// Track the call regardless of outcome — eBay counts it either way.
 		$this->increment_daily_call_count();
+
+		// request_with_retry() surfaces HTTP 429 as a rate_limited error so the
+		// importer's existing backoff handling picks it up.
+		if ( is_wp_error( $response ) && 'rate_limited' === $response->get_error_code() ) {
+			return $response;
+		}
 
 		if ( is_wp_error( $response ) ) {
 			TCGiant_Sync_Logger::error( 'eBay Trading API Request Failed: ' . $response->get_error_message() );
@@ -306,11 +333,101 @@ class TCGiant_Sync_API {
 
 	/**
 	 * Increment the daily Trading API call counter.
+	 *
+	 * Uses an atomic DB increment rather than read-modify-write on a transient.
+	 * Several Action Scheduler workers run concurrently, and the old
+	 * get-then-set pattern lost every increment that interleaved — so the
+	 * counter under-reported usage and the daily budget guard fired late.
 	 */
 	private function increment_daily_call_count() {
-		$key   = 'tcgiant_api_calls_' . gmdate( 'Y-m-d' );
-		$count = (int) get_transient( $key );
-		set_transient( $key, $count + 1, DAY_IN_SECONDS );
+		global $wpdb;
+
+		$key         = 'tcgiant_api_calls_' . gmdate( 'Y-m-d' );
+		$option_name = '_transient_' . $key;
+		$timeout_key = '_transient_timeout_' . $key;
+
+		// Ensure the timeout row exists so WordPress expires the counter.
+		if ( false === get_option( $timeout_key, false ) ) {
+			add_option( $timeout_key, time() + DAY_IN_SECONDS, '', false );
+		}
+
+		// Single-statement increment; concurrent callers serialise on the row.
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$updated = $wpdb->query( $wpdb->prepare(
+			"UPDATE {$wpdb->options}
+			 SET option_value = option_value + 1
+			 WHERE option_name = %s",
+			$option_name
+		) );
+
+		if ( ! $updated ) {
+			// First call of the day (or an object cache is in play) — fall back.
+			add_option( $option_name, 1, '', false );
+		}
+
+		// Keep any persistent object cache in step with the row we just wrote.
+		wp_cache_delete( $key, 'transient' );
+	}
+
+	/**
+	 * Perform an HTTP request with retries for transient failures.
+	 *
+	 * A single DNS blip, connection reset or 5xx used to fail the whole job,
+	 * because the caller returned immediately on is_wp_error(). eBay's 429
+	 * responses were not recognised at all.
+	 *
+	 * @param string $url  Request URL.
+	 * @param array  $args wp_remote_request() arguments.
+	 * @return array|WP_Error Response array, or WP_Error after the final attempt.
+	 */
+	private function request_with_retry( $url, $args ) {
+		$max_attempts = 3;
+		$response     = null;
+
+		for ( $attempt = 1; $attempt <= $max_attempts; $attempt++ ) {
+			$response = wp_remote_request( $url, $args );
+
+			if ( ! is_wp_error( $response ) ) {
+				$code = (int) wp_remote_retrieve_response_code( $response );
+
+				// Explicit throttling — honour Retry-After when eBay sends it.
+				if ( 429 === $code ) {
+					$retry_after = (int) wp_remote_retrieve_header( $response, 'retry-after' );
+					TCGiant_Sync_Logger::warning( sprintf(
+						'eBay returned HTTP 429 (rate limited)%s.',
+						$retry_after ? sprintf( ', Retry-After: %ds', $retry_after ) : ''
+					) );
+					return new WP_Error(
+						'rate_limited',
+						'eBay returned HTTP 429 (too many requests).',
+						array( 'retry_after' => $retry_after )
+					);
+				}
+
+				// Retry server-side failures; anything else is the caller's to handle.
+				if ( $code < 500 || $attempt === $max_attempts ) {
+					return $response;
+				}
+
+				TCGiant_Sync_Logger::log( sprintf(
+					'eBay returned HTTP %d — attempt %d of %d, retrying.',
+					$code, $attempt, $max_attempts
+				), 'warning' );
+			} elseif ( $attempt === $max_attempts ) {
+				return $response;
+			} else {
+				TCGiant_Sync_Logger::log( sprintf(
+					'eBay request failed (%s) — attempt %d of %d, retrying.',
+					$response->get_error_message(), $attempt, $max_attempts
+				), 'warning' );
+			}
+
+			// Exponential backoff with jitter, capped so we never stall a
+			// worker for long: ~1s, ~2s.
+			usleep( ( ( 2 ** ( $attempt - 1 ) ) * 1000000 ) + wp_rand( 0, 250000 ) );
+		}
+
+		return $response;
 	}
 
 	/**

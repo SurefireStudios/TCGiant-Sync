@@ -19,6 +19,8 @@ class TCGiant_Sync_Importer {
 
 	/**
 	 * Instance.
+	 *
+	 * @var self|null
 	 */
 	private static $_instance = null;
 
@@ -28,7 +30,87 @@ class TCGiant_Sync_Importer {
 	const STATE_OPTION = 'tcgiant_sync_state';
 
 	/**
+	 * Action Scheduler group names.
+	 *
+	 * The three queues run in parallel so that page scanning is never stuck
+	 * behind item imports or image downloads. Cancelling or querying an action
+	 * requires the RIGHT group — passing the wrong one silently matches nothing,
+	 * which is how "Emergency Stop" came to cancel neither imports nor images.
+	 * Use these constants rather than repeating the literals.
+	 */
+	const GROUP_SCAN    = 'tcgiant_sync_group';
+	const GROUP_IMPORTS = 'tcgiant_sync_imports';
+	const GROUP_IMAGES  = 'tcgiant_sync_images';
+
+	/**
+	 * Option holding the eBay Item IDs seen during the current scan.
+	 */
+	const ACTIVE_IDS_OPTION = 'tcgiant_sync_active_ids';
+
+	/**
+	 * Append eBay Item IDs to the running active-ID list for this scan.
+	 *
+	 * Written with autoload = false. WordPress decides autoload when an option
+	 * is first created, and update_option() never revisits that decision — so
+	 * because page 1 creates a small option, a 10,000-item scan used to leave a
+	 * ~300 KB serialized array being loaded into memory on every front-end and
+	 * admin request until the scan finished and the pruner deleted it.
+	 *
+	 * @param array $ids eBay Item IDs seen on this page.
+	 * @return void
+	 */
+	private static function append_active_ids( array $ids ) {
+		if ( empty( $ids ) ) {
+			return;
+		}
+
+		$existing = get_option( self::ACTIVE_IDS_OPTION, array() );
+		$existing = is_array( $existing ) ? $existing : array();
+
+		$merged = array_values( array_unique( array_merge( $existing, $ids ) ) );
+
+		// Delete-then-add is the only reliable way to change an existing
+		// option's autoload flag on WordPress versions before 6.4.
+		if ( ! empty( $existing ) ) {
+			delete_option( self::ACTIVE_IDS_OPTION );
+		}
+		add_option( self::ACTIVE_IDS_OPTION, $merged, '', false );
+	}
+
+	/**
+	 * Cancel every queued sync job and clear all sync-related cron events.
+	 *
+	 * Used by the "Emergency Stop" button. Also releases the concurrency lock
+	 * and clears the WP-Cron scan-resume event, without which the scan simply
+	 * picks up again on the next cron tick.
+	 *
+	 * Image localization is deliberately left running: it finishes downloading
+	 * images for products that were already imported, and is not part of the
+	 * scan/import pipeline being stopped.
+	 *
+	 * @return void
+	 */
+	public static function stop_all() {
+		if ( function_exists( 'as_unschedule_all_actions' ) ) {
+			as_unschedule_all_actions( 'tcgiant_sync_fetch_listings', null, self::GROUP_SCAN );
+			as_unschedule_all_actions( 'tcgiant_sync_scan_all_pages', null, self::GROUP_SCAN );
+			as_unschedule_all_actions( 'tcgiant_sync_fetch_delta_events', null, self::GROUP_SCAN );
+			as_unschedule_all_actions( 'tcgiant_sync_prune_orphans', null, self::GROUP_SCAN );
+			as_unschedule_all_actions( 'tcgiant_sync_process_item_import', null, self::GROUP_IMPORTS );
+			as_unschedule_all_actions( 'tcgiant_sync_download_images', null, self::GROUP_IMAGES );
+		}
+
+		// The scan resumes itself through WP-Cron, not Action Scheduler.
+		wp_clear_scheduled_hook( 'tcgiant_sync_scan_resume' );
+
+		// Otherwise the next sync is blocked until the lock goes stale.
+		self::release_lock();
+	}
+
+	/**
 	 * Main instance.
+	 *
+	 * @return self
 	 */
 	public static function instance() {
 		if ( is_null( self::$_instance ) ) {
@@ -232,7 +314,7 @@ class TCGiant_Sync_Importer {
 		) );
 
 		// Clear active IDs list for pruning orphaned items.
-		delete_option( 'tcgiant_sync_active_ids' );
+		delete_option( self::ACTIVE_IDS_OPTION );
 
 		$api = TCGiant_Sync_API::instance();
 		TCGiant_Sync_Logger::log( sprintf(
@@ -1064,11 +1146,7 @@ class TCGiant_Sync_Importer {
 			}
 		}
 
-		if ( ! empty( $active_ids_batch ) ) {
-			$existing_active = get_option( 'tcgiant_sync_active_ids', array() );
-			$existing_active = is_array( $existing_active ) ? $existing_active : array();
-			update_option( 'tcgiant_sync_active_ids', array_unique( array_merge( $existing_active, $active_ids_batch ) ) );
-		}
+		self::append_active_ids( $active_ids_batch );
 
 		// Update state with running totals.
 		$state = self::get_sync_state();
@@ -1336,11 +1414,7 @@ class TCGiant_Sync_Importer {
 			}
 		}
 
-		if ( ! empty( $active_ids_batch ) ) {
-			$existing_active = get_option( 'tcgiant_sync_active_ids', array() );
-			$existing_active = is_array( $existing_active ) ? $existing_active : array();
-			update_option( 'tcgiant_sync_active_ids', array_unique( array_merge( $existing_active, $active_ids_batch ) ) );
-		}
+		self::append_active_ids( $active_ids_batch );
 
 		// Update state with running totals (inline items are already processed).
 		$state = self::get_sync_state();
@@ -1676,7 +1750,7 @@ class TCGiant_Sync_Importer {
 		if ( ! $is_done && function_exists( 'as_get_scheduled_actions' ) ) {
 			$pending = as_get_scheduled_actions( array(
 				'hook'   => 'tcgiant_sync_process_item_import',
-				'group'  => 'tcgiant_sync_imports',
+				'group'  => self::GROUP_IMPORTS,
 				'status' => ActionScheduler_Store::STATUS_PENDING,
 				'per_page' => 1,
 			) );
@@ -1729,7 +1803,7 @@ class TCGiant_Sync_Importer {
 			return;
 		}
 
-		$active_ids = get_option( 'tcgiant_sync_active_ids', array() );
+		$active_ids = get_option( self::ACTIVE_IDS_OPTION, array() );
 		if ( ! is_array( $active_ids ) || empty( $active_ids ) ) {
 			TCGiant_Sync_Logger::warning(
 				'Inventory Pruning: Skipped — no active eBay Item IDs were recorded during the scan. '
@@ -1770,7 +1844,7 @@ class TCGiant_Sync_Importer {
 
 		if ( 0 === $prune_count ) {
 			TCGiant_Sync_Logger::log( 'Inventory Pruning: No orphaned products found.' );
-			delete_option( 'tcgiant_sync_active_ids' );
+			delete_option( self::ACTIVE_IDS_OPTION );
 			return;
 		}
 
@@ -1829,7 +1903,7 @@ class TCGiant_Sync_Importer {
 			$trashed_count, $preserved_count, $total_linked
 		), 'success' );
 
-		delete_option( 'tcgiant_sync_active_ids' );
+		delete_option( self::ACTIVE_IDS_OPTION );
 	}
 
 	/**

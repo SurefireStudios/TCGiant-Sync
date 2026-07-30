@@ -17,6 +17,8 @@ class TCGiant_Sync_Logger {
 
 	/**
 	 * Instance of this class.
+	 *
+	 * @var self|null
 	 */
 	private static $_instance = null;
 
@@ -26,13 +28,61 @@ class TCGiant_Sync_Logger {
 	const MAX_LOG_SIZE = 512000;
 
 	/**
+	 * Pending log lines, flushed on shutdown.
+	 *
+	 * @var string[]
+	 */
+	private static $buffer = array();
+
+	/**
+	 * Whether the shutdown flush has been registered.
+	 *
+	 * @var bool
+	 */
+	private static $flush_registered = false;
+
+	/**
+	 * Flush the buffer once it reaches this many lines, so a long-running
+	 * import does not hold the whole run in memory.
+	 */
+	const BUFFER_LIMIT = 100;
+
+	/**
+	 * Severity ranking, used to filter by the configured minimum level.
+	 */
+	const LEVELS = array(
+		'debug'   => 10,
+		'info'    => 20,
+		'success' => 20,
+		'warning' => 30,
+		'error'   => 40,
+	);
+
+	/**
 	 * Main instance.
+	 *
+	 * @return self
 	 */
 	public static function instance() {
 		if ( is_null( self::$_instance ) ) {
 			self::$_instance = new self();
 		}
 		return self::$_instance;
+	}
+
+	/**
+	 * Minimum level that gets recorded.
+	 *
+	 * Defaults to 'info' (current behaviour). Setting log_level to 'warning' on
+	 * a large store removes the bulk of the write volume, since the importer
+	 * emits a success line per product.
+	 *
+	 * @return int Numeric threshold from self::LEVELS.
+	 */
+	private static function min_level() {
+		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
+		$configured = is_array( $settings ) && ! empty( $settings['log_level'] ) ? $settings['log_level'] : 'info';
+		return self::LEVELS[ $configured ] ?? self::LEVELS['info'];
 	}
 
 	/**
@@ -64,45 +114,70 @@ class TCGiant_Sync_Logger {
 	 * @param string $level   Log level (info, error, warning, success, debug).
 	 */
 	public static function log( $message, $level = 'info' ) {
-		$log_file = self::get_log_file();
-		$timestamp = current_time( 'Y-m-d H:i:s' );
-		$entry = "[$timestamp] [$level] $message" . PHP_EOL;
-
-		// Cap log file size - truncate to last 200 lines if over limit.
-		if ( file_exists( $log_file ) && filesize( $log_file ) > self::MAX_LOG_SIZE ) {
-			$lines = file( $log_file );
-			$lines = array_slice( $lines, -200 );
-			file_put_contents( $log_file, implode( '', $lines ) );
-		}
-
-		file_put_contents( $log_file, $entry, FILE_APPEND );
-
-		// Also write to WooCommerce logger if available.
-		if ( ! class_exists( 'WC_Logger' ) ) {
+		$severity = self::LEVELS[ $level ] ?? self::LEVELS['info'];
+		if ( $severity < self::min_level() ) {
 			return;
 		}
 
-		$logger = wc_get_logger();
+		$timestamp = current_time( 'Y-m-d H:i:s' );
+		self::$buffer[] = "[$timestamp] [$level] $message" . PHP_EOL;
+
+		// Flush once at the end of the request rather than opening, stat-ing
+		// and appending to the file on every single call. An import emits
+		// several lines per product, so this was tens of thousands of
+		// unbuffered writes per run.
+		if ( ! self::$flush_registered ) {
+			self::$flush_registered = true;
+			add_action( 'shutdown', array( __CLASS__, 'flush' ), 100 );
+		}
+
+		if ( count( self::$buffer ) >= self::BUFFER_LIMIT ) {
+			self::flush();
+		}
+
+		// Errors and warnings are mirrored to the WooCommerce log so they show
+		// up in WooCommerce → Status → Logs. Routine info lines are not — they
+		// were doubling the I/O for no benefit.
+		if ( $severity < self::LEVELS['warning'] || ! function_exists( 'wc_get_logger' ) ) {
+			return;
+		}
+
+		$logger  = wc_get_logger();
 		$context = array( 'source' => 'tcgiant-sync' );
 
-		switch ( $level ) {
-			case 'error':
-				$logger->error( $message, $context );
-				break;
-			case 'warning':
-				$logger->warning( $message, $context );
-				break;
-			case 'debug':
-				if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
-					$logger->debug( $message, $context );
-				}
-				break;
-			case 'success':
-			case 'info':
-			default:
-				$logger->info( $message, $context );
-				break;
+		if ( 'error' === $level ) {
+			$logger->error( $message, $context );
+		} else {
+			$logger->warning( $message, $context );
 		}
+	}
+
+	/**
+	 * Write any buffered lines to disk.
+	 *
+	 * Registered on shutdown; also called when the buffer hits BUFFER_LIMIT.
+	 *
+	 * @return void
+	 */
+	public static function flush() {
+		if ( empty( self::$buffer ) ) {
+			return;
+		}
+
+		$entries      = implode( '', self::$buffer );
+		self::$buffer = array();
+
+		$log_file = self::get_log_file();
+
+		// Cap log file size — truncate to the last 200 lines if over limit.
+		if ( file_exists( $log_file ) && filesize( $log_file ) > self::MAX_LOG_SIZE ) {
+			$lines = file( $log_file );
+			if ( is_array( $lines ) ) {
+				file_put_contents( $log_file, implode( '', array_slice( $lines, -200 ) ), LOCK_EX );
+			}
+		}
+
+		file_put_contents( $log_file, $entries, FILE_APPEND | LOCK_EX );
 	}
 
 	/**
@@ -123,9 +198,12 @@ class TCGiant_Sync_Logger {
 	 * Clear the log file completely.
 	 */
 	public static function clear() {
+		// Drop anything buffered — it belongs to the log being cleared.
+		self::$buffer = array();
+
 		$log_file = self::get_log_file();
 		if ( file_exists( $log_file ) ) {
-			file_put_contents( $log_file, '' );
+			file_put_contents( $log_file, '', LOCK_EX );
 		}
 		self::log( 'Log cleared by admin.' );
 	}
@@ -137,6 +215,10 @@ class TCGiant_Sync_Logger {
 	 * @return array Array of parsed log entries.
 	 */
 	public static function get_recent_entries( $limit = 20 ) {
+		// Make sure anything logged earlier in this request is on disk, so the
+		// admin log view is not a step behind.
+		self::flush();
+
 		$log_file = self::get_log_file();
 		if ( ! file_exists( $log_file ) ) {
 			return array();

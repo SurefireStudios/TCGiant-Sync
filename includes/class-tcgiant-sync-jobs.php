@@ -19,17 +19,60 @@ if ( ! defined( 'ABSPATH' ) ) {
 class TCGiant_Sync_Jobs {
 
 	/**
-	 * Option key for storing jobs.
+	 * Option key for storing job progress records.
+	 *
+	 * Holds metadata only — never the item list. See ITEMS_OPTION_PREFIX.
 	 */
 	const OPTION_KEY = 'tcgiant_sync_jobs';
 
 	/**
+	 * Option key prefix for a single job's item list.
+	 *
+	 * The item list is stored per job, separately from the progress record,
+	 * because progress is rewritten after every batch. Keeping several thousand
+	 * product IDs inside that record meant each 5-item batch rewrote a
+	 * multi-hundred-kilobyte option — 1,000 full read-modify-write cycles for a
+	 * 5,000-product bulk push.
+	 */
+	const ITEMS_OPTION_PREFIX = 'tcgiant_sync_job_items_';
+
+	/**
+	 * Maximum number of jobs kept in history.
+	 */
+	const MAX_JOB_HISTORY = 10;
+
+	/**
+	 * Get the option key holding a job's item list.
+	 *
+	 * @param string $job_id Job ID.
+	 * @return string
+	 */
+	private static function items_option_key( $job_id ) {
+		return self::ITEMS_OPTION_PREFIX . $job_id;
+	}
+
+	/**
+	 * Get the item list for a job.
+	 *
+	 * @param string $job_id Job ID.
+	 * @return array
+	 */
+	private static function get_job_items( $job_id ) {
+		$items = get_option( self::items_option_key( $job_id ), array() );
+		return is_array( $items ) ? $items : array();
+	}
+
+	/**
 	 * Instance.
+	 *
+	 * @var self|null
 	 */
 	private static $_instance = null;
 
 	/**
 	 * Main instance.
+	 *
+	 * @return self
 	 */
 	public static function instance() {
 		if ( is_null( self::$_instance ) ) {
@@ -61,7 +104,6 @@ class TCGiant_Sync_Jobs {
 			'id'         => $job_id,
 			'type'       => $type,
 			'status'     => 'pending',
-			'items'      => $items,
 			'total'      => count( $items ),
 			'processed'  => 0,
 			'succeeded'  => 0,
@@ -71,16 +113,41 @@ class TCGiant_Sync_Jobs {
 			'updated_at' => current_time( 'mysql' ),
 		);
 
+		// Item list lives in its own non-autoloaded option so that per-batch
+		// progress writes stay small.
+		add_option( self::items_option_key( $job_id ), array_values( $items ), '', false );
+
 		$jobs = get_option( self::OPTION_KEY, array() );
+		$jobs = is_array( $jobs ) ? $jobs : array();
 		$jobs[ $job_id ] = $job;
 
-		// Keep max 10 jobs in history.
-		if ( count( $jobs ) > 10 ) {
-			$jobs = array_slice( $jobs, -10, null, true );
+		// Trim history, removing each dropped job's item list too.
+		if ( count( $jobs ) > self::MAX_JOB_HISTORY ) {
+			$keep    = array_slice( $jobs, -self::MAX_JOB_HISTORY, null, true );
+			$dropped = array_diff_key( $jobs, $keep );
+			foreach ( array_keys( $dropped ) as $old_id ) {
+				delete_option( self::items_option_key( $old_id ) );
+			}
+			$jobs = $keep;
 		}
 
-		update_option( self::OPTION_KEY, $jobs );
+		self::save_jobs( $jobs );
 		return $job_id;
+	}
+
+	/**
+	 * Persist the job progress records without autoloading them.
+	 *
+	 * @param array $jobs Job records keyed by job ID.
+	 * @return void
+	 */
+	private static function save_jobs( array $jobs ) {
+		// delete-then-add is the only reliable way to clear a pre-existing
+		// autoload flag on WordPress versions before 6.4.
+		if ( false !== get_option( self::OPTION_KEY, false ) ) {
+			delete_option( self::OPTION_KEY );
+		}
+		add_option( self::OPTION_KEY, $jobs, '', false );
 	}
 
 	/**
@@ -102,10 +169,23 @@ class TCGiant_Sync_Jobs {
 	 */
 	public static function update_job( $job_id, array $data ) {
 		$jobs = get_option( self::OPTION_KEY, array() );
-		if ( isset( $jobs[ $job_id ] ) ) {
-			$jobs[ $job_id ] = array_merge( $jobs[ $job_id ], $data );
-			$jobs[ $job_id ]['updated_at'] = current_time( 'mysql' );
-			update_option( self::OPTION_KEY, $jobs );
+		$jobs = is_array( $jobs ) ? $jobs : array();
+
+		if ( ! isset( $jobs[ $job_id ] ) ) {
+			return;
+		}
+
+		// The item list is never part of the progress record.
+		unset( $data['items'] );
+
+		$jobs[ $job_id ] = array_merge( $jobs[ $job_id ], $data );
+		$jobs[ $job_id ]['updated_at'] = current_time( 'mysql' );
+		self::save_jobs( $jobs );
+
+		// A finished or cancelled job no longer needs its item list.
+		$status = $jobs[ $job_id ]['status'] ?? '';
+		if ( in_array( $status, array( 'completed', 'cancelled' ), true ) ) {
+			delete_option( self::items_option_key( $job_id ) );
 		}
 	}
 
@@ -170,7 +250,7 @@ class TCGiant_Sync_Jobs {
 		// Process up to 5 items per batch.
 		$batch_size  = 5;
 		$start_index = $job['processed'];
-		$batch       = array_slice( $job['items'], $start_index, $batch_size );
+		$batch       = array_slice( self::get_job_items( $job_id ), $start_index, $batch_size );
 		$succeeded   = $job['succeeded'];
 		$failed      = $job['failed'];
 		$errors      = $job['errors'];

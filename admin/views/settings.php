@@ -316,6 +316,15 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						</select>
 					</div>
 					<div class="tc-field">
+						<label class="tc-label" for="ebay_log_level"><?php esc_html_e( 'Log Detail', 'tcgiant-sync' ); ?></label>
+						<select name="tcgiant_sync_ebay_settings[log_level]" id="ebay_log_level" class="tc-select">
+							<option value="info" <?php selected( $settings['log_level'] ?? 'info', 'info' ); ?>><?php esc_html_e( 'Everything (default)', 'tcgiant-sync' ); ?></option>
+							<option value="warning" <?php selected( $settings['log_level'] ?? 'info', 'warning' ); ?>><?php esc_html_e( 'Warnings and errors only', 'tcgiant-sync' ); ?></option>
+							<option value="error" <?php selected( $settings['log_level'] ?? 'info', 'error' ); ?>><?php esc_html_e( 'Errors only', 'tcgiant-sync' ); ?></option>
+						</select>
+						<p class="description"><?php esc_html_e( 'Every imported product writes a log line. On stores with thousands of listings, switching to "Warnings and errors only" noticeably reduces disk activity during a sync.', 'tcgiant-sync' ); ?></p>
+					</div>
+					<div class="tc-field">
 						<label class="tc-label"><?php esc_html_e( 'Reduce WooCommerce stock on eBay sale?', 'tcgiant-sync' ); ?></label>
 						<div class="tc-radio-group">
 							<label><input type="radio" name="tcgiant_sync_ebay_settings[enable_order_sync]" value="1" <?php checked( $settings['enable_order_sync'] ?? '0', '1' ); ?>> Yes</label>
@@ -703,6 +712,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 		</div>
 	</div>
 </div>
+</div><!-- /.wrap.tc-dashboard-wrap (opened at the top of this file) -->
 
 <script>
 (function($){

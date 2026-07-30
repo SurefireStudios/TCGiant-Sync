@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.1.3
+Stable tag: 3.1.4
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,24 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.1.4 - 2026-07-30 =
+**Performance**
+* PERFORMANCE: Added a database index for the plugin's metadata lookups. Image deduplication and eBay Item ID matching previously scanned every matching row in wp_postmeta on every lookup — roughly 80,000 full scans during a 10,000-product sync. Applied once, automatically, and skipped safely if the database user lacks permission.
+* PERFORMANCE: The image deduplicator no longer duplicates attachment records. Reusing an image across products created a new media library entry each time, bloating the library and leaving copies that broke if the original file was deleted.
+* PERFORMANCE: The scan's active-listing tracker is no longer autoloaded — on a 10,000-item store it grew to ~300KB and was loaded on every page request, front-end included, for the duration of the sync.
+* PERFORMANCE: Bulk job progress no longer rewrites the whole job history after every batch (~1,000 rewrites of a large option for a 5,000-product push).
+* PERFORMANCE: Log writes are buffered and flushed once per request rather than appending to the file on every line, and routine info lines are no longer duplicated into the WooCommerce log.
+* NEW: "Log Detail" setting under Settings → Scheduling. "Warnings and errors only" substantially reduces disk activity on large stores.
+
+**Reliability**
+* FIX: eBay requests retry transient failures. A single DNS blip, dropped connection or eBay 5xx used to fail an entire sync job outright.
+* FIX: eBay HTTP 429 responses are recognised as rate limiting and honour the Retry-After header.
+* FIX: The daily API call counter is incremented atomically — concurrent workers were overwriting each other's counts, so the daily budget safeguard engaged later than intended.
+* FIX: Log rotation now looks in the directory the plugin actually writes to; the daily cleanup had been checking a path that never contained logs.
+
+**Uninstall**
+* FIX: Uninstalling now actually removes the plugin's data. The routine referenced option names that never existed, so deleting the plugin left everything behind — including the stored eBay access token, refresh token and relay signing key. Products and orders are deliberately left untouched.
 
 = 3.1.3 - 2026-07-30 =
 **Security**
@@ -434,6 +452,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.1.4 =
+Performance and reliability release, recommended for all stores and important for large ones. Adds a database index and removes several hot spots that made large syncs slow: a ~300KB option being autoloaded on every page request, duplicated media library records, and tens of thousands of individual log writes per import. eBay requests now retry transient network failures instead of failing an entire sync, and rate-limit responses are handled properly. Also fixes uninstall, which previously left all plugin data behind — including your stored eBay tokens.
 
 = 3.1.3 =
 Security and data-loss release — update immediately. Fixes an unauthenticated path that allowed the site's eBay credentials to be replaced, removes a hardcoded key that let forged eBay account-deletion requests erase customer data from orders, and stops imports from permanently ending live eBay listings. Also prevents a failed API call mid-scan from trashing large parts of your catalogue, stops image downloads being silently abandoned after a single timeout, and fixes relisting, which never worked. If eBay deletion notifications stop being accepted after updating, reconnect your eBay account from Settings.

@@ -25,12 +25,31 @@ class TCGiant_Sync_DB {
 	const TABLE_VERSION = '1.0.0';
 
 	/**
+	 * Version marker for the postmeta index migration.
+	 */
+	const POSTMETA_INDEX_VERSION = '1';
+
+	/**
+	 * Option key recording which postmeta index migration has run.
+	 */
+	const POSTMETA_INDEX_OPTION = 'tcgiant_postmeta_index_version';
+
+	/**
+	 * Name of the index added to wp_postmeta.
+	 */
+	const POSTMETA_INDEX_NAME = 'tcgiant_key_value';
+
+	/**
 	 * Instance.
+	 *
+	 * @var self|null
 	 */
 	private static $_instance = null;
 
 	/**
 	 * Main instance.
+	 *
+	 * @return self
 	 */
 	public static function instance() {
 		if ( is_null( self::$_instance ) ) {
@@ -52,6 +71,72 @@ class TCGiant_Sync_DB {
 	 */
 	public function __construct() {
 		add_action( 'plugins_loaded', array( $this, 'maybe_create_table' ), 5 );
+		add_action( 'plugins_loaded', array( $this, 'maybe_add_postmeta_index' ), 6 );
+	}
+
+	/**
+	 * Add a composite index to wp_postmeta for our meta lookups.
+	 *
+	 * WordPress indexes postmeta.meta_key but not meta_value, so a query like
+	 *
+	 *     meta_key = '_tcgiant_source_url' AND meta_value = '<url>'
+	 *
+	 * scans every row carrying that key. The image localizer runs exactly that
+	 * lookup once per image, so a 10,000-product store with eight images each
+	 * performs ~80,000 lookups, each scanning the full set of source-URL rows.
+	 * The same shape is used for _ebay_item_id and _ebay_sku.
+	 *
+	 * Runs once, guarded by an option, and is deliberately non-fatal: if the
+	 * database user lacks ALTER rights, or the table is too large to alter on
+	 * this request, the plugin still works — just more slowly.
+	 */
+	public function maybe_add_postmeta_index() {
+		if ( get_option( self::POSTMETA_INDEX_OPTION ) === self::POSTMETA_INDEX_VERSION ) {
+			return;
+		}
+
+		global $wpdb;
+
+		// Never attempt this mid-import; an ALTER on a large table plus a
+		// running scan is a bad combination on shared hosting.
+		$state = get_option( 'tcgiant_sync_state', array() );
+		if ( is_array( $state ) && in_array( $state['status'] ?? '', array( 'scanning', 'importing' ), true ) ) {
+			return;
+		}
+
+		// Already present (possibly added by hand or by another install)?
+		$existing = $wpdb->get_results( $wpdb->prepare(
+			"SHOW INDEX FROM {$wpdb->postmeta} WHERE Key_name = %s",
+			self::POSTMETA_INDEX_NAME
+		) );
+
+		if ( ! empty( $existing ) ) {
+			update_option( self::POSTMETA_INDEX_OPTION, self::POSTMETA_INDEX_VERSION, false );
+			return;
+		}
+
+		// meta_value is LONGTEXT, so it must be prefix-indexed. 191 characters
+		// is the safe maximum under utf8mb4 with a 767-byte index limit.
+		$wpdb->hide_errors();
+		$result = $wpdb->query(
+			"ALTER TABLE {$wpdb->postmeta}
+			 ADD INDEX " . self::POSTMETA_INDEX_NAME . " (meta_key(32), meta_value(191))"
+		);
+		$wpdb->show_errors();
+
+		if ( false === $result ) {
+			// Record the attempt anyway so we do not retry on every request.
+			update_option( self::POSTMETA_INDEX_OPTION, self::POSTMETA_INDEX_VERSION, false );
+			TCGiant_Sync_Logger::warning(
+				'Could not add the tcgiant_key_value index to wp_postmeta (' . $wpdb->last_error . '). '
+				. 'Image deduplication and eBay ID lookups will be slower on large stores. '
+				. 'A database administrator can add it manually.'
+			);
+			return;
+		}
+
+		update_option( self::POSTMETA_INDEX_OPTION, self::POSTMETA_INDEX_VERSION, false );
+		TCGiant_Sync_Logger::log( 'Added the tcgiant_key_value index to wp_postmeta.', 'success' );
 	}
 
 	/**

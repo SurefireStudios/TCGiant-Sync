@@ -17,6 +17,8 @@ class TCGiant_Sync_OAuth {
 
 	/**
 	 * Instance of this class.
+	 *
+	 * @var self|null
 	 */
 	private static $_instance = null;
 
@@ -28,6 +30,8 @@ class TCGiant_Sync_OAuth {
 
 	/**
 	 * Main instance.
+	 *
+	 * @return self
 	 */
 	public static function instance() {
 		if ( is_null( self::$_instance ) ) {
