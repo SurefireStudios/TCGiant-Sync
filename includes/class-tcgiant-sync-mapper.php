@@ -63,8 +63,6 @@ class TCGiant_Sync_Mapper {
 		$product_data['description'] = $ebay_item['Description'] ?? '';
 		$product_data['sku'] = $ebay_item['SKU'] ?? '';
 
-		$product_data['sku'] = $ebay_item['SKU'] ?? '';
-
 		// Check if eBay SKU should be routed to a bin location instead of WooCommerce SKU.
 		$product_data['bin_location'] = '';
 		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
@@ -126,11 +124,13 @@ class TCGiant_Sync_Mapper {
 		$product_data['sale_price']    = $prices['sale_price'];
 
 		// Map Store Categories.
+		// eBay sends "0" for "no store category"; empty() already rejects that,
+		// so no separate comparison is needed.
 		$product_data['store_categories'] = array();
-		if ( ! empty( $ebay_item['Storefront']['StoreCategoryID'] ) && '0' !== (string) $ebay_item['Storefront']['StoreCategoryID'] ) {
+		if ( ! empty( $ebay_item['Storefront']['StoreCategoryID'] ) ) {
 			$product_data['store_categories'][] = $ebay_item['Storefront']['StoreCategoryID'];
 		}
-		if ( ! empty( $ebay_item['Storefront']['StoreCategory2ID'] ) && '0' !== (string) $ebay_item['Storefront']['StoreCategory2ID'] ) {
+		if ( ! empty( $ebay_item['Storefront']['StoreCategory2ID'] ) ) {
 			$product_data['store_categories'][] = $ebay_item['Storefront']['StoreCategory2ID'];
 		}
 
@@ -295,16 +295,18 @@ class TCGiant_Sync_Mapper {
 	}
 
 	/**
-	 * Extract a clean numeric price from eBay's various response formats.
+	 * Extract clean numeric prices from eBay's various response formats.
 	 *
 	 * eBay Trading API XML->JSON can return prices as:
 	 * - A plain string: "29.99"
 	 * - An array: {"@attributes": {"currencyID": "USD"}, "#text": "29.99"}
 	 * - An array with underscore: {"__text": "29.99"}
+	 * - An array with SimpleXML's numeric text key: {"0": "29.99"}
 	 * - Just a numeric value
 	 *
 	 * @param array $ebay_item The full eBay item array.
-	 * @return string The clean numeric price or empty string.
+	 * @return array{regular_price: string, sale_price: string} Clean numeric
+	 *               strings, each empty when the value is absent.
 	 */
 	private function extract_prices( $ebay_item ) {
 		$prices = array(
@@ -371,26 +373,9 @@ class TCGiant_Sync_Mapper {
 	 * @return string Clean numeric string.
 	 */
 	private function parse_price_value( $raw ) {
-		if ( is_string( $raw ) || is_numeric( $raw ) ) {
-			return (string) $raw;
-		}
-
-		if ( is_array( $raw ) ) {
-			// SimpleXML->JSON format: {"#text": "29.99", "@attributes": {...}}
-			if ( isset( $raw['#text'] ) ) {
-				return (string) $raw['#text'];
-			}
-			// Alternative format: {"__text": "29.99"}
-			if ( isset( $raw['__text'] ) ) {
-				return (string) $raw['__text'];
-			}
-			// Sometimes the value key itself contains the price
-			if ( isset( $raw['value'] ) ) {
-				return (string) $raw['value'];
-			}
-		}
-
-		return '';
+		// Shared with the order importer so both paths handle every shape the
+		// XML→JSON conversion can produce, including SimpleXML's numeric text key.
+		return TCGiant_Sync_API::scalar_value( $raw );
 	}
 
 	/**
@@ -663,7 +648,9 @@ class TCGiant_Sync_Mapper {
 			if ( $has_price && ! $is_new ) {
 				$sync_decisions[] = 'Price updated (eBay won)';
 			}
-		} elseif ( ! $is_new && ! empty( $product_data['regular_price'] ) ) {
+		} elseif ( ! empty( $product_data['regular_price'] ) ) {
+			// Only reachable when the product already existed and price
+			// overwriting is off, so $is_new is necessarily false here.
 			$sync_decisions[] = 'Price skipped (WooCommerce won)';
 		}
 		
@@ -763,21 +750,20 @@ class TCGiant_Sync_Mapper {
 			}
 		}
 
-		// Update Sync Log.
-		if ( ! empty( $sync_decisions ) ) {
-			$existing_logs = $product->get_meta( '_tcgiant_sync_log', true );
-			if ( ! is_array( $existing_logs ) ) {
-				$existing_logs = array();
-			}
-
-			array_unshift( $existing_logs, array(
-				'timestamp' => current_time( 'mysql' ),
-				'decisions' => $sync_decisions,
-			) );
-
-			$existing_logs = array_slice( $existing_logs, 0, 20 ); // Keep last 20 syncs
-			$product->update_meta_data( '_tcgiant_sync_log', $existing_logs );
+		// Update Sync Log. A stock decision is always recorded above, so this
+		// list is never empty by the time we get here.
+		$existing_logs = $product->get_meta( '_tcgiant_sync_log', true );
+		if ( ! is_array( $existing_logs ) ) {
+			$existing_logs = array();
 		}
+
+		array_unshift( $existing_logs, array(
+			'timestamp' => current_time( 'mysql' ),
+			'decisions' => $sync_decisions,
+		) );
+
+		$existing_logs = array_slice( $existing_logs, 0, 20 ); // Keep last 20 syncs
+		$product->update_meta_data( '_tcgiant_sync_log', $existing_logs );
 
 		// Everything below writes stock that came FROM eBay. Suppress the
 		// WC → eBay push listeners for the duration, otherwise every imported
@@ -802,6 +788,26 @@ class TCGiant_Sync_Mapper {
 		// IDs and SKUs — the old product gets trashed but its images survive.
 		if ( $is_new && $saved_id && ! empty( $product_data['meta']['_ebay_sku'] ) ) {
 			$this->migrate_images_from_orphan( $saved_id, $product_data['meta']['_ebay_sku'] );
+		}
+
+		// Mirror the listing into the indexed custom table.
+		//
+		// The table is created and migrated on install and read by the Listings
+		// admin page and the auto-relist scheduler, but nothing wrote to it
+		// after the initial migration — so both were working from a snapshot
+		// frozen at install time.
+		if ( $saved_id ) {
+			TCGiant_Sync_DB::upsert( array(
+				'product_id'     => $saved_id,
+				'ebay_item_id'   => $item_id,
+				'listing_type'   => $product_data['meta']['_ebay_listing_type'] ?: 'FixedPriceItem',
+				'listing_status' => $product_data['meta']['_ebay_listing_status'] ?: 'Active',
+				'ebay_price'     => (float) $product_data['regular_price'],
+				'ebay_quantity'  => (int) $product_data['stock_quantity'],
+				'ebay_url'       => $item_id ? 'https://www.ebay.com/itm/' . $item_id : '',
+				'ebay_title'     => $product_data['title'],
+				'last_synced'    => current_time( 'mysql' ),
+			) );
 		}
 
 		return $saved_id;
@@ -894,14 +900,36 @@ class TCGiant_Sync_Mapper {
 			}
 		}
 		
-		// Delete any existing variations that are no longer present
+		// Retire variations that are no longer present on eBay.
+		//
+		// These are NOT force-deleted. A partial or degraded eBay response
+		// would otherwise permanently destroy variations along with their links
+		// to existing order line items. Zeroing stock and hiding them is
+		// reversible; deletion is not.
 		foreach ( $existing_variations as $existing_id ) {
-			if ( ! in_array( $existing_id, $processed_ids ) ) {
-				$var_to_delete = wc_get_product( $existing_id );
-				if ( $var_to_delete ) {
-					$var_to_delete->delete( true );
-				}
+			if ( in_array( $existing_id, $processed_ids, true ) ) {
+				continue;
 			}
+
+			$var_to_retire = wc_get_product( $existing_id );
+			if ( ! $var_to_retire ) {
+				continue;
+			}
+
+			TCGiant_Sync_Inventory::begin_ebay_origin();
+			try {
+				$var_to_retire->set_stock_quantity( 0 );
+				$var_to_retire->set_stock_status( 'outofstock' );
+				$var_to_retire->set_status( 'private' );
+				$var_to_retire->save();
+			} finally {
+				TCGiant_Sync_Inventory::end_ebay_origin();
+			}
+
+			TCGiant_Sync_Logger::log( sprintf(
+				'Variation #%d is no longer on eBay — set to private and out of stock (not deleted).',
+				$existing_id
+			) );
 		}
 	}
 
@@ -1063,7 +1091,10 @@ class TCGiant_Sync_Mapper {
 				};
 				$flatten( $categories );
 			}
-			set_transient( 'tcgiant_sync_store_cat_map', $map, 3600 );
+			// Cache a failed/empty lookup only briefly. Storing an empty map for
+			// a full hour meant every product imported in that window silently
+			// lost its categories.
+			set_transient( 'tcgiant_sync_store_cat_map', $map, empty( $map ) ? 60 : 3600 );
 		}
 
 		$names = array();
@@ -1089,21 +1120,7 @@ class TCGiant_Sync_Mapper {
 		if ( null === $raw ) {
 			return '';
 		}
-		if ( is_string( $raw ) || is_numeric( $raw ) ) {
-			return (string) $raw;
-		}
-		if ( is_array( $raw ) ) {
-			if ( isset( $raw['#text'] ) ) {
-				return (string) $raw['#text'];
-			}
-			if ( isset( $raw['__text'] ) ) {
-				return (string) $raw['__text'];
-			}
-			if ( isset( $raw['value'] ) ) {
-				return (string) $raw['value'];
-			}
-		}
-		return '';
+		return TCGiant_Sync_API::scalar_value( $raw );
 	}
 
 	/**

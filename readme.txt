@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.1.4
+Stable tag: 3.2.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,29 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.2.0 - 2026-07-30 =
+**Data safety**
+* CHANGED: Variations that disappear from an eBay listing are no longer deleted — they are set to private and out of stock. A partial eBay response previously destroyed them permanently along with their links to past orders. Retiring is reversible; deleting was not.
+* FIX: eBay order values are parsed properly. Amounts arriving as structured values (whenever eBay includes a currency attribute) were cast directly to a number, silently producing $1.00 orders. Totals, shipping, line prices and quantities now share the product importer's normalizer.
+* FIX: Order import reads every page — it previously requested only the first 100 orders per day and ignored the rest.
+
+**Fixed**
+* FIX: The Listings page and auto-relist scheduler were reading a snapshot frozen at install time; the listings table was never written to after the initial migration. It is now kept current on every import.
+* FIX: Store categories are no longer lost for an hour after a failed lookup, which caused products to import uncategorised.
+* FIX: Bulk "Push to eBay" no longer reports success before contacting eBay. Queued and completed are now counted separately.
+* FIX: The progress bar's colour gradient, lost in 3.1.2 when the stripe overlay replaced it instead of layering over it.
+* FIX: Saving settings could fail on nested values.
+* FIX: Job status lookups now require administrator permissions.
+
+**Security & privacy**
+* The activity log filename now includes a per-site random token. The log directory relies on an .htaccess rule that nginx ignores, so the log — containing product titles, SKUs and raw eBay API responses — was readable at a predictable URL on nginx.
+* eBay-supplied business policy names are escaped before display.
+
+**Maintenance**
+* Removed ~760 lines of unreachable code (the pre-3.0.0 image downloader and pre-2.0.0 page scanner). The old scanner counted progress differently, which broke "Resume Import" after an interrupted sync.
+* Action Scheduler cleanup now removes matching log rows instead of leaving them to accumulate.
+* PHPStan static analysis reports zero findings, and runs in CI with a syntax check on every change.
 
 = 3.1.4 - 2026-07-30 =
 **Performance**
@@ -452,6 +475,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.2.0 =
+Data-safety and maintenance release. Variations removed from an eBay listing are now retired rather than deleted, so a bad eBay response can no longer destroy them. Fixes eBay order values being misread as $1.00 in some cases, order import missing anything past the first 100 per day, and the Listings page showing data frozen at install time. Also removes ~760 lines of dead code and hardens the activity log against public access on nginx.
 
 = 3.1.4 =
 Performance and reliability release, recommended for all stores and important for large ones. Adds a database index and removes several hot spots that made large syncs slow: a ~300KB option being autoloaded on every page request, duplicated media library records, and tens of thousands of individual log writes per import. eBay requests now retry transient network failures instead of failing an entire sync, and rate-limit responses are handled properly. Also fixes uninstall, which previously left all plugin data behind — including your stored eBay tokens.

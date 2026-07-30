@@ -29,12 +29,19 @@ if ( 'limit_reached' === $sync_state['status'] && $license_ui['can_import'] ) {
 
 // Auto-clear rate_limited state when auto-retry already handled it.
 if ( 'rate_limited' === $sync_state['status'] && function_exists( 'as_get_scheduled_actions' ) ) {
+	// Scanning is queued as tcgiant_sync_scan_all_pages; the old per-page
+	// tcgiant_sync_fetch_listings hook was retired in 2.0.0, so checking it
+	// here never found anything.
 	$pending_scans = as_get_scheduled_actions( array(
-		'hook'   => 'tcgiant_sync_fetch_listings',
+		'hook'   => 'tcgiant_sync_scan_all_pages',
 		'group'  => TCGiant_Sync_Importer::GROUP_SCAN,
 		'status' => ActionScheduler_Store::STATUS_PENDING,
 		'per_page' => 1,
 	) );
+	// The scan also resumes through WP-Cron rather than Action Scheduler.
+	if ( empty( $pending_scans ) && wp_next_scheduled( 'tcgiant_sync_scan_resume' ) ) {
+		$pending_scans = array( 'wp-cron' );
+	}
 	// Item imports are queued in GROUP_IMPORTS, not the scan group.
 	$pending_imports = as_get_scheduled_actions( array(
 		'hook'   => 'tcgiant_sync_process_item_import',

@@ -159,11 +159,8 @@ class TCGiant_Sync_REST {
 		$params[] = $per_page;
 		$params[] = $offset;
 
-		if ( ! empty( $params ) ) {
-			$results = $wpdb->get_results( $wpdb->prepare( $sql, ...$params ), ARRAY_A );
-		} else {
-			$results = $wpdb->get_results( $sql, ARRAY_A );
-		}
+		// $params always holds at least the LIMIT/OFFSET values appended above.
+		$results = $wpdb->get_results( $wpdb->prepare( $sql, ...$params ), ARRAY_A );
 
 		$listings = array();
 		foreach ( $results as $row ) {
@@ -194,8 +191,9 @@ class TCGiant_Sync_REST {
 			: (int) $wpdb->get_var( $count_sql );
 
 		$response = new WP_REST_Response( $listings, 200 );
-		$response->header( 'X-WP-Total', $total );
-		$response->header( 'X-WP-TotalPages', ceil( $total / $per_page ) );
+		// Header values must be strings.
+		$response->header( 'X-WP-Total', (string) $total );
+		$response->header( 'X-WP-TotalPages', (string) ( $per_page > 0 ? (int) ceil( $total / $per_page ) : 0 ) );
 
 		return $response;
 	}
@@ -231,7 +229,7 @@ class TCGiant_Sync_REST {
 			'stock'          => $product->get_stock_quantity(),
 			'last_synced'    => get_post_meta( $product_id, '_ebay_last_synced', true ) ?: '',
 			'last_pushed'    => get_post_meta( $product_id, '_ebay_export_last_pushed', true ) ?: '',
-			'images'         => wp_get_attachment_url( $product->get_image_id() ) ?: '',
+			'images'         => wp_get_attachment_url( (int) $product->get_image_id() ) ?: '',
 		), 200 );
 	}
 

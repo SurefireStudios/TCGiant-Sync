@@ -67,6 +67,33 @@ class TCGiant_Sync_DB {
 	}
 
 	/**
+	 * Cached result of the table-existence check.
+	 *
+	 * @var bool|null
+	 */
+	private static $table_exists = null;
+
+	/**
+	 * Whether the custom listings table exists.
+	 *
+	 * Cached per request: this is consulted once per imported product, so an
+	 * uncached SHOW TABLES would add one round-trip per item.
+	 *
+	 * @return bool
+	 */
+	public static function table_exists() {
+		if ( null !== self::$table_exists ) {
+			return self::$table_exists;
+		}
+
+		global $wpdb;
+		$table = self::table_name();
+		self::$table_exists = ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $table ) ) === $table );
+
+		return self::$table_exists;
+	}
+
+	/**
 	 * Constructor — check for table creation/migration.
 	 */
 	public function __construct() {
@@ -178,6 +205,9 @@ class TCGiant_Sync_DB {
 		require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 		dbDelta( $sql );
 
+		// The table may have just been created, so drop any cached "missing".
+		self::$table_exists = null;
+
 		// Migrate existing data from post meta on first install.
 		if ( empty( $installed_version ) ) {
 			$this->migrate_from_postmeta();
@@ -250,8 +280,10 @@ class TCGiant_Sync_DB {
 		global $wpdb;
 		$table = self::table_name();
 
-		// Check if the table exists.
-		if ( $wpdb->get_var( "SHOW TABLES LIKE '{$table}'" ) !== $table ) {
+		// Check if the table exists (cached — this runs once per imported
+		// product, and a SHOW TABLES per product is thousands of wasted
+		// round-trips on a large sync).
+		if ( ! self::table_exists() ) {
 			return false; // Table not yet created.
 		}
 
@@ -310,7 +342,7 @@ class TCGiant_Sync_DB {
 		global $wpdb;
 		$table = self::table_name();
 
-		if ( $wpdb->get_var( "SHOW TABLES LIKE '{$table}'" ) !== $table ) {
+		if ( ! TCGiant_Sync_DB::table_exists() ) {
 			return null;
 		}
 
@@ -330,7 +362,7 @@ class TCGiant_Sync_DB {
 		global $wpdb;
 		$table = self::table_name();
 
-		if ( $wpdb->get_var( "SHOW TABLES LIKE '{$table}'" ) !== $table ) {
+		if ( ! TCGiant_Sync_DB::table_exists() ) {
 			return null;
 		}
 
@@ -352,7 +384,7 @@ class TCGiant_Sync_DB {
 		global $wpdb;
 		$table = self::table_name();
 
-		if ( $wpdb->get_var( "SHOW TABLES LIKE '{$table}'" ) !== $table ) {
+		if ( ! TCGiant_Sync_DB::table_exists() ) {
 			return array( 'items' => array(), 'total' => 0 );
 		}
 
@@ -430,7 +462,7 @@ class TCGiant_Sync_DB {
 		global $wpdb;
 		$table = self::table_name();
 
-		if ( $wpdb->get_var( "SHOW TABLES LIKE '{$table}'" ) !== $table ) {
+		if ( ! TCGiant_Sync_DB::table_exists() ) {
 			return;
 		}
 
@@ -446,7 +478,7 @@ class TCGiant_Sync_DB {
 		global $wpdb;
 		$table = self::table_name();
 
-		if ( $wpdb->get_var( "SHOW TABLES LIKE '{$table}'" ) !== $table ) {
+		if ( ! TCGiant_Sync_DB::table_exists() ) {
 			return array( 'active' => 0, 'ended' => 0, 'total' => 0 );
 		}
 

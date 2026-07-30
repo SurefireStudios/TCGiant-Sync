@@ -19,6 +19,11 @@ if ( ! defined( 'ABSPATH' ) ) {
 class TCGiant_Sync_Orders {
 
 	/**
+	 * Maximum order pages to walk in one import run.
+	 */
+	const MAX_ORDER_PAGES = 20;
+
+	/**
 	 * Instance.
 	 *
 	 * @var self|null
@@ -128,30 +133,54 @@ class TCGiant_Sync_Orders {
 		$from = gmdate( 'Y-m-d\TH:i:s.000\Z', time() - DAY_IN_SECONDS );
 		$to   = gmdate( 'Y-m-d\TH:i:s.000\Z' );
 
-		$xml = '
+		$orders      = array();
+		$page        = 1;
+		$total_pages = 1;
+
+		// Walk every page. Requesting only page 1 meant any store taking more
+		// than 100 orders in a day silently lost the remainder.
+		do {
+			$xml = '
 <CreateTimeFrom>' . $from . '</CreateTimeFrom>
 <CreateTimeTo>' . $to . '</CreateTimeTo>
 <OrderRole>Seller</OrderRole>
 <OrderStatus>All</OrderStatus>
 <Pagination>
 <EntriesPerPage>100</EntriesPerPage>
-<PageNumber>1</PageNumber>
+<PageNumber>' . (int) $page . '</PageNumber>
 </Pagination>';
 
-		$result = $api->trading_api_request( 'GetOrders', $xml );
-		if ( is_wp_error( $result ) ) {
-			return $result;
-		}
+			$result = $api->trading_api_request( 'GetOrders', $xml );
+			if ( is_wp_error( $result ) ) {
+				// Return what we have if a later page fails; surface the error
+				// only when nothing was retrieved at all.
+				return empty( $orders ) ? $result : $orders;
+			}
 
-		$orders = array();
-		if ( isset( $result['OrderArray']['Order'] ) ) {
+			if ( ! isset( $result['OrderArray']['Order'] ) ) {
+				break;
+			}
+
 			$order_list = $result['OrderArray']['Order'];
 			// Single order vs. multiple orders.
 			if ( isset( $order_list['OrderID'] ) ) {
 				$orders[] = $order_list;
 			} else {
-				$orders = $order_list;
+				$orders = array_merge( $orders, $order_list );
 			}
+
+			$total_pages = isset( $result['PaginationResult']['TotalNumberOfPages'] )
+				? (int) $result['PaginationResult']['TotalNumberOfPages']
+				: 1;
+
+			$page++;
+		} while ( $page <= $total_pages && $page <= self::MAX_ORDER_PAGES );
+
+		if ( $total_pages > self::MAX_ORDER_PAGES ) {
+			TCGiant_Sync_Logger::warning( sprintf(
+				'Order Import: Stopped at the %d-page cap (%d pages available).',
+				self::MAX_ORDER_PAGES, $total_pages
+			) );
 		}
 
 		return $orders;
@@ -196,7 +225,7 @@ class TCGiant_Sync_Orders {
 	private function create_wc_order( $ebay_order ) {
 		$order_id    = $ebay_order['OrderID'] ?? '';
 		$buyer_email = $ebay_order['BuyerUserID'] ?? '';
-		$total       = (float) ( $ebay_order['Total'] ?? 0 );
+		$total       = TCGiant_Sync_API::money_value( $ebay_order['Total'] ?? 0 );
 		$status      = $ebay_order['OrderStatus'] ?? '';
 
 		try {
@@ -237,16 +266,16 @@ class TCGiant_Sync_Orders {
 			}
 
 			// Set shipping cost.
-			$shipping_cost = (float) ( $ebay_order['ShippingServiceSelected']['ShippingServiceCost'] ?? 0 );
+			$shipping_cost = TCGiant_Sync_API::money_value( $ebay_order['ShippingServiceSelected']['ShippingServiceCost'] ?? 0 );
 			if ( $shipping_cost > 0 ) {
 				$shipping_item = new WC_Order_Item_Shipping();
 				$shipping_item->set_method_title( 'eBay Shipping' );
-				$shipping_item->set_total( $shipping_cost );
+				$shipping_item->set_total( (string) $shipping_cost );
 				$wc_order->add_item( $shipping_item );
 			}
 
 			// Set order totals.
-			$wc_order->set_total( $total );
+			$wc_order->set_total( (string) $total );
 
 			// Set order status.
 			$wc_status = $this->map_order_status( $status );
@@ -330,8 +359,9 @@ class TCGiant_Sync_Orders {
 		$item_data   = $transaction['Item'] ?? array();
 		$ebay_item_id = $item_data['ItemID'] ?? '';
 		$title       = $item_data['Title'] ?? 'eBay Item';
-		$qty         = (int) ( $transaction['QuantityPurchased'] ?? 1 );
-		$price       = (float) ( $transaction['TransactionPrice'] ?? 0 );
+		$qty         = (int) TCGiant_Sync_API::scalar_value( $transaction['QuantityPurchased'] ?? 1 );
+		$qty         = max( 1, $qty );
+		$price       = TCGiant_Sync_API::money_value( $transaction['TransactionPrice'] ?? 0 );
 
 		// Try to match to a WC product.
 		$wc_product = null;
@@ -350,8 +380,8 @@ class TCGiant_Sync_Orders {
 			$item = new WC_Order_Item_Product();
 			$item->set_product( $wc_product );
 			$item->set_quantity( $qty );
-			$item->set_subtotal( $price * $qty );
-			$item->set_total( $price * $qty );
+			$item->set_subtotal( (string) ( $price * $qty ) );
+			$item->set_total( (string) ( $price * $qty ) );
 
 			// Reduce stock with circular-update guard.
 			TCGiant_Sync_Inventory::mark_ebay_origin( $wc_product->get_id() );
@@ -360,8 +390,8 @@ class TCGiant_Sync_Orders {
 			$item = new WC_Order_Item_Product();
 			$item->set_name( $title );
 			$item->set_quantity( $qty );
-			$item->set_subtotal( $price * $qty );
-			$item->set_total( $price * $qty );
+			$item->set_subtotal( (string) ( $price * $qty ) );
+			$item->set_total( (string) ( $price * $qty ) );
 		}
 
 		$item->add_meta_data( '_ebay_item_id', $ebay_item_id, true );

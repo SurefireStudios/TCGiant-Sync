@@ -843,18 +843,23 @@
 }
 
 /* ─── Animated Progress Bar Stripe ─── */
+/* Layered over the base gradient rather than replacing it. Declaring only
+   background-image here overrode the `background` shorthand set earlier, so the
+   bar lost its blue→green gradient and rendered as stripes on nothing. */
 .wrap.tc-dashboard-wrap .tc-progress-fill {
-    background-image: linear-gradient(
-        45deg,
-        rgba(255, 255, 255, 0.15) 25%,
-        transparent 25%,
-        transparent 50%,
-        rgba(255, 255, 255, 0.15) 50%,
-        rgba(255, 255, 255, 0.15) 75%,
-        transparent 75%,
-        transparent
-    );
-    background-size: 1rem 1rem;
+    background-image:
+        linear-gradient(
+            45deg,
+            rgba(255, 255, 255, 0.15) 25%,
+            transparent 25%,
+            transparent 50%,
+            rgba(255, 255, 255, 0.15) 50%,
+            rgba(255, 255, 255, 0.15) 75%,
+            transparent 75%,
+            transparent
+        ),
+        linear-gradient(90deg, var(--tc-primary), var(--tc-success));
+    background-size: 1rem 1rem, 100% 100%;
     animation: tc-progress-stripe 1s linear infinite;
 }
 

@@ -306,18 +306,40 @@ class TCGiant_Sync_Cron {
 		$table = $wpdb->prefix . 'actionscheduler_actions';
 
 		// Check if the table exists.
-		if ( $wpdb->get_var( "SHOW TABLES LIKE '{$table}'" ) !== $table ) {
+		if ( ! TCGiant_Sync_DB::table_exists() ) {
 			return;
 		}
 
-		$cutoff = gmdate( 'Y-m-d H:i:s', time() - ( 7 * DAY_IN_SECONDS ) );
-		$deleted = $wpdb->query( $wpdb->prepare(
-			"DELETE FROM {$table}
+		$cutoff    = gmdate( 'Y-m-d H:i:s', time() - ( 7 * DAY_IN_SECONDS ) );
+		$logs_table = $wpdb->prefix . 'actionscheduler_logs';
+
+		// Collect the ids first so the matching log rows can go too. Deleting
+		// only from the actions table left orphaned log rows accumulating
+		// forever, which is the larger of the two tables.
+		$action_ids = $wpdb->get_col( $wpdb->prepare(
+			"SELECT action_id FROM {$table}
 			 WHERE hook LIKE %s
 			   AND status IN ('complete', 'failed', 'canceled')
-			   AND scheduled_date_gmt < %s",
+			   AND scheduled_date_gmt < %s
+			 LIMIT 5000",
 			'tcgiant_sync_%',
 			$cutoff
+		) );
+
+		if ( empty( $action_ids ) ) {
+			return;
+		}
+
+		$placeholders = implode( ',', array_fill( 0, count( $action_ids ), '%d' ) );
+
+		$wpdb->query( $wpdb->prepare(
+			"DELETE FROM {$logs_table} WHERE action_id IN ({$placeholders})",
+			$action_ids
+		) );
+
+		$deleted = $wpdb->query( $wpdb->prepare(
+			"DELETE FROM {$table} WHERE action_id IN ({$placeholders})",
+			$action_ids
 		) );
 
 		if ( $deleted > 0 ) {
@@ -359,7 +381,7 @@ class TCGiant_Sync_Cron {
 		$table = TCGiant_Sync_DB::table_name();
 
 		// Check if custom table exists.
-		if ( $wpdb->get_var( "SHOW TABLES LIKE '{$table}'" ) !== $table ) {
+		if ( ! TCGiant_Sync_DB::table_exists() ) {
 			// Fall back to post meta query.
 			$ended_products = $wpdb->get_results(
 				"SELECT pm1.post_id, pm1.meta_value AS ebay_item_id

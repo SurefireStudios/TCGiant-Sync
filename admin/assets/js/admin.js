@@ -9,6 +9,17 @@
 (function($) {
     'use strict';
 
+    /**
+     * Escape a value for safe insertion into an HTML string.
+     *
+     * Shared across this file. Values coming back from the eBay API (policy
+     * names, category names) are seller-controlled and must not be
+     * concatenated into markup unescaped.
+     */
+    function esc(str) {
+        return $('<span>').text(str === null || str === undefined ? '' : str).html();
+    }
+
     $(document).ready(function() {
         initStatusPolling();
         initLogPolling();
@@ -395,7 +406,6 @@
             });
         }
 
-        function esc(str) { return $('<span>').text(str).html(); }
     }
 
     /* ─── Policy Fetcher ─── */
@@ -437,7 +447,7 @@
             if (policies && policies.length) {
                 policies.forEach(function(p) {
                     var selected = (current && current === p.id) ? ' selected' : '';
-                    $sel.append('<option value="' + p.id + '"' + selected + '>' + p.name + ' (' + p.id + ')</option>');
+                    $sel.append('<option value="' + esc(p.id) + '"' + selected + '>' + esc(p.name) + ' (' + esc(p.id) + ')</option>');
                 });
             }
         }

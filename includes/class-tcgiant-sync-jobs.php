@@ -107,6 +107,7 @@ class TCGiant_Sync_Jobs {
 			'total'      => count( $items ),
 			'processed'  => 0,
 			'succeeded'  => 0,
+			'queued'     => 0,
 			'failed'     => 0,
 			'errors'     => array(),
 			'created_at' => current_time( 'mysql' ),
@@ -239,12 +240,12 @@ class TCGiant_Sync_Jobs {
 		}
 
 		if ( 'cancelled' === $job['status'] ) {
+			// wp_send_json_success() ends the request.
 			wp_send_json_success( array(
 				'status'    => 'cancelled',
 				'processed' => $job['processed'],
 				'total'     => $job['total'],
 			) );
-			return;
 		}
 
 		// Process up to 5 items per batch.
@@ -253,6 +254,7 @@ class TCGiant_Sync_Jobs {
 		$batch       = array_slice( self::get_job_items( $job_id ), $start_index, $batch_size );
 		$succeeded   = $job['succeeded'];
 		$failed      = $job['failed'];
+		$queued      = $job['queued'] ?? 0;
 		$errors      = $job['errors'];
 
 		$exporter = TCGiant_Sync_Exporter::instance();
@@ -268,12 +270,17 @@ class TCGiant_Sync_Jobs {
 
 			switch ( $job['type'] ) {
 				case 'bulk_push':
+					// push_product() only enqueues the push and returns true as
+					// soon as the product exists — it does not contact eBay. So
+					// this counter records "queued", not "listed". Reporting it
+					// as success made the progress bar hit 100% before a single
+					// listing had been created, and hid every real failure.
 					$result = $exporter->push_product( $product_id );
 					if ( $result ) {
-						$succeeded++;
+						$queued++;
 					} else {
 						$failed++;
-						$errors[] = sprintf( '#%d: Push failed.', $product_id );
+						$errors[] = sprintf( '#%d: Could not be queued for push.', $product_id );
 					}
 					break;
 
@@ -332,6 +339,7 @@ class TCGiant_Sync_Jobs {
 		self::update_job( $job_id, array(
 			'processed' => $new_processed,
 			'succeeded' => $succeeded,
+			'queued'    => $queued,
 			'failed'    => $failed,
 			'errors'    => array_slice( $errors, -50 ), // Keep last 50 errors.
 			'status'    => $is_done ? 'completed' : 'running',
@@ -342,7 +350,12 @@ class TCGiant_Sync_Jobs {
 			'processed' => $new_processed,
 			'total'     => $job['total'],
 			'succeeded' => $succeeded,
+			'queued'    => $queued,
 			'failed'    => $failed,
+			// bulk_push is asynchronous: 'queued' items have been handed to the
+			// background pusher, not confirmed as listed on eBay. Watch the
+			// per-product eBay status column for the real outcome.
+			'is_async'  => ( 'bulk_push' === $job['type'] ),
 			'errors'    => array_slice( $errors, -5 ), // Return last 5 to client.
 		) );
 	}
@@ -352,6 +365,10 @@ class TCGiant_Sync_Jobs {
 	 */
 	public function ajax_job_status() {
 		check_ajax_referer( 'tcgiant_sync_ajax' );
+
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'Unauthorized.' ) );
+		}
 
 		$job_id = sanitize_text_field( wp_unslash( $_GET['job_id'] ?? $_POST['job_id'] ?? '' ) );
 		$job    = self::get_job( $job_id );
@@ -365,6 +382,7 @@ class TCGiant_Sync_Jobs {
 			'processed' => $job['processed'],
 			'total'     => $job['total'],
 			'succeeded' => $job['succeeded'],
+			'queued'    => $job['queued'] ?? 0,
 			'failed'    => $job['failed'],
 			'errors'    => array_slice( $job['errors'], -10 ),
 		) );

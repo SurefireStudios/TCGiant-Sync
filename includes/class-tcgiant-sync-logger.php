@@ -104,7 +104,26 @@ class TCGiant_Sync_Logger {
 	 * Get the log file path.
 	 */
 	public static function get_log_file() {
-		return self::get_log_dir() . '/tcgiant-sync.log';
+		return self::get_log_dir() . '/tcgiant-sync-' . self::log_file_token() . '.log';
+	}
+
+	/**
+	 * Per-site random token appended to the log filename.
+	 *
+	 * The log directory is protected with an .htaccess deny rule, which nginx
+	 * ignores entirely — so on nginx the log was readable at a predictable URL.
+	 * It contains product titles, SKUs and raw eBay API error bodies. An
+	 * unguessable filename closes that off regardless of web server.
+	 *
+	 * @return string
+	 */
+	private static function log_file_token() {
+		$token = get_option( 'tcgiant_log_token' );
+		if ( ! $token ) {
+			$token = wp_generate_password( 16, false );
+			add_option( 'tcgiant_log_token', $token, '', false );
+		}
+		return $token;
 	}
 
 	/**

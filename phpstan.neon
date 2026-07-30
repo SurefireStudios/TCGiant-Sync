@@ -43,6 +43,14 @@ parameters:
     bootstrapFiles:
         - phpstan-bootstrap.php
 
+    # These constants are environment-dependent. The bootstrap has to give them
+    # a concrete value for the code to analyse at all, but that value must not
+    # be treated as fact — otherwise every staging guard reads as dead code.
+    dynamicConstantNames:
+        - TCGIANT_SYNC_IS_STAGING
+        - WP_DEBUG
+        - WP_UNINSTALL_PLUGIN
+
     # Action Scheduler ships inside WooCommerce rather than as a stub package,
     # and ActionScheduler_Store is referenced for its status constants.
     universalObjectCratesClasses:
@@ -71,10 +79,20 @@ parameters:
         # Casting ~20 template call sites would be pure churn.
         - '#^Parameter \#1 \$text of function esc_(attr|html) expects string, (int|float)[<>,0-9a-z |]* given\.$#'
 
-        # TCGIANT_SYNC_IS_STAGING is declared false in the analysis bootstrap, so
-        # every staging guard reads as permanently false. It is set from the real
-        # environment at runtime.
-        - '#(Result of &&|Right side of &&) is always false\.$#'
+        # --- Intentional defensive guards ---
+        #
+        # These are null-coalesce fallbacks and range checks on values PHPStan
+        # can currently prove are safe, because the surrounding constants happen
+        # to line up. They are kept deliberately: the inputs come from user
+        # settings, and adding a listing duration or changing FREE_LIMIT without
+        # updating the matching constant would otherwise fail silently. Deleting
+        # a safety net to satisfy the analyser is the wrong trade.
+        -
+            message: '#^Offset .* on array\{.*\} on left side of \?\? always exists and is not nullable\.$#'
+            path: includes/class-tcgiant-sync-exporter.php
+        -
+            message: '#^Comparison operation ">" between 50 and 0 is always true\.$#'
+            path: includes/class-tcgiant-sync-license.php
 
     treatPhpDocTypesAsCertain: false
     reportUnmatchedIgnoredErrors: false

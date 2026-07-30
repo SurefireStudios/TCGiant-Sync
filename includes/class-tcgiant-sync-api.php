@@ -751,6 +751,46 @@ class TCGiant_Sync_API {
 	}
 
 	/**
+	 * Normalise a scalar value out of eBay's XML→JSON conversion.
+	 *
+	 * An element carrying attributes (for example
+	 * `<CurrentPrice currencyID="USD">29.99</CurrentPrice>`) does not survive
+	 * the round-trip as a plain string — depending on the converter it arrives
+	 * as an array keyed by '#text', '__text', 'value', or SimpleXML's numeric
+	 * '0'. Casting such an array straight to float silently yields 1.0, which
+	 * is how eBay orders were being imported with a $1.00 total.
+	 *
+	 * @param mixed $raw Raw value from a decoded eBay response.
+	 * @return string Scalar string, or '' when nothing usable is present.
+	 */
+	public static function scalar_value( $raw ) {
+		if ( is_string( $raw ) || is_numeric( $raw ) ) {
+			return (string) $raw;
+		}
+
+		if ( is_array( $raw ) ) {
+			foreach ( array( '#text', '__text', 'value', 0, '0' ) as $key ) {
+				if ( isset( $raw[ $key ] ) && ( is_string( $raw[ $key ] ) || is_numeric( $raw[ $key ] ) ) ) {
+					return (string) $raw[ $key ];
+				}
+			}
+		}
+
+		return '';
+	}
+
+	/**
+	 * Normalise an eBay monetary value to a float.
+	 *
+	 * @param mixed $raw Raw value from a decoded eBay response.
+	 * @return float Amount, or 0.0 when absent/unparseable.
+	 */
+	public static function money_value( $raw ) {
+		$value = self::scalar_value( $raw );
+		return ( '' === $value ) ? 0.0 : (float) $value;
+	}
+
+	/**
 	 * Generate a UUID in the format eBay accepts.
 	 *
 	 * eBay requires exactly 32 hexadecimal characters. wp_generate_uuid4()

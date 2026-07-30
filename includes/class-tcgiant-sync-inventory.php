@@ -283,6 +283,11 @@ class TCGiant_Sync_Inventory {
 		$woo_sync_cats = isset( $settings['woo_category_ids'] ) && is_array( $settings['woo_category_ids'] ) ? $settings['woo_category_ids'] : array();
 
 		foreach ( $order->get_items() as $item ) {
+			// Shipping, fee and tax rows are plain WC_Order_Item objects and
+			// have no get_product().
+			if ( ! $item instanceof WC_Order_Item_Product ) {
+				continue;
+			}
 			$product = $item->get_product();
 			if ( ! $product ) {
 				continue;

@@ -789,7 +789,7 @@ class TCGiant_Sync_Exporter {
 		$xml .= '<ListingType>' . esc_attr( $listing_type ) . '</ListingType>' . "\n";
 		$xml .= '<Site>' . esc_attr( $marketplace['site'] ) . '</Site>' . "\n";
 
-		if ( $product->is_type( 'variable' ) ) {
+		if ( $product instanceof WC_Product_Variable ) {
 			$xml .= '<Variations>' . "\n";
 			$xml .= "\t<VariationSpecificsSet>\n";
 			$attributes = $product->get_variation_attributes();
@@ -809,7 +809,9 @@ class TCGiant_Sync_Exporter {
 			$children_ids = $product->get_children();
 			foreach ( $children_ids as $child_id ) {
 				$child = wc_get_product( $child_id );
-				if ( ! $child || 'publish' !== $child->get_status() ) continue;
+				// get_children() on a variable product yields variations, but
+				// guard explicitly so get_variation_attributes() is safe.
+				if ( ! $child instanceof WC_Product_Variation || 'publish' !== $child->get_status() ) continue;
 				
 				$xml .= "\t<Variation>\n";
 				$xml .= "\t\t<SKU>" . esc_xml( $child->get_sku() ) . "</SKU>\n";
@@ -1472,7 +1474,7 @@ class TCGiant_Sync_Exporter {
 		$urls = array();
 
 		// Featured image.
-		$thumb_id = $product->get_image_id();
+		$thumb_id = (int) $product->get_image_id();
 		if ( $thumb_id ) {
 			$src = wp_get_attachment_image_url( $thumb_id, 'full' );
 			if ( $src ) {

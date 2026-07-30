@@ -255,6 +255,11 @@ class TCGiant_Sync_Admin {
 		$results = array();
 
 		foreach ( $order->get_items() as $item ) {
+			// get_items() defaults to line items, but shipping/fee/tax rows are
+			// plain WC_Order_Item objects with no get_product().
+			if ( ! $item instanceof WC_Order_Item_Product ) {
+				continue;
+			}
 			$product = $item->get_product();
 			if ( ! $product ) {
 				continue;
@@ -495,7 +500,8 @@ class TCGiant_Sync_Admin {
 
 		// Setup Wizard (hidden from menu).
 		add_submenu_page(
-			null, // Hidden from menu.
+			'', // Hidden from the menu; still reachable by URL. Passing null
+			    // here is deprecated and emits a notice on PHP 8.1+.
 			__( 'Setup Wizard', 'tcgiant-sync' ),
 			__( 'Setup Wizard', 'tcgiant-sync' ),
 			'manage_options',
@@ -709,7 +715,9 @@ class TCGiant_Sync_Admin {
 			foreach ( $input as $key => $value ) {
 				$clean_key = sanitize_key( $key );
 				if ( is_array( $value ) ) {
-					$sanitized[ $clean_key ] = array_map( 'sanitize_text_field', $value );
+					// map_deep() recurses; array_map( 'sanitize_text_field' )
+					// raised a TypeError on any nested array value.
+					$sanitized[ $clean_key ] = map_deep( $value, 'sanitize_text_field' );
 				} elseif ( 'custom_saved_categories' === $clean_key ) {
 					$sanitized[ $clean_key ] = sanitize_textarea_field( $value );
 				} else {

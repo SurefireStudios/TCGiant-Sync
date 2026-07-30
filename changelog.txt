@@ -1,5 +1,29 @@
 *** TCGiant Sync Changelog ***
 
+2026-07-30 - version 3.2.0
+== Data Safety ==
+- CHANGED: Variations that disappear from an eBay listing are no longer deleted. They are set to private and out of stock instead. A partial or degraded eBay response previously destroyed those variations permanently, along with their links to past order line items. Retiring them is reversible; deleting them was not.
+- FIX: eBay order values are parsed properly. Amounts arriving as structured values (which happens whenever eBay includes a currency attribute) were being cast directly to a number, silently producing $1.00 orders with no error. Order totals, shipping costs, line item prices and quantities now all go through the same normalizer the product importer uses.
+- FIX: Order import now reads every page. It requested only the first 100 orders of the last 24 hours and ignored the rest, so busy stores silently lost orders.
+
+== Fixed ==
+- FIX: The Listings page and the auto-relist scheduler were reading a snapshot frozen at install time. The plugin's listings table was created and migrated but never written to afterwards, so neither reflected anything that had been synced since. It is now kept current on every import.
+- FIX: Store categories are no longer lost for an hour after a failed lookup. An empty result was being cached for the full hour, so every product imported in that window came in uncategorised.
+- FIX: Bulk "Push to eBay" no longer reports success before contacting eBay. Queuing a product was being counted as a completed listing, so the progress bar reached 100% immediately and genuine failures never surfaced. Queued and completed are now reported separately.
+- FIX: The progress bar lost its colour gradient in 3.1.2 when the animated stripe overlay replaced it instead of layering over it.
+- FIX: Saving settings could fail on nested values.
+- FIX: Job status lookups now require administrator permissions, matching every other endpoint.
+
+== Security & Privacy ==
+- The activity log filename now includes a per-site random token. The log directory is protected by an .htaccess rule, which nginx ignores, so on nginx servers the log — which contains product titles, SKUs and raw eBay API responses — was readable at a predictable URL.
+- eBay-supplied business policy names are escaped before being displayed in the settings screen.
+
+== Maintenance ==
+- Removed roughly 760 lines of unreachable code: the old synchronous image downloader (replaced by the background localizer in 3.0.0) and the old per-page scanner (replaced in 2.0.0). Both had been retained but unused, and the old scanner counted progress differently, which broke "Resume Import" after an interrupted sync.
+- Old Action Scheduler cleanup now removes the matching log rows too. Deleting only the task rows left orphaned log entries accumulating indefinitely in the larger of the two tables.
+- The plugin's database table check is cached per request rather than re-queried once per imported product.
+- Static analysis (PHPStan) now reports zero findings across the plugin, and runs in CI on every change along with a syntax check.
+
 2026-07-30 - version 3.1.4
 == Performance ==
 - PERFORMANCE: Added a database index for the plugin's metadata lookups. Image deduplication and eBay Item ID matching previously scanned every matching row in wp_postmeta on every lookup — around 80,000 full scans during a 10,000-product sync. Added once, automatically, and skipped safely if the database user lacks permission.
