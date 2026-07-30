@@ -77,10 +77,13 @@ class TCGiant_Sync_Image_Localizer {
 	 * This makes the product immediately visible with images hosted on eBay.
 	 * The images will be localized (downloaded to WP media library) in the background.
 	 *
-	 * @param int   $product_id  WooCommerce product ID.
-	 * @param array $image_entries Array of image URLs (strings or [url, variation_id] arrays).
+	 * @param int   $product_id    WooCommerce product ID.
+	 * @param array $image_entries  Array of image URLs (strings or [url, variation_id] arrays).
+	 * @param bool  $force          Re-queue even when the URLs are unchanged. Used by
+	 *                              the images-only tool, whose entire purpose is to
+	 *                              re-download images that are wrong or missing.
 	 */
-	public static function set_external_images( $product_id, $image_entries ) {
+	public static function set_external_images( $product_id, $image_entries, $force = false ) {
 		if ( empty( $image_entries ) || ! is_array( $image_entries ) ) {
 			return;
 		}
@@ -118,7 +121,16 @@ class TCGiant_Sync_Image_Localizer {
 		$stored_hash = get_post_meta( $product_id, '_tcgiant_image_urls_hash', true );
 		$is_localized = (int) get_post_meta( $product_id, '_tcgiant_images_localized', true );
 
-		if ( $new_hash === $stored_hash && $is_localized && has_post_thumbnail( $product_id ) ) {
+		// A placeholder counts as "no image". It is a stand-in attachment
+		// pointing at eBay's CDN, not a downloaded file — but has_post_thumbnail()
+		// cannot tell the difference, so a product left holding one satisfied
+		// every condition below and was skipped forever. Its eBay URLs never
+		// change either, so neither a re-sync nor a full re-fetch could rescue
+		// it. Treating placeholders as missing lets those products heal
+		// themselves on the next ordinary sync.
+		$has_thumbnail = self::has_local_thumbnail( $product_id );
+
+		if ( ! $force && $new_hash === $stored_hash && $is_localized && $has_thumbnail ) {
 			// Images unchanged and already localized — nothing to do.
 			return;
 		}
@@ -127,25 +139,16 @@ class TCGiant_Sync_Image_Localizer {
 		update_post_meta( $product_id, '_tcgiant_image_urls_hash', $new_hash );
 		update_post_meta( $product_id, '_tcgiant_external_image_urls', $image_entries );
 
-		// Mark as not localized so the background process picks it up when
-		// either the image set changed OR the product has no thumbnail.
-		//
-		// The thumbnail condition matters: if the hash matched and the product
-		// was already flagged localized but its thumbnail had since been
-		// removed, the flag was never reset. The code below then attached a
-		// placeholder pointing at eBay's CDN, and the localizer — which only
-		// selects products flagged '0' — never looked at the product again. The
-		// store was left with images that die when the eBay listing ends.
-		$has_thumbnail = has_post_thumbnail( $product_id );
-
-		if ( $new_hash !== $stored_hash || ! $has_thumbnail ) {
+		// Re-queue when the image set changed, when there is no real local
+		// thumbnail, or when the caller explicitly asked for a re-download.
+		if ( $force || $new_hash !== $stored_hash || ! $has_thumbnail ) {
 			update_post_meta( $product_id, '_tcgiant_images_localized', 0 );
 		}
 
 		// A changed image set is a fresh start, so clear any retry state —
 		// otherwise a product that had exhausted its attempts on the old URLs
 		// would be given up on immediately, and a stale backoff would delay it.
-		if ( $new_hash !== $stored_hash ) {
+		if ( $force || $new_hash !== $stored_hash ) {
 			delete_post_meta( $product_id, '_tcgiant_localize_attempts' );
 			delete_post_meta( $product_id, '_tcgiant_localize_retry_after' );
 		}
@@ -162,6 +165,30 @@ class TCGiant_Sync_Image_Localizer {
 
 		// Ensure the localization cron is scheduled.
 		self::ensure_cron_scheduled();
+	}
+
+	/**
+	 * Whether a product has a real, locally-downloaded featured image.
+	 *
+	 * Distinguishes a genuine attachment from the placeholder the importer
+	 * attaches so a product is visible immediately after import — that
+	 * placeholder has no file behind it and points at eBay's CDN, which stops
+	 * working once the listing ends.
+	 *
+	 * @param int $product_id Product ID.
+	 * @return bool
+	 */
+	public static function has_local_thumbnail( $product_id ) {
+		if ( ! has_post_thumbnail( $product_id ) ) {
+			return false;
+		}
+
+		$thumb_id = get_post_thumbnail_id( $product_id );
+		if ( ! $thumb_id ) {
+			return false;
+		}
+
+		return empty( get_post_meta( $thumb_id, '_tcgiant_external_url', true ) );
 	}
 
 	/**

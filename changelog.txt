@@ -1,5 +1,10 @@
 *** TCGiant Sync Changelog ***
 
+2026-07-30 - version 3.3.3
+== Images ==
+- FIX: Products stuck showing an eBay-hosted image now repair themselves. If a download failed at some point, the product kept a temporary stand-in image pointing at eBay — which stops working once that listing ends. The plugin could not tell that stand-in apart from a real downloaded image, so it considered the product finished and never revisited it. Because the eBay image addresses never change, neither a re-sync nor a full re-fetch could rescue it either. Affected products are now detected and re-queued automatically on the next ordinary sync. No action needed.
+- FIX: "Re-sync images only" now genuinely re-downloads. It previously skipped any product whose eBay image addresses had not changed, which is exactly the situation you would be using the tool in.
+
 2026-07-30 - version 3.3.2
 == Operations Buttons ==
 - FIX: "Prune Inventory" was posting the same action as "Fetch Inventory", so it started a full import rather than a prune. It now has its own action, an accurate description, and a confirmation — removing products that are no longer on eBay requires checking every listing first, so it necessarily runs a scan and prunes at the end.

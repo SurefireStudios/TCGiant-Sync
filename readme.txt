@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.3.2
+Stable tag: 3.3.3
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,11 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.3.3 - 2026-07-30 =
+**Images**
+* FIX: Products stuck showing an eBay-hosted image repair themselves. A failed download left a temporary stand-in pointing at eBay, which stops working once that listing ends — and the plugin could not tell it apart from a real image, so it never revisited the product. Since eBay's image addresses never change, neither a re-sync nor a full re-fetch could fix it. Affected products are now re-queued automatically on the next sync. No action needed.
+* FIX: "Re-sync images only" genuinely re-downloads now. It previously skipped products whose eBay image addresses had not changed — exactly when you would be reaching for it.
 
 = 3.3.2 - 2026-07-30 =
 **Operations buttons**
@@ -504,6 +509,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.3.3 =
+No action needed after updating. Products left showing an eBay-hosted image because a download failed are now detected and repaired automatically on the next sync — previously nothing could fix them, including a full re-fetch. Also makes "Re-sync images only" actually re-download.
 
 = 3.3.2 =
 Fixes the Operations buttons on the Import screen. "Prune Inventory" was starting a full import instead of a prune, "Process Queue" could not reach the scheduled tasks that actually stall, and several buttons reported success even when the action had been declined.
