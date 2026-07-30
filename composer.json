@@ -25,11 +25,13 @@
         "check": [
             "@lint",
             "@analyse"
-        ]
+        ],
+        "build": "@php tools/build-zip.php"
     },
     "scripts-descriptions": {
         "lint": "Run php -l over every plugin source file.",
         "analyse": "Run PHPStan static analysis (level 5).",
-        "check": "Run lint then analyse — use this before tagging a release."
+        "check": "Run lint then analyse \u2014 use this before tagging a release.",
+        "build": "Build a distributable plugin zip into zips/."
     }
 }

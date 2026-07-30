@@ -13,6 +13,12 @@
  * @package TCGiant_Sync
  */
 
+// Analysis-time only. This file is never loaded by WordPress, and must not do
+// anything if it is ever requested directly over HTTP.
+if ( PHP_SAPI !== 'cli' ) {
+	exit;
+}
+
 // --- Plugin constants (see tcgiant-sync.php) ---
 define( 'TCGIANT_SYNC_VERSION', '0.0.0' );
 define( 'TCGIANT_SYNC_FILE', __FILE__ );
