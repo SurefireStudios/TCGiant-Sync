@@ -45,6 +45,7 @@ class TCGiant_Sync_Admin {
 		add_action( 'admin_post_tcgiant_sync_now', array( $this, 'handle_manual_sync' ) );
 		add_action( 'admin_post_tcgiant_sync_specific', array( $this, 'handle_sync_specific' ) );
 		add_action( 'admin_post_tcgiant_force_queue', array( $this, 'handle_force_queue' ) );
+		add_action( 'admin_post_tcgiant_prune_now', array( $this, 'handle_prune_now' ) );
 		add_action( 'admin_post_tcgiant_resume_sync', array( $this, 'handle_resume_sync' ) );
 		add_action( 'wp_ajax_tcgiant_sync_order_to_ebay', array( $this, 'ajax_sync_order_to_ebay' ) );
 		add_action( 'admin_post_tcgiant_stop_sync', array( $this, 'handle_stop_sync' ) );
@@ -165,8 +166,45 @@ class TCGiant_Sync_Admin {
 			wp_die( esc_html__( 'Unauthorized.', 'tcgiant-sync' ) );
 		}
 
-		TCGiant_Sync_Importer::instance()->start_full_sync( true );
-		wp_safe_redirect( admin_url( 'admin.php?page=tcgiant-sync&sync_started=1' ) );
+		// Report what actually happened. A sync already holding the lock makes
+		// this a no-op, and the old unconditional "sync queued" message meant
+		// the button looked like it worked while doing nothing.
+		$result = TCGiant_Sync_Importer::instance()->start_full_sync( true );
+
+		$args = is_wp_error( $result )
+			? array( 'sync_failed' => rawurlencode( $result->get_error_message() ) )
+			: array( 'sync_started' => 1 );
+
+		wp_safe_redirect( add_query_arg( $args, admin_url( 'admin.php?page=tcgiant-import' ) ) );
+		exit;
+	}
+
+	/**
+	 * Handle the "Prune Inventory" request.
+	 *
+	 * Removing products that are no longer on eBay requires knowing what IS on
+	 * eBay, so this necessarily runs a fresh scan first and prunes at the end.
+	 *
+	 * It previously posted the same action as "Fetch Inventory", so the button
+	 * silently started a full import instead of a prune — same outcome
+	 * eventually, but nothing said so, and the two buttons were
+	 * indistinguishable in the logs.
+	 */
+	public function handle_prune_now() {
+		check_admin_referer( 'tcgiant_prune_now' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'Unauthorized.', 'tcgiant-sync' ) );
+		}
+
+		TCGiant_Sync_Logger::log( 'Prune Inventory requested — running a full scan first so retired listings can be identified.' );
+
+		$result = TCGiant_Sync_Importer::instance()->start_full_sync( true );
+
+		$args = is_wp_error( $result )
+			? array( 'sync_failed' => rawurlencode( $result->get_error_message() ) )
+			: array( 'prune_started' => 1 );
+
+		wp_safe_redirect( add_query_arg( $args, admin_url( 'admin.php?page=tcgiant-import' ) ) );
 		exit;
 	}
 
@@ -209,11 +247,41 @@ class TCGiant_Sync_Admin {
 			wp_die( esc_html__( 'Unauthorized.', 'tcgiant-sync' ) );
 		}
 
+		// Action Scheduler side: item imports, pruning, stock pushes.
+		$as_processed = 0;
 		if ( class_exists( 'ActionScheduler_QueueRunner' ) ) {
-			ActionScheduler_QueueRunner::instance()->run();
+			$result = ActionScheduler_QueueRunner::instance()->run();
+			// Older Action Scheduler releases return null rather than a count.
+			$as_processed = is_numeric( $result ) ? (int) $result : 0;
 		}
 
-		wp_safe_redirect( admin_url( 'admin.php?page=tcgiant-sync&queue_processed=1' ) );
+		// WP-Cron side: continuing the page scan and downloading images.
+		//
+		// This is the half that was missing. Those are WP-Cron events, not
+		// Action Scheduler actions, so draining Action Scheduler alone left
+		// them untouched — on a host with broken cron, which is exactly when
+		// someone presses this button, it achieved nothing at all.
+		$cron = TCGiant_Sync_Cron::run_due_events_now();
+
+		TCGiant_Sync_Logger::log( sprintf(
+			'Manual queue run: %d Action Scheduler job(s), %d scheduled task(s).',
+			$as_processed,
+			$cron['due']
+		) );
+
+		// Return to whichever screen the button was pressed on, rather than
+		// always bouncing to the Dashboard.
+		$referer = wp_get_referer();
+		$target  = $referer ? $referer : admin_url( 'admin.php?page=tcgiant-import' );
+
+		wp_safe_redirect( add_query_arg(
+			array(
+				'queue_processed' => 1,
+				'queue_as'        => $as_processed,
+				'queue_cron'      => $cron['due'],
+			),
+			remove_query_arg( array( 'queue_processed', 'queue_as', 'queue_cron' ), $target )
+		) );
 		exit;
 	}
 

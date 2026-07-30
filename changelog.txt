@@ -1,5 +1,13 @@
 *** TCGiant Sync Changelog ***
 
+2026-07-30 - version 3.3.2
+== Operations Buttons ==
+- FIX: "Prune Inventory" was posting the same action as "Fetch Inventory", so it started a full import rather than a prune. It now has its own action, an accurate description, and a confirmation — removing products that are no longer on eBay requires checking every listing first, so it necessarily runs a scan and prunes at the end.
+- FIX: "Process Queue" only ran Action Scheduler jobs. Continuing a page scan and downloading images are WordPress scheduled tasks, not Action Scheduler jobs, so on a site with broken cron — exactly when you would press this button — it did nothing for the two things that actually stall. It now runs both, and reports how many of each it ran.
+- FIX: "Fetch Inventory", "Resume Import" and "Sync Specific Items" always reported success, even when the request was declined because a sync was already running or the import limit had been reached. They now show what actually happened.
+- FIX: "Process Queue" no longer bounces you to the Dashboard from the Import screen, and no longer claims to have processed jobs when the queue was empty.
+- FIX: The REST endpoint for starting a sync reported success under the same conditions, and now returns a proper error.
+
 2026-07-30 - version 3.3.1
 == Security ==
 - Credentials are no longer written to the activity log. When a token refresh failed, the relay's full response was logged verbatim — an unexpected or partial response could put an access token, refresh token or the relay signing key into a plaintext file that ends up in support bundles and backups. Those values are now replaced with [redacted].

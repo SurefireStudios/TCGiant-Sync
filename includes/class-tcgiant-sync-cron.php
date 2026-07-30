@@ -281,6 +281,65 @@ class TCGiant_Sync_Cron {
 	}
 
 	/**
+	 * Run every plugin cron event that is currently due, in this request.
+	 *
+	 * Used by the "Process Queue" button, which promises to run pending
+	 * background work immediately. Action Scheduler's queue runner only covers
+	 * Action Scheduler; the page-scan resume and image localization are WP-Cron
+	 * events, so on a host with broken cron — precisely when someone reaches
+	 * for that button — draining Action Scheduler alone achieves nothing.
+	 *
+	 * @return array{ran:string[], due:int} Hooks executed, and how many were due.
+	 */
+	public static function run_due_events_now() {
+		@set_time_limit( 300 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+		ignore_user_abort( true );
+
+		$ran = array();
+		$now = time();
+
+		foreach ( self::BACKGROUND_HOOKS as $hook ) {
+			$timestamp = wp_next_scheduled( $hook );
+			if ( ! $timestamp || $timestamp > $now ) {
+				continue;
+			}
+
+			// Take the event off the schedule before running it, so a crash
+			// cannot leave it looping, and re-entrant scheduling inside the
+			// callback still works.
+			wp_unschedule_event( $timestamp, $hook );
+
+			try {
+				do_action( $hook );
+				$ran[] = $hook;
+			} catch ( Exception $e ) {
+				TCGiant_Sync_Logger::error( sprintf( 'Manual queue run: %s failed — %s', $hook, $e->getMessage() ) );
+			} catch ( Error $e ) {
+				TCGiant_Sync_Logger::error( sprintf( 'Manual queue run: %s fatal — %s', $hook, $e->getMessage() ) );
+			}
+		}
+
+		return array( 'ran' => $ran, 'due' => count( $ran ) );
+	}
+
+	/**
+	 * Human-readable label for a plugin cron hook.
+	 *
+	 * @param string $hook Hook name.
+	 * @return string
+	 */
+	public static function describe_hook( $hook ) {
+		$labels = array(
+			'tcgiant_sync_scan_resume'          => __( 'continued the eBay scan', 'tcgiant-sync' ),
+			'tcgiant_sync_localize_images'      => __( 'downloaded pending images', 'tcgiant-sync' ),
+			'tcgiant_sync_poll_ebay_cron'       => __( 'ran the scheduled eBay sync', 'tcgiant-sync' ),
+			'tcgiant_sync_import_orders'        => __( 'imported eBay orders', 'tcgiant-sync' ),
+			'tcgiant_sync_check_ended_listings' => __( 'checked for ended listings', 'tcgiant-sync' ),
+		);
+		return $labels[ $hook ] ?? $hook;
+	}
+
+	/**
 	 * Report on how healthy scheduled background work looks.
 	 *
 	 * @return array{disabled:bool, overdue:string[], alternate:bool}

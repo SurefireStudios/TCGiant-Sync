@@ -265,7 +265,10 @@ class TCGiant_Sync_Importer {
 				),
 				'warning'
 			);
-			return;
+			return new WP_Error(
+				'limit_reached',
+				__( 'Import limit reached. Upgrade to Pro for unlimited imports.', 'tcgiant-sync' )
+			);
 		}
 
 		// Guard: don't restart if a sync is already in progress (prevents cron overlap).
@@ -273,13 +276,23 @@ class TCGiant_Sync_Importer {
 			$current = self::get_sync_state();
 			if ( in_array( $current['status'], array( 'scanning', 'importing' ), true ) ) {
 				TCGiant_Sync_Logger::log( 'Sync already in progress - skipping duplicate request.' );
-				return;
+				return new WP_Error(
+					'already_running',
+					__( 'A sync is already running.', 'tcgiant-sync' )
+				);
 			}
 		}
 
 		// File lock: prevent concurrent execution from overlapping cron triggers.
+		//
+		// This is why "force" is not absolute: a scan holding the lock keeps it
+		// until it finishes or the lock goes stale, so the caller has to be told
+		// the request was declined rather than shown a success message.
 		if ( ! self::acquire_lock( 'full_sync' ) ) {
-			return;
+			return new WP_Error(
+				'sync_locked',
+				__( 'Another sync is currently running. Wait for it to finish, or use Emergency Stop first.', 'tcgiant-sync' )
+			);
 		}
 
 		// Clear any previous pending sync jobs to prevent stacking.
@@ -327,6 +340,8 @@ class TCGiant_Sync_Importer {
 			$filter_name, $api->get_remaining_daily_budget(), TCGiant_Sync_API::DAILY_CALL_LIMIT
 		) );
 		as_enqueue_async_action( 'tcgiant_sync_scan_all_pages', array(), 'tcgiant_sync_group' );
+
+		return true;
 	}
 
 	/**

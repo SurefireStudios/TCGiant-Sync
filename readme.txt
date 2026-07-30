@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.3.1
+Stable tag: 3.3.2
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,14 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.3.2 - 2026-07-30 =
+**Operations buttons**
+* FIX: "Prune Inventory" posted the same action as "Fetch Inventory", so it started a full import instead of a prune. It now has its own action, accurate wording and a confirmation.
+* FIX: "Process Queue" only ran Action Scheduler jobs — continuing a page scan and downloading images are WordPress scheduled tasks, so on a site with broken cron it did nothing for the two things that actually stall. It now runs both and reports what it ran.
+* FIX: "Fetch Inventory", "Resume Import" and "Sync Specific Items" always reported success even when declined because a sync was already running or the import limit was reached.
+* FIX: "Process Queue" no longer bounces you to the Dashboard from the Import screen, or claim to have processed an empty queue.
+* FIX: The REST sync endpoint reported success under the same conditions and now returns a proper error.
 
 = 3.3.1 - 2026-07-30 =
 **Security**
@@ -496,6 +504,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.3.2 =
+Fixes the Operations buttons on the Import screen. "Prune Inventory" was starting a full import instead of a prune, "Process Queue" could not reach the scheduled tasks that actually stall, and several buttons reported success even when the action had been declined.
 
 = 3.3.1 =
 Adds product attributes as eBay item specifics on push — listings previously went up with almost none, hurting search placement and causing rejections in categories with required aspects. Required aspects are now checked before pushing and named if missing. Adds optional image hosting on eBay for sites eBay cannot reach. Also fixes background tasks stalling between scan batches, and never running at all on hosts with WP-Cron disabled.

@@ -272,8 +272,15 @@ class TCGiant_Sync_REST {
 		$importer = TCGiant_Sync_Importer::instance();
 		$result   = $importer->start_full_sync();
 
+		// start_full_sync() used to return nothing, so this check was dead and
+		// the endpoint reported success even when the licence limit or an
+		// in-flight sync had blocked it.
 		if ( is_wp_error( $result ) ) {
-			return $result;
+			return new WP_Error(
+				$result->get_error_code(),
+				$result->get_error_message(),
+				array( 'status' => 'limit_reached' === $result->get_error_code() ? 402 : 409 )
+			);
 		}
 
 		return new WP_REST_Response( array(

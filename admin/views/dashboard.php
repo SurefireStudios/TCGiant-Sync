@@ -53,8 +53,21 @@ if ( empty( $settings['redirect_uri'] ) ) {
 	<?php if ( isset( $_GET['sales_cleared'] ) && '1' === $_GET['sales_cleared'] ) : ?>
 		<div class="notice notice-success is-dismissible"><p><?php esc_html_e( 'Recent sales cleared.', 'tcgiant-sync' ); ?></p></div>
 	<?php endif; ?>
-	<?php if ( isset( $_GET['queue_processed'] ) && '1' === $_GET['queue_processed'] ) : ?>
-		<div class="notice notice-success is-dismissible"><p><?php esc_html_e( 'Queue processed. Check the Activity Log for results.', 'tcgiant-sync' ); ?></p></div>
+	<?php if ( isset( $_GET['queue_processed'] ) && '1' === $_GET['queue_processed'] ) :
+		$tc_as   = isset( $_GET['queue_as'] ) ? (int) $_GET['queue_as'] : 0;
+		$tc_cron = isset( $_GET['queue_cron'] ) ? (int) $_GET['queue_cron'] : 0;
+		if ( $tc_as || $tc_cron ) : ?>
+			<div class="notice notice-success is-dismissible"><p><?php
+				printf(
+					/* translators: 1: number of background jobs, 2: number of scheduled tasks */
+					esc_html__( 'Ran %1$d background job(s) and %2$d scheduled task(s). Check the Activity Log for results.', 'tcgiant-sync' ),
+					$tc_as,
+					$tc_cron
+				);
+			?></p></div>
+		<?php else : ?>
+			<div class="notice notice-info is-dismissible"><p><?php esc_html_e( 'Nothing was waiting to run — the queue is already empty.', 'tcgiant-sync' ); ?></p></div>
+		<?php endif; ?>
 	<?php endif; ?>
 	<?php // phpcs:enable WordPress.Security.NonceVerification.Recommended ?>
 

@@ -78,8 +78,29 @@ if ( $sync_state['total_queued'] > 0 ) {
 	<?php if ( isset( $_GET['sync_resumed'] ) && '1' === $_GET['sync_resumed'] ) : ?>
 		<div class="notice notice-success is-dismissible"><p><?php esc_html_e( 'Sync resumed from where it left off. Check progress below.', 'tcgiant-sync' ); ?></p></div>
 	<?php endif; ?>
-	<?php if ( isset( $_GET['queue_processed'] ) && '1' === $_GET['queue_processed'] ) : ?>
-		<div class="notice notice-success is-dismissible"><p><?php esc_html_e( 'Queue runner executed manually.', 'tcgiant-sync' ); ?></p></div>
+	<?php if ( isset( $_GET['sync_failed'] ) ) : ?>
+		<div class="notice notice-error is-dismissible"><p><?php
+			echo esc_html( sanitize_text_field( rawurldecode( wp_unslash( $_GET['sync_failed'] ) ) ) );
+		?></p></div>
+	<?php endif; ?>
+	<?php if ( isset( $_GET['prune_started'] ) && '1' === $_GET['prune_started'] ) : ?>
+		<div class="notice notice-success is-dismissible"><p><?php esc_html_e( 'Scanning eBay now. Products no longer listed will be moved to the Trash once the scan finishes.', 'tcgiant-sync' ); ?></p></div>
+	<?php endif; ?>
+	<?php if ( isset( $_GET['queue_processed'] ) && '1' === $_GET['queue_processed'] ) :
+		$tc_as   = isset( $_GET['queue_as'] ) ? (int) $_GET['queue_as'] : 0;
+		$tc_cron = isset( $_GET['queue_cron'] ) ? (int) $_GET['queue_cron'] : 0;
+		if ( $tc_as || $tc_cron ) : ?>
+			<div class="notice notice-success is-dismissible"><p><?php
+				printf(
+					/* translators: 1: number of background jobs, 2: number of scheduled tasks */
+					esc_html__( 'Ran %1$d background job(s) and %2$d scheduled task(s). Check the Activity Log for results.', 'tcgiant-sync' ),
+					$tc_as,
+					$tc_cron
+				);
+			?></p></div>
+		<?php else : ?>
+			<div class="notice notice-info is-dismissible"><p><?php esc_html_e( 'Nothing was waiting to run — the queue is already empty.', 'tcgiant-sync' ); ?></p></div>
+		<?php endif; ?>
 	<?php endif; ?>
 	<?php // phpcs:enable WordPress.Security.NonceVerification.Recommended ?>
 
@@ -313,10 +334,12 @@ if ( $sync_state['total_queued'] > 0 ) {
 
 			<div class="tc-section">
 				<h3 class="tc-section-title"><?php esc_html_e( 'Clean Sold Items', 'tcgiant-sync' ); ?></h3>
-				<p class="tc-section-desc"><?php esc_html_e( 'Verify active listings and remove WooCommerce products no longer active on eBay.', 'tcgiant-sync' ); ?></p>
-				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
-					<input type="hidden" name="action" value="tcgiant_sync_now">
-					<?php wp_nonce_field( 'tcgiant_sync_now' ); ?>
+				<p class="tc-section-desc"><?php esc_html_e( 'Re-scans your eBay store, then moves WooCommerce products that are no longer listed to the Trash. Because it has to check every listing first, this takes as long as a full sync.', 'tcgiant-sync' ); ?></p>
+				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" onsubmit="return confirm('<?php echo esc_js( __( 'This re-scans your entire eBay store, then moves products that are no longer listed to the Trash.
+
+Products can be restored from the Trash afterwards. Continue?', 'tcgiant-sync' ) ); ?>');">
+					<input type="hidden" name="action" value="tcgiant_prune_now">
+					<?php wp_nonce_field( 'tcgiant_prune_now' ); ?>
 					<button type="submit" class="tc-button secondary full-width">
 						<span class="dashicons dashicons-trash" style="font-size:16px;"></span>
 						<?php esc_html_e( 'Prune Inventory', 'tcgiant-sync' ); ?>
