@@ -47,6 +47,8 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 		<div class="notice notice-success is-dismissible"><p><?php esc_html_e( 'Successfully authenticated with eBay.', 'tcgiant-sync' ); ?></p></div>
 	<?php elseif ( isset( $_GET['auth'] ) && 'failed' === $_GET['auth'] ) : // phpcs:ignore ?>
 		<div class="notice notice-error is-dismissible"><p><?php esc_html_e( 'eBay authentication failed. Please try again.', 'tcgiant-sync' ); ?></p></div>
+	<?php elseif ( isset( $_GET['auth'] ) && 'invalid_state' === $_GET['auth'] ) : // phpcs:ignore ?>
+		<div class="notice notice-error is-dismissible"><p><?php esc_html_e( 'eBay connection rejected: no pending authorization request. Always start the connection using the "Connect to eBay" button below — never by following a link from elsewhere.', 'tcgiant-sync' ); ?></p></div>
 	<?php endif; ?>
 
 	<!-- ─── TOP BAR: CONNECTION + LICENSE ─── -->

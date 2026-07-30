@@ -775,10 +775,21 @@ class TCGiant_Sync_Mapper {
 			$product->update_meta_data( '_tcgiant_sync_log', $existing_logs );
 		}
 
-		$saved_id = $product->save();
-		
-		if ( $is_variable && $saved_id ) {
-			$this->save_variations( $saved_id, $product_data['variations'] );
+		// Everything below writes stock that came FROM eBay. Suppress the
+		// WC → eBay push listeners for the duration, otherwise every imported
+		// product queues a redundant ReviseInventoryStatus call — and anything
+		// mapped to 0 stock triggers auto-end, permanently ending the seller's
+		// live eBay listing as a side effect of importing it.
+		TCGiant_Sync_Inventory::begin_ebay_origin();
+
+		try {
+			$saved_id = $product->save();
+
+			if ( $is_variable && $saved_id ) {
+				$this->save_variations( $saved_id, $product_data['variations'] );
+			}
+		} finally {
+			TCGiant_Sync_Inventory::end_ebay_origin();
 		}
 
 		// When a brand new product is created and it doesn't have images yet,
@@ -873,7 +884,14 @@ class TCGiant_Sync_Mapper {
 	private function migrate_images_from_orphan( $new_product_id, $ebay_sku ) {
 		global $wpdb;
 
-		// Find trashed or still-active products with the same _ebay_sku.
+		// Only ever harvest images from TRASHED products.
+		//
+		// Without the post_status filter this also matched live products. Two
+		// active eBay listings can legitimately share one seller SKU (and
+		// therefore one _ebay_sku value, which is recorded before the
+		// "-{item_id}" uniqueness suffix is applied to the WooCommerce SKU),
+		// so importing the second listing would strip the thumbnail and
+		// gallery off the first one's live product.
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		$donor_ids = $wpdb->get_col( $wpdb->prepare(
 			"SELECT pm.post_id FROM {$wpdb->postmeta} pm
@@ -881,6 +899,7 @@ class TCGiant_Sync_Mapper {
 			 WHERE pm.meta_key = '_ebay_sku' AND pm.meta_value = %s
 			   AND pm.post_id != %d
 			   AND p.post_type = 'product'
+			   AND p.post_status = 'trash'
 			 LIMIT 5",
 			$ebay_sku,
 			$new_product_id
@@ -889,8 +908,6 @@ class TCGiant_Sync_Mapper {
 		if ( empty( $donor_ids ) ) {
 			return;
 		}
-
-		$migrated = false;
 
 		foreach ( $donor_ids as $donor_id ) {
 			$donor_id = (int) $donor_id;
@@ -936,9 +953,8 @@ class TCGiant_Sync_Mapper {
 			// Clear the donor's thumbnail so it doesn't interfere.
 			delete_post_thumbnail( $donor_id );
 
-			$migrated = true;
 			TCGiant_Sync_Logger::log( sprintf(
-				'Migrated images from orphaned WC #%d to new WC #%d (SKU: %s).',
+				'Migrated images from trashed WC #%d to new WC #%d (SKU: %s).',
 				$donor_id, $new_product_id, $ebay_sku
 			) );
 

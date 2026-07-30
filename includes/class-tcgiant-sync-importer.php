@@ -73,8 +73,19 @@ class TCGiant_Sync_Importer {
 			'last_item_title'         => '',
 			'last_successful_sync_at' => '',           // ISO 8601 UTC timestamp of last successful sync (used as ModTimeFrom for next delta)
 			'rate_limit_retries'      => 0,            // Number of consecutive rate limit hits (for escalating backoff)
+			'scan_complete_clean'     => false,        // True only when every page was scanned without error — gates orphan pruning
 		) );
 	}
+
+	/**
+	 * Maximum share of eBay-linked products the pruner may trash in one run.
+	 *
+	 * A correct scan rarely retires more than a few percent of a catalogue at
+	 * once. Anything above this threshold almost certainly means the scan was
+	 * incomplete, so we refuse and ask for a human decision rather than
+	 * trashing the store.
+	 */
+	const PRUNE_MAX_RATIO = 0.20;
 
 	/**
 	 * Update sync state.
@@ -217,6 +228,7 @@ class TCGiant_Sync_Importer {
 			'started_at'          => current_time( 'mysql' ),
 			'last_item_title'     => '',
 			'rate_limit_retries'  => 0,
+			'scan_complete_clean' => false,
 		) );
 
 		// Clear active IDs list for pruning orphaned items.
@@ -295,6 +307,9 @@ class TCGiant_Sync_Importer {
 			'filter_name'     => $filter_name,
 			'started_at'      => current_time( 'mysql' ),
 			'last_item_title' => '',
+			// A delta sync never builds a complete active-ID list, so it must
+			// never leave the pruner authorised.
+			'scan_complete_clean' => false,
 		) );
 
 		TCGiant_Sync_Logger::log( sprintf(
@@ -323,6 +338,9 @@ class TCGiant_Sync_Importer {
 		self::update_sync_state( array(
 			'status'       => 'importing',
 			'total_queued' => $new_queued,
+			// Syncing a hand-picked set of items says nothing about which
+			// listings are still active, so it must not authorise pruning.
+			'scan_complete_clean' => false,
 		) );
 
 		foreach ( $item_ids as $item_id ) {
@@ -806,9 +824,28 @@ class TCGiant_Sync_Importer {
 				return;
 			}
 
-			// Handle API error or empty response — scan is done.
-			if ( is_wp_error( $response ) || ! isset( $response['ItemArray']['Item'] ) ) {
-				$this->finalize_scan();
+			// A failed request is NOT the same as "no more pages".
+			// Treating it as end-of-scan used to hand a half-populated
+			// active-ID list to the pruner, which then trashed every product
+			// belonging to the pages we never reached.
+			if ( is_wp_error( $response ) ) {
+				TCGiant_Sync_Logger::error( sprintf(
+					'Scan aborted on page %d: %s. Progress kept — use "Resume Import" to continue. Orphan pruning skipped.',
+					$current_page,
+					$response->get_error_message()
+				) );
+				self::update_sync_state( array(
+					'status'              => 'error',
+					'current_page'        => max( 1, $current_page - 1 ), // Last page we actually completed.
+					'scan_complete_clean' => false,
+				) );
+				self::release_lock();
+				return;
+			}
+
+			// Genuinely empty page — we have reached the end of the listings.
+			if ( ! isset( $response['ItemArray']['Item'] ) ) {
+				$this->finalize_scan( true );
 				return;
 			}
 
@@ -832,7 +869,7 @@ class TCGiant_Sync_Importer {
 
 			// Check if we've reached the last page.
 			if ( $current_page >= $total_pages ) {
-				$this->finalize_scan();
+				$this->finalize_scan( true );
 				return;
 			}
 
@@ -852,11 +889,19 @@ class TCGiant_Sync_Importer {
 
 	/**
 	 * Finalize the scan — transition to importing or complete state.
+	 *
+	 * @param bool $clean True when every page was scanned without error. Only a
+	 *                    clean scan may authorise orphan pruning, since the
+	 *                    pruner trashes anything absent from the active-ID list.
 	 */
-	private function finalize_scan() {
+	private function finalize_scan( $clean = false ) {
 		$state = self::get_sync_state();
+
 		if ( $state['total_queued'] > 0 || $state['total_processed'] > 0 ) {
-			self::update_sync_state( array( 'status' => 'importing' ) );
+			self::update_sync_state( array(
+				'status'              => 'importing',
+				'scan_complete_clean' => (bool) $clean,
+			) );
 			TCGiant_Sync_Logger::log( sprintf(
 				'Scan complete. %d found, %d imported inline, %d queued for GetItem across %d pages.',
 				$state['total_found'], $state['total_processed'], $state['total_queued'], $state['total_pages']
@@ -866,9 +911,12 @@ class TCGiant_Sync_Importer {
 				'status'                  => 'complete',
 				'last_completed'          => current_time( 'mysql' ),
 				'last_successful_sync_at' => gmdate( 'Y-m-d\TH:i:s.000\Z' ),
+				'scan_complete_clean'     => (bool) $clean,
 			) );
 			TCGiant_Sync_Logger::log( 'Scan complete. No matching items found.' );
-			as_enqueue_async_action( 'tcgiant_sync_prune_orphans', array(), 'tcgiant_sync_group' );
+			if ( $clean ) {
+				as_enqueue_async_action( 'tcgiant_sync_prune_orphans', array(), 'tcgiant_sync_group' );
+			}
 		}
 
 		// Release the concurrent execution lock.
@@ -1099,16 +1147,36 @@ class TCGiant_Sync_Importer {
 			return;
 		}
 
-		if ( is_wp_error( $response ) || ! isset( $response['ItemArray']['Item'] ) ) {
+		// A failed request must not be mistaken for the end of the listings —
+		// see finalize_scan(). Stop, keep progress, and block orphan pruning.
+		if ( is_wp_error( $response ) ) {
+			TCGiant_Sync_Logger::error( sprintf(
+				'Scan aborted on page %d: %s. Orphan pruning skipped.',
+				$page_number,
+				$response->get_error_message()
+			) );
+			self::update_sync_state( array(
+				'status'              => 'error',
+				'current_page'        => max( 1, $page_number - 1 ),
+				'scan_complete_clean' => false,
+			) );
+			return;
+		}
+
+		if ( ! isset( $response['ItemArray']['Item'] ) ) {
 			$state = self::get_sync_state();
 			if ( $state['total_queued'] > 0 ) {
-				self::update_sync_state( array( 'status' => 'importing' ) );
+				self::update_sync_state( array(
+					'status'              => 'importing',
+					'scan_complete_clean' => true,
+				) );
 				TCGiant_Sync_Logger::log( sprintf( 'Scan complete. %d items queued for import.', $state['total_queued'] ) );
 			} else {
 				self::update_sync_state( array(
 					'status'                  => 'complete',
 					'last_completed'          => current_time( 'mysql' ),
 					'last_successful_sync_at' => gmdate( 'Y-m-d\TH:i:s.000\Z' ),
+					'scan_complete_clean'     => true,
 				) );
 				TCGiant_Sync_Logger::log( 'Scan complete. No matching items found.' );
 			}
@@ -1315,16 +1383,20 @@ class TCGiant_Sync_Importer {
 			as_schedule_single_action( time() + $delay_next_page, 'tcgiant_sync_fetch_listings', array( 'page_number' => $page_number + 1 ), 'tcgiant_sync_group' );
 		} else {
 			if ( $new_total_queued > 0 ) {
-				self::update_sync_state( array( 'status' => 'importing' ) );
+				self::update_sync_state( array(
+					'status'              => 'importing',
+					'scan_complete_clean' => true,
+				) );
 				TCGiant_Sync_Logger::log( sprintf( 'Scan complete. %d total items queued for import across %d pages.', $new_total_queued, $total_pages ) );
 			} else {
 				self::update_sync_state( array(
 					'status'                  => 'complete',
 					'last_completed'          => current_time( 'mysql' ),
 					'last_successful_sync_at' => gmdate( 'Y-m-d\TH:i:s.000\Z' ),
+					'scan_complete_clean'     => true,
 				) );
 				TCGiant_Sync_Logger::log( 'Scan complete. No matching items found.' );
-				
+
 				// Ensure pruning runs even if 0 items matched the filter, because items might have ended.
 				as_enqueue_async_action( 'tcgiant_sync_prune_orphans', array(), 'tcgiant_sync_group' );
 			}
@@ -1449,8 +1521,15 @@ class TCGiant_Sync_Importer {
 					continue;
 				}
 
-				$stock_reduced = wc_update_product_stock( $product_id, $quantity, 'decrease' );
-				
+				// eBay already decremented its own quantity when the order was
+				// placed — suppress the WC → eBay push so we don't echo it back.
+				TCGiant_Sync_Inventory::begin_ebay_origin();
+				try {
+					$stock_reduced = wc_update_product_stock( $product_id, $quantity, 'decrease' );
+				} finally {
+					TCGiant_Sync_Inventory::end_ebay_origin();
+				}
+
 				if ( ! is_wp_error( $stock_reduced ) ) {
 					update_post_meta( $product_id, '_ebay_order_processed_' . $line_item_id, current_time( 'mysql' ) );
 					TCGiant_Sync_Logger::log( sprintf( 'Reduced stock for WC Product %d by %d (eBay order).', $product_id, $quantity ), 'success' );
@@ -1626,10 +1705,36 @@ class TCGiant_Sync_Importer {
 
 	/**
 	 * Remove WooCommerce products that are no longer active on eBay.
+	 *
+	 * This is the single most destructive operation in the plugin, so it is
+	 * gated three ways:
+	 *
+	 *   1. The last scan must have completed cleanly (scan_complete_clean).
+	 *      A scan aborted by an API error leaves a partial active-ID list, and
+	 *      pruning against that trashes every product on the pages we never
+	 *      reached.
+	 *   2. The active-ID list must be non-empty. An empty list cannot be
+	 *      distinguished from a failure, and verifying each product against the
+	 *      API instead costs one Trading API call per product.
+	 *   3. The prune set must not exceed PRUNE_MAX_RATIO of the catalogue.
 	 */
 	public function prune_orphaned_items() {
+		$state = self::get_sync_state();
+
+		if ( empty( $state['scan_complete_clean'] ) ) {
+			TCGiant_Sync_Logger::warning(
+				'Inventory Pruning: Skipped — the last scan did not complete cleanly. '
+				. 'Run a full sync to completion before orphaned products can be retired.'
+			);
+			return;
+		}
+
 		$active_ids = get_option( 'tcgiant_sync_active_ids', array() );
-		if ( ! is_array( $active_ids ) ) {
+		if ( ! is_array( $active_ids ) || empty( $active_ids ) ) {
+			TCGiant_Sync_Logger::warning(
+				'Inventory Pruning: Skipped — no active eBay Item IDs were recorded during the scan. '
+				. 'Refusing to prune, since an empty list is indistinguishable from a failed scan.'
+			);
 			return;
 		}
 
@@ -1637,64 +1742,92 @@ class TCGiant_Sync_Importer {
 		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
 		$preserve_cats = isset( $settings['preserve_woo_category_ids'] ) && is_array( $settings['preserve_woo_category_ids'] ) ? $settings['preserve_woo_category_ids'] : array();
 
+		// O(1) membership test. in_array() over a 10k-element list, once per
+		// product, is 100M string comparisons on a large catalogue.
+		$active_lookup = array_flip( array_map( 'strval', $active_ids ) );
+
 		// Get all products that have an _ebay_item_id.
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		$ebay_linked_products = $wpdb->get_results(
-			"SELECT post_id, meta_value as ebay_id 
+			"SELECT post_id, meta_value as ebay_id
 			FROM {$wpdb->postmeta} pm
-			JOIN {$wpdb->posts} p ON p.ID = pm.post_id 
+			JOIN {$wpdb->posts} p ON p.ID = pm.post_id
 			WHERE pm.meta_key = '_ebay_item_id' AND pm.meta_value != '' AND p.post_type = 'product' AND p.post_status != 'trash'"
 		);
 
-		$trashed_count = 0;
+		$total_linked = count( $ebay_linked_products );
+
+		// Decide the prune set up front so we can sanity-check its size before
+		// touching anything.
+		$prune_rows = array();
+		foreach ( $ebay_linked_products as $row ) {
+			if ( ! isset( $active_lookup[ (string) $row->ebay_id ] ) ) {
+				$prune_rows[] = $row;
+			}
+		}
+
+		$prune_count = count( $prune_rows );
+
+		if ( 0 === $prune_count ) {
+			TCGiant_Sync_Logger::log( 'Inventory Pruning: No orphaned products found.' );
+			delete_option( 'tcgiant_sync_active_ids' );
+			return;
+		}
+
+		/**
+		 * Filter the maximum share of eBay-linked products a single prune may retire.
+		 *
+		 * @param float $ratio        Between 0 and 1. Default self::PRUNE_MAX_RATIO.
+		 * @param int   $prune_count  Number of products this run would retire.
+		 * @param int   $total_linked Total eBay-linked products.
+		 */
+		$max_ratio = (float) apply_filters( 'tcgiant_sync_prune_max_ratio', self::PRUNE_MAX_RATIO, $prune_count, $total_linked );
+
+		if ( $total_linked > 0 && $max_ratio > 0 && ( $prune_count / $total_linked ) > $max_ratio ) {
+			TCGiant_Sync_Logger::error( sprintf(
+				'Inventory Pruning: ABORTED — would have trashed %d of %d eBay-linked products (%.1f%%, limit %.0f%%). '
+				. 'This normally means the scan was incomplete. Nothing was changed. '
+				. 'Re-run a full sync; if the removal is genuine, raise the limit with the '
+				. 'tcgiant_sync_prune_max_ratio filter.',
+				$prune_count,
+				$total_linked,
+				( $prune_count / $total_linked ) * 100,
+				$max_ratio * 100
+			) );
+			return;
+		}
+
+		$trashed_count   = 0;
 		$preserved_count = 0;
 
-		foreach ( $ebay_linked_products as $row ) {
-			$ebay_id = $row->ebay_id;
-			$product_id = $row->post_id;
-			$should_prune = false;
+		foreach ( $prune_rows as $row ) {
+			$product_id = (int) $row->post_id;
 
-			if ( ! in_array( $ebay_id, $active_ids, true ) && ! empty( $active_ids ) ) {
-				// The item is no longer on eBay.
-				$should_prune = true;
-			} elseif ( empty( $active_ids ) ) {
-				// Safety check: if active_ids is entirely empty, maybe the scan failed or they have 0 items.
-				// Wait, if they truly have 0 items on eBay, active_ids IS empty.
-				// But to be completely safe, we shouldn't delete their entire store if active_ids is empty due to a bug.
-				// We'll verify directly with the API as a fallback.
-				$api = TCGiant_Sync_API::instance();
-				$ebay_response = $api->get_item( $ebay_id );
-				if ( ! is_wp_error( $ebay_response ) && isset( $ebay_response['Item']['SellingStatus']['ListingStatus'] ) ) {
-					$status = $ebay_response['Item']['SellingStatus']['ListingStatus'];
-					if ( 'Active' !== $status ) {
-						$should_prune = true;
-					}
-				}
-			}
+			$is_preserved = ! empty( $preserve_cats ) && has_term( $preserve_cats, 'product_cat', $product_id );
 
-			if ( $should_prune ) {
-				$is_preserved = false;
-				if ( ! empty( $preserve_cats ) && has_term( $preserve_cats, 'product_cat', $product_id ) ) {
-					$is_preserved = true;
-				}
-
-				if ( $is_preserved ) {
+			if ( $is_preserved ) {
+				// The listing is already gone from eBay; zeroing WC stock must
+				// not trigger a push (which would try to end an already-ended
+				// listing and burn an API call per product).
+				TCGiant_Sync_Inventory::begin_ebay_origin();
+				try {
 					wc_update_product_stock( $product_id, 0, 'set' );
 					wc_update_product_stock_status( $product_id, 'outofstock' );
-					delete_post_meta( $product_id, '_ebay_item_id' );
-					$preserved_count++;
-				} else {
-					wp_trash_post( $product_id );
-					$trashed_count++;
+				} finally {
+					TCGiant_Sync_Inventory::end_ebay_origin();
 				}
+				delete_post_meta( $product_id, '_ebay_item_id' );
+				$preserved_count++;
+			} else {
+				wp_trash_post( $product_id );
+				$trashed_count++;
 			}
 		}
 
-		if ( $trashed_count > 0 || $preserved_count > 0 ) {
-			TCGiant_Sync_Logger::log( sprintf( 'Inventory Pruning: Trashed %d products, preserved %d products (set to out of stock).', $trashed_count, $preserved_count ), 'success' );
-		} else {
-			TCGiant_Sync_Logger::log( 'Inventory Pruning: No orphaned products found.' );
-		}
+		TCGiant_Sync_Logger::log( sprintf(
+			'Inventory Pruning: Trashed %d products, preserved %d products (set to out of stock), out of %d eBay-linked.',
+			$trashed_count, $preserved_count, $total_linked
+		), 'success' );
 
 		delete_option( 'tcgiant_sync_active_ids' );
 	}

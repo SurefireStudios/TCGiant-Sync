@@ -634,17 +634,29 @@ class TCGiant_Sync_API {
 	}
 
 	/**
+	 * Generate a UUID in the format eBay accepts.
+	 *
+	 * eBay requires exactly 32 hexadecimal characters. wp_generate_uuid4()
+	 * returns 36 characters with hyphens, which is rejected with
+	 * "The UUID can only contain Numbers and Letters from A to F".
+	 *
+	 * @return string 32-character hex UUID.
+	 */
+	public static function generate_ebay_uuid() {
+		return str_replace( '-', '', wp_generate_uuid4() );
+	}
+
+	/**
 	 * Relist an ended eBay listing.
 	 *
 	 * @param string $item_id eBay Item ID of the ended listing.
 	 * @return array|WP_Error Response on success, WP_Error on failure.
 	 */
 	public function relist_item( $item_id ) {
-		$uuid = wp_generate_uuid4();
 		$xml = '
 <Item>
 <ItemID>' . esc_attr( $item_id ) . '</ItemID>
-<UUID>' . $uuid . '</UUID>
+<UUID>' . self::generate_ebay_uuid() . '</UUID>
 </Item>';
 
 		$result = $this->trading_api_request( 'RelistItem', $xml );
@@ -706,9 +718,7 @@ class TCGiant_Sync_API {
 	 */
 	public function add_item( $item_xml ) {
 		// Inject UUID for duplicate prevention — insert right after <Item>.
-		// eBay requires exactly 32 hex characters (no hyphens).
-		$uuid     = str_replace( '-', '', wp_generate_uuid4() );
-		$uuid_tag = '<UUID>' . $uuid . '</UUID>' . "\n";
+		$uuid_tag = '<UUID>' . self::generate_ebay_uuid() . '</UUID>' . "\n";
 		$item_xml = preg_replace( '/(<Item>\s*\n?)/', '$1' . $uuid_tag, $item_xml, 1 );
 
 		$xml = '<ErrorLanguage>en_US</ErrorLanguage>

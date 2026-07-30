@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.1.1
+Stable tag: 3.1.3
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,65 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.1.3 - 2026-07-30 =
+**Security**
+* SECURITY: The eBay OAuth callback accepted account credentials without verifying who sent them — no nonce, no capability check. Any logged-in user, or an administrator following a crafted link, could replace the site's stored eBay tokens and relay signing key, redirecting the store's listings and stock pushes to another eBay account. Connecting now goes through a nonce-protected handler with a one-time state token, and the callback requires an administrator plus a pending handshake.
+* SECURITY: Removed the hardcoded fallback key used to verify eBay Marketplace Account Deletion notifications. The key shipped inside the plugin, so it could be used to forge notifications against sites that had not yet been issued a per-site key — and that endpoint erases customer data from orders. If notifications stop being accepted after updating, reconnect your eBay account from Settings to be issued a key.
+* SECURITY: Deletion notifications older than 5 minutes are now rejected, preventing replay of a captured request.
+
+**Critical fixes**
+* CRITICAL: Importing from eBay could permanently END live eBay listings. Imported stock was being pushed straight back to eBay, and anything mapping to 0 available stock triggered auto-end — so sold-out-but-active listings were closed simply by importing them. Stock that originates from eBay is no longer pushed back.
+* CRITICAL: That same loop queued one wasted eBay API call per imported product. A 10,000-item import no longer generates 10,000 pointless stock pushes.
+* CRITICAL: A single failed API request part-way through a scan was treated as "no more pages", so the scan ended early and the orphan pruner trashed every product on the pages never reached. Failed requests are now reported as errors, progress is kept, and pruning is blocked unless the scan completed cleanly.
+* CRITICAL: Orphan pruning gained two more safety nets — it refuses to run when no active eBay Item IDs were recorded, and aborts if it would retire more than 20% of your eBay-linked products at once.
+* CRITICAL: Image migration on relist could strip images off live products when two active listings shared one seller SKU. It now only harvests images from trashed products.
+* CRITICAL: Background image localization marked products "done" even when every download failed, losing those images permanently. Failures are now retried up to 3 times with a 10-minute backoff, and permanent 404/403 errors are recognised rather than retried forever.
+* CRITICAL: The weekly inventory reconciliation crashed on every run (it called a method that does not exist), taking down other scheduled tasks in the same cron tick. It now works, checks every page instead of only the first 200 listings, and compares available stock rather than listed quantity.
+
+**Fixes**
+* FIX: Relisting always failed with "The UUID can only contain Numbers and Letters from A to F" — the v3.1.1 UUID fix missed the relist call, so auto-relist and bulk relist never worked.
+* FIX: eBay Marketplace Account Deletion requests matched no orders and erased nothing, because the handler searched a meta key the plugin never writes.
+* FIX: The setup wizard never showed eBay as connected and never advanced past step 1.
+* FIX: Order-driven stock reductions and orphan pruning no longer echo redundant calls back to eBay.
+
+= 3.1.2 - 2026-07-29 =
+* FIX: Settings page two-column layout — removed 53 duplicated CSS rules that were overriding the grid definitions.
+* FIX: Images are preserved when eBay relists an item under a new Item ID and SKU, instead of being re-downloaded.
+* Performance: Global image deduplication — a previously downloaded image is reused across products.
+* Performance: Image localization processes 50 products per batch (up from 10), cutting total localization time for large stores.
+
+= 3.1.1 - 2026-07-29 =
+* FIX: UUID format error on Push to eBay — eBay requires 32 hex characters without hyphens.
+* FIX: "No changes allowed on ended listings" error — stock sync now handles already-ended listings gracefully and marks local status as Ended.
+* FIX: Settings page two-column layout — added the missing CSS definitions for tc-card, tc-row-2col and tc-row-3col.
+* FIX: Stock was being synced to eBay for products that no longer exist in WooCommerce. All SKU lookups now exclude trashed products.
+
+= 3.1.0 - 2026-07-29 =
+* Feature: Setup Wizard — multi-step guided setup (Connect → Import → Export → Done).
+* Feature: REST API — five endpoints under /tcgiant-sync/v1/ for listings, listing detail, sync status, start sync and orders.
+* Feature: Job Queue — AJAX batch processor with progress tracking for bulk operations.
+* Feature: Bulk actions on Listings — bulk Push, End and Relist with a modal progress bar.
+* Feature: Verify button on the product edit screen — calls VerifyAddItem to show estimated fees and catch errors before listing.
+* Feature: Auto-Relist Scheduler — daily check for ended listings with stock remaining. Off by default.
+* Feature: eBay Order column on the WooCommerce Orders list (HPOS and legacy compatible).
+* Feature: UUID duplicate prevention on AddItem, so a network timeout and retry cannot create two listings.
+
+= 3.0.1 - 2026-07-29 =
+* CRITICAL FIX: Products were not matching by SKU when eBay changed the Item ID (old listing expired, seller created a new one), creating duplicate products with mangled SKUs like "SKU-123456789".
+* FIX: Trashed WooCommerce products were blocking SKU matching and causing false "Duplicate SKU detected" warnings.
+* FIX: Trashed products could be matched by _ebay_item_id. The lookup now excludes them.
+
+= 3.0.0 - 2026-07-29 =
+* CRITICAL: Deferred image pipeline — products receive eBay image URLs immediately during sync and images are downloaded to the media library in the background. Eliminates the 7,600+ queued image jobs that blocked scanning for days.
+* Feature: Full eBay order import via GetOrders, polling every 15 minutes, with address and line-item mapping, deduplication by eBay Order ID, and HPOS compatibility.
+* Feature: Tracking number push to eBay when a WooCommerce order is marked Completed.
+* Feature: Real-time WooCommerce → eBay stock sync for manual edits, CSV imports and REST API changes.
+* Feature: Listings admin page — filterable, sortable, searchable table of all eBay-linked products.
+* Feature: Best Offer support with auto-accept and auto-decline thresholds.
+* Feature: GPSR compliance fields (manufacturer, address, EU responsible person).
+* Feature: Custom database table for eBay listing data with indexed columns.
+* Performance: File-based concurrency lock, cron rate limiting, and a daily maintenance task.
 
 = 2.1.0 - 2026-07-28 =
 * CRITICAL FIX: Scan resume now uses WP-Cron instead of Action Scheduler. When PHP timed out, the resume action was getting stuck behind 2,800+ image/import jobs in the AS queue for hours. WP-Cron events fire directly on the next page load, bypassing the AS batch queue entirely.
@@ -375,6 +434,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.1.3 =
+Security and data-loss release — update immediately. Fixes an unauthenticated path that allowed the site's eBay credentials to be replaced, removes a hardcoded key that let forged eBay account-deletion requests erase customer data from orders, and stops imports from permanently ending live eBay listings. Also prevents a failed API call mid-scan from trashing large parts of your catalogue, stops image downloads being silently abandoned after a single timeout, and fixes relisting, which never worked. If eBay deletion notifications stop being accepted after updating, reconnect your eBay account from Settings.
 
 = 1.7.2 =
 Critical fix for sellers with multi-variant products: image imports were silently timing out for products with many variant photos. Images are now downloaded in safe chunks with automatic retry on failure. Also adds "Sync Specific Items" and "Re-sync Images Only" tools for fine-grained control over what gets updated. Recommended for all users, especially international sellers.

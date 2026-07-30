@@ -37,6 +37,7 @@ class TCGiant_Sync_Admin {
 		add_action( 'admin_menu', array( $this, 'add_menu_pages' ) );
 		add_action( 'admin_init', array( $this, 'handle_oauth_callback' ) );
 		add_action( 'admin_init', array( $this, 'register_settings' ) );
+		add_action( 'admin_post_tcgiant_oauth_start', array( $this, 'handle_oauth_start' ) );
 		add_action( 'admin_post_tcgiant_sync_now', array( $this, 'handle_manual_sync' ) );
 		add_action( 'admin_post_tcgiant_sync_specific', array( $this, 'handle_sync_specific' ) );
 		add_action( 'admin_post_tcgiant_force_queue', array( $this, 'handle_force_queue' ) );
@@ -598,7 +599,41 @@ class TCGiant_Sync_Admin {
 	}
 
 	/**
+	 * Begin the eBay OAuth handshake.
+	 *
+	 * Records a one-time state token, then redirects out to the relay. This is
+	 * the only supported entry point into the connect flow — handle_oauth_callback()
+	 * refuses to store tokens unless this ran first.
+	 */
+	public function handle_oauth_start() {
+		check_admin_referer( 'tcgiant_oauth_start' );
+
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'Unauthorized.', 'tcgiant-sync' ) );
+		}
+
+		$oauth = TCGiant_Sync_OAuth::instance();
+		$state = $oauth->begin_authorization();
+
+		// External host, so wp_redirect() rather than wp_safe_redirect().
+		wp_redirect( $oauth->get_relay_authorization_url( $state ) ); // phpcs:ignore WordPress.Security.SafeRedirect.wp_redirect_wp_redirect
+		exit;
+	}
+
+	/**
 	 * Handle OAuth Callback.
+	 *
+	 * Runs on admin_init, which fires for every authenticated user on every
+	 * wp-admin request and executes BEFORE WordPress performs the per-page
+	 * capability check. Everything here is therefore gated explicitly:
+	 *
+	 *   1. The current user must be able to manage options.
+	 *   2. This site must have started a handshake within the last 15 minutes
+	 *      (proved by the state transient set in handle_oauth_start()).
+	 *   3. If the relay echoed a state value back, it must match.
+	 *
+	 * Without these, any logged-in subscriber — or CSRF against an administrator
+	 * — could plant arbitrary eBay credentials and a forged relay signing key.
 	 */
 	public function handle_oauth_callback() {
 		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
@@ -607,25 +642,49 @@ class TCGiant_Sync_Admin {
 		}
 
 		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
-		if ( isset( $_GET['ebay_access_token'], $_GET['ebay_refresh_token'], $_GET['ebay_expires_in'] ) ) {
-			$oauth = TCGiant_Sync_OAuth::instance();
-			// phpcs:disable WordPress.Security.NonceVerification.Recommended
-			$data = array(
-				'access_token'  => sanitize_text_field( wp_unslash( $_GET['ebay_access_token'] ) ),
-				'refresh_token' => sanitize_text_field( wp_unslash( $_GET['ebay_refresh_token'] ) ),
-				'expires_in'    => sanitize_text_field( wp_unslash( $_GET['ebay_expires_in'] ) ),
-				'relay_key'     => isset( $_GET['ebay_relay_key'] ) ? sanitize_text_field( wp_unslash( $_GET['ebay_relay_key'] ) ) : '',
-			);
-			// phpcs:enable WordPress.Security.NonceVerification.Recommended
-
-			if ( $oauth->save_tokens_from_relay( $data ) ) {
-				wp_safe_redirect( admin_url( 'admin.php?page=tcgiant-sync&auth=success' ) );
-				exit;
-			} else {
-				wp_safe_redirect( admin_url( 'admin.php?page=tcgiant-sync&auth=failed' ) );
-				exit;
-			}
+		if ( ! isset( $_GET['ebay_access_token'], $_GET['ebay_refresh_token'], $_GET['ebay_expires_in'] ) ) {
+			return;
 		}
+
+		if ( ! current_user_can( 'manage_options' ) ) {
+			TCGiant_Sync_Logger::warning( sprintf(
+				'Rejected eBay OAuth callback from user #%d: insufficient capability.',
+				get_current_user_id()
+			) );
+			return;
+		}
+
+		$oauth = TCGiant_Sync_OAuth::instance();
+
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		$returned_state = isset( $_GET['state'] ) ? sanitize_text_field( wp_unslash( $_GET['state'] ) ) : '';
+
+		if ( ! $oauth->consume_authorization_state( $returned_state ) ) {
+			TCGiant_Sync_Logger::warning(
+				'Rejected eBay OAuth callback: no pending authorization request for this site. '
+				. 'Start the connection from the Settings page.'
+			);
+			wp_safe_redirect( admin_url( 'admin.php?page=tcgiant-settings&auth=invalid_state' ) );
+			exit;
+		}
+
+		// phpcs:disable WordPress.Security.NonceVerification.Recommended
+		$data = array(
+			'access_token'  => sanitize_text_field( wp_unslash( $_GET['ebay_access_token'] ) ),
+			'refresh_token' => sanitize_text_field( wp_unslash( $_GET['ebay_refresh_token'] ) ),
+			'expires_in'    => sanitize_text_field( wp_unslash( $_GET['ebay_expires_in'] ) ),
+			'relay_key'     => isset( $_GET['ebay_relay_key'] ) ? sanitize_text_field( wp_unslash( $_GET['ebay_relay_key'] ) ) : '',
+		);
+		// phpcs:enable WordPress.Security.NonceVerification.Recommended
+
+		if ( $oauth->save_tokens_from_relay( $data ) ) {
+			TCGiant_Sync_Logger::log( 'eBay account connected successfully.', 'success' );
+			wp_safe_redirect( admin_url( 'admin.php?page=tcgiant-sync&auth=success' ) );
+			exit;
+		}
+
+		wp_safe_redirect( admin_url( 'admin.php?page=tcgiant-sync&auth=failed' ) );
+		exit;
 	}
 
 	/**

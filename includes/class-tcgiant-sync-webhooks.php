@@ -16,15 +16,11 @@ if ( ! defined( 'ABSPATH' ) ) {
 class TCGiant_Sync_Webhooks {
 
 	/**
-	 * Legacy HMAC signing key — used ONLY as a fallback for installations
-	 * that connected before per-site keys were introduced (v1.3.1+).
+	 * Maximum age of a signed notification, in seconds.
 	 *
-	 * New connections receive a unique, cryptographically random key from the
-	 * relay server, stored in the site's tcgiant_sync_ebay_settings['relay_secret'].
-	 *
-	 * @deprecated Use get_signing_key() instead of referencing this constant directly.
+	 * Without this, a captured request stays replayable forever.
 	 */
-	const RELAY_SIGNING_KEY = 'tcgiant_relay_secret_key_500';
+	const MAX_SIGNATURE_AGE = 300;
 
 	/**
 	 * Instance.
@@ -76,17 +72,21 @@ class TCGiant_Sync_Webhooks {
 	/**
 	 * Get the signing key for this installation.
 	 *
-	 * Returns the per-site relay_secret if available (set during OAuth connection
-	 * in v1.3.1+), otherwise falls back to the legacy hardcoded constant.
+	 * Returns the per-site relay_secret assigned during OAuth connection.
 	 *
-	 * @return string The HMAC signing key.
+	 * There is deliberately no fallback. A previous version fell back to a
+	 * constant compiled into the plugin, which meant anyone holding a copy of
+	 * the source could forge a valid signature against any site that had not
+	 * yet been issued a per-site key — and this endpoint destroys order PII.
+	 *
+	 * @return string|false The HMAC signing key, or false if none is set.
 	 */
 	private function get_signing_key() {
 		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
 		if ( ! empty( $settings['relay_secret'] ) ) {
 			return $settings['relay_secret'];
 		}
-		return self::RELAY_SIGNING_KEY;
+		return false;
 	}
 
 	/**
@@ -98,9 +98,22 @@ class TCGiant_Sync_Webhooks {
 		$signature = $request->get_header( 'x-tcgiant-signature' );
 		$timestamp = $request->get_header( 'x-tcgiant-timestamp' );
 		$body      = $request->get_body();
-		
-		// Verify signature from TCGiant Relay using per-site key.
+
+		// No per-site key means this site cannot authenticate anything. Reject
+		// rather than falling back to a shared secret.
 		$relay_secret = $this->get_signing_key();
+		if ( false === $relay_secret ) {
+			TCGiant_Sync_Logger::warning(
+				'eBay Deletion: Rejected notification — no per-site relay key is configured. Reconnect the eBay account.'
+			);
+			return new WP_Error( 'not_configured', __( 'Endpoint is not configured.', 'tcgiant-sync' ), array( 'status' => 401 ) );
+		}
+
+		// Reject stale requests so a captured payload cannot be replayed later.
+		if ( empty( $timestamp ) || abs( time() - (int) $timestamp ) > self::MAX_SIGNATURE_AGE ) {
+			return new WP_Error( 'expired', __( 'Request timestamp is missing or expired.', 'tcgiant-sync' ), array( 'status' => 401 ) );
+		}
+
 		$expected_signature = hash_hmac( 'sha256', $body . $timestamp, $relay_secret );
 
 		if ( ! hash_equals( $expected_signature, (string) $signature ) ) {
@@ -124,13 +137,39 @@ class TCGiant_Sync_Webhooks {
 		set_transient( $rate_key, 1, 30 );
 
 		// Query for matching orders - this is the expensive part.
-		// phpcs:disable WordPress.DB.SlowDBQuery.slow_db_query_meta_key, WordPress.DB.SlowDBQuery.slow_db_query_meta_value
-		$orders = wc_get_orders( array(
-			'meta_key'   => '_ebay_user_id',
-			'meta_value' => $ebay_user_id,
-			'limit'      => -1,
-		) );
-		// phpcs:enable WordPress.DB.SlowDBQuery.slow_db_query_meta_key, WordPress.DB.SlowDBQuery.slow_db_query_meta_value
+		//
+		// The order importer stores the buyer handle as '_ebay_buyer_user_id'
+		// (see TCGiant_Sync_Orders::create_wc_order). This handler previously
+		// only queried '_ebay_user_id', a key nothing ever writes, so every
+		// deletion request silently matched zero orders and scrubbed nothing —
+		// leaving the site non-compliant with eBay Marketplace Account Deletion.
+		// Both keys are checked so older data is still covered.
+		$orders     = array();
+		$seen_ids   = array();
+		$meta_keys  = array( '_ebay_buyer_user_id', '_ebay_user_id' );
+
+		foreach ( $meta_keys as $meta_key ) {
+			// phpcs:disable WordPress.DB.SlowDBQuery.slow_db_query_meta_key, WordPress.DB.SlowDBQuery.slow_db_query_meta_value
+			$found = wc_get_orders( array(
+				'meta_key'   => $meta_key,
+				'meta_value' => $ebay_user_id,
+				'limit'      => -1,
+			) );
+			// phpcs:enable WordPress.DB.SlowDBQuery.slow_db_query_meta_key, WordPress.DB.SlowDBQuery.slow_db_query_meta_value
+
+			if ( empty( $found ) || is_wp_error( $found ) ) {
+				continue;
+			}
+
+			foreach ( $found as $order ) {
+				$order_id = $order->get_id();
+				if ( isset( $seen_ids[ $order_id ] ) ) {
+					continue;
+				}
+				$seen_ids[ $order_id ] = true;
+				$orders[] = $order;
+			}
+		}
 
 		// Only process and log if we actually find matching orders.
 		if ( empty( $orders ) ) {

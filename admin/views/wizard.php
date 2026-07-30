@@ -15,14 +15,11 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 $settings = TCGiant_Sync_OAuth::instance()->get_settings();
-$is_connected = ! empty( $settings['ebay_access_token'] );
-$relay_url    = defined( 'TCGIANT_SYNC_RELAY_URL' ) ? TCGIANT_SYNC_RELAY_URL : 'https://surefirestudios.io/syncconnect/relay.php';
-$auth_url     = add_query_arg(
-	array(
-		'redirect_uri' => rawurlencode( admin_url( 'admin.php?page=tcgiant-sync' ) ),
-	),
-	$relay_url
-);
+// Use the shared authentication check — the token lives under 'access_token',
+// not 'ebay_access_token', so the old local check never reported connected.
+$is_connected = TCGiant_Sync_OAuth::instance()->is_authenticated();
+// Route through the nonce-protected connect handler like every other view.
+$auth_url     = TCGiant_Sync_OAuth::instance()->get_authorization_url();
 $license_key    = $settings['license_key'] ?? '';
 $license_status = $settings['license_status'] ?? '';
 $marketplace    = $settings['marketplace'] ?? 'EBAY_US';

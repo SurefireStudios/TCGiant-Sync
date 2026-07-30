@@ -52,16 +52,86 @@ class TCGiant_Sync_OAuth {
 	}
 
 	/**
-	 * Get Authorization URL.
-	 * 
-	 * Redirects to the central TCGiant Relay.
+	 * Transient key holding the pending OAuth state token.
+	 */
+	const STATE_TRANSIENT = 'tcgiant_oauth_state';
+
+	/**
+	 * How long a pending OAuth handshake stays valid (seconds).
+	 */
+	const STATE_TTL = 900;
+
+	/**
+	 * Get the Authorization URL to put behind a "Connect to eBay" button.
+	 *
+	 * This does NOT link straight to the relay. It links to a nonce-protected
+	 * admin-post handler which records a one-time state token before bouncing
+	 * the user out to the relay. The callback refuses to store tokens unless
+	 * that state token is present, which stops a third party from planting
+	 * their own eBay credentials on this site via a crafted link.
+	 *
+	 * @return string Nonce-protected local URL.
 	 */
 	public function get_authorization_url() {
+		return wp_nonce_url(
+			admin_url( 'admin-post.php?action=tcgiant_oauth_start' ),
+			'tcgiant_oauth_start'
+		);
+	}
+
+	/**
+	 * Get the real relay URL to redirect to once the handshake has started.
+	 *
+	 * @param string $state One-time state token to hand to the relay.
+	 * @return string Relay URL.
+	 */
+	public function get_relay_authorization_url( $state = '' ) {
 		$params = array(
 			'site_url' => get_site_url(),
 		);
 
+		if ( ! empty( $state ) ) {
+			$params['state'] = $state;
+		}
+
 		return 'https://tcgiant.com/syncconnect/relay.php?' . http_build_query( $params );
+	}
+
+	/**
+	 * Begin an OAuth handshake: generate and store a one-time state token.
+	 *
+	 * @return string The generated state token.
+	 */
+	public function begin_authorization() {
+		$state = wp_generate_password( 32, false );
+		set_transient( self::STATE_TRANSIENT, $state, self::STATE_TTL );
+		return $state;
+	}
+
+	/**
+	 * Verify (and consume) a pending OAuth handshake.
+	 *
+	 * The relay is not guaranteed to echo the state parameter back, so a
+	 * returned state is only compared when one is actually supplied. The
+	 * presence of the pending transient is the primary check: it proves this
+	 * site initiated the handshake within the last STATE_TTL seconds.
+	 *
+	 * @param string $returned_state State value returned by the relay, if any.
+	 * @return bool True if the handshake is valid.
+	 */
+	public function consume_authorization_state( $returned_state = '' ) {
+		$expected = get_transient( self::STATE_TRANSIENT );
+
+		if ( empty( $expected ) ) {
+			return false;
+		}
+
+		if ( ! empty( $returned_state ) && ! hash_equals( (string) $expected, (string) $returned_state ) ) {
+			return false;
+		}
+
+		delete_transient( self::STATE_TRANSIENT );
+		return true;
 	}
 
 	/**

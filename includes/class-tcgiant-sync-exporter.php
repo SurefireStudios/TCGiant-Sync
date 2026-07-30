@@ -634,8 +634,7 @@ class TCGiant_Sync_Exporter {
 
 		} else {
 			// New listing — add it. UUID prevents duplicate creation on timeout/retry.
-			// eBay requires 32 hex chars (no hyphens), wp_generate_uuid4() returns 36 with hyphens.
-			$uuid = str_replace( '-', '', wp_generate_uuid4() );
+			$uuid = TCGiant_Sync_API::generate_ebay_uuid();
 			$full_xml = '<Item>' . "\n" . '<UUID>' . $uuid . '</UUID>' . "\n" . $item_xml . "\n" . '</Item>';
 			$response = $api->add_item( $full_xml );
 

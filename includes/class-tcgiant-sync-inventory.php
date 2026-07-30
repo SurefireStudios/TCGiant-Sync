@@ -24,6 +24,17 @@ class TCGiant_Sync_Inventory {
 	private static $_instance = null;
 
 	/**
+	 * Depth counter for suppressed WC → eBay stock pushes.
+	 *
+	 * Incremented while the plugin is itself writing stock that came FROM eBay.
+	 * A counter rather than a boolean so nested calls (product save that also
+	 * saves variations) unwind correctly.
+	 *
+	 * @var int
+	 */
+	private static $push_suppression_depth = 0;
+
+	/**
 	 * Main instance.
 	 */
 	public static function instance() {
@@ -31,6 +42,40 @@ class TCGiant_Sync_Inventory {
 			self::$_instance = new self();
 		}
 		return self::$_instance;
+	}
+
+	/**
+	 * Begin a block of stock writes that originate from eBay.
+	 *
+	 * WooCommerce fires woocommerce_product_set_stock / _variation_set_stock
+	 * from WC_Product_Data_Store_CPT::handle_updated_props() whenever
+	 * stock_quantity changes — including during an import, where the value came
+	 * from eBay in the first place. Without this guard every imported product
+	 * queues a redundant push back to eBay, and any item mapped to 0 stock
+	 * triggers auto-end and permanently ENDS the seller's live listing.
+	 *
+	 * Always pair with end_ebay_origin() in a finally block.
+	 */
+	public static function begin_ebay_origin() {
+		self::$push_suppression_depth++;
+	}
+
+	/**
+	 * End a block of eBay-originated stock writes.
+	 */
+	public static function end_ebay_origin() {
+		if ( self::$push_suppression_depth > 0 ) {
+			self::$push_suppression_depth--;
+		}
+	}
+
+	/**
+	 * Whether WC → eBay stock pushes are currently suppressed.
+	 *
+	 * @return bool
+	 */
+	public static function is_push_suppressed() {
+		return self::$push_suppression_depth > 0;
 	}
 
 	/**
@@ -156,8 +201,13 @@ class TCGiant_Sync_Inventory {
 	 * @param WC_Product $product Product or variation object.
 	 */
 	private function queue_stock_update_for_product( $product ) {
+		// This stock value came from eBay — pushing it back would be an echo.
+		if ( self::is_push_suppressed() ) {
+			return;
+		}
+
 		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
-		
+
 		// Master kill-switch.
 		if ( isset( $settings['enable_order_sync'] ) && '0' === $settings['enable_order_sync'] ) {
 			return;
@@ -213,8 +263,14 @@ class TCGiant_Sync_Inventory {
 	 * @param WC_Order $order The order object.
 	 */
 	public function sync_stock_to_ebay( $order ) {
+		// Reducing stock for an order that was itself imported from eBay is an
+		// eBay-originated change; eBay already decremented its own quantity.
+		if ( self::is_push_suppressed() ) {
+			return;
+		}
+
 		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
-		
+
 		// Respect the master kill-switch if set.
 		if ( isset( $settings['enable_order_sync'] ) && '0' === $settings['enable_order_sync'] ) {
 			return;
@@ -420,6 +476,29 @@ class TCGiant_Sync_Inventory {
 	 * Logs mismatches as warnings.
 	 */
 	public function reconcile_inventory() {
+		// Runs unattended from WP-Cron, where an uncaught Error takes down every
+		// hook scheduled after it in the same tick.
+		try {
+			$this->do_reconcile_inventory();
+		} catch ( Exception $e ) {
+			TCGiant_Sync_Logger::error( 'Reconciliation: Exception — ' . $e->getMessage() );
+		} catch ( Error $e ) {
+			TCGiant_Sync_Logger::error( 'Reconciliation: Fatal — ' . $e->getMessage() );
+		}
+	}
+
+	/**
+	 * Maximum listing pages to walk during one reconciliation run.
+	 */
+	const RECONCILE_MAX_PAGES = 25;
+
+	/**
+	 * Perform the reconciliation pass.
+	 *
+	 * Compares WooCommerce stock quantities against eBay active listing
+	 * quantities across all pages and logs mismatches as warnings.
+	 */
+	private function do_reconcile_inventory() {
 		TCGiant_Sync_Logger::log( 'Reconciliation: Starting weekly inventory check...' );
 
 		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
@@ -428,58 +507,99 @@ class TCGiant_Sync_Inventory {
 			return;
 		}
 
-		$api = TCGiant_Sync_API::instance();
+		$api         = TCGiant_Sync_API::instance();
+		$mismatches  = 0;
+		$checked     = 0;
+		$page        = 1;
+		$total_pages = 1;
 
-		// Fetch all active eBay listings with quantities.
-		$result = $api->get_seller_list( 1, 200, 'Active', false );
-		if ( is_wp_error( $result ) ) {
-			TCGiant_Sync_Logger::error( 'Reconciliation: Failed to fetch eBay listings — ' . $result->get_error_message() );
-			return;
-		}
+		global $wpdb;
 
-		$items = $result['items'] ?? array();
-		$mismatches = 0;
-		$checked = 0;
+		do {
+			// get_active_listings() is the real GetSellerList wrapper. The old
+			// call here was to a get_seller_list() method that has never
+			// existed, so this task fatalled on every run.
+			$result = $api->get_active_listings( $page, 200 );
 
-		foreach ( $items as $item ) {
-			$item_id  = $item['ItemID'] ?? '';
-			$ebay_qty = isset( $item['Quantity'] ) ? (int) $item['Quantity'] : null;
-			$title    = $item['Title'] ?? 'Unknown';
-
-			if ( empty( $item_id ) || null === $ebay_qty ) {
-				continue;
-			}
-
-			// Find the WC product by eBay Item ID.
-			global $wpdb;
-			$product_id = $wpdb->get_var( $wpdb->prepare(
-				"SELECT pm.post_id FROM {$wpdb->postmeta} pm
-				 INNER JOIN {$wpdb->posts} p ON pm.post_id = p.ID AND p.post_status != 'trash'
-				 WHERE pm.meta_key = '_ebay_item_id' AND pm.meta_value = %s LIMIT 1",
-				$item_id
-			) );
-
-			if ( ! $product_id ) {
-				continue; // Not linked to a WC product.
-			}
-
-			$product = wc_get_product( $product_id );
-			if ( ! $product || ! $product->managing_stock() ) {
-				continue;
-			}
-
-			$wc_qty = $product->get_stock_quantity();
-			$checked++;
-
-			if ( (int) $wc_qty !== $ebay_qty ) {
-				$mismatches++;
-				TCGiant_Sync_Logger::warning( sprintf(
-					'Reconciliation mismatch: "%s" (eBay #%s, WC #%d) — WC stock: %d, eBay stock: %d',
-					$title, $item_id, $product_id, $wc_qty, $ebay_qty
+			if ( is_wp_error( $result ) ) {
+				TCGiant_Sync_Logger::error( sprintf(
+					'Reconciliation: Failed to fetch eBay listings on page %d — %s',
+					$page,
+					$result->get_error_message()
 				) );
+				break;
 			}
+
+			if ( ! isset( $result['ItemArray']['Item'] ) ) {
+				break;
+			}
+
+			// The Trading API returns a bare item object when only one matches.
+			$items = $result['ItemArray']['Item'];
+			if ( isset( $items['ItemID'] ) ) {
+				$items = array( $items );
+			}
+
+			$total_pages = isset( $result['PaginationResult']['TotalNumberOfPages'] )
+				? (int) $result['PaginationResult']['TotalNumberOfPages']
+				: 1;
+
+			foreach ( $items as $item ) {
+				$item_id  = $item['ItemID'] ?? '';
+				$ebay_qty = isset( $item['Quantity'] ) ? (int) $item['Quantity'] : null;
+				$title    = $item['Title'] ?? 'Unknown';
+
+				if ( empty( $item_id ) || null === $ebay_qty ) {
+					continue;
+				}
+
+				// eBay reports the listed quantity; available stock is that
+				// minus what has already sold.
+				$sold = isset( $item['SellingStatus']['QuantitySold'] ) ? (int) $item['SellingStatus']['QuantitySold'] : 0;
+				$ebay_available = max( 0, $ebay_qty - $sold );
+
+				// Find the WC product by eBay Item ID.
+				$product_id = $wpdb->get_var( $wpdb->prepare(
+					"SELECT pm.post_id FROM {$wpdb->postmeta} pm
+					 INNER JOIN {$wpdb->posts} p ON pm.post_id = p.ID AND p.post_status != 'trash'
+					 WHERE pm.meta_key = '_ebay_item_id' AND pm.meta_value = %s LIMIT 1",
+					$item_id
+				) );
+
+				if ( ! $product_id ) {
+					continue; // Not linked to a WC product.
+				}
+
+				$product = wc_get_product( $product_id );
+				if ( ! $product || ! $product->managing_stock() ) {
+					continue;
+				}
+
+				$wc_qty = (int) $product->get_stock_quantity();
+				$checked++;
+
+				if ( $wc_qty !== $ebay_available ) {
+					$mismatches++;
+					TCGiant_Sync_Logger::warning( sprintf(
+						'Reconciliation mismatch: "%s" (eBay #%s, WC #%d) — WC stock: %d, eBay available: %d',
+						$title, $item_id, $product_id, $wc_qty, $ebay_available
+					) );
+				}
+			}
+
+			$page++;
+		} while ( $page <= $total_pages && $page <= self::RECONCILE_MAX_PAGES );
+
+		if ( $total_pages > self::RECONCILE_MAX_PAGES ) {
+			TCGiant_Sync_Logger::warning( sprintf(
+				'Reconciliation: Stopped at the %d-page cap (%d pages available). Remaining listings were not checked.',
+				self::RECONCILE_MAX_PAGES, $total_pages
+			) );
 		}
 
+		// Re-read settings — the loop above can span minutes, and writing a
+		// stale copy back would clobber any change made in the meantime.
+		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
 		$settings['last_reconciliation'] = current_time( 'mysql' );
 		$settings['last_reconciliation_mismatches'] = $mismatches;
 		update_option( 'tcgiant_sync_ebay_settings', $settings );

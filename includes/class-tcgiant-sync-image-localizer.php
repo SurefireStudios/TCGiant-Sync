@@ -28,6 +28,19 @@ class TCGiant_Sync_Image_Localizer {
 	const PRODUCTS_PER_BATCH = 50;
 
 	/**
+	 * How many times a product may fail localization before we stop retrying.
+	 *
+	 * Without a cap, a permanently unreachable host would keep the product in
+	 * the pending query forever and the batch would never drain.
+	 */
+	const MAX_LOCALIZE_ATTEMPTS = 3;
+
+	/**
+	 * Base retry backoff in seconds, multiplied by the attempt number.
+	 */
+	const RETRY_BACKOFF_SECONDS = 600;
+
+	/**
 	 * WP-Cron hook name.
 	 */
 	const CRON_HOOK = 'tcgiant_sync_localize_images';
@@ -111,8 +124,13 @@ class TCGiant_Sync_Image_Localizer {
 		update_post_meta( $product_id, '_tcgiant_external_image_urls', $image_entries );
 
 		// If images changed, mark as not localized so the background process picks it up.
+		// This is a fresh set of URLs, so any retry state from the previous set
+		// must be cleared — otherwise a product that had exhausted its attempts
+		// would be given up on immediately, and a stale backoff would delay it.
 		if ( $new_hash !== $stored_hash ) {
 			update_post_meta( $product_id, '_tcgiant_images_localized', 0 );
+			delete_post_meta( $product_id, '_tcgiant_localize_attempts' );
+			delete_post_meta( $product_id, '_tcgiant_localize_retry_after' );
 		}
 
 		// Only set external image URLs if the product doesn't already have local images.
@@ -213,21 +231,48 @@ class TCGiant_Sync_Image_Localizer {
 		require_once ABSPATH . 'wp-admin/includes/file.php';
 		require_once ABSPATH . 'wp-admin/includes/image.php';
 
-		// Find products that need localization.
+		// Find products that need localization and are not in retry backoff.
 		global $wpdb;
+		$now = time();
+
 		$product_ids = $wpdb->get_col( $wpdb->prepare(
 			"SELECT DISTINCT p.ID FROM {$wpdb->posts} p
 			 INNER JOIN {$wpdb->postmeta} pm_ext ON p.ID = pm_ext.post_id AND pm_ext.meta_key = '_tcgiant_external_image_urls'
 			 INNER JOIN {$wpdb->postmeta} pm_loc ON p.ID = pm_loc.post_id AND pm_loc.meta_key = '_tcgiant_images_localized'
+			 LEFT JOIN {$wpdb->postmeta} pm_retry ON p.ID = pm_retry.post_id AND pm_retry.meta_key = '_tcgiant_localize_retry_after'
 			 WHERE p.post_type IN ('product', 'product_variation')
 			   AND p.post_status IN ('publish', 'draft', 'private')
 			   AND pm_loc.meta_value = '0'
+			   AND ( pm_retry.meta_value IS NULL OR CAST( pm_retry.meta_value AS UNSIGNED ) <= %d )
 			 ORDER BY p.ID ASC
 			 LIMIT %d",
+			$now,
 			self::PRODUCTS_PER_BATCH
 		) );
 
 		if ( empty( $product_ids ) ) {
+			// Nothing due right now — but something may be waiting out a backoff.
+			$next_due = $wpdb->get_var( $wpdb->prepare(
+				"SELECT MIN( CAST( pm_retry.meta_value AS UNSIGNED ) ) FROM {$wpdb->posts} p
+				 INNER JOIN {$wpdb->postmeta} pm_loc ON p.ID = pm_loc.post_id AND pm_loc.meta_key = '_tcgiant_images_localized'
+				 INNER JOIN {$wpdb->postmeta} pm_retry ON p.ID = pm_retry.post_id AND pm_retry.meta_key = '_tcgiant_localize_retry_after'
+				 WHERE p.post_type IN ('product', 'product_variation')
+				   AND p.post_status IN ('publish', 'draft', 'private')
+				   AND pm_loc.meta_value = '0'
+				   AND CAST( pm_retry.meta_value AS UNSIGNED ) > %d",
+				$now
+			) );
+
+			if ( $next_due ) {
+				$delay = max( 30, (int) $next_due - $now );
+				TCGiant_Sync_Logger::log( sprintf(
+					'Image localizer: Nothing due yet — products waiting out a retry backoff. Next check in %ds.',
+					$delay
+				) );
+				wp_schedule_single_event( $now + $delay, self::CRON_HOOK );
+				return;
+			}
+
 			TCGiant_Sync_Logger::log( 'Image localizer: No products pending. Done.' );
 			return;
 		}
@@ -263,15 +308,20 @@ class TCGiant_Sync_Image_Localizer {
 			$total_downloaded, $total_skipped, $total_failed
 		), $total_failed > 0 ? 'warning' : 'success' );
 
-		// Check if more products need processing.
-		$remaining = $wpdb->get_var(
+		// Check if more products are due now. Products sitting in retry backoff
+		// are deliberately excluded — counting them here would reschedule every
+		// 30 seconds and re-select the same failing rows in a tight loop.
+		$remaining = $wpdb->get_var( $wpdb->prepare(
 			"SELECT COUNT(DISTINCT p.ID) FROM {$wpdb->posts} p
 			 INNER JOIN {$wpdb->postmeta} pm_ext ON p.ID = pm_ext.post_id AND pm_ext.meta_key = '_tcgiant_external_image_urls'
 			 INNER JOIN {$wpdb->postmeta} pm_loc ON p.ID = pm_loc.post_id AND pm_loc.meta_key = '_tcgiant_images_localized'
+			 LEFT JOIN {$wpdb->postmeta} pm_retry ON p.ID = pm_retry.post_id AND pm_retry.meta_key = '_tcgiant_localize_retry_after'
 			 WHERE p.post_type IN ('product', 'product_variation')
 			   AND p.post_status IN ('publish', 'draft', 'private')
-			   AND pm_loc.meta_value = '0'"
-		);
+			   AND pm_loc.meta_value = '0'
+			   AND ( pm_retry.meta_value IS NULL OR CAST( pm_retry.meta_value AS UNSIGNED ) <= %d )",
+			time()
+		) );
 
 		if ( (int) $remaining > 0 ) {
 			TCGiant_Sync_Logger::log( sprintf(
@@ -279,7 +329,11 @@ class TCGiant_Sync_Image_Localizer {
 				$remaining
 			) );
 			wp_schedule_single_event( time() + 30, self::CRON_HOOK );
+			return;
 		}
+
+		// Nothing due now — re-arm for whatever is waiting out a backoff.
+		self::ensure_cron_scheduled();
 	}
 
 	/**
@@ -293,7 +347,7 @@ class TCGiant_Sync_Image_Localizer {
 	 */
 	private function localize_product_images( $product_id ) {
 		$image_entries = get_post_meta( $product_id, '_tcgiant_external_image_urls', true );
-		$result = array( 'downloaded' => 0, 'skipped' => 0, 'failed' => 0 );
+		$result = array( 'downloaded' => 0, 'skipped' => 0, 'failed' => 0, 'permanent' => 0 );
 
 		if ( empty( $image_entries ) || ! is_array( $image_entries ) ) {
 			// Nothing to localize — mark as done.
@@ -359,11 +413,22 @@ class TCGiant_Sync_Image_Localizer {
 			// Download the image.
 			$id = media_sideload_image( $image_url, $product_id, null, 'id' );
 			if ( is_wp_error( $id ) ) {
-				$result['failed']++;
-				TCGiant_Sync_Logger::warning( sprintf(
-					'Image localizer: Failed for WC #%d — %s — URL: %s',
-					$product_id, $id->get_error_message(), $image_url
-				) );
+				// A 404/403/410 will never succeed, so it must not keep the
+				// product in the retry queue forever. Anything else (timeout,
+				// 5xx, DNS) is worth another attempt.
+				if ( self::is_permanent_image_failure( $id ) ) {
+					$result['permanent']++;
+					TCGiant_Sync_Logger::warning( sprintf(
+						'Image localizer: [PERMANENT] WC #%d — %s — URL: %s — will not retry.',
+						$product_id, $id->get_error_message(), $image_url
+					) );
+				} else {
+					$result['failed']++;
+					TCGiant_Sync_Logger::warning( sprintf(
+						'Image localizer: Failed for WC #%d — %s — URL: %s',
+						$product_id, $id->get_error_message(), $image_url
+					) );
+				}
 				continue;
 			}
 
@@ -404,10 +469,79 @@ class TCGiant_Sync_Image_Localizer {
 			update_post_meta( $product_id, '_product_image_gallery', implode( ',', $clean_gallery ) );
 		}
 
-		// Mark product as localized.
-		update_post_meta( $product_id, '_tcgiant_images_localized', 1 );
+		// Only declare the product done when nothing retryable failed.
+		//
+		// This flag is the sole gate on the batch query (meta_value = '0'), so
+		// setting it unconditionally meant a single timeout or transient 5xx
+		// lost the product's images permanently — the localizer would never
+		// look at it again.
+		if ( 0 === $result['failed'] ) {
+			update_post_meta( $product_id, '_tcgiant_images_localized', 1 );
+			delete_post_meta( $product_id, '_tcgiant_localize_attempts' );
+			delete_post_meta( $product_id, '_tcgiant_localize_retry_after' );
+
+			if ( $result['permanent'] > 0 ) {
+				TCGiant_Sync_Logger::warning( sprintf(
+					'Image localizer: WC #%d finished with %d permanently unavailable image(s).',
+					$product_id, $result['permanent']
+				) );
+			}
+		} else {
+			$attempts = (int) get_post_meta( $product_id, '_tcgiant_localize_attempts', true ) + 1;
+			update_post_meta( $product_id, '_tcgiant_localize_attempts', $attempts );
+
+			if ( $attempts >= self::MAX_LOCALIZE_ATTEMPTS ) {
+				// Give up so one unreachable image can't pin the queue open.
+				update_post_meta( $product_id, '_tcgiant_images_localized', 1 );
+				delete_post_meta( $product_id, '_tcgiant_localize_retry_after' );
+				TCGiant_Sync_Logger::error( sprintf(
+					'Image localizer: WC #%d gave up after %d attempts with %d image(s) still failing. '
+					. 'Re-run an images-only sync for this item to try again.',
+					$product_id, $attempts, $result['failed']
+				) );
+			} else {
+				// Back off before retrying so a transient outage has time to
+				// clear — otherwise the 30s batch loop burns every attempt in
+				// under two minutes.
+				$backoff = self::RETRY_BACKOFF_SECONDS * $attempts;
+				update_post_meta( $product_id, '_tcgiant_localize_retry_after', time() + $backoff );
+				TCGiant_Sync_Logger::log( sprintf(
+					'Image localizer: WC #%d has %d image(s) still failing — attempt %d of %d, retrying in %ds.',
+					$product_id, $result['failed'], $attempts, self::MAX_LOCALIZE_ATTEMPTS, $backoff
+				) );
+			}
+		}
 
 		return $result;
+	}
+
+	/**
+	 * Check if an image download failure is permanent (should not be retried).
+	 *
+	 * Permanent failures include HTTP 404/403/410 (expired or deleted eBay
+	 * images) and empty/invalid file responses. Transient failures (timeouts,
+	 * 5xx, DNS) are worth retrying.
+	 *
+	 * @param WP_Error $wp_error The error returned by media_sideload_image.
+	 * @return bool True if the failure is permanent.
+	 */
+	private static function is_permanent_image_failure( $wp_error ) {
+		$message = strtolower( $wp_error->get_error_message() );
+
+		$permanent_patterns = array(
+			'404', '403', '410',
+			'not found', 'forbidden', 'gone',
+			'file is empty', 'invalid url', 'invalid image',
+			'not an accepted', 'could not calculate',
+		);
+
+		foreach ( $permanent_patterns as $pattern ) {
+			if ( false !== strpos( $message, $pattern ) ) {
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	/**
