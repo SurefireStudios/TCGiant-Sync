@@ -1,0 +1,80 @@
+# PHPStan configuration for TCGiant Sync.
+#
+# Run:  composer analyse
+# or:   vendor/bin/phpstan analyse --memory-limit=1G
+#
+# Level 5 is a deliberate starting point. It catches the bugs that actually bit
+# us — calls to undefined methods and properties, wrong argument counts, bad
+# return types — without drowning the report in missing-typehint noise. Raise it
+# once the codebase is clean at this level.
+parameters:
+    level: 5
+
+    # The WordPress stub file is a single ~10 MB PHP file. Each parallel worker
+    # loads its own copy, which exhausts memory before analysis starts. One
+    # process is slower but actually completes.
+    parallel:
+        maximumNumberOfProcesses: 1
+
+    paths:
+        - tcgiant-sync.php
+        - uninstall.php
+        - includes
+        - admin
+
+    excludePaths:
+        analyseAndScan:
+            # Third-party library, not ours to fix.
+            - includes/plugin-update-checker/*
+            # Competitor source kept for reference only; not shipped, not loaded.
+            - wp-lister-ebay*
+            - vendor/*
+            - zips/*
+
+    # WordPress, WooCommerce and WP-CLI function/class definitions. Without
+    # these every add_action() and WC_Product reference is reported as undefined.
+    scanFiles:
+        - vendor/php-stubs/wordpress-stubs/wordpress-stubs.php
+        - vendor/php-stubs/woocommerce-stubs/woocommerce-stubs.php
+        - vendor/php-stubs/wp-cli-stubs/wp-cli-stubs.php
+
+    # Declares the plugin's own constants and the WordPress core constants that
+    # are set at runtime rather than declared in the stubs.
+    bootstrapFiles:
+        - phpstan-bootstrap.php
+
+    # Action Scheduler ships inside WooCommerce rather than as a stub package,
+    # and ActionScheduler_Store is referenced for its status constants.
+    universalObjectCratesClasses:
+        - stdClass
+
+    ignoreErrors:
+        # --- Symbols that exist at runtime but not during analysis ---
+
+        # Action Scheduler ships inside WooCommerce and has no stub package.
+        # Every call site is already guarded with function_exists()/class_exists().
+        - '#^Function as_[a-z_]+ not found\.$#'
+        - '#ActionScheduler_[A-Za-z_]+#'
+
+        # Plugin Update Checker is a vendored third-party library excluded from
+        # analysis, so its namespace is unknown here.
+        - '#YahnisElsts\\PluginUpdateChecker#'
+
+        # wp-admin/includes/*.php are pulled in on demand and only exist inside
+        # a real WordPress install, not in this repo.
+        - '#^Path in require_once\(\) ".*wp-admin[\\\\/]includes[\\\\/].*" is not a file or it does not exist\.$#'
+
+        # --- Stub strictness, not real defects ---
+
+        # The WordPress stubs type esc_attr()/esc_html() as string-only, but PHP
+        # coerces int/float transparently and WordPress documents them as mixed.
+        # Casting ~20 template call sites would be pure churn.
+        - '#^Parameter \#1 \$text of function esc_(attr|html) expects string, (int|float)[<>,0-9a-z |]* given\.$#'
+
+        # TCGIANT_SYNC_IS_STAGING is declared false in the analysis bootstrap, so
+        # every staging guard reads as permanently false. It is set from the real
+        # environment at runtime.
+        - '#(Result of &&|Right side of &&) is always false\.$#'
+
+    treatPhpDocTypesAsCertain: false
+    reportUnmatchedIgnoredErrors: false

@@ -1,0 +1,35 @@
+{
+    "name": "surefirestudios/tcgiant-sync",
+    "description": "Development tooling for the TCGiant Sync WordPress plugin. Not shipped with the plugin.",
+    "type": "wordpress-plugin",
+    "license": "GPL-2.0-or-later",
+    "require": {
+        "php": ">=7.4"
+    },
+    "require-dev": {
+        "phpstan/phpstan": "^2.0",
+        "php-stubs/wordpress-stubs": "^6.6",
+        "php-stubs/woocommerce-stubs": "^9.0",
+        "php-stubs/wp-cli-stubs": "^2.10"
+    },
+    "config": {
+        "platform": {
+            "php": "7.4.33"
+        },
+        "optimize-autoloader": true
+    },
+    "scripts": {
+        "lint": "@php tools/lint.php",
+        "analyse": "@php vendor/phpstan/phpstan/phpstan.phar analyse --memory-limit=3G",
+        "analyse-baseline": "@php vendor/phpstan/phpstan/phpstan.phar analyse --memory-limit=3G --generate-baseline",
+        "check": [
+            "@lint",
+            "@analyse"
+        ]
+    },
+    "scripts-descriptions": {
+        "lint": "Run php -l over every plugin source file.",
+        "analyse": "Run PHPStan static analysis (level 5).",
+        "check": "Run lint then analyse — use this before tagging a release."
+    }
+}

@@ -9,3 +9,12 @@ tcg-admin-ajax.php
 wp-lister-ebay/
 wp-lister-ebay(do not use)/
 .agents/
+
+# Dev tooling — composer.json/composer.lock ARE tracked so the checks are
+# reproducible, but the installed packages must never ship in the plugin zip.
+/vendor/
+.phpunit.result.cache
+phpstan-baseline.neon
+
+# Internal audit notes — contains exploitation detail, keep out of the public repo.
+AUDIT-*.md

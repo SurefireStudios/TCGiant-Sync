@@ -1,0 +1,48 @@
+name: Static Analysis
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  analyse:
+    name: Lint and PHPStan
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          # Lint on the oldest version the plugin claims to support, so we do
+          # not accidentally ship syntax that breaks on a customer's host.
+          php-version: '7.4'
+          coverage: none
+          tools: none
+
+      - name: Syntax check (php -l)
+        run: php tools/lint.php
+
+      # PHPStan itself needs a modern PHP; the analysis still targets 7.4 via
+      # the platform setting in composer.json.
+      - name: Set up PHP for analysis
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+
+      - name: Cache Composer packages
+        uses: actions/cache@v4
+        with:
+          path: vendor
+          key: ${{ runner.os }}-composer-${{ hashFiles('composer.lock') }}
+          restore-keys: ${{ runner.os }}-composer-
+
+      - name: Install dependencies
+        run: composer install --no-interaction --no-progress --prefer-dist
+
+      - name: PHPStan
+        run: php vendor/phpstan/phpstan/phpstan.phar analyse --memory-limit=3G --no-progress --error-format=github
