@@ -1,5 +1,11 @@
 *** TCGiant Sync Changelog ***
 
+2026-07-30 - version 3.3.4
+== Images ==
+- CRITICAL: Fixed broken images on sites using "Disable background image localization" (the "keep eBay-hosted URLs" option). Images were never displaying at all in this mode. The plugin stored the eBay image address in the WordPress field meant to hold a file path, and WordPress treats that field as a location inside your uploads folder — so it built addresses like "https://yoursite.com/wp-content/uploads/https://i.ebayimg.com/..." which cannot load. Product images, gallery images and thumbnails in the admin product list were all affected. Images now resolve to the correct eBay address.
+- Existing products are corrected automatically — no re-import needed. Images should appear immediately after updating.
+- Housekeeping: the bad file-path value is cleaned off affected images in the background, so other plugins that read that field (media tools, backups, CDN integrations) are no longer given a web address where they expect a filename.
+
 2026-07-30 - version 3.3.3
 == Images ==
 - FIX: Products stuck showing an eBay-hosted image now repair themselves. If a download failed at some point, the product kept a temporary stand-in image pointing at eBay — which stops working once that listing ends. The plugin could not tell that stand-in apart from a real downloaded image, so it considered the product finished and never revisited it. Because the eBay image addresses never change, neither a re-sync nor a full re-fetch could rescue it either. Affected products are now detected and re-queued automatically on the next ordinary sync. No action needed.

@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.3.3
+Stable tag: 3.3.4
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,12 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.3.4 - 2026-07-30 =
+**Images**
+* CRITICAL: Fixed broken images on sites using "Disable background image localization" (keep eBay-hosted URLs). Images never displayed at all in this mode. The eBay address was stored in the WordPress field meant for a file path, and WordPress treats that as a location inside your uploads folder — producing addresses like "https://yoursite.com/wp-content/uploads/https://i.ebayimg.com/..." which cannot load. Product images, galleries and admin thumbnails were all affected.
+* Existing products are corrected automatically — no re-import needed. Images should appear immediately after updating.
+* The bad file-path value is cleaned off affected images in the background so other plugins reading that field are not given a web address where they expect a filename.
 
 = 3.3.3 - 2026-07-30 =
 **Images**
@@ -509,6 +515,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.3.4 =
+Important if you use "Disable background image localization" (keep eBay-hosted URLs) — images never displayed at all in that mode, because the eBay address was being stored in a field WordPress treats as a file path inside your uploads folder. Existing products are corrected automatically on update, with no re-import needed.
 
 = 3.3.3 =
 No action needed after updating. Products left showing an eBay-hosted image because a download failed are now detected and repaired automatically on the next sync — previously nothing could fix them, including a full re-fetch. Also makes "Re-sync images only" actually re-download.

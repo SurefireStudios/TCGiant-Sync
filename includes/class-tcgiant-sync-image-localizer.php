@@ -69,6 +69,150 @@ class TCGiant_Sync_Image_Localizer {
 	 */
 	public function __construct() {
 		add_action( self::CRON_HOOK, array( $this, 'process_batch' ) );
+
+		// Make placeholder attachments resolve to their real eBay URL.
+		//
+		// A placeholder stores the eBay address in _wp_attached_file, but
+		// WordPress treats that value as a path relative to the uploads folder
+		// and prepends the uploads base URL, producing
+		//   https://site.com/wp-content/uploads/https://i.ebayimg.com/...
+		// Every placeholder image was therefore broken, which is why the
+		// "keep eBay-hosted URLs" mode showed no images at all. These filters
+		// return the stored URL instead.
+		add_filter( 'wp_get_attachment_url', array( __CLASS__, 'filter_attachment_url' ), 10, 2 );
+		add_filter( 'wp_get_attachment_image_src', array( __CLASS__, 'filter_image_src' ), 10, 2 );
+		add_filter( 'wp_calculate_image_srcset', array( __CLASS__, 'filter_srcset' ), 10, 5 );
+		add_filter( 'wp_get_attachment_metadata', array( __CLASS__, 'filter_metadata' ), 10, 2 );
+
+		add_action( 'admin_init', array( __CLASS__, 'maybe_clean_placeholder_paths' ) );
+	}
+
+	/**
+	 * Strip the bogus _wp_attached_file value from existing placeholders.
+	 *
+	 * Placeholders created before this fix stored a full eBay URL there. The
+	 * filters above already correct what is displayed, but leaving a URL in a
+	 * field every other plugin reads as a file path invites breakage elsewhere
+	 * — media tools, backup plugins and CDN integrations all consult it.
+	 *
+	 * Runs in small batches on admin requests until nothing is left.
+	 *
+	 * @return void
+	 */
+	public static function maybe_clean_placeholder_paths() {
+		if ( get_option( 'tcgiant_placeholder_paths_cleaned' ) ) {
+			return;
+		}
+
+		global $wpdb;
+
+		// Placeholders whose _wp_attached_file still looks like a URL.
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$ids = $wpdb->get_col(
+			"SELECT pm_file.post_id
+			 FROM {$wpdb->postmeta} pm_file
+			 INNER JOIN {$wpdb->postmeta} pm_ext
+			         ON pm_file.post_id = pm_ext.post_id
+			        AND pm_ext.meta_key = '_tcgiant_external_url'
+			 WHERE pm_file.meta_key = '_wp_attached_file'
+			   AND pm_file.meta_value LIKE 'http%'
+			 LIMIT 200"
+		);
+
+		if ( empty( $ids ) ) {
+			update_option( 'tcgiant_placeholder_paths_cleaned', 1, false );
+			return;
+		}
+
+		foreach ( $ids as $id ) {
+			delete_post_meta( (int) $id, '_wp_attached_file' );
+		}
+
+		TCGiant_Sync_Logger::log( sprintf(
+			'Cleaned %d placeholder attachment(s) that stored an eBay URL as a file path.',
+			count( $ids )
+		) );
+	}
+
+	/**
+	 * Get the external URL stored on a placeholder attachment.
+	 *
+	 * @param int $attachment_id Attachment ID.
+	 * @return string Empty string when this is a normal local attachment.
+	 */
+	private static function external_url_for( $attachment_id ) {
+		$attachment_id = (int) $attachment_id;
+		if ( ! $attachment_id ) {
+			return '';
+		}
+		$url = get_post_meta( $attachment_id, '_tcgiant_external_url', true );
+		return is_string( $url ) ? $url : '';
+	}
+
+	/**
+	 * Return the eBay URL for placeholder attachments.
+	 *
+	 * @param string $url           URL WordPress calculated.
+	 * @param int    $attachment_id Attachment ID.
+	 * @return string
+	 */
+	public static function filter_attachment_url( $url, $attachment_id ) {
+		$external = self::external_url_for( $attachment_id );
+		return $external ? $external : $url;
+	}
+
+	/**
+	 * Return the eBay URL for placeholder attachments in image contexts.
+	 *
+	 * Covers wp_get_attachment_image(), which is what WooCommerce and the
+	 * products list use to render thumbnails.
+	 *
+	 * @param array|false $image         Array of [url, width, height, is_intermediate].
+	 * @param int         $attachment_id Attachment ID.
+	 * @return array|false
+	 */
+	public static function filter_image_src( $image, $attachment_id ) {
+		$external = self::external_url_for( $attachment_id );
+		if ( ! $external ) {
+			return $image;
+		}
+
+		// eBay serves whatever size the URL asks for; report the nominal
+		// dimensions and flag it as a full-size (non-intermediate) image.
+		return array( $external, 800, 800, false );
+	}
+
+	/**
+	 * Suppress srcset for placeholder attachments.
+	 *
+	 * There are no generated sizes behind them, so any calculated srcset would
+	 * point at files that do not exist.
+	 *
+	 * @param array $sources       Calculated srcset sources.
+	 * @param array $size_array    Requested size.
+	 * @param string $image_src    Image source.
+	 * @param array $image_meta    Attachment metadata.
+	 * @param int   $attachment_id Attachment ID.
+	 * @return array
+	 */
+	public static function filter_srcset( $sources, $size_array, $image_src, $image_meta, $attachment_id ) {
+		return self::external_url_for( $attachment_id ) ? array() : $sources;
+	}
+
+	/**
+	 * Keep placeholder metadata from pointing at a non-existent local file.
+	 *
+	 * @param array $data          Attachment metadata.
+	 * @param int   $attachment_id Attachment ID.
+	 * @return array
+	 */
+	public static function filter_metadata( $data, $attachment_id ) {
+		if ( ! self::external_url_for( $attachment_id ) || ! is_array( $data ) ) {
+			return $data;
+		}
+		// No intermediate sizes exist for a placeholder.
+		$data['sizes'] = array();
+		return $data;
 	}
 
 	/**
@@ -225,17 +369,21 @@ class TCGiant_Sync_Image_Localizer {
 		), false, $product_id );
 
 		if ( $attachment_id && ! is_wp_error( $attachment_id ) ) {
-			// Store external URL metadata so WP knows where to find the image.
-			update_post_meta( $attachment_id, '_wp_attached_file', $url );
+			// The external URL is the source of truth, read back by the
+			// wp_get_attachment_url / _image_src filters registered above.
 			update_post_meta( $attachment_id, '_tcgiant_external_url', $url );
 			update_post_meta( $attachment_id, '_tcgiant_source_url', preg_replace( '/\?.*$/', '', $url ) );
 
-			// Generate a minimal _wp_attachment_metadata pointing to the external URL.
-			// This lets wp_get_attachment_image_src() return the eBay URL.
+			// Deliberately NOT storing the URL in _wp_attached_file.
+			// WordPress treats that value as a path relative to the uploads
+			// directory and prepends the uploads base URL, which turned every
+			// placeholder into
+			//   https://site.com/wp-content/uploads/https://i.ebayimg.com/...
+			// and is why images never appeared with localization disabled.
+
 			$metadata = array(
 				'width'  => 800,
 				'height' => 800,
-				'file'   => $url,
 				'sizes'  => array(),
 			);
 			update_post_meta( $attachment_id, '_wp_attachment_metadata', $metadata );
