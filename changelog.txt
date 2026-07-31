@@ -1,5 +1,11 @@
 *** TCGiant Sync Changelog ***
 
+2026-07-31 - version 3.4.0
+== New ==
+- NEW: "Imported Image Size" setting (Settings -> Import Settings). Choose Original, 1200px, 800px or 600px for images downloaded from eBay. eBay serves every size from the same address, so a smaller choice is requested instead of downloading the full-size file and shrinking it afterwards — saving download time as well as disk space, and reducing every thumbnail WordPress generates from it. Roughly 100-300KB per image at Original against 50-120KB at 800px, so a large catalogue can drop by well over half. 800px is ample for a product page on most themes.
+- The setting only affects images downloaded from that point on; images already in your Media Library are left alone. Switching it also never causes images to be re-downloaded unnecessarily, because deduplication still tracks eBay's original address.
+- Developers: JPEG quality for imported images can be adjusted with the tcgiant_sync_image_quality filter. It applies only while eBay images are being imported, never to your own uploads.
+
 2026-07-30 - version 3.3.5
 == Images ==
 - FIX: Turning image downloading back on now actually restarts it. If you had "Disable background image localization" switched on, the background task stopped and was never re-scheduled, so switching the setting back to "download to Media Library" appeared to do nothing — and neither did the Process Queue button, because there was no scheduled task left for it to run. The plugin now notices when there are images waiting but nothing scheduled, and restarts the queue automatically within a minute of visiting the admin.

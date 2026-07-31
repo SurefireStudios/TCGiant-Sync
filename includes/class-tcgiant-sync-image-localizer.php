@@ -46,6 +46,49 @@ class TCGiant_Sync_Image_Localizer {
 	const CRON_HOOK = 'tcgiant_sync_localize_images';
 
 	/**
+	 * Image widths eBay will serve, offered as import options.
+	 *
+	 * eBay hosts every size behind the same URL — the "s-l{width}" segment
+	 * selects which one is returned. Asking for a smaller variant saves the
+	 * bytes before they are ever transferred, which cuts download time and
+	 * disk use together, and shrinks every derivative WordPress generates from
+	 * it as well.
+	 */
+	const EBAY_IMAGE_WIDTHS = array( 1600, 1200, 800, 600 );
+
+	/**
+	 * Rewrite an eBay image URL to the configured maximum width.
+	 *
+	 * Only the URL used for downloading is changed. The original address is
+	 * still what gets recorded for deduplication, so switching this setting
+	 * never orphans images that were already downloaded.
+	 *
+	 * @param string $url Original eBay image URL.
+	 * @return string URL to download, unchanged if it is not a recognised eBay image.
+	 */
+	public static function apply_image_size_preference( $url ) {
+		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
+		$width    = isset( $settings['import_image_width'] ) ? (int) $settings['import_image_width'] : 0;
+
+		// 0 or an unrecognised value means "leave eBay's own URL alone".
+		if ( ! in_array( $width, self::EBAY_IMAGE_WIDTHS, true ) ) {
+			return $url;
+		}
+
+		// eBay image URLs look like .../s-l1600.jpg, sometimes with a query
+		// string appended. Anything that does not match is left untouched.
+		$pattern = '#/s-l\d+(\.(?:jpe?g|png|webp|gif))(\?.*)?$#i';
+
+		if ( ! preg_match( $pattern, $url ) ) {
+			return $url;
+		}
+
+		$rewritten = preg_replace( $pattern, '/s-l' . $width . '$1$2', $url );
+
+		return $rewritten ? $rewritten : $url;
+	}
+
+	/**
 	 * Instance.
 	 *
 	 * @var self|null
@@ -536,6 +579,21 @@ class TCGiant_Sync_Image_Localizer {
 		$timeout_filter = function() { return 30; };
 		add_filter( 'http_request_timeout', $timeout_filter );
 
+		/**
+		 * JPEG quality for images imported from eBay.
+		 *
+		 * Scoped to this batch and removed afterwards, so it never affects
+		 * images the merchant uploads themselves. Defaults to WordPress's own
+		 * value; lowering it to around 78 is usually indistinguishable on
+		 * product photography and saves roughly a further fifth of the bytes.
+		 *
+		 * @param int $quality JPEG quality, 1-100.
+		 */
+		$quality_filter = function() {
+			return (int) apply_filters( 'tcgiant_sync_image_quality', 82 );
+		};
+		add_filter( 'wp_editor_set_quality', $quality_filter );
+
 		if ( function_exists( 'wp_raise_memory_limit' ) ) {
 			wp_raise_memory_limit( 'image' );
 		}
@@ -552,6 +610,7 @@ class TCGiant_Sync_Image_Localizer {
 		}
 
 		remove_filter( 'http_request_timeout', $timeout_filter );
+		remove_filter( 'wp_editor_set_quality', $quality_filter );
 
 		TCGiant_Sync_Logger::log( sprintf(
 			'Image localizer: Batch complete. %d downloaded, %d skipped, %d failed.',
@@ -666,8 +725,10 @@ class TCGiant_Sync_Image_Localizer {
 				continue;
 			}
 
-			// Download the image.
-			$id = media_sideload_image( $image_url, $product_id, null, 'id' );
+			// Download the image, honouring the configured maximum width.
+			// $clean_url (the original address) remains the dedup key, so
+			// changing the size setting never orphans existing downloads.
+			$id = media_sideload_image( self::apply_image_size_preference( $image_url ), $product_id, null, 'id' );
 			if ( is_wp_error( $id ) ) {
 				// A 404/403/410 will never succeed, so it must not keep the
 				// product in the retry queue forever. Anything else (timeout,

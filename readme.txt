@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.3.5
+Stable tag: 3.4.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,12 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.4.0 - 2026-07-31 =
+**New**
+* NEW: "Imported Image Size" setting — choose Original, 1200px, 800px or 600px for images downloaded from eBay. eBay serves every size from the same address, so a smaller choice is requested rather than downloading the full file and shrinking it afterwards. That saves download time as well as disk space, and reduces every thumbnail WordPress generates. Roughly 100-300KB per image at Original against 50-120KB at 800px.
+* Only affects images downloaded from that point on; existing images are untouched, and deduplication still tracks eBay's original address so nothing is needlessly re-downloaded.
+* Developers: adjust JPEG quality for imported images with the `tcgiant_sync_image_quality` filter. Scoped to eBay imports only.
 
 = 3.3.5 - 2026-07-30 =
 **Images**
@@ -520,6 +526,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.4.0 =
+Adds an "Imported Image Size" setting. If disk space matters, set it to 800px before importing images — eBay serves that size directly, so files are around half to a third the size with no visible difference on a product page. Existing images are unaffected.
 
 = 3.3.5 =
 Includes the 3.3.4 image fix, plus: switching "Disable background image localization" back off now actually restarts downloading. Previously the background task had been left unscheduled, so re-enabling the setting did nothing.

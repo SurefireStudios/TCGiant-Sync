@@ -324,6 +324,16 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						<p class="description"><?php esc_html_e( 'By default, listings point at images on this site, which means eBay has to be able to reach it. Turn this on to upload each image to eBay Picture Services instead — necessary if your site is password-protected, behind bot protection, or may change domain. Uploads are cached, so repeat pushes do not re-upload.', 'tcgiant-sync' ); ?></p>
 					</div>
 					<div class="tc-field">
+						<label class="tc-label" for="ebay_import_image_width"><?php esc_html_e( 'Imported Image Size', 'tcgiant-sync' ); ?></label>
+						<select name="tcgiant_sync_ebay_settings[import_image_width]" id="ebay_import_image_width" class="tc-select">
+							<option value="0" <?php selected( (string) ( $settings['import_image_width'] ?? '0' ), '0' ); ?>><?php esc_html_e( 'Original — full size from eBay (largest files)', 'tcgiant-sync' ); ?></option>
+							<option value="1200" <?php selected( (string) ( $settings['import_image_width'] ?? '0' ), '1200' ); ?>><?php esc_html_e( 'Large — up to 1200px', 'tcgiant-sync' ); ?></option>
+							<option value="800" <?php selected( (string) ( $settings['import_image_width'] ?? '0' ), '800' ); ?>><?php esc_html_e( 'Medium — up to 800px (recommended)', 'tcgiant-sync' ); ?></option>
+							<option value="600" <?php selected( (string) ( $settings['import_image_width'] ?? '0' ), '600' ); ?>><?php esc_html_e( 'Small — up to 600px (smallest files)', 'tcgiant-sync' ); ?></option>
+						</select>
+						<p class="description"><?php esc_html_e( 'eBay can serve any of these sizes, so a smaller choice is downloaded instead of being resized afterwards — it saves download time as well as disk space, and every thumbnail WordPress generates from it shrinks too. 800px is ample for a product page on most themes. Roughly 100-300KB per image at Original, against 50-120KB at Medium. Only affects images downloaded from now on; existing images are left alone.', 'tcgiant-sync' ); ?></p>
+					</div>
+					<div class="tc-field">
 						<label class="tc-label" for="ebay_log_level"><?php esc_html_e( 'Log Detail', 'tcgiant-sync' ); ?></label>
 						<select name="tcgiant_sync_ebay_settings[log_level]" id="ebay_log_level" class="tc-select">
 							<option value="info" <?php selected( $settings['log_level'] ?? 'info', 'info' ); ?>><?php esc_html_e( 'Everything (default)', 'tcgiant-sync' ); ?></option>
