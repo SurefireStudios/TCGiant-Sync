@@ -62,8 +62,12 @@ class TCGiant_Sync_OAuth {
 
 	/**
 	 * How long a pending OAuth handshake stays valid (seconds).
+	 *
+	 * Generous on purpose: the merchant may pause on eBay's consent screen, and
+	 * expiring mid-flow rejects a perfectly good connection with a confusing
+	 * "no pending authorization" error.
 	 */
-	const STATE_TTL = 900;
+	const STATE_TTL = 1800;
 
 	/**
 	 * Get the Authorization URL to put behind a "Connect to eBay" button.
