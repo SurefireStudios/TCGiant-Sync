@@ -710,12 +710,33 @@ class TCGiant_Sync_Exporter {
 				TCGiant_Sync_Logger::error( sprintf( 'Export failed for "%s" (WC #%d): %s', $title, $product_id, $error_msg ) );
 			} else {
 				$item_id = $result['item_id'];
-				$action  = $result['action']; // 'created' or 'updated'
+				$action  = $result['action']; // 'created', 'updated' or 'relisted'
 
 				$product->update_meta_data( '_ebay_item_id', $item_id );
 				$product->update_meta_data( '_ebay_export_status', 'pushed' );
 				$product->update_meta_data( '_ebay_export_error', '' );
 				$product->update_meta_data( '_ebay_export_last_pushed', current_time( 'mysql' ) );
+
+				// A newly created listing is live, so clear any stale "Ended"
+				// state left over from the listing it replaced — otherwise the
+				// product keeps showing as ended and the ended-listing cron
+				// would mark it so again.
+				if ( 'updated' !== $action ) {
+					$product->update_meta_data( '_ebay_listing_status', 'Active' );
+					$product->delete_meta_data( '_ebay_end_time' );
+				}
+
+				if ( ! empty( $result['previous_item_id'] ) ) {
+					$product->update_meta_data( '_ebay_previous_item_id', $result['previous_item_id'] );
+					TCGiant_Sync_Logger::log( sprintf(
+						'Relisted "%s" (WC #%d): ended listing %s replaced by new listing %s.',
+						$title,
+						$product_id,
+						$result['previous_item_id'],
+						$item_id
+					), 'success' );
+				}
+
 				$product->save();
 
 				$state = self::get_export_state();
@@ -841,20 +862,43 @@ class TCGiant_Sync_Exporter {
 			}
 		}
 
+		$previous_item_id = '';
+
 		if ( ! empty( $ebay_item_id ) ) {
 			// Existing listing — revise it.
 			$full_xml = '<Item>' . "\n" . '<ItemID>' . esc_attr( $ebay_item_id ) . '</ItemID>' . "\n" . $item_xml . "\n" . '</Item>';
 			$response = $api->revise_item( $full_xml );
 
-			if ( is_wp_error( $response ) ) {
+			if ( ! is_wp_error( $response ) ) {
+				// ReviseItem returns ItemID in the response.
+				$returned_item_id = $response['ItemID'] ?? $ebay_item_id;
+				return array( 'item_id' => $returned_item_id, 'action' => 'updated' );
+			}
+
+			// An ended listing cannot be revised, and its format cannot be
+			// changed — eBay requires a brand new listing. Previously this was
+			// a dead end: the product kept its old Item ID, so every push tried
+			// to revise again and failed the same way, with no route back to
+			// being listed.
+			//
+			// The decision is made from eBay's own response rather than local
+			// status, so a listing that is actually still live can never be
+			// duplicated by mistake.
+			if ( ! self::is_ended_listing_error( $response ) ) {
 				return $response;
 			}
 
-			// ReviseItem returns ItemID in the response.
-			$returned_item_id = $response['ItemID'] ?? $ebay_item_id;
-			return array( 'item_id' => $returned_item_id, 'action' => 'updated' );
+			TCGiant_Sync_Logger::log( sprintf(
+				'eBay listing %s has ended and cannot be revised — creating a new listing for WC #%d instead.',
+				$ebay_item_id,
+				$product->get_id()
+			) );
 
-		} else {
+			$previous_item_id = $ebay_item_id;
+			$ebay_item_id     = '';
+		}
+
+		{
 			// New listing — add it. UUID prevents duplicate creation on timeout/retry.
 			$uuid = TCGiant_Sync_API::generate_ebay_uuid();
 			$full_xml = '<Item>' . "\n" . '<UUID>' . $uuid . '</UUID>' . "\n" . $item_xml . "\n" . '</Item>';
@@ -868,8 +912,51 @@ class TCGiant_Sync_Exporter {
 				return new WP_Error( 'no_item_id', __( 'eBay did not return an Item ID after AddItem. Listing may have been created — check your eBay account.', 'tcgiant-sync' ) );
 			}
 
-			return array( 'item_id' => $response['ItemID'], 'action' => 'created' );
+			return array(
+				'item_id'          => $response['ItemID'],
+				'action'           => $previous_item_id ? 'relisted' : 'created',
+				'previous_item_id' => $previous_item_id,
+			);
 		}
+	}
+
+	/**
+	 * Does this eBay error mean the listing has ended?
+	 *
+	 * Ended listings cannot be revised, and their format cannot be changed, so
+	 * the only way forward is a new listing. Detected from eBay's own response
+	 * rather than local status, which means a listing that is genuinely still
+	 * live can never be duplicated by mistake.
+	 *
+	 * Matched on message text because eBay returns several distinct error codes
+	 * for this condition depending on the listing format.
+	 *
+	 * @param WP_Error $error Error returned by ReviseItem.
+	 * @return bool
+	 */
+	public static function is_ended_listing_error( $error ) {
+		if ( ! is_wp_error( $error ) ) {
+			return false;
+		}
+
+		$message = strtolower( $error->get_error_message() );
+
+		$patterns = array(
+			'not allowed to revise ended listing',
+			'revise ended listing',
+			'listing has ended',
+			'ended listing',
+			'auction has already been closed',
+			'already been closed',
+		);
+
+		foreach ( $patterns as $pattern ) {
+			if ( false !== strpos( $message, $pattern ) ) {
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	/**

@@ -1,5 +1,13 @@
 *** TCGiant Sync Changelog ***
 
+2026-07-31 - version 3.4.1
+== Relisting ==
+- FIX: You can now relist an ended listing. Pushing a product whose eBay listing had ended always failed with "You are not allowed to revise ended listings", and there was no way out — the product kept its old Item ID, so every attempt tried to revise the same ended listing again. Ending a listing effectively made the product unlistable. Pushing now creates a fresh listing automatically when eBay reports the old one has ended.
+- FIX: You can now change listing type after ending. eBay does not allow a listing's format to be changed, so switching between Auction and Fixed Price requires a new listing. That now happens automatically as part of the same push.
+- The decision comes from eBay's own response, not from the status stored here, so a listing that is genuinely still live can never be duplicated by mistake. Any other error is reported as before rather than creating anything.
+- The button now reads "Relist on eBay" instead of "Update" when a listing has ended, so it is clear a new listing will be created.
+- The previous eBay Item ID is kept on the product for reference, and the product is marked Active again once relisted.
+
 2026-07-31 - version 3.4.0
 == New ==
 - NEW: "Imported Image Size" setting (Settings -> Import Settings). Choose Original, 1200px, 800px or 600px for images downloaded from eBay. eBay serves every size from the same address, so a smaller choice is requested instead of downloading the full-size file and shrinking it afterwards — saving download time as well as disk space, and reducing every thumbnail WordPress generates from it. Roughly 100-300KB per image at Original against 50-120KB at 800px, so a large catalogue can drop by well over half. 800px is ample for a product page on most themes.

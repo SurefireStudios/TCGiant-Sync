@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.4.0
+Stable tag: 3.4.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,14 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.4.1 - 2026-07-31 =
+**Relisting**
+* FIX: You can now relist an ended listing. Pushing a product whose listing had ended always failed with "You are not allowed to revise ended listings", and there was no way out — the product kept its old Item ID, so every attempt revised the same ended listing again. Ending a listing effectively made the product unlistable. Pushing now creates a fresh listing automatically.
+* FIX: You can now change listing type after ending. eBay does not allow a listing's format to change, so Auction to Fixed Price requires a new listing — this now happens automatically as part of the push.
+* The decision comes from eBay's own response rather than locally stored status, so a listing that is still live can never be duplicated by mistake. Other errors are reported as before.
+* The button reads "Relist on eBay" instead of "Update" when a listing has ended.
+* The previous Item ID is kept for reference and the product is marked Active again once relisted.
 
 = 3.4.0 - 2026-07-31 =
 **New**
@@ -526,6 +534,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.4.1 =
+Important if you end listings. Previously a product whose eBay listing had ended could not be listed again — every push failed with "You are not allowed to revise ended listings" and there was no way to recover. Pushing now creates a fresh listing automatically, which also makes it possible to switch between Auction and Fixed Price.
 
 = 3.4.0 =
 Adds an "Imported Image Size" setting. If disk space matters, set it to 800px before importing images — eBay serves that size directly, so files are around half to a third the size with no visible difference on a product page. Existing images are unaffected.

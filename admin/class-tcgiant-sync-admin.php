@@ -2308,8 +2308,22 @@ class TCGiant_Sync_Admin {
 		}
 
 		// Push/Update button.
-		$btn_label = ! empty( $ebay_item_id ) ? '↺ Update' : '📤 Push to eBay';
-		$btn_class = ! empty( $ebay_item_id ) ? 'tc-ebay-btn tc-ebay-btn-update' : 'tc-ebay-btn tc-ebay-btn-push';
+		// An ended listing cannot be revised — pushing creates a fresh listing
+		// instead. Say so on the button, rather than offering "Update" for
+		// something that will produce a new Item ID.
+		$listing_has_ended = ! empty( $ebay_item_id )
+			&& ( ( 'Ended' === $listing_status ) || ( ! empty( $end_time ) && strtotime( $end_time ) && strtotime( $end_time ) < time() ) );
+
+		if ( $listing_has_ended ) {
+			$btn_label = '↻ ' . __( 'Relist on eBay', 'tcgiant-sync' );
+			$btn_class = 'tc-ebay-btn tc-ebay-btn-push';
+		} elseif ( ! empty( $ebay_item_id ) ) {
+			$btn_label = '↺ Update';
+			$btn_class = 'tc-ebay-btn tc-ebay-btn-update';
+		} else {
+			$btn_label = '📤 Push to eBay';
+			$btn_class = 'tc-ebay-btn tc-ebay-btn-push';
+		}
 		echo '<button type="button" class="' . esc_attr( $btn_class ) . '" data-product-id="' . esc_attr( $post_id ) . '">' . esc_html( $btn_label ) . '</button>';
 		echo '<span class="tc-ebay-btn-status" data-product-id="' . esc_attr( $post_id ) . '"></span>';
 
