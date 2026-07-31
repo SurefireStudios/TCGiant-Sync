@@ -1,5 +1,12 @@
 *** TCGiant Sync Changelog ***
 
+2026-07-31 - version 3.4.2
+== Connecting to eBay ==
+- CRITICAL: Fixed being unable to connect or reconnect your eBay account. Attempting to connect failed with "Invalid callback data or state. Debug -> Code: NO | State: ...". This affected every version from 3.1.3 onwards and could not be worked around — reinstalling the plugin or unlinking on eBay's side made no difference.
+- Cause: 3.1.3 added a security check that sent an extra "state" value to the connection service. That service uses the presence of that value to tell an incoming callback from eBay apart from a request to start a new connection, so every connection attempt was misread as a broken callback and rejected. The value is no longer sent.
+- The security protection added in 3.1.3 is unaffected. The safeguard is a record kept on your own site that a connection was started from the Settings page, and that check is unchanged — connection details still cannot be planted by following a link from elsewhere.
+- The window to complete a connection is now 30 minutes rather than 15, so pausing on eBay's consent screen no longer causes a rejection.
+
 2026-07-31 - version 3.4.1
 == Relisting ==
 - FIX: You can now relist an ended listing. Pushing a product whose eBay listing had ended always failed with "You are not allowed to revise ended listings", and there was no way out — the product kept its old Item ID, so every attempt tried to revise the same ended listing again. Ending a listing effectively made the product unlistable. Pushing now creates a fresh listing automatically when eBay reports the old one has ended.

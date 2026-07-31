@@ -791,10 +791,14 @@ class TCGiant_Sync_Admin {
 		}
 
 		$oauth = TCGiant_Sync_OAuth::instance();
-		$state = $oauth->begin_authorization();
+
+		// Records the pending handshake locally. Nothing is appended to the
+		// relay URL — see get_relay_authorization_url() for why doing so broke
+		// connecting entirely.
+		$oauth->begin_authorization();
 
 		// External host, so wp_redirect() rather than wp_safe_redirect().
-		wp_redirect( $oauth->get_relay_authorization_url( $state ) ); // phpcs:ignore WordPress.Security.SafeRedirect.wp_redirect_wp_redirect
+		wp_redirect( $oauth->get_relay_authorization_url() ); // phpcs:ignore WordPress.Security.SafeRedirect.wp_redirect_wp_redirect
 		exit;
 	}
 

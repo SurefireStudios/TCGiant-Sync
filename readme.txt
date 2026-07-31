@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.4.1
+Stable tag: 3.4.2
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,13 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.4.2 - 2026-07-31 =
+**Connecting to eBay**
+* CRITICAL: Fixed being unable to connect or reconnect your eBay account, which failed with "Invalid callback data or state. Debug -> Code: NO | State: ...". Affected every version from 3.1.3 onwards, and could not be worked around — reinstalling or unlinking on eBay's side made no difference.
+* Cause: 3.1.3 added a security check that sent an extra "state" value to the connection service. That service uses the presence of that value to distinguish an incoming eBay callback from a request to start a connection, so every attempt was misread as a broken callback. It is no longer sent.
+* The security protection from 3.1.3 is unaffected — the safeguard is a record kept on your own site that a connection was started from the Settings page, and that is unchanged.
+* The window to complete a connection is now 30 minutes rather than 15, so pausing on eBay's consent screen no longer causes a rejection.
 
 = 3.4.1 - 2026-07-31 =
 **Relisting**
@@ -534,6 +541,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.4.2 =
+Update immediately if you cannot connect or reconnect your eBay account. Connecting failed with "Invalid callback data or state" on every version from 3.1.3 onwards, with no workaround. Fixed — connect from Settings as normal after updating.
 
 = 3.4.1 =
 Important if you end listings. Previously a product whose eBay listing had ended could not be listed again — every push failed with "You are not allowed to revise ended listings" and there was no way to recover. Pushing now creates a fresh listing automatically, which also makes it possible to switch between Auction and Fixed Price.

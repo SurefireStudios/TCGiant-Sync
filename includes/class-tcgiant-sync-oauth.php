@@ -90,13 +90,31 @@ class TCGiant_Sync_OAuth {
 	 * @return string Relay URL.
 	 */
 	public function get_relay_authorization_url( $state = '' ) {
+		/*
+		 * Do NOT add a "state" parameter here.
+		 *
+		 * The relay distinguishes "start a connection" from "this is the
+		 * callback coming back from eBay" by whether a state value is present.
+		 * Sending one on the outbound request made every connection attempt
+		 * look like a malformed callback, and the relay answered with
+		 *
+		 *   Invalid callback data or state. Debug -> Code: NO | State: ... |
+		 *
+		 * which blocked connecting and reconnecting entirely from 3.1.3 until
+		 * 3.4.2. The parameter is kept in the signature for compatibility but
+		 * is deliberately unused.
+		 *
+		 * Security is unaffected: the guard against a third party planting
+		 * their own credentials is the pending-handshake transient recorded in
+		 * begin_authorization(), which handle_oauth_callback() requires. That
+		 * was always the primary check — comparing a returned state was only
+		 * ever a bonus for a relay that echoed one back, and this one does not.
+		 */
+		unset( $state );
+
 		$params = array(
 			'site_url' => get_site_url(),
 		);
-
-		if ( ! empty( $state ) ) {
-			$params['state'] = $state;
-		}
 
 		return 'https://tcgiant.com/syncconnect/relay.php?' . http_build_query( $params );
 	}
