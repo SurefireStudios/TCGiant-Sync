@@ -1,5 +1,10 @@
 *** TCGiant Sync Changelog ***
 
+2026-07-30 - version 3.3.5
+== Images ==
+- FIX: Turning image downloading back on now actually restarts it. If you had "Disable background image localization" switched on, the background task stopped and was never re-scheduled, so switching the setting back to "download to Media Library" appeared to do nothing — and neither did the Process Queue button, because there was no scheduled task left for it to run. The plugin now notices when there are images waiting but nothing scheduled, and restarts the queue automatically within a minute of visiting the admin.
+- This also recovers from any other cause of a lost schedule, such as a site migration or a host clearing scheduled tasks.
+
 2026-07-30 - version 3.3.4
 == Images ==
 - CRITICAL: Fixed broken images on sites using "Disable background image localization" (the "keep eBay-hosted URLs" option). Images were never displaying at all in this mode. The plugin stored the eBay image address in the WordPress field meant to hold a file path, and WordPress treats that field as a location inside your uploads folder — so it built addresses like "https://yoursite.com/wp-content/uploads/https://i.ebayimg.com/..." which cannot load. Product images, gallery images and thumbnails in the admin product list were all affected. Images now resolve to the correct eBay address.

@@ -85,6 +85,57 @@ class TCGiant_Sync_Image_Localizer {
 		add_filter( 'wp_get_attachment_metadata', array( __CLASS__, 'filter_metadata' ), 10, 2 );
 
 		add_action( 'admin_init', array( __CLASS__, 'maybe_clean_placeholder_paths' ) );
+		add_action( 'admin_init', array( __CLASS__, 'maybe_rearm' ) );
+	}
+
+	/**
+	 * Re-arm the localizer when it has work but nothing scheduled.
+	 *
+	 * process_batch() bails at the "localization disabled" check before it
+	 * reaches the code that schedules the next run, so the single event fires
+	 * once, exits, and is never replaced. Turning the setting back on therefore
+	 * did nothing at all — there was no event left to run, and "Process Queue"
+	 * could not help either because it only runs events that are scheduled.
+	 *
+	 * This also covers any other way the schedule can be lost: a cleared cron
+	 * table, a migration, or a host that wipes scheduled events.
+	 *
+	 * @return void
+	 */
+	public static function maybe_rearm() {
+		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
+		if ( ! empty( $settings['disable_image_localization'] ) ) {
+			return; // Deliberately off.
+		}
+
+		if ( wp_next_scheduled( self::CRON_HOOK ) ) {
+			return; // Already queued.
+		}
+
+		if ( get_transient( 'tcgiant_localizer_rearm_check' ) ) {
+			return;
+		}
+		set_transient( 'tcgiant_localizer_rearm_check', 1, 5 * MINUTE_IN_SECONDS );
+
+		global $wpdb;
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$pending = (int) $wpdb->get_var(
+			"SELECT COUNT(*) FROM {$wpdb->postmeta}
+			 WHERE meta_key = '_tcgiant_images_localized' AND meta_value = '0'
+			 LIMIT 1"
+		);
+
+		if ( $pending < 1 ) {
+			return;
+		}
+
+		wp_schedule_single_event( time() + 30, self::CRON_HOOK );
+		TCGiant_Sync_Cron::request_dispatch();
+
+		TCGiant_Sync_Logger::log( sprintf(
+			'Image localization re-armed: %d product(s) waiting and nothing was scheduled.',
+			$pending
+		) );
 	}
 
 	/**

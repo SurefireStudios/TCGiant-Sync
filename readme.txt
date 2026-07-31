@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.3.4
+Stable tag: 3.3.5
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,11 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.3.5 - 2026-07-30 =
+**Images**
+* FIX: Turning image downloading back on now actually restarts it. With "Disable background image localization" switched on, the background task stopped and was never re-scheduled — so switching the setting back appeared to do nothing, and Process Queue could not help either because no scheduled task remained. The plugin now detects images waiting with nothing scheduled and restarts the queue automatically.
+* Also recovers from a lost schedule for any other reason, such as a site migration or a host clearing scheduled tasks.
 
 = 3.3.4 - 2026-07-30 =
 **Images**
@@ -515,6 +520,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.3.5 =
+Includes the 3.3.4 image fix, plus: switching "Disable background image localization" back off now actually restarts downloading. Previously the background task had been left unscheduled, so re-enabling the setting did nothing.
 
 = 3.3.4 =
 Important if you use "Disable background image localization" (keep eBay-hosted URLs) — images never displayed at all in that mode, because the eBay address was being stored in a field WordPress treats as a file path inside your uploads folder. Existing products are corrected automatically on update, with no re-import needed.
