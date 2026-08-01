@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.4.3
+Stable tag: 3.5.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,17 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.5.0 - 2026-07-31 =
+**Deleted products**
+* FIX: Products you delete no longer come back. Deleting left no record that you had done so, and because the plugin ignored items in the Trash it could not tell a deliberate deletion from a listing it had never seen — so it created the product again. A product in the Trash with the same eBay Item ID is now recognised as a deliberate deletion.
+* FIX: Items that have sold or ended are no longer re-imported. The hourly sync asks eBay for everything that changed recently, and a sale counts as a change — so items were reported at exactly the moment they sold and imported as new products. This was the most common way a deleted item reappeared.
+* Products that already exist for an ended listing are still marked as ended; only creating new ones is prevented.
+* Deliberately skipped items are no longer counted as errors.
+
+**Notes**
+* Emptying the Trash removes the record of a deletion. If the eBay listing is still live it will be imported again as a new product — to remove an item for good, end the listing on eBay first.
+* Developers: `tcgiant_sync_reimport_deleted_products` restores the previous behaviour.
 
 = 3.4.3 - 2026-07-31 =
 **Connecting to eBay**
@@ -544,6 +555,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.5.0 =
+Fixes deleted products reappearing after the item sold on eBay. Deleting a product left no record of the deletion, and the hourly sync treats a sale as a change — so a sold item was reported by eBay at exactly the moment you deleted it, and imported straight back. Both causes are fixed. Note that emptying the Trash removes the record of a deletion.
 
 = 3.4.3 =
 Minor follow-up to 3.4.2. Extends the time you have to complete an eBay connection from 15 to 30 minutes — described in the 3.4.2 notes but missing from that build. If 3.4.2 already reconnected you successfully, nothing here affects you.

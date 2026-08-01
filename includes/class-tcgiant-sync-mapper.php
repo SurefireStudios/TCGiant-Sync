@@ -18,6 +18,16 @@ if ( ! defined( 'ABSPATH' ) ) {
 class TCGiant_Sync_Mapper {
 
 	/**
+	 * Whether the last save_as_product() call skipped on purpose.
+	 *
+	 * A deliberate skip is not a failure, and counting it as one would inflate
+	 * the error total shown on the dashboard.
+	 *
+	 * @var bool
+	 */
+	public static $last_skipped = false;
+
+	/**
 	 * Instance.
 	 *
 	 * @var self|null
@@ -474,22 +484,57 @@ class TCGiant_Sync_Mapper {
 	 * @param array $product_data Mapped product data.
 	 */
 	public function save_as_product( &$product_data ) {
+		self::$last_skipped = false;
+
 		$item_id = $product_data['meta']['_ebay_item_id'];
 		$product_id = false;
 
-		// 1. Check by exact eBay Item ID first (exclude trashed products).
+		// 1. Check by exact eBay Item ID first.
+		//
+		// Trashed products are included here on purpose. A trashed product
+		// carrying this exact Item ID means the merchant deliberately deleted
+		// the product for this listing, and re-creating it on the next sync is
+		// the single most confusing thing the plugin can do — the item comes
+		// back from the dead with no explanation.
+		//
+		// This does not reintroduce the trashed-SKU problem fixed in 3.0.1:
+		// that was about matching by SKU (step 2) when a seller relists under a
+		// NEW Item ID. A relist has a different Item ID, so it never matches a
+		// trashed product here.
 		global $wpdb;
-		$found_by_meta = $wpdb->get_var( $wpdb->prepare(
-			"SELECT pm.post_id FROM {$wpdb->postmeta} pm
+		$found = $wpdb->get_row( $wpdb->prepare(
+			"SELECT pm.post_id, p.post_status FROM {$wpdb->postmeta} pm
 			 INNER JOIN {$wpdb->posts} p ON pm.post_id = p.ID
 			 WHERE pm.meta_key = '_ebay_item_id' AND pm.meta_value = %s
-			   AND p.post_status != 'trash'
+			 ORDER BY ( p.post_status = 'trash' ) ASC
 			 LIMIT 1",
 			$item_id
 		) );
-		
-		if ( $found_by_meta ) {
-			$product_id = (int) $found_by_meta;
+
+		if ( $found && 'trash' === $found->post_status ) {
+			/**
+			 * Filter whether a deleted product should be re-created by a sync.
+			 *
+			 * Default false: the merchant deleted it, so leave it deleted.
+			 * Emptying the Trash removes the record, after which the listing
+			 * will be imported as new.
+			 *
+			 * @param bool   $recreate Whether to re-import.
+			 * @param string $item_id  eBay Item ID.
+			 */
+			if ( ! apply_filters( 'tcgiant_sync_reimport_deleted_products', false, $item_id ) ) {
+				TCGiant_Sync_Logger::log( sprintf(
+					'Skipped eBay item %s — its WooCommerce product (#%d) is in the Trash, so it was deleted deliberately.',
+					$item_id,
+					(int) $found->post_id
+				) );
+				self::$last_skipped = true;
+				return false;
+			}
+		}
+
+		if ( $found && 'trash' !== $found->post_status ) {
+			$product_id = (int) $found->post_id;
 		}
 
 		// 2. If not found by Item ID, check by SKU to link to existing WC product.

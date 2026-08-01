@@ -1,5 +1,16 @@
 *** TCGiant Sync Changelog ***
 
+2026-07-31 - version 3.5.0
+== Deleted Products ==
+- FIX: Products you delete no longer come back. Deleting a product left no record that you had done so, and because the plugin ignored items in the Trash, the next sync could not tell a deliberately deleted product from one it had never seen — so it created it again. A product in the Trash carrying the same eBay Item ID is now recognised as a deliberate deletion and left alone.
+- FIX: Items that have sold or ended are no longer re-imported. The hourly sync asks eBay for everything that changed recently, and a sale counts as a change — so items were reported to the plugin at exactly the moment they sold, and imported as new products. This was the most common way a deleted item reappeared: it sold, you deleted it, and the next sync brought it straight back.
+- If a product already exists for a listing that has ended, it is still marked as ended, so ended listings continue to be reflected. Only creating products for them is prevented.
+- Deliberately skipped items are no longer counted as errors on the dashboard.
+
+== Notes ==
+- Emptying the Trash removes the record of a deletion. If you empty the Trash and the eBay listing is still live, the product will be imported again on the next sync, as a new product. To remove an item for good, end the listing on eBay first.
+- Developers: the tcgiant_sync_reimport_deleted_products filter restores the old behaviour if you want deleted products re-created.
+
 2026-07-31 - version 3.4.3
 == Connecting to eBay ==
 - The window to complete a connection is now 30 minutes rather than 15, so pausing on eBay's consent screen no longer causes an otherwise valid connection to be rejected. This was described in the 3.4.2 notes but did not make it into that build.

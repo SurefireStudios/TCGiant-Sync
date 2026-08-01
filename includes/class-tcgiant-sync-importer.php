@@ -688,6 +688,47 @@ class TCGiant_Sync_Importer {
 					}
 				}
 
+				// Don't create products for listings that have already ended.
+				//
+				// A sale IS a modification, so GetSellerEvents reports the item
+				// on the very next delta sync — meaning the items most likely to
+				// arrive here are the ones that just sold and ended. Importing
+				// those created a fresh product for something no longer for sale,
+				// and for a merchant who had deleted the product after the sale
+				// it looked like deleted items rising from the dead.
+				//
+				// An existing product still gets its status updated, so ended
+				// listings are still reflected; only creation is prevented.
+				$listing_status = $ebay_item['SellingStatus']['ListingStatus'] ?? '';
+				if ( '' !== $listing_status && 'Active' !== $listing_status ) {
+					global $wpdb;
+					$existing_id = $wpdb->get_var( $wpdb->prepare(
+						"SELECT pm.post_id FROM {$wpdb->postmeta} pm
+						 INNER JOIN {$wpdb->posts} p ON pm.post_id = p.ID
+						 WHERE pm.meta_key = '_ebay_item_id' AND pm.meta_value = %s
+						   AND p.post_status != 'trash'
+						 LIMIT 1",
+						$item_id
+					) );
+
+					if ( ! $existing_id ) {
+						$skipped++;
+						continue;
+					}
+
+					// Known product — record that its listing is over and move on.
+					update_post_meta( (int) $existing_id, '_ebay_listing_status', 'Ended' );
+					if ( ! empty( $ebay_item['ListingDetails']['EndTime'] ) ) {
+						update_post_meta( (int) $existing_id, '_ebay_end_time', $ebay_item['ListingDetails']['EndTime'] );
+					}
+					TCGiant_Sync_Logger::log( sprintf(
+						'Delta: eBay item %s is %s — marked WC #%d as ended (not re-imported).',
+						$item_id, $listing_status, (int) $existing_id
+					) );
+					$skipped++;
+					continue;
+				}
+
 				// Fallback: if critical data is missing, fetch via GetItem.
 				$needs_fallback = false;
 				if ( ! isset( $ebay_item['Title'] ) || ! isset( $ebay_item['SellingStatus'] ) ) {
@@ -743,7 +784,7 @@ class TCGiant_Sync_Importer {
 						'Delta imported: "%s" → WC #%d (%s, Qty: %d, %d attrs)',
 						$title, $product_id, $price_display, $product_data['stock_quantity'], $attr_count
 					), 'success' );
-				} else {
+				} elseif ( ! TCGiant_Sync_Mapper::$last_skipped ) {
 					$errors++;
 					TCGiant_Sync_Logger::error( sprintf( 'Delta: Failed to save product for eBay Item: %s (%s)', $item_id, $title ) );
 				}
@@ -1152,7 +1193,7 @@ class TCGiant_Sync_Importer {
 							'Imported: "%s" -> WC #%d (%s, Qty: %d, %d attrs%s)%s',
 							$title, $product_id, $price_display, $product_data['stock_quantity'], $attr_count, $weight_display, $var_label
 						), 'success' );
-					} else {
+					} elseif ( ! TCGiant_Sync_Mapper::$last_skipped ) {
 						$inline_errors++;
 						TCGiant_Sync_Logger::error( sprintf( 'Failed to save product for eBay Item: %s [inline]', $item_id ) );
 					}
@@ -1441,7 +1482,7 @@ class TCGiant_Sync_Importer {
 					'Imported: "%s" -> WC #%d (%s, Qty: %d, %d attrs%s)',
 					$title, $product_id, $price_display, $product_data['stock_quantity'], $attr_count, $weight_display
 				), 'success' );
-			} else {
+			} elseif ( ! TCGiant_Sync_Mapper::$last_skipped ) {
 				self::update_sync_state( array(
 					'total_errors' => self::get_sync_state()['total_errors'] + 1,
 				) );
