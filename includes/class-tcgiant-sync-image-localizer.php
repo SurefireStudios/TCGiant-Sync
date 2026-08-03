@@ -129,6 +129,7 @@ class TCGiant_Sync_Image_Localizer {
 
 		add_action( 'admin_init', array( __CLASS__, 'maybe_clean_placeholder_paths' ) );
 		add_action( 'admin_init', array( __CLASS__, 'maybe_rearm' ) );
+		add_action( 'admin_init', array( __CLASS__, 'maybe_backfill_galleries' ) );
 	}
 
 	/**
@@ -226,6 +227,110 @@ class TCGiant_Sync_Image_Localizer {
 			'Cleaned %d placeholder attachment(s) that stored an eBay URL as a file path.',
 			count( $ids )
 		) );
+	}
+
+	/**
+	 * Restore the full photo set on products left showing a single image.
+	 *
+	 * Until now only the first eBay photo was ever represented before an image
+	 * was downloaded, so a product waiting in the queue — or one whose queue
+	 * had stalled or given up — showed exactly one picture no matter how many
+	 * the listing carried. The remaining addresses were stored all along, so
+	 * repairing this needs no eBay calls at all: it is purely local.
+	 *
+	 * Walks every product with stored image URLs once, in ID order, and only
+	 * touches those actually showing the fault (two or more photos expected,
+	 * at most one present). A merchant who has curated a gallery down by hand
+	 * is left alone.
+	 *
+	 * @return void
+	 */
+	public static function maybe_backfill_galleries() {
+		if ( get_option( 'tcgiant_gallery_backfill_done' ) ) {
+			return;
+		}
+
+		// admin_init fires on every page load and every admin AJAX request.
+		if ( get_transient( 'tcgiant_gallery_backfill_tick' ) ) {
+			return;
+		}
+		set_transient( 'tcgiant_gallery_backfill_tick', 1, MINUTE_IN_SECONDS );
+
+		global $wpdb;
+
+		$cursor = (int) get_option( 'tcgiant_gallery_backfill_cursor', 0 );
+
+		// A cursor rather than a self-draining filter: the repair does not
+		// always change what the query matches, so walking by ID is the only
+		// way to guarantee this terminates.
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$product_ids = $wpdb->get_col( $wpdb->prepare(
+			"SELECT DISTINCT post_id FROM {$wpdb->postmeta}
+			 WHERE meta_key = '_tcgiant_external_image_urls'
+			   AND post_id > %d
+			 ORDER BY post_id ASC
+			 LIMIT 100",
+			$cursor
+		) );
+
+		if ( empty( $product_ids ) ) {
+			update_option( 'tcgiant_gallery_backfill_done', 1, false );
+			delete_option( 'tcgiant_gallery_backfill_cursor' );
+			TCGiant_Sync_Logger::log( 'Image backfill: finished checking every product.' );
+			return;
+		}
+
+		$repaired = 0;
+
+		foreach ( $product_ids as $product_id ) {
+			$product_id = (int) $product_id;
+			$cursor     = max( $cursor, $product_id );
+
+			$entries = get_post_meta( $product_id, '_tcgiant_external_image_urls', true );
+			if ( empty( $entries ) || ! is_array( $entries ) ) {
+				continue;
+			}
+
+			// Count main images only — variation photos live on the variations.
+			$expected = array();
+			foreach ( $entries as $entry ) {
+				if ( is_array( $entry ) ) {
+					$var_id = $entry[1] ?? false;
+					if ( $var_id && '__retry' !== $var_id ) {
+						continue;
+					}
+					$entry = $entry[0] ?? '';
+				}
+				if ( ! empty( $entry ) ) {
+					$expected[ $entry ] = true;
+				}
+			}
+
+			if ( count( $expected ) < 2 ) {
+				continue;
+			}
+
+			$gallery = array_filter( explode( ',', (string) get_post_meta( $product_id, '_product_image_gallery', true ) ) );
+			$present = ( has_post_thumbnail( $product_id ) ? 1 : 0 ) + count( $gallery );
+
+			// Deliberately narrow: only the reported symptom, not every
+			// product whose gallery is merely shorter than eBay's set.
+			if ( $present > 1 ) {
+				continue;
+			}
+
+			self::set_external_images( $product_id, $entries, true );
+			$repaired++;
+		}
+
+		update_option( 'tcgiant_gallery_backfill_cursor', $cursor, false );
+
+		if ( $repaired > 0 ) {
+			TCGiant_Sync_Logger::log( sprintf(
+				'Image backfill: restored the full photo set on %d product(s).',
+				$repaired
+			) );
+		}
 	}
 
 	/**
@@ -938,12 +1043,27 @@ class TCGiant_Sync_Image_Localizer {
 	 * @return int|false Attachment ID or false.
 	 */
 	private function find_existing_local_attachment( $product_id, $source_url ) {
+		// Placeholders carry _tcgiant_source_url too, so they must be excluded
+		// in the query rather than filtered out afterwards. With only one
+		// placeholder per product that distinction was academic; now that the
+		// whole image set is represented, a placeholder matching first would
+		// mask a real local copy and force a needless re-download.
+		$real_only = array(
+			array(
+				'key'   => '_tcgiant_source_url',
+				'value' => $source_url,
+			),
+			array(
+				'key'     => '_tcgiant_external_url',
+				'compare' => 'NOT EXISTS',
+			),
+		);
+
 		// First, check attachments belonging to this specific product (fastest).
 		$attachments = get_posts( array(
 			'post_type'   => 'attachment',
 			'post_parent' => $product_id,
-			'meta_key'    => '_tcgiant_source_url',
-			'meta_value'  => $source_url,
+			'meta_query'  => $real_only, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_query
 			'fields'      => 'ids',
 			'numberposts' => 1,
 		) );
@@ -953,8 +1073,7 @@ class TCGiant_Sync_Image_Localizer {
 		if ( empty( $attachments ) ) {
 			$attachments = get_posts( array(
 				'post_type'   => 'attachment',
-				'meta_key'    => '_tcgiant_source_url',
-				'meta_value'  => $source_url,
+				'meta_query'  => $real_only, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_query
 				'fields'      => 'ids',
 				'numberposts' => 1,
 			) );
