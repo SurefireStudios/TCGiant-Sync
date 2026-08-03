@@ -1,6 +1,20 @@
 *** TCGiant Sync Changelog ***
 
 2026-08-03 - version 3.5.2
+== Listings ==
+- FIX: GTC listings being shown as Ended while still live on eBay. eBay renews a Good 'Til Cancelled listing roughly every 30 days and moves its end date forward each time, but the plugin treated the end date it had last seen as final. So about a month after a listing was last synced it was marked Ended, and offered a "Relist" button that would have created a second, duplicate listing alongside the one still running. The plugin now confirms with eBay before marking anything ended, and a listing eBay reports as still active is put back to Active.
+- Fixed-length listings (1 to 10 days, 30 days) are unaffected and cost no extra API calls: their end date really is final. Only GTC listings, and older items with no recorded duration, are checked with eBay, at most 40 an hour, and each check pushes the next one out to that listing's next renewal.
+- An eBay outage can no longer mark listings as ended. A failed check leaves the listing exactly as it was.
+
+== Coins ==
+- FIX: "eBay requires these item specifics ... Circulated/Uncirculated" blocking coin listings even after the condition was set. The plugin sent the coin's condition to eBay one way, but never as the Circulated/Uncirculated item specific eBay asks for, so there was no way to satisfy it from the condition selector. It is now filled in automatically from the condition already chosen: Uncirculated for uncirculated coins and for Mint State, Proof and Specimen grades; Circulated for everything else, including "About Uncirculated", which is a circulated grade despite the name.
+- Anything you set yourself as a product attribute still wins, so you can always override it.
+- Item specific names no longer have to be typed exactly. "Circulated / Uncirculated" and "circulated-uncirculated" are now recognised as the same field, and are corrected to eBay's own spelling before being sent. Previously a near miss passed the plugin's own check and was then rejected by eBay.
+
+== Bulk Tools ==
+- NEW: Change listing format in bulk. On the Products list, select any number of products and choose "eBay: set format to Fixed Price / GTC" or "eBay: set format to Auction / 10 days" from the Bulk actions menu. Built for the cycle of running 10-day auctions, moving the unsold ones to a 30-day GTC, and switching back to an auction at a new price later on.
+- Setting the format does not contact eBay. Select the same products again and choose "Push to eBay" to apply it. eBay cannot change the format of a live listing, so each one is replaced with a new listing.
+
 == Images ==
 - FIX: Products showing only one photo when the eBay listing has several. Until an image had been downloaded, the plugin represented the listing with a single stand-in image — the first photo only — so the rest simply did not exist as far as WooCommerce was concerned. The whole set is now represented straight away: first photo as the main image, the rest as the gallery.
 - This is why the problem affected only some products. Anything already downloaded had its full gallery; anything still waiting in the queue showed one photo until its turn came.

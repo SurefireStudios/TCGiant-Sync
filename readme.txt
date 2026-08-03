@@ -96,6 +96,20 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 == Changelog ==
 
 = 3.5.2 - 2026-08-03 =
+**Listings**
+* FIX: GTC listings shown as Ended while still live on eBay. eBay renews a Good 'Til Cancelled listing roughly every 30 days and moves its end date forward, but the plugin treated the last end date it saw as final. So about a month after a listing was last synced it was marked Ended and offered a "Relist" that would have created a duplicate alongside the listing still running. eBay is now asked before anything is marked ended, and a listing reported as still active is put back to Active.
+* Fixed-length listings are unaffected and cost no extra API calls. Only GTC listings and older items with no recorded duration are checked, at most 40 an hour, and each check pushes the next one out to that listing's next renewal.
+* An eBay outage can no longer mark listings as ended: a failed check leaves the listing untouched.
+
+**Coins**
+* FIX: "eBay requires these item specifics ... Circulated/Uncirculated" blocking coin listings even with the condition set. The condition was sent to eBay, but never as the item specific eBay asks for, so the requirement could not be satisfied from the condition selector. It is now derived from the condition already chosen: Uncirculated for uncirculated coins and for Mint State, Proof and Specimen grades; Circulated otherwise, including "About Uncirculated" which is a circulated grade despite the name.
+* A product attribute you set yourself still takes precedence.
+* Item specific names no longer need to be typed exactly. "Circulated / Uncirculated" and "circulated-uncirculated" are recognised as the same field and corrected to eBay's spelling before sending. Previously a near miss passed the plugin's own check and was then rejected by eBay.
+
+**Bulk tools**
+* NEW: Change listing format in bulk from the Products list: "eBay: set format to Fixed Price / GTC" and "eBay: set format to Auction / 10 days" in the Bulk actions menu. Built for the cycle of running 10-day auctions, moving unsold items to a 30-day GTC, then switching back at a new price.
+* Setting the format does not contact eBay. Select the same products again and choose "Push to eBay" to apply it: eBay cannot change a live listing's format, so each becomes a new listing.
+
 **Images**
 * FIX: Products showing only one photo when the eBay listing has several. Until an image was downloaded, the plugin represented the listing with a single stand-in — the first photo only — so the others did not exist as far as WooCommerce was concerned. The whole set is now represented immediately: first photo as the main image, the rest as the gallery.
 * This is why only *some* products were affected: anything already downloaded had its full gallery, anything still queued showed one photo until its turn came.
@@ -568,7 +582,7 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 == Upgrade Notice ==
 
 = 3.5.2 =
-Fixes products showing only one photo when the eBay listing has several. Existing products repair themselves in the background after updating — no sync or re-fetch needed, and no eBay API usage.
+Fixes GTC listings being wrongly shown as Ended (relisting one would have created a duplicate), unblocks coin listings held up by the Circulated/Uncirculated requirement, adds bulk listing-format changes, and fixes products showing only one photo. Existing products repair themselves in the background, so no sync or re-fetch is needed.
 
 = 3.5.0 =
 Fixes deleted products reappearing after the item sold on eBay. Deleting a product left no record of the deletion, and the hourly sync treats a sale as a change — so a sold item was reported by eBay at exactly the moment you deleted it, and imported straight back. Both causes are fixed. Note that emptying the Trash removes the record of a deletion.

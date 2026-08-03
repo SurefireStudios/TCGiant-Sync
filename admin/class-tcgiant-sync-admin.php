@@ -1510,8 +1510,33 @@ class TCGiant_Sync_Admin {
 	 * @return array
 	 */
 	public function register_bulk_push_action( $actions ) {
-		$actions['tcgiant_push_to_ebay'] = __( 'Push to eBay', 'tcgiant-sync' );
+		$actions['tcgiant_push_to_ebay']    = __( 'Push to eBay', 'tcgiant-sync' );
+		$actions['tcgiant_set_fixed_gtc']   = __( 'eBay: set format to Fixed Price / GTC', 'tcgiant-sync' );
+		$actions['tcgiant_set_auction_10']  = __( 'eBay: set format to Auction / 10 days', 'tcgiant-sync' );
 		return $actions;
+	}
+
+	/**
+	 * Listing formats offered as bulk actions.
+	 *
+	 * Sellers move the same stock between a 10-day auction and a 30-day GTC on a
+	 * regular cycle, which meant editing every product by hand.
+	 *
+	 * @return array<string, array{type: string, duration: string, label: string}>
+	 */
+	private function bulk_listing_formats() {
+		return array(
+			'tcgiant_set_fixed_gtc'  => array(
+				'type'     => 'FixedPriceItem',
+				'duration' => 'GTC',
+				'label'    => __( 'Fixed Price / GTC', 'tcgiant-sync' ),
+			),
+			'tcgiant_set_auction_10' => array(
+				'type'     => 'Chinese',
+				'duration' => 'Days_10',
+				'label'    => __( 'Auction / 10 days', 'tcgiant-sync' ),
+			),
+		);
 	}
 
 	/**
@@ -1523,6 +1548,32 @@ class TCGiant_Sync_Admin {
 	 * @return string Modified redirect URL.
 	 */
 	public function handle_bulk_push_action( $redirect_to, $action, $post_ids ) {
+		$formats = $this->bulk_listing_formats();
+
+		if ( isset( $formats[ $action ] ) ) {
+			$format  = $formats[ $action ];
+			$changed = 0;
+
+			foreach ( $post_ids as $post_id ) {
+				$post_id = (int) $post_id;
+				if ( ! current_user_can( 'edit_post', $post_id ) ) {
+					continue;
+				}
+				update_post_meta( $post_id, '_ebay_export_listing_type', $format['type'] );
+				update_post_meta( $post_id, '_ebay_export_listing_duration', $format['duration'] );
+				$changed++;
+			}
+
+			return add_query_arg(
+				array(
+					'tcgiant_format_set'   => $changed,
+					'tcgiant_format_label' => rawurlencode( $format['label'] ),
+					'post_type'            => 'product',
+				),
+				$redirect_to
+			);
+		}
+
 		if ( 'tcgiant_push_to_ebay' !== $action ) {
 			return $redirect_to;
 		}
@@ -1543,6 +1594,27 @@ class TCGiant_Sync_Admin {
 	 * Display admin notice after bulk push is queued.
 	 */
 	public function bulk_push_admin_notice() {
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		if ( isset( $_REQUEST['tcgiant_format_set'] ) ) {
+			// phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			$count = (int) $_REQUEST['tcgiant_format_set'];
+			// phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			$label = isset( $_REQUEST['tcgiant_format_label'] )
+				? sanitize_text_field( rawurldecode( wp_unslash( $_REQUEST['tcgiant_format_label'] ) ) )
+				: '';
+
+			echo '<div class="notice notice-success is-dismissible"><p>';
+			printf(
+				/* translators: 1: number of products, 2: listing format name */
+				esc_html( _n( '%1$d product set to %2$s.', '%1$d products set to %2$s.', $count, 'tcgiant-sync' ) ),
+				(int) $count,
+				esc_html( $label )
+			);
+			echo ' ';
+			esc_html_e( 'Nothing has been sent to eBay yet — select the same products again and choose "Push to eBay" to apply it. eBay cannot change the format of a live listing, so each one is replaced with a new listing.', 'tcgiant-sync' );
+			echo '</p></div>';
+		}
+
 		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
 		if ( ! isset( $_REQUEST['tcgiant_pushed'] ) ) {
 			return;

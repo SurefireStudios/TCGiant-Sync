@@ -108,6 +108,11 @@ class TCGiant_Sync_Cron {
 	 * requests — the scheduled event fires from wp-cron.php, so the callback
 	 * was never registered when it ran.
 	 */
+	const ENDED_VERIFY_PER_RUN = 40;
+
+	/**
+	 * Mark listings whose end time has passed as Ended.
+	 */
 	public function check_ended_listings() {
 		global $wpdb;
 
@@ -115,10 +120,11 @@ class TCGiant_Sync_Cron {
 
 		// Find products with end time in the past that aren't already marked Ended.
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-		$product_ids = $wpdb->get_col( $wpdb->prepare(
-			"SELECT DISTINCT p.ID
+		$rows = $wpdb->get_results( $wpdb->prepare(
+			"SELECT p.ID, pm_dur.meta_value AS duration
 			 FROM {$wpdb->posts} p
 			 INNER JOIN {$wpdb->postmeta} pm_end ON p.ID = pm_end.post_id AND pm_end.meta_key = '_ebay_end_time'
+			 LEFT JOIN {$wpdb->postmeta} pm_dur ON p.ID = pm_dur.post_id AND pm_dur.meta_key = '_ebay_listing_duration'
 			 LEFT JOIN {$wpdb->postmeta} pm_status ON p.ID = pm_status.post_id AND pm_status.meta_key = '_ebay_listing_status'
 			 WHERE p.post_type = 'product'
 			   AND p.post_status != 'trash'
@@ -129,18 +135,80 @@ class TCGiant_Sync_Cron {
 			$now_utc
 		) );
 
-		if ( empty( $product_ids ) ) {
+		if ( empty( $rows ) ) {
 			return;
 		}
 
-		$count = 0;
-		foreach ( $product_ids as $pid ) {
-			update_post_meta( (int) $pid, '_ebay_listing_status', 'Ended' );
-			$count++;
+		$ended    = 0;
+		$active   = 0;
+		$verified = 0;
+
+		foreach ( $rows as $row ) {
+			$pid      = (int) $row->ID;
+			$duration = (string) $row->duration;
+
+			// A fixed-length listing genuinely is over once its end time passes,
+			// so the stored value can be trusted and costs nothing to act on.
+			if ( '' !== $duration && 0 === strpos( $duration, 'Days_' ) ) {
+				update_post_meta( $pid, '_ebay_listing_status', 'Ended' );
+				$ended++;
+				continue;
+			}
+
+			// Good 'Til Cancelled is different. eBay renews it about every 30
+			// days and moves the end time forward each time, so the stored value
+			// is only ever a snapshot of the next renewal — not an end. Treating
+			// it as authoritative marked live listings as Ended and offered a
+			// "Relist" that would have created a duplicate of a listing already
+			// running. The same applies when the duration is unknown, which is
+			// the case for anything imported before it was recorded.
+			if ( $verified >= self::ENDED_VERIFY_PER_RUN ) {
+				continue;
+			}
+
+			$item_id = get_post_meta( $pid, '_ebay_item_id', true );
+			if ( empty( $item_id ) ) {
+				continue;
+			}
+
+			$verified++;
+			$response = TCGiant_Sync_API::instance()->get_item( $item_id );
+
+			// Never conclude "ended" from a failed call — an eBay outage would
+			// otherwise mark the whole catalogue as ended.
+			if ( is_wp_error( $response ) || ! isset( $response['Item'] ) ) {
+				continue;
+			}
+
+			$item   = $response['Item'];
+			$status = $item['SellingStatus']['ListingStatus'] ?? '';
+
+			// Refresh the snapshot so a renewed listing drops out of this query
+			// until its next renewal, rather than being re-checked every hour.
+			if ( ! empty( $item['ListingDetails']['EndTime'] ) ) {
+				update_post_meta( $pid, '_ebay_end_time', $item['ListingDetails']['EndTime'] );
+			}
+			if ( ! empty( $item['ListingDuration'] ) ) {
+				update_post_meta( $pid, '_ebay_listing_duration', $item['ListingDuration'] );
+			}
+
+			if ( 'Active' === $status ) {
+				update_post_meta( $pid, '_ebay_listing_status', 'Active' );
+				$active++;
+				continue;
+			}
+
+			if ( '' !== $status ) {
+				update_post_meta( $pid, '_ebay_listing_status', 'Ended' );
+				$ended++;
+			}
 		}
 
-		if ( $count > 0 ) {
-			TCGiant_Sync_Logger::log( sprintf( 'Ended listing check: marked %d product(s) as Ended.', $count ) );
+		if ( $ended > 0 || $active > 0 ) {
+			TCGiant_Sync_Logger::log( sprintf(
+				'Ended listing check: %d marked Ended, %d confirmed still active on eBay (%d verified via GetItem).',
+				$ended, $active, $verified
+			) );
 		}
 	}
 

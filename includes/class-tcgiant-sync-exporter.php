@@ -1505,14 +1505,17 @@ class TCGiant_Sync_Exporter {
 			return array();
 		}
 
-		$provided = array_change_key_case( $this->build_specifics_map( $product, $settings ), CASE_LOWER );
+		$provided = array();
+		foreach ( $this->build_specifics_map( $product, $settings ) as $name => $value ) {
+			$provided[ self::normalize_aspect_name( $name ) ] = $value;
+		}
 
 		$missing = array();
 		foreach ( $aspects as $aspect ) {
 			if ( empty( $aspect['required'] ) || empty( $aspect['name'] ) ) {
 				continue;
 			}
-			$key = strtolower( $aspect['name'] );
+			$key = self::normalize_aspect_name( $aspect['name'] );
 			if ( ! isset( $provided[ $key ] ) || '' === trim( (string) $provided[ $key ] ) ) {
 				$missing[] = $aspect['name'];
 			}
@@ -1532,10 +1535,140 @@ class TCGiant_Sync_Exporter {
 	 * @return array<string,string>
 	 */
 	private function build_specifics_map( WC_Product $product, array $settings ) {
-		return array_merge(
+		$specifics = array_merge(
 			$this->collect_attribute_specifics( $product ),
 			$this->collect_configured_specifics( $settings )
 		);
+
+		$specifics = $this->add_derived_specifics( $specifics, $settings );
+
+		return $this->canonicalize_specific_names( $specifics, $settings );
+	}
+
+	/**
+	 * Reduce an aspect name to a comparable form.
+	 *
+	 * eBay's names are not typeable without ambiguity — "Circulated/Uncirculated"
+	 * gets entered as "Circulated / Uncirculated" or "Circulated-Uncirculated"
+	 * and the listing was then rejected for a specific the seller had plainly
+	 * supplied. Comparing on letters and digits alone makes those equivalent.
+	 *
+	 * @param string $name Aspect or attribute name.
+	 * @return string
+	 */
+	private static function normalize_aspect_name( $name ) {
+		return preg_replace( '/[^a-z0-9]/', '', strtolower( (string) $name ) );
+	}
+
+	/**
+	 * Fill in item specifics the plugin can work out for itself.
+	 *
+	 * eBay wants Circulated/Uncirculated as an item specific for most coin
+	 * categories, but the plugin only ever sent the equivalent information as a
+	 * ConditionDescriptor. The seller had already chosen the condition, so
+	 * asking them to repeat it as a product attribute on every coin was busywork
+	 * that also left the push blocked until they did.
+	 *
+	 * @param array $specifics Specifics gathered so far.
+	 * @param array $settings  Resolved export settings.
+	 * @return array
+	 */
+	private function add_derived_specifics( array $specifics, array $settings ) {
+		if ( ! self::is_coins_category( $settings['category_id'] ?? '', $settings['item_type'] ?? '' ) ) {
+			return $specifics;
+		}
+
+		$derived = self::derive_circulation( $settings );
+		if ( '' === $derived ) {
+			return $specifics;
+		}
+
+		// Anything the seller set explicitly wins over what we inferred.
+		$target = self::normalize_aspect_name( 'Circulated/Uncirculated' );
+		foreach ( array_keys( $specifics ) as $name ) {
+			if ( self::normalize_aspect_name( $name ) === $target ) {
+				return $specifics;
+			}
+		}
+
+		$specifics['Circulated/Uncirculated'] = $derived;
+
+		return $specifics;
+	}
+
+	/**
+	 * Work out whether a coin is circulated from the condition already chosen.
+	 *
+	 * @param array $settings Resolved export settings.
+	 * @return string "Uncirculated", "Circulated", or empty when undetermined.
+	 */
+	private static function derive_circulation( array $settings ) {
+		$condition_type = $settings['condition_type'] ?? '';
+
+		if ( 'ungraded' === $condition_type ) {
+			$value = (string) ( $settings['ungraded_condition'] ?? '' );
+			if ( '' === $value ) {
+				return '';
+			}
+
+			// Only value 7 is Uncirculated. Value 8 reads "Extremely Fine to
+			// About Uncirculated", which is a circulated grade despite the name.
+			return ( '7' === $value ) ? 'Uncirculated' : 'Circulated';
+		}
+
+		if ( 'graded' === $condition_type ) {
+			$grade = strtoupper( trim( (string) ( $settings['grade_value'] ?? '' ) ) );
+			if ( '' === $grade ) {
+				return '';
+			}
+
+			// Mint State, Proof and Specimen grades are uncirculated by
+			// definition. Every other scale (AU, XF, VF, F, VG, G) grades wear.
+			// The trailing class stands in for a word boundary: it has to match
+			// "MS 65" and "MS/PR 69" while rejecting a longer word starting MS.
+			return preg_match( '/^(MS|PR|PF|SP)([^A-Z]|$)/', $grade ) ? 'Uncirculated' : 'Circulated';
+		}
+
+		return '';
+	}
+
+	/**
+	 * Rename specifics to the exact aspect names eBay publishes for the category.
+	 *
+	 * Applied to what is actually sent, not just to validation — passing our own
+	 * pre-flight check and then being rejected by eBay for the same field would
+	 * be worse than not checking at all.
+	 *
+	 * @param array $specifics Specifics to send.
+	 * @param array $settings  Resolved export settings.
+	 * @return array
+	 */
+	private function canonicalize_specific_names( array $specifics, array $settings ) {
+		$category_id = $settings['category_id'] ?? '';
+		if ( empty( $category_id ) || empty( $specifics ) ) {
+			return $specifics;
+		}
+
+		$aspects = TCGiant_Sync_API::instance()->get_category_aspects( $category_id );
+		if ( is_wp_error( $aspects ) || empty( $aspects ) ) {
+			return $specifics;
+		}
+
+		$canonical = array();
+		foreach ( $aspects as $aspect ) {
+			if ( empty( $aspect['name'] ) ) {
+				continue;
+			}
+			$canonical[ self::normalize_aspect_name( $aspect['name'] ) ] = $aspect['name'];
+		}
+
+		$out = array();
+		foreach ( $specifics as $name => $value ) {
+			$key = self::normalize_aspect_name( $name );
+			$out[ isset( $canonical[ $key ] ) ? $canonical[ $key ] : $name ] = $value;
+		}
+
+		return $out;
 	}
 
 	/**
