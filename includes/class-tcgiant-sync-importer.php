@@ -735,7 +735,10 @@ class TCGiant_Sync_Importer {
 					$needs_fallback = true;
 				}
 				// If specs or images are missing, we need GetItem to fetch the full data.
-				if ( ! isset( $ebay_item['ItemSpecifics'] ) || ! isset( $ebay_item['PictureDetails'] ) ) {
+				// Test PictureURL rather than the PictureDetails container: a summary
+				// response can carry PictureDetails holding only a GalleryURL, which
+				// looked complete here but yields no importable images at all.
+				if ( ! isset( $ebay_item['ItemSpecifics'] ) || ! isset( $ebay_item['PictureDetails']['PictureURL'] ) ) {
 					$needs_fallback = true;
 				}
 				// Check for variations that should exist but are missing.
@@ -1157,7 +1160,8 @@ class TCGiant_Sync_Importer {
 			// Determine if this item needs a GetItem fallback.
 			$has_variations = isset( $item['Variations'] );
 			$missing_critical = ! isset( $item['Title'] ) || ! isset( $item['SellingStatus'] );
-			$missing_specs_or_images = ! isset( $item['ItemSpecifics'] ) || ! isset( $item['PictureDetails'] );
+			// PictureURL, not the PictureDetails container — see fetch_delta_events().
+			$missing_specs_or_images = ! isset( $item['ItemSpecifics'] ) || ! isset( $item['PictureDetails']['PictureURL'] );
 
 			$can_inline = ! $missing_critical && ! $missing_specs_or_images;
 			if ( $has_variations && $can_inline ) {

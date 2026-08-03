@@ -394,11 +394,11 @@ class TCGiant_Sync_Image_Localizer {
 		// Only set external image URLs if the product doesn't already have local images.
 		// If it does have images and the hash matches, keep the local copies.
 		if ( ! $has_thumbnail && ! empty( $main_urls ) ) {
-			// Use the first URL as the product's external image via WC's image setter.
-			// WooCommerce doesn't natively support external image URLs on products,
-			// so we attach a placeholder and store the external URL for front-end use.
-			// The localizer will replace this with a real attachment later.
-			self::set_product_external_thumbnail( $product_id, $main_urls[0] );
+			// WooCommerce doesn't natively support external image URLs on
+			// products, so we attach placeholders that carry the eBay URL and
+			// let the front-end filters resolve them. The localizer replaces
+			// these with real attachments later.
+			self::set_external_placeholders( $product_id, $main_urls );
 		}
 
 		// Ensure the localization cron is scheduled.
@@ -430,15 +430,66 @@ class TCGiant_Sync_Image_Localizer {
 	}
 
 	/**
-	 * Set an external image URL as the product thumbnail.
+	 * Stand in for a product's whole image set with eBay-hosted placeholders.
 	 *
-	 * Creates a lightweight attachment record pointing to the external URL.
-	 * This lets WooCommerce display the image without downloading it.
+	 * Creates lightweight attachment records pointing at the external URLs, so
+	 * WooCommerce can display them without downloading anything.
 	 *
-	 * @param int    $product_id Product ID.
-	 * @param string $url        External image URL.
+	 * The first URL becomes the featured image and the rest become the gallery.
+	 * Only the featured image used to be represented, so a listing with twelve
+	 * photos showed exactly one until the localizer replaced the placeholder
+	 * with real attachments — and with "keep eBay-hosted URLs" enabled the
+	 * localizer never runs, so it showed one forever.
+	 *
+	 * @param int      $product_id Product ID.
+	 * @param string[] $urls       External image URLs, in eBay's order.
 	 */
-	private static function set_product_external_thumbnail( $product_id, $url ) {
+	private static function set_external_placeholders( $product_id, $urls ) {
+		$urls = array_values( array_unique( array_filter( $urls ) ) );
+		if ( empty( $urls ) ) {
+			return;
+		}
+
+		$thumb_id = self::get_or_create_external_attachment( $product_id, array_shift( $urls ) );
+		if ( $thumb_id ) {
+			set_post_thumbnail( $product_id, $thumb_id );
+		}
+
+		if ( empty( $urls ) ) {
+			return;
+		}
+
+		// Never overwrite a real gallery. A product part-way through
+		// localization has genuine attachments here, and replacing them with
+		// eBay-hosted stand-ins would be a downgrade.
+		$existing = array_filter( explode( ',', (string) get_post_meta( $product_id, '_product_image_gallery', true ) ) );
+		foreach ( $existing as $gid ) {
+			if ( ! get_post_meta( (int) $gid, '_tcgiant_external_url', true ) ) {
+				return;
+			}
+		}
+
+		$gallery_ids = array();
+		foreach ( $urls as $url ) {
+			$id = self::get_or_create_external_attachment( $product_id, $url );
+			if ( $id ) {
+				$gallery_ids[] = $id;
+			}
+		}
+
+		if ( ! empty( $gallery_ids ) ) {
+			update_post_meta( $product_id, '_product_image_gallery', implode( ',', $gallery_ids ) );
+		}
+	}
+
+	/**
+	 * Get or create a placeholder attachment standing in for an eBay-hosted image.
+	 *
+	 * @param int    $product_id Product to attach to.
+	 * @param string $url        eBay image URL.
+	 * @return int Attachment ID, or 0 on failure.
+	 */
+	private static function get_or_create_external_attachment( $product_id, $url ) {
 		// Check if we already have an external attachment for this URL.
 		$existing = get_posts( array(
 			'post_type'   => 'attachment',
@@ -450,8 +501,7 @@ class TCGiant_Sync_Image_Localizer {
 		) );
 
 		if ( ! empty( $existing ) ) {
-			set_post_thumbnail( $product_id, $existing[0] );
-			return;
+			return (int) $existing[0];
 		}
 
 		// Create a placeholder attachment with the external URL.
@@ -482,8 +532,10 @@ class TCGiant_Sync_Image_Localizer {
 			);
 			update_post_meta( $attachment_id, '_wp_attachment_metadata', $metadata );
 
-			set_post_thumbnail( $product_id, $attachment_id );
+			return (int) $attachment_id;
 		}
+
+		return 0;
 	}
 
 	/**
@@ -777,13 +829,25 @@ class TCGiant_Sync_Image_Localizer {
 			$gallery_ids = array_unique( array_filter( $gallery_ids ) );
 			// Remove any external placeholder IDs from gallery.
 			$clean_gallery = array();
+			$placeholders  = array();
 			foreach ( $gallery_ids as $gid ) {
 				$is_external = get_post_meta( (int) $gid, '_tcgiant_external_url', true );
 				if ( empty( $is_external ) ) {
 					$clean_gallery[] = $gid;
+				} else {
+					$placeholders[] = (int) $gid;
 				}
 			}
 			update_post_meta( $product_id, '_product_image_gallery', implode( ',', $clean_gallery ) );
+
+			// Discard the eBay-hosted stand-ins only once every image has been
+			// downloaded successfully. Dropping them while a retry is still
+			// pending would leave the product showing fewer photos than before.
+			if ( 0 === $result['failed'] && ! empty( $clean_gallery ) ) {
+				foreach ( $placeholders as $pid ) {
+					wp_delete_attachment( $pid, true );
+				}
+			}
 		}
 
 		// Only declare the product done when nothing retryable failed.

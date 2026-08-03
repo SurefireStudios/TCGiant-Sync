@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.5.0
+Stable tag: 3.5.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,15 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.5.1 - 2026-08-03 =
+**Images**
+* FIX: Products showing only one photo when the eBay listing has several. Until an image was downloaded, the plugin represented the listing with a single stand-in — the first photo only — so the others did not exist as far as WooCommerce was concerned. The whole set is now represented immediately: first photo as the main image, the rest as the gallery.
+* This is why only *some* products were affected: anything already downloaded had its full gallery, anything still queued showed one photo until its turn came.
+* With "Disable background image localization" (keep eBay-hosted URLs) nothing is ever downloaded, so every product showed exactly one photo permanently. Those now show their full gallery.
+* Affected products are repaired on the next sync; run Fetch Inventory to fix everything at once.
+* FIX: Listings whose summary data arrives without usable picture addresses are now fetched in full from eBay rather than imported with no images.
+* Housekeeping: eBay-hosted stand-ins are removed once every photo for a product has downloaded successfully. They are kept while any download is still pending, so a product never temporarily loses photos.
 
 = 3.5.0 - 2026-07-31 =
 **Deleted products**
@@ -555,6 +564,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.5.1 =
+Fixes products showing only one photo when the eBay listing has several. Products are repaired on the next sync — run Fetch Inventory to fix them all at once.
 
 = 3.5.0 =
 Fixes deleted products reappearing after the item sold on eBay. Deleting a product left no record of the deletion, and the hourly sync treats a sale as a change — so a sold item was reported by eBay at exactly the moment you deleted it, and imported straight back. Both causes are fixed. Note that emptying the Trash removes the record of a deletion.
