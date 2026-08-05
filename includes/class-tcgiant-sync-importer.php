@@ -589,7 +589,7 @@ class TCGiant_Sync_Importer {
 			// Clamp to 48hr window and log a note. Next delta sync will pick up the rest.
 			$mod_to = gmdate( 'Y-m-d\TH:i:s.000\Z', $from_ts + $max_window );
 			TCGiant_Sync_Logger::log( sprintf(
-				'Delta window exceeds 48hr max. Clamped to %s → %s. Next sync will continue.',
+				'Delta window exceeds the eBay maximum of 48 hours. Reading %s → %s this run; the next sync resumes from there.',
 				$mod_from, $mod_to
 			), 'warning' );
 		}
@@ -615,11 +615,21 @@ class TCGiant_Sync_Importer {
 		}
 
 		if ( is_wp_error( $response ) ) {
-			TCGiant_Sync_Logger::error( 'Delta events API error: ' . $response->get_error_message() );
+			TCGiant_Sync_Logger::error( sprintf(
+				'Delta events API error: %s. Keeping the sync position at %s so this window is retried — nothing changed on eBay meanwhile will be missed.',
+				$response->get_error_message(),
+				$mod_from
+			) );
+
+			// Deliberately does NOT advance last_successful_sync_at. It used to,
+			// which meant every failed run moved the start of the next window
+			// past a period that had never been read. Anything listed or changed
+			// on eBay during an outage — an expired token, a relay problem — fell
+			// into a gap that no later delta sync would ever look at again, and
+			// only a full Fetch Inventory could recover.
 			self::update_sync_state( array(
-				'status'                  => 'complete',
-				'last_completed'          => current_time( 'mysql' ),
-				'last_successful_sync_at' => gmdate( 'Y-m-d\TH:i:s.000\Z' ),
+				'status'         => 'complete',
+				'last_completed' => current_time( 'mysql' ),
 			) );
 			return;
 		}
@@ -638,7 +648,7 @@ class TCGiant_Sync_Importer {
 			self::update_sync_state( array(
 				'status'                  => 'complete',
 				'last_completed'          => current_time( 'mysql' ),
-				'last_successful_sync_at' => gmdate( 'Y-m-d\TH:i:s.000\Z' ),
+				'last_successful_sync_at' => $mod_to,
 			) );
 			return;
 		}
@@ -829,6 +839,12 @@ class TCGiant_Sync_Importer {
 			$processed, $errors, count( $items ), $filter_label, $fallback_label
 		), 'success' );
 
+		// The end of the window actually queried, not the clock. When the window
+		// is clamped to eBay's 48 hour maximum, "now" is beyond what was read —
+		// so the backlog the clamp exists to work through incrementally was
+		// skipped instead, despite the log promising the next sync would
+		// continue. It also closes a small gap where anything modified between
+		// the API call and this line was stepped over.
 		self::update_sync_state( array(
 			'status'                  => 'complete',
 			'total_found'             => count( $items ),
@@ -836,7 +852,7 @@ class TCGiant_Sync_Importer {
 			'total_processed'         => $processed,
 			'total_errors'            => $errors,
 			'last_completed'          => current_time( 'mysql' ),
-			'last_successful_sync_at' => gmdate( 'Y-m-d\TH:i:s.000\Z' ),
+			'last_successful_sync_at' => $mod_to,
 		) );
 	}
 

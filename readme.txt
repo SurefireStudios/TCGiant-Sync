@@ -106,6 +106,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Existing duplicates are not removed automatically — only you can say which copy to keep. The duplicate is the one whose SKU ends in "-" followed by the eBay item number.
 
 **Syncing**
+* FIX: Listings added or changed while the connection was down were never imported, and no later sync went back for them. A failed scheduled sync still moved its position forward as though it had succeeded, so the period it never read was stepped over permanently. A failed sync now holds its position and re-reads that period on the next run.
+* FIX: The same loss over longer outages. eBay allows only 48 hours of changes per request, so a site offline for longer catches up in stages — but each stage jumped the position to the present rather than to the end of the stage just read, discarding the backlog it was working through. It now resumes exactly where it left off.
+* If products went missing during an outage, run Fetch Inventory once to bring them in.
 * FIX: Scheduled syncs could be skipped silently. Each delta sync claimed a lock and never released it, so the next run reported "Stale lock detected. Breaking lock". At the default 15 minute interval that was only noise, but on a shorter interval every run after the first was refused and skipped without saying so — as was a manual Fetch Inventory started within ten minutes of a delta sync. The lock is now released on every exit, including errors.
 * Connection failures are now diagnosable: "Token Refresh Error Body: null" only meant the reply could not be read. The log now records the HTTP status and the start of the actual response.
 
@@ -599,7 +602,7 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 == Upgrade Notice ==
 
 = 3.5.3 =
-Fixes WooCommerce stock dropping by two for every one sold on eBay, variable products being duplicated when they sell, and scheduled syncs being skipped without reporting it. Existing duplicate products are not removed automatically — the duplicate is the one whose SKU ends in the eBay item number.
+Fixes listings added during a connection outage never being imported, WooCommerce stock dropping by two for every one sold on eBay, variable products being duplicated when they sell, and scheduled syncs being skipped without reporting it. Existing duplicate products are not removed automatically — the duplicate is the one whose SKU ends in the eBay item number.
 
 = 3.5.2 =
 Fixes GTC listings being wrongly shown as Ended (relisting one would have created a duplicate), unblocks coin listings held up by the Circulated/Uncirculated requirement, adds bulk listing-format changes, and fixes products showing only one photo. Existing products repair themselves in the background, so no sync or re-fetch is needed.
