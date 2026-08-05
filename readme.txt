@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.5.2
+Stable tag: 3.5.3
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,23 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.5.3 - 2026-08-06 =
+**Stock**
+* FIX: Two units taken off WooCommerce stock for every one sold on eBay. eBay has already deducted the quantity by the time the plugin hears about a sale, and the sync writes eBay's figure straight into WooCommerce — then WooCommerce deducted a second unit of its own when the eBay order was imported. Imported eBay orders no longer trigger that second deduction.
+* Turning off "Reduce WooCommerce stock on eBay sale?" did not help, because it only governed a third path. That setting now states what it does: it applies only to products not linked to an eBay listing. Linked products always take their quantity from eBay directly.
+
+**Variable products**
+* FIX: Variable products duplicated when one sold on eBay. eBay's SKU for a variable listing usually belongs to a variation rather than the parent, and the plugin refused to match a SKU held by a variation — so it did not recognise the product it had already imported and created a second one, same attributes and price, with a SKU ending in the eBay item number. It now matches the variation's parent product, which was the intent all along.
+* FIX: A product's own variation is no longer mistaken for a SKU clash, which renamed the parent's SKU on every sync of a variable listing.
+* Existing duplicates are not removed automatically — only you can say which copy to keep. The duplicate is the one whose SKU ends in "-" followed by the eBay item number.
+
+**Syncing**
+* FIX: Scheduled syncs could be skipped silently. Each delta sync claimed a lock and never released it, so the next run reported "Stale lock detected. Breaking lock". At the default 15 minute interval that was only noise, but on a shorter interval every run after the first was refused and skipped without saying so — as was a manual Fetch Inventory started within ten minutes of a delta sync. The lock is now released on every exit, including errors.
+* Connection failures are now diagnosable: "Token Refresh Error Body: null" only meant the reply could not be read. The log now records the HTTP status and the start of the actual response.
+
+**Settings**
+* FIX: Import Settings and Push to eBay Settings sit side by side again. An unclosed field in the markup was swallowing the fields below it and pushing the second panel out of the two-column layout.
 
 = 3.5.2 - 2026-08-03 =
 **Listings**
@@ -580,6 +597,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.5.3 =
+Fixes WooCommerce stock dropping by two for every one sold on eBay, variable products being duplicated when they sell, and scheduled syncs being skipped without reporting it. Existing duplicate products are not removed automatically — the duplicate is the one whose SKU ends in the eBay item number.
 
 = 3.5.2 =
 Fixes GTC listings being wrongly shown as Ended (relisting one would have created a duplicate), unblocks coin listings held up by the Circulated/Uncirculated requirement, adds bulk listing-format changes, and fixes products showing only one photo. Existing products repair themselves in the background, so no sync or re-fetch is needed.

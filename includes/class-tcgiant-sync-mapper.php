@@ -506,6 +506,7 @@ class TCGiant_Sync_Mapper {
 			"SELECT pm.post_id, p.post_status FROM {$wpdb->postmeta} pm
 			 INNER JOIN {$wpdb->posts} p ON pm.post_id = p.ID
 			 WHERE pm.meta_key = '_ebay_item_id' AND pm.meta_value = %s
+			   AND p.post_type = 'product'
 			 ORDER BY ( p.post_status = 'trash' ) ASC
 			 LIMIT 1",
 			$item_id
@@ -583,6 +584,15 @@ class TCGiant_Sync_Mapper {
 		// Exclude trashed products from conflict detection.
 		if ( ! empty( $product_data['sku'] ) ) {
 			$conflict_id = wc_get_product_id_by_sku( $product_data['sku'] );
+
+			// A variation of the product we are about to save is not a conflict.
+			// Treating it as one renamed the parent's SKU on every sync of a
+			// variable listing, and left the listing looking unmatched next time.
+			if ( $conflict_id && $product_id && 'product_variation' === get_post_type( $conflict_id )
+				&& (int) wp_get_post_parent_id( $conflict_id ) === (int) $product_id ) {
+				$conflict_id = 0;
+			}
+
 			if ( $conflict_id && $conflict_id !== $product_id ) {
 				$conflict_status = get_post_status( $conflict_id );
 				if ( 'trash' === $conflict_status ) {
@@ -880,8 +890,23 @@ class TCGiant_Sync_Mapper {
 		// Trashed products are handled by the caller, and wc_get_product()
 		// returns false for some trashed rows, so check the post type directly.
 		if ( 'product_variation' === get_post_type( $found_id ) ) {
+			// A listing must never be bound to a variation ID. But refusing to match
+			// at all meant the parent went unrecognised and the whole listing was
+			// imported again as a second product — which is what happened to
+			// variable listings, where eBay's SKU routinely lands on a variation.
+			// Resolve to the parent instead: same protection, no duplicate.
+			$parent_id = (int) wp_get_post_parent_id( $found_id );
+
+			if ( $parent_id && 'product' === get_post_type( $parent_id ) ) {
+				TCGiant_Sync_Logger::log( sprintf(
+					'SKU "%s" is held by variation #%d — matching its parent product #%d.',
+					$sku, $found_id, $parent_id
+				) );
+				return $parent_id;
+			}
+
 			TCGiant_Sync_Logger::warning( sprintf(
-				'SKU "%s" is held by variation #%d, not a product. Skipping SKU match to avoid overwriting it.',
+				'SKU "%s" is held by variation #%d, which has no parent product. Skipping SKU match.',
 				$sku, $found_id
 			) );
 			return false;

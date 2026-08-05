@@ -1,5 +1,23 @@
 *** TCGiant Sync Changelog ***
 
+2026-08-06 - version 3.5.3
+== Stock ==
+- FIX: Two units taken off WooCommerce stock for every one sold on eBay. eBay has already deducted the quantity by the time the plugin hears about a sale, and the sync writes eBay's figure straight into WooCommerce. WooCommerce was then deducting a second unit of its own when the eBay order was imported. Imported eBay orders no longer trigger that second deduction.
+- Turning off "Reduce WooCommerce stock on eBay sale?" did not help, because that setting only governed a third path. It is now clear what it does: it applies only to products that are not linked to an eBay listing. Linked products always take their quantity from eBay directly, so nothing is deducted on top.
+- Stock now moves by exactly the quantity sold.
+
+== Variable Products ==
+- FIX: Variable products duplicated when one sold on eBay. eBay's SKU for a variable listing usually belongs to one of the variations rather than the parent product. The plugin refused to match a SKU held by a variation, so it did not recognise the product it had already imported and created a second one alongside it, with the same attributes and price and a SKU ending in the eBay item number. It now matches the variation's parent product, which was the intent all along.
+- FIX: A product's own variation is no longer mistaken for a SKU clash, which was renaming the parent product's SKU on every sync of a variable listing and leaving the listing unmatched next time round.
+- Existing duplicates are not removed automatically, since only you can say which copy to keep. The duplicate is the one whose SKU ends in "-" followed by the eBay item number.
+
+== Syncing ==
+- FIX: Scheduled syncs could be skipped without saying so. Each delta sync claimed a lock and never gave it back, so the next run found it and reported "Stale lock detected. Breaking lock". At the default 15 minute interval that was only noise, but on a shorter interval every run after the first was refused and skipped silently, and a manual Fetch Inventory started within ten minutes of a delta sync was refused for the same reason. The lock is now released on every exit, including errors.
+- Connection problems are now reported usefully. "Token Refresh Error Body: null" only meant the reply could not be read; the log now records the HTTP status and the start of the actual response, so a failure to reconnect can be diagnosed.
+
+== Settings ==
+- FIX: Import Settings and Push to eBay Settings sit side by side again. A field left unclosed in the markup was swallowing the fields below it and pushing the second panel out of the two-column layout.
+
 2026-08-03 - version 3.5.2
 == Listings ==
 - FIX: GTC listings being shown as Ended while still live on eBay. eBay renews a Good 'Til Cancelled listing roughly every 30 days and moves its end date forward each time, but the plugin treated the end date it had last seen as final. So about a month after a listing was last synced it was marked Ended, and offered a "Relist" button that would have created a second, duplicate listing alongside the one still running. The plugin now confirms with eBay before marking anything ended, and a listing eBay reports as still active is put back to Active.

@@ -267,7 +267,23 @@ class TCGiant_Sync_OAuth {
 			return $body['access_token'];
 		}
 
-		TCGiant_Sync_Logger::error( 'Token Refresh Error Body: ' . wp_json_encode( self::redact_secrets( $body ) ) );
+		// A decoded body of null means the reply was not JSON at all, so logging
+		// the decoded value said nothing more than "it failed". Record the status
+		// code and a slice of the raw reply so the next report can be diagnosed.
+		if ( null === $body ) {
+			TCGiant_Sync_Logger::error( sprintf(
+				'Token refresh failed: HTTP %s, reply was not JSON. First 200 characters: %s',
+				wp_remote_retrieve_response_code( $response ),
+				substr( (string) wp_remote_retrieve_body( $response ), 0, 200 )
+			) );
+			return false;
+		}
+
+		TCGiant_Sync_Logger::error( sprintf(
+			'Token refresh failed: HTTP %s. Response: %s',
+			wp_remote_retrieve_response_code( $response ),
+			wp_json_encode( self::redact_secrets( $body ) )
+		) );
 		return false;
 	}
 

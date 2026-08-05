@@ -348,6 +348,8 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 							<label><input type="radio" name="tcgiant_sync_ebay_settings[enable_order_sync]" value="1" <?php checked( $settings['enable_order_sync'] ?? '0', '1' ); ?>> Yes</label>
 							<label><input type="radio" name="tcgiant_sync_ebay_settings[enable_order_sync]" value="0" <?php checked( $settings['enable_order_sync'] ?? '0', '0' ); ?>> No</label>
 						</div>
+						<p class="tc-hint"><?php esc_html_e( 'Only applies to products that are not linked to an eBay listing. Linked products always take their quantity from eBay directly.', 'tcgiant-sync' ); ?></p>
+					</div>
 					<div class="tc-field">
 						<label class="tc-label"><?php esc_html_e( 'Import eBay orders into WooCommerce?', 'tcgiant-sync' ); ?></label>
 						<div class="tc-radio-group">
@@ -411,10 +413,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 					<button type="submit" class="tc-button full-width" style="font-size:14px;padding:12px 20px;"><?php esc_html_e( 'Save Import Settings', 'tcgiant-sync' ); ?></button>
 				</div>
 			</form>
-		</div>
-		</div><!-- /.tc-card — Import Settings. Without this the Push card
-		            nested inside it, so the two-column grid saw a single child
-		            and stacked them. -->
+		</div><!-- /.tc-card — Import Settings -->
 
 		<!-- Push to eBay Settings -->
 		<div class="tc-card">

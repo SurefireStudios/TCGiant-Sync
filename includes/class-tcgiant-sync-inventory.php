@@ -88,6 +88,12 @@ class TCGiant_Sync_Inventory {
 	public function __construct() {
 		// WooCommerce to eBay stock sync (order stock reduction).
 		add_action( 'woocommerce_reduce_order_stock', array( $this, 'sync_stock_to_ebay' ) );
+
+		// eBay has already decremented its own quantity by the time we hear about
+		// an order, and the importer writes that quantity straight into
+		// WooCommerce. Letting WooCommerce reduce stock again for the same sale
+		// took two off for every one sold.
+		add_filter( 'woocommerce_can_reduce_order_stock', array( $this, 'block_double_reduction' ), 10, 2 );
 		
 		// Real-time stock sync: manual stock edits, CSV imports, REST API updates.
 		add_action( 'woocommerce_product_set_stock', array( $this, 'on_product_stock_change' ) );
@@ -265,6 +271,28 @@ class TCGiant_Sync_Inventory {
 	 * Hook: When WooCommerce reduces stock for an order.
 	 *
 	 * @param WC_Order $order The order object.
+	 */
+	public function block_double_reduction( $can_reduce, $order ) {
+		if ( ! $can_reduce || ! is_a( $order, 'WC_Abstract_Order' ) ) {
+			return $can_reduce;
+		}
+
+		if ( 'ebay' !== $order->get_meta( '_ebay_order_source' ) ) {
+			return $can_reduce;
+		}
+
+		TCGiant_Sync_Logger::log( sprintf(
+			'Order #%d came from eBay, which already deducted the quantity — leaving WooCommerce stock to the sync.',
+			$order->get_id()
+		) );
+
+		return false;
+	}
+
+	/**
+	 * Push a WooCommerce stock change out to eBay.
+	 *
+	 * @param WC_Order $order Order whose stock was just reduced.
 	 */
 	public function sync_stock_to_ebay( $order ) {
 		// Reducing stock for an order that was itself imported from eBay is an

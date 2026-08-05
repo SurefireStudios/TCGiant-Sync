@@ -540,11 +540,31 @@ class TCGiant_Sync_Importer {
 	/**
 	 * Fetch modified items via GetSellerEvents and process them directly.
 	 *
+	 * Wrapper only. start_delta_sync() takes the lock and then hands off to this
+	 * asynchronously, so this is where it has to be given back — on every exit,
+	 * including the early returns and anything thrown. It never was, so each run
+	 * left the file behind for the next one to report stale and break. That was
+	 * merely noisy at a 15 minute interval, but on a shorter one every run after
+	 * the first was refused the lock and skipped in silence, and a manual Fetch
+	 * Inventory within ten minutes of a delta sync was refused for the same
+	 * reason.
+	 */
+	public function fetch_delta_events() {
+		try {
+			$this->run_delta_events();
+		} finally {
+			self::release_lock();
+		}
+	}
+
+	/**
+	 * Fetch modified items via GetSellerEvents and process them directly.
+	 *
 	 * This replaces the GetSellerList + per-item GetItem flow for delta syncs.
 	 * GetSellerEvents returns full item data inline, so no individual GetItem calls are needed.
 	 * Max time window is 48 hours per eBay API rules.
 	 */
-	public function fetch_delta_events() {
+	private function run_delta_events() {
 		$state = self::get_sync_state();
 		$mod_from = $state['delta_mod_from'] ?? '';
 
@@ -1370,6 +1390,16 @@ class TCGiant_Sync_Importer {
 
 				$processed = get_post_meta( $product_id, '_ebay_order_processed_' . $line_item_id, true );
 				if ( $processed ) {
+					continue;
+				}
+
+				// Products linked to an eBay listing have their quantity set outright
+				// from eBay on every sync ("Stock is ALWAYS managed by eBay" in the
+				// mapper), and eBay's figure already excludes what has sold. Taking
+				// another unit off here deducted the same sale twice. Products with no
+				// eBay link are not touched by that path, so they still need this.
+				if ( get_post_meta( $product_id, '_ebay_item_id', true ) ) {
+					update_post_meta( $product_id, '_ebay_order_processed_' . $line_item_id, current_time( 'mysql' ) );
 					continue;
 				}
 
