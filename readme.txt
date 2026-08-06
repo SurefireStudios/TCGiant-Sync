@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.5.3
+Stable tag: 3.5.4
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,12 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.5.4 - 2026-08-06 =
+**Images**
+* FIX: The "Overwrite Images" setting did nothing. It was read and then never acted on, so a product that already had a main image kept it whatever the eBay listing showed, and eBay photos were only ever appended to the gallery behind it. Turning it on now makes the eBay photos authoritative — first photo as the main image, gallery rebuilt from the listing.
+* This is why a product could show a photo that is not on its eBay listing with no way to correct it except by deleting the image by hand. Left off, your own images are still untouched, exactly as before.
+* Images already in your Media Library are never deleted when the setting is on — only unlinked from the product, since they may be your own uploads or used elsewhere.
 
 = 3.5.3 - 2026-08-06 =
 **Stock**
@@ -600,6 +606,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.5.4 =
+Makes the "Overwrite Images" setting work — it previously did nothing, so a product that already had a main image kept it whatever eBay showed. Turn it on if a product is displaying a photo that is not on its eBay listing, then re-sync that product.
 
 = 3.5.3 =
 Fixes listings added during a connection outage never being imported, WooCommerce stock dropping by two for every one sold on eBay, variable products being duplicated when they sell, and scheduled syncs being skipped without reporting it. Existing duplicate products are not removed automatically — the duplicate is the one whose SKU ends in the eBay item number.

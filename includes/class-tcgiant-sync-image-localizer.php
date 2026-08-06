@@ -825,7 +825,13 @@ class TCGiant_Sync_Image_Localizer {
 		$overwrite_images = ! empty( $settings['overwrite_images'] );
 
 		$gallery_ids = array();
-		$needs_thumbnail = ! has_post_thumbnail( $product_id );
+
+		// "Overwrite Images" means eBay's photos are authoritative. The setting
+		// was read and then never used, so a product that already had a main
+		// image kept it whatever eBay showed, and every eBay photo was appended
+		// to the gallery behind it. There was no way to make eBay's photo the
+		// main one short of deleting the existing image by hand.
+		$needs_thumbnail = $overwrite_images || ! has_post_thumbnail( $product_id );
 
 		// If product has a thumbnail, check if it's an external placeholder.
 		if ( ! $needs_thumbnail ) {
@@ -837,10 +843,18 @@ class TCGiant_Sync_Image_Localizer {
 			}
 		}
 
-		// Load existing gallery to append to.
-		$existing_gallery = get_post_meta( $product_id, '_product_image_gallery', true );
-		if ( ! empty( $existing_gallery ) ) {
-			$gallery_ids = array_filter( explode( ',', $existing_gallery ) );
+		// Load existing gallery to append to. When overwriting, eBay's set
+		// replaces it instead — appending would leave the old photos in place
+		// and simply add the new ones after them.
+		//
+		// Only the gallery list is rebuilt. The attachments themselves are left
+		// in the Media Library, since they may be the merchant's own uploads and
+		// may be in use elsewhere.
+		if ( ! $overwrite_images ) {
+			$existing_gallery = get_post_meta( $product_id, '_product_image_gallery', true );
+			if ( ! empty( $existing_gallery ) ) {
+				$gallery_ids = array_filter( explode( ',', $existing_gallery ) );
+			}
 		}
 
 		foreach ( $image_entries as $image_entry ) {

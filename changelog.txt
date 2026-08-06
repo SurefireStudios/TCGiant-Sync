@@ -1,5 +1,11 @@
 *** TCGiant Sync Changelog ***
 
+2026-08-06 - version 3.5.4
+== Images ==
+- FIX: The "Overwrite Images" setting did nothing. It was read and then never acted on, so a product that already had a main image kept it no matter what the eBay listing showed, and eBay photos were only ever added to the gallery behind it. Turning the setting on now makes the eBay photos authoritative: the first becomes the main image and the gallery is rebuilt from the listing.
+- This is why a product could sit there showing a photo that is not on its eBay listing, with no way to correct it except by deleting the image by hand. Leave the setting off and your own images are still left alone, exactly as before.
+- Images already in your Media Library are never deleted when the setting is on, only unlinked from the product, since they may be your own uploads or in use on other products.
+
 2026-08-06 - version 3.5.3
 == Stock ==
 - FIX: Two units taken off WooCommerce stock for every one sold on eBay. eBay has already deducted the quantity by the time the plugin hears about a sale, and the sync writes eBay's figure straight into WooCommerce. WooCommerce was then deducting a second unit of its own when the eBay order was imported. Imported eBay orders no longer trigger that second deduction.
