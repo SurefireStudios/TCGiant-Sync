@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.5.5
+Stable tag: 3.5.6
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,15 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.5.6 - 2026-08-07 =
+**Coins**
+* FIX: Coin listings were only recognised as coins when the category was one of five top-level eBay categories. Nobody lists at the top level — a real coin goes in a sub-category such as "Coins & Paper Money > Coins: US > Mint Sets", and those were not recognised, so coin handling quietly did not apply: no grading descriptors, no Certification, Grade or Year, no Circulated/Uncirculated. Only setting Item Type to Coins by hand on each product rescued it.
+* The full category path is already recorded when you pick a category, so it is now used. Anything under "Coins & Paper Money" counts as coins at any depth. Setting Item Type by hand still works and still wins for custom category IDs typed in directly.
+* Card categories are unaffected and can never be read as coin categories.
+
+**Housekeeping**
+* Removed three unused leftovers in the API and order code. No change in behaviour.
 
 = 3.5.5 - 2026-08-07 =
 **Images**
@@ -612,6 +621,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.5.6 =
+Coin listings in sub-categories such as "Coins: US > Mint Sets" are now recognised as coins. Previously only five top-level categories were, so grading descriptors and coin item specifics were skipped unless you set Item Type to Coins on every product by hand.
 
 = 3.5.5 =
 Required if you turned on "Overwrite Images" in 3.5.4 and nothing happened. The setting worked, but existing products were skipped before it was consulted. Update, switch it on, and run an import from eBay.

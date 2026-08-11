@@ -177,8 +177,7 @@ class TCGiant_Sync_API {
 
 		// Pre-flight: check if we're approaching the daily call limit.
 		if ( $this->is_daily_budget_exhausted() ) {
-			$used  = $this->get_daily_call_count();
-			$limit = (int) ( self::DAILY_CALL_LIMIT * self::DAILY_CALL_SOFT_CEILING );
+			$used = $this->get_daily_call_count();
 			TCGiant_Sync_Logger::log( sprintf(
 				'eBay daily API budget reached (%d/%d calls used today, %d%% ceiling). Blocking %s to preserve remaining quota.',
 				$used, self::DAILY_CALL_LIMIT, (int) ( self::DAILY_CALL_SOFT_CEILING * 100 ), $call_name
@@ -442,7 +441,6 @@ class TCGiant_Sync_API {
 		// 1. Check global budget from relay (preferred — covers all client sites).
 		$relay = $this->get_relay_budget();
 		if ( false !== $relay ) {
-			$global_remaining = (int) $relay['remaining'];
 			$global_ceiling   = (int) ( $relay['daily_limit'] * self::DAILY_CALL_SOFT_CEILING );
 			$global_used      = (int) $relay['global_calls'];
 			return $global_used >= $global_ceiling;

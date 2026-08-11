@@ -1,5 +1,14 @@
 *** TCGiant Sync Changelog ***
 
+2026-08-07 - version 3.5.6
+== Coins ==
+- FIX: Coin listings were only recognised as coins when the category was one of five top-level eBay categories, such as "Coins: US". Nobody lists at the top level — a real coin goes in a sub-category like "Coins & Paper Money > Coins: US > Mint Sets". Those were not recognised, so coin handling quietly did not apply: no grading descriptors, no Certification, Grade or Year, and no Circulated/Uncirculated. The only thing that rescued it was setting Item Type to Coins on each product by hand.
+- The plugin already records the full category path when you pick a category, so it now reads that. Any category under "Coins & Paper Money" is treated as coins, whatever its depth. Setting Item Type by hand still works and still takes precedence for custom category IDs typed in directly.
+- Card categories are unaffected, and a card category can never be read as a coin one.
+
+== Housekeeping ==
+- Removed three unused leftovers in the API and order code. No change in behaviour.
+
 2026-08-07 - version 3.5.5
 == Images ==
 - FIX: Turning on "Overwrite Images" still did nothing on existing products. 3.5.4 made the setting work, but only for products the plugin had already decided to revisit — and a product is only revisited when its eBay photo addresses change. For the products the setting exists to fix, those addresses had not changed, so they were skipped before the setting was ever consulted. Switching it on now marks every product to be looked at once, so the change actually takes effect.

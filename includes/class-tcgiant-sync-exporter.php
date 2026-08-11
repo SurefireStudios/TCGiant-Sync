@@ -1232,6 +1232,7 @@ class TCGiant_Sync_Exporter {
 
 		$settings = array(
 			'category_id'           => $global['export_category_id'] ?? '',
+			'category_name'         => $global['export_category_name'] ?? '',
 			'condition_id'          => $global['export_condition_id'] ?? '1000',
 			'condition_type'        => $global['export_condition_type'] ?? '',
 			'grader_id'             => $global['export_grader_id'] ?? '',
@@ -1269,6 +1270,11 @@ class TCGiant_Sync_Exporter {
 			$override_item_type = $product->get_meta( '_ebay_export_item_type' );
 			if ( ! empty( $override_item_type ) ) {
 				$settings['item_type'] = $override_item_type;
+			}
+
+			$override_cat_name = $product->get_meta( '_ebay_export_category_name' );
+			if ( ! empty( $override_cat_name ) ) {
+				$settings['category_name'] = $override_cat_name;
 			}
 
 			$override_grader = $product->get_meta( '_ebay_export_grader_id' );
@@ -1574,7 +1580,7 @@ class TCGiant_Sync_Exporter {
 	 * @return array
 	 */
 	private function add_derived_specifics( array $specifics, array $settings ) {
-		if ( ! self::is_coins_category( $settings['category_id'] ?? '', $settings['item_type'] ?? '' ) ) {
+		if ( ! self::is_coins_category( $settings['category_id'] ?? '', $settings['item_type'] ?? '', $settings['category_name'] ?? '' ) ) {
 			return $specifics;
 		}
 
@@ -1681,7 +1687,7 @@ class TCGiant_Sync_Exporter {
 		$item_type = $settings['item_type'] ?? '';
 
 		// Only generate ItemSpecifics for Coins categories.
-		if ( ! self::is_coins_category( $settings['category_id'] ?? '', $item_type ) ) {
+		if ( ! self::is_coins_category( $settings['category_id'] ?? '', $item_type, $settings['category_name'] ?? '' ) ) {
 			return array();
 		}
 
@@ -1798,7 +1804,7 @@ class TCGiant_Sync_Exporter {
 	 * @param string $item_type Optional item type override.
 	 * @return bool True if the category is a Coins category.
 	 */
-	public static function is_coins_category( $category_id, $item_type = '' ) {
+	public static function is_coins_category( $category_id, $item_type = '', $category_name = '' ) {
 		$cat_str = (string) $category_id;
 
 		// The actual eBay category is authoritative. If the category is in a
@@ -1811,6 +1817,18 @@ class TCGiant_Sync_Exporter {
 			return false;
 		}
 
+		// Those lists hold eBay's top-level coin and card categories, but nobody
+		// lists at the top level — a real coin goes in a leaf such as 526,
+		// "Coins & Paper Money > Coins: US > Mint Sets". Every check above then
+		// missed, and coin handling silently did not apply unless the seller had
+		// also set Item Type on the product by hand.
+		//
+		// The category browser already records the full path it was chosen from,
+		// so the answer is on the product. No extra eBay call needed.
+		if ( '' !== $category_name && false !== stripos( (string) $category_name, 'Coins & Paper Money' ) ) {
+			return true;
+		}
+
 		// For custom/unknown categories, fall back to item_type.
 		return 'coins' === $item_type;
 	}
@@ -1821,8 +1839,8 @@ class TCGiant_Sync_Exporter {
 	 * @param string $category_id eBay category ID.
 	 * @return array Value ID => label.
 	 */
-	public static function get_ungraded_conditions( $category_id, $item_type = '' ) {
-		if ( self::is_coins_category( $category_id, $item_type ) ) {
+	public static function get_ungraded_conditions( $category_id, $item_type = '', $category_name = '' ) {
+		if ( self::is_coins_category( $category_id, $item_type, $category_name ) ) {
 			return self::UNGRADED_COINS;
 		}
 		return self::UNGRADED_TCG;
@@ -1850,7 +1868,7 @@ class TCGiant_Sync_Exporter {
 		$xml = '<ConditionDescriptors>' . "\n";
 
 		if ( 'graded' === $settings['condition_type'] ) {
-			if ( self::is_coins_category( $settings['category_id'], $item_type ) ) {
+			if ( self::is_coins_category( $settings['category_id'], $item_type, $settings['category_name'] ?? '' ) ) {
 				// ---- COINS: Graded ----
 				// Professional Grader (Descriptor Name 1) — value must be a numeric ID.
 				if ( ! empty( $settings['grader_id'] ) ) {
@@ -1933,7 +1951,7 @@ class TCGiant_Sync_Exporter {
 			}
 		} elseif ( 'ungraded' === $settings['condition_type'] ) {
 			if ( ! empty( $settings['ungraded_condition'] ) ) {
-				if ( self::is_coins_category( $settings['category_id'], $item_type ) ) {
+				if ( self::is_coins_category( $settings['category_id'], $item_type, $settings['category_name'] ?? '' ) ) {
 					// Coins: Descriptor Name 2 ("Coin Condition").
 					$xml .= "\t<ConditionDescriptor>\n";
 					$xml .= "\t\t<Name>2</Name>\n";

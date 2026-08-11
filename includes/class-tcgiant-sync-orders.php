@@ -458,7 +458,6 @@ class TCGiant_Sync_Orders {
 
 		// Get eBay line item IDs from the order.
 		$line_item_id = '';
-		$transaction_id = '';
 		foreach ( $order->get_items() as $item ) {
 			$ebay_item_id = $item->get_meta( '_ebay_item_id' );
 			if ( ! empty( $ebay_item_id ) ) {
