@@ -460,7 +460,18 @@ class TCGiant_Sync_Image_Localizer {
 		// If so, skip — no need to overwrite local images with external URLs.
 		$plain_urls = array_merge( $main_urls, array_values( $variation_map ) );
 		sort( $plain_urls );
-		$new_hash = md5( implode( '|', $plain_urls ) );
+
+		// "Overwrite Images" decides what the product ends up showing, so it is
+		// part of what the hash stands for. Leaving it out meant turning the
+		// setting on changed nothing for precisely the products it exists to
+		// fix: their eBay addresses had not changed, so the hash still matched
+		// and they were skipped by the check below — before the localizer, which
+		// is where the setting is applied, ever got to run. Folding it in means
+		// changing the setting re-queues every product once, and once only.
+		$settings         = get_option( 'tcgiant_sync_ebay_settings', array() );
+		$overwrite_images = ! empty( $settings['overwrite_images'] );
+
+		$new_hash = md5( implode( '|', $plain_urls ) . ( $overwrite_images ? '|overwrite' : '' ) );
 		$stored_hash = get_post_meta( $product_id, '_tcgiant_image_urls_hash', true );
 		$is_localized = (int) get_post_meta( $product_id, '_tcgiant_images_localized', true );
 

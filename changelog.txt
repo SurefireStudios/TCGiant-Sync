@@ -1,5 +1,11 @@
 *** TCGiant Sync Changelog ***
 
+2026-08-07 - version 3.5.5
+== Images ==
+- FIX: Turning on "Overwrite Images" still did nothing on existing products. 3.5.4 made the setting work, but only for products the plugin had already decided to revisit — and a product is only revisited when its eBay photo addresses change. For the products the setting exists to fix, those addresses had not changed, so they were skipped before the setting was ever consulted. Switching it on now marks every product to be looked at once, so the change actually takes effect.
+- After updating, switch "Overwrite Images" on (Settings -> Import Settings -> Data Mapping) and run an import from eBay. Products are corrected in the background over the following minutes, largest catalogues taking longest. No photos are downloaded again — anything already in your Media Library is reused.
+- This happens once per change of the setting, not on every sync.
+
 2026-08-06 - version 3.5.4
 == Images ==
 - FIX: The "Overwrite Images" setting did nothing. It was read and then never acted on, so a product that already had a main image kept it no matter what the eBay listing showed, and eBay photos were only ever added to the gallery behind it. Turning the setting on now makes the eBay photos authoritative: the first becomes the main image and the gallery is rebuilt from the listing.

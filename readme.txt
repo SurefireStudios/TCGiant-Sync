@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.5.4
+Stable tag: 3.5.5
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,12 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.5.5 - 2026-08-07 =
+**Images**
+* FIX: Turning on "Overwrite Images" still did nothing on existing products. 3.5.4 made the setting work, but only for products the plugin had already decided to revisit — and a product is only revisited when its eBay photo addresses change. For the products the setting exists to fix, those addresses had not changed, so they were skipped before the setting was consulted. Switching it on now marks every product to be looked at once.
+* After updating: switch it on under Settings → Import Settings → Data Mapping, then run an import from eBay. Products are corrected in the background. Nothing is re-downloaded — images already in your Media Library are reused.
+* This happens once per change of the setting, not on every sync.
 
 = 3.5.4 - 2026-08-06 =
 **Images**
@@ -606,6 +612,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.5.5 =
+Required if you turned on "Overwrite Images" in 3.5.4 and nothing happened. The setting worked, but existing products were skipped before it was consulted. Update, switch it on, and run an import from eBay.
 
 = 3.5.4 =
 Makes the "Overwrite Images" setting work — it previously did nothing, so a product that already had a main image kept it whatever eBay showed. Turn it on if a product is displaying a photo that is not on its eBay listing, then re-sync that product.
