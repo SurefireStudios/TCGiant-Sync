@@ -864,12 +864,26 @@ class TCGiant_Sync_Admin {
 			// for months.
 			$data = $oauth->claim_tokens_from_relay( $claim_code );
 
+			TCGiant_Sync_Logger::log(
+				'Collected the eBay tokens over a direct request. Nothing sensitive passed through the browser.'
+			);
+
 			if ( is_wp_error( $data ) ) {
 				TCGiant_Sync_Logger::error( 'Could not collect the eBay tokens: ' . $data->get_error_message() );
 				wp_safe_redirect( admin_url( 'admin.php?page=tcgiant-sync&auth=failed' ) );
 				exit;
 			}
 		} else {
+			// The connection service handed the tokens back in the web address. That
+			// works, but they are now in this browser's history and this server's
+			// access log, and a refresh token stays valid for months. Say so, rather
+			// than let it pass unremarked.
+			TCGiant_Sync_Logger::warning(
+				'Connected, but the eBay tokens arrived in the web address rather than over a direct request, '
+				. 'so they are recorded in this browser history and this server access log. '
+				. 'The connection service is running an older version.'
+			);
+
 			// phpcs:disable WordPress.Security.NonceVerification.Recommended
 			$data = array(
 				'access_token'  => sanitize_text_field( wp_unslash( $_GET['ebay_access_token'] ) ),
