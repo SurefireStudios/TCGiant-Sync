@@ -1080,6 +1080,9 @@ class TCGiant_Sync_Mapper {
 		//
 		// The attribute combination is what actually identifies a variation
 		// within a listing, so it is the right thing to match on.
+		$settings        = TCGiant_Sync_OAuth::instance()->get_settings();
+		$overwrite_price = isset( $settings['overwrite_price'] ) ? $settings['overwrite_price'] : '1';
+
 		$by_signature = array();
 		foreach ( $existing_variations as $existing_id ) {
 			$existing = wc_get_product( $existing_id );
@@ -1125,15 +1128,29 @@ class TCGiant_Sync_Mapper {
 				}
 			}
 
+			$is_new_variation = ! $variation_id;
+
 			$variation = $variation_id ? wc_get_product( $variation_id ) : new WC_Product_Variation();
 			$variation->set_parent_id( $parent_id );
 			
 			$variation->set_sku( $var_data['sku'] );
-			$variation->set_regular_price( $var_data['regular_price'] );
-			if ( ! empty( $var_data['sale_price'] ) ) {
-				$variation->set_sale_price( $var_data['sale_price'] );
-			} else {
-				$variation->set_sale_price( '' );
+			// Honour "Overwrite Price" here too.
+			//
+			// The parent product has always respected it, but variations did not:
+			// their prices were written from eBay on every sync no matter what the
+			// setting said. A seller who priced their variations differently in
+			// WooCommerce watched that work get undone hourly, and turning the
+			// setting off changed nothing because it was never consulted here.
+			//
+			// A variation being created now has no price to preserve, so it always
+			// takes eBay's.
+			if ( $is_new_variation || '1' === $overwrite_price ) {
+				$variation->set_regular_price( $var_data['regular_price'] );
+				if ( ! empty( $var_data['sale_price'] ) ) {
+					$variation->set_sale_price( $var_data['sale_price'] );
+				} else {
+					$variation->set_sale_price( '' );
+				}
 			}
 			$variation->set_manage_stock( true );
 			$variation->set_stock_quantity( $var_data['stock_quantity'] );

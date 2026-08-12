@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.7.0
+Stable tag: 3.7.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,13 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.7.1 - 2026-08-12 =
+**Variable products**
+* FIX: "Overwrite Price" was ignored for variations. It has always been respected for ordinary products, but variation prices were written from eBay on every sync whatever the setting said — so prices set in WooCommerce were undone hourly, and turning the setting off changed nothing because it was never consulted. Variations now follow the same rule. A variation created for the first time still takes eBay's price.
+* FIX: Changes to variations never reached eBay. eBay handles listings with variations through a different call from ordinary ones, and the plugin used the ordinary one — which eBay accepts, applying everything else and quietly discarding the variations. Prices updated, new variations never appeared, and nothing in the log explained it. Listings with variations, and fixed-price listings generally, now use the call eBay intends.
+* Push your variable products again to send the variations that were dropped. Nothing needs re-importing.
+* Also fixed: new listings were sent with their duplicate-protection reference twice over.
 
 = 3.7.0 - 2026-08-12 =
 **Connecting to eBay**
@@ -676,6 +683,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.7.1 =
+Important for variable products. Fixes "Overwrite Price" being ignored for variations, and variation changes never reaching eBay because the wrong eBay call was used. Push your variable products again after updating.
 
 = 3.7.0 =
 eBay tokens no longer pass through the browser when connecting, so they stop being recorded in browser history and server access logs. Existing connections keep working and need no action.

@@ -1,5 +1,12 @@
 *** TCGiant Sync Changelog ***
 
+2026-08-12 - version 3.7.1
+== Variable Products ==
+- FIX: "Overwrite Price" was ignored for variations. The setting has always been respected for ordinary products, but variation prices were written from eBay on every sync whatever it said — so a seller who priced their variations differently in WooCommerce watched that work undone hourly, and turning the setting off changed nothing because it was never consulted. Variations now follow the same rule as everything else. A variation being created for the first time still takes eBay's price, since there is nothing to preserve.
+- FIX: Changes to variations were never reaching eBay. eBay handles listings with variations through a different call from ordinary ones, and the plugin was using the ordinary one. eBay does not refuse this — it accepts the request, applies everything else, and quietly discards the variations. So the price went up and new variations never appeared, with nothing in the log to say why. Listings with variations, and fixed-price listings generally, now go through the call eBay intends for them.
+- Push your variable products again to send the variations that were dropped. Nothing needs re-importing.
+- Also fixed: new listings were being sent with their duplicate-protection reference twice over, which defeated the point of having one.
+
 2026-08-12 - version 3.7.0
 == Connecting to eBay ==
 - Your eBay tokens no longer travel through the browser. Connecting used to finish by sending them back in the web address, which meant they were written into your browser history and your own server access logs, where they stay. An eBay refresh token remains valid for months, so that is a long time to leave one lying about.

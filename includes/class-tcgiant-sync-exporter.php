@@ -868,11 +868,14 @@ class TCGiant_Sync_Exporter {
 		}
 
 		$previous_item_id = '';
+		$fixed_price      = $this->uses_fixed_price_calls( $product, $settings, $ebay_item_id );
 
 		if ( ! empty( $ebay_item_id ) ) {
 			// Existing listing — revise it.
 			$full_xml = '<Item>' . "\n" . '<ItemID>' . esc_attr( $ebay_item_id ) . '</ItemID>' . "\n" . $item_xml . "\n" . '</Item>';
-			$response = $api->revise_item( $full_xml );
+			$response = $fixed_price
+				? $api->revise_fixed_price_item( $full_xml )
+				: $api->revise_item( $full_xml );
 
 			if ( ! is_wp_error( $response ) ) {
 				// ReviseItem returns ItemID in the response.
@@ -907,7 +910,9 @@ class TCGiant_Sync_Exporter {
 			// New listing — add it. UUID prevents duplicate creation on timeout/retry.
 			$uuid = TCGiant_Sync_API::generate_ebay_uuid();
 			$full_xml = '<Item>' . "\n" . '<UUID>' . $uuid . '</UUID>' . "\n" . $item_xml . "\n" . '</Item>';
-			$response = $api->add_item( $full_xml );
+			$response = $fixed_price
+				? $api->add_fixed_price_item( $full_xml )
+				: $api->add_item( $full_xml );
 
 			if ( is_wp_error( $response ) ) {
 				return $response;
@@ -982,6 +987,33 @@ class TCGiant_Sync_Exporter {
 	 * @param array      $settings Merged export settings.
 	 * @return string XML string.
 	 */
+	/**
+	 * Whether this listing must go through eBay's fixed-price calls.
+	 *
+	 * @param WC_Product $product      Product being pushed.
+	 * @param array      $settings     Resolved export settings.
+	 * @param string     $ebay_item_id Existing listing, when there is one.
+	 * @return bool
+	 */
+	private function uses_fixed_price_calls( WC_Product $product, array $settings, $ebay_item_id = '' ) {
+		// Variations only exist on fixed-price listings, and eBay will not accept
+		// them through ReviseItem at all — it ignores them silently.
+		if ( $product->is_type( 'variable' ) ) {
+			return true;
+		}
+
+		// For a listing that already exists, what it actually is beats what we
+		// would create today: the seller may have changed its format on eBay.
+		if ( '' !== (string) $ebay_item_id ) {
+			$actual = (string) $product->get_meta( '_ebay_listing_type' );
+			if ( '' !== $actual ) {
+				return 'FixedPriceItem' === $actual;
+			}
+		}
+
+		return 'FixedPriceItem' === ( $settings['listing_type'] ?? 'FixedPriceItem' );
+	}
+
 	private function build_item_xml( WC_Product $product, array $settings ) {
 		$title       = $this->sanitize_title( $product->get_name() );
 		$description = $this->build_description( $product );

@@ -873,8 +873,13 @@ class TCGiant_Sync_API {
 	 */
 	public function add_item( $item_xml ) {
 		// Inject UUID for duplicate prevention — insert right after <Item>.
-		$uuid_tag = '<UUID>' . self::generate_ebay_uuid() . '</UUID>' . "\n";
-		$item_xml = preg_replace( '/(<Item>\s*\n?)/', '$1' . $uuid_tag, $item_xml, 1 );
+		// Callers that supply their own are left alone: adding a second one gave
+		// eBay two <UUID> elements in the same item, which defeats the point of
+		// having one at all.
+		if ( false === strpos( $item_xml, '<UUID>' ) ) {
+			$uuid_tag = '<UUID>' . self::generate_ebay_uuid() . '</UUID>' . "\n";
+			$item_xml = preg_replace( '/(<Item>\s*\n?)/', '$1' . $uuid_tag, $item_xml, 1 );
+		}
 
 		$xml = '<ErrorLanguage>en_US</ErrorLanguage>
 <WarningLevel>High</WarningLevel>
@@ -889,6 +894,49 @@ class TCGiant_Sync_API {
 	 *                         Must include <ItemID> inside the block.
 	 * @return array|WP_Error Parsed API response or error.
 	 */
+	/**
+	 * Create a fixed-price listing.
+	 *
+	 * eBay treats fixed-price listings as their own kind of call, and a listing
+	 * with variations can only be created this way — AddItem has no concept of
+	 * them.
+	 *
+	 * @param string $item_xml Item body, including its own UUID.
+	 * @return array|WP_Error
+	 */
+	public function add_fixed_price_item( $item_xml ) {
+		if ( false === strpos( $item_xml, '<UUID>' ) ) {
+			$uuid_tag = '<UUID>' . self::generate_ebay_uuid() . '</UUID>' . "\n";
+			$item_xml = preg_replace( '/(<Item>\s*\n?)/', '$1' . $uuid_tag, $item_xml, 1 );
+		}
+
+		$xml = '<ErrorLanguage>en_US</ErrorLanguage>
+<WarningLevel>High</WarningLevel>
+' . $item_xml;
+
+		return $this->trading_api_request( 'AddFixedPriceItem', $xml );
+	}
+
+	/**
+	 * Revise a fixed-price listing.
+	 *
+	 * Required for anything with variations. eBay states plainly that ReviseItem
+	 * does not support multiple-variation listings, and it does not report this
+	 * as a failure — the variations are simply ignored while the rest of the
+	 * revision goes through, so a seller sees prices update and new variations
+	 * never appear.
+	 *
+	 * @param string $item_xml Item body including ItemID.
+	 * @return array|WP_Error
+	 */
+	public function revise_fixed_price_item( $item_xml ) {
+		$xml = '<ErrorLanguage>en_US</ErrorLanguage>
+<WarningLevel>High</WarningLevel>
+' . $item_xml;
+
+		return $this->trading_api_request( 'ReviseFixedPriceItem', $xml );
+	}
+
 	public function revise_item( $item_xml ) {
 		$xml = '<ErrorLanguage>en_US</ErrorLanguage>
 <WarningLevel>High</WarningLevel>
