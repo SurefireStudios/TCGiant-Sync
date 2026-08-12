@@ -111,6 +111,10 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Images are now only adopted when they are demonstrably the same photographs.
 * Already affected: turn on "Overwrite Images" under Settings → Import Settings → Data Mapping and run an import from eBay.
 
+**Coins**
+* Coin listings pushed before 3.5.6 are still missing their grading details, Certification, Grade, Year and Circulated/Uncirculated on eBay — fixing the code changed what future pushes send, but did nothing for what had already gone out, and nothing about them looks wrong from inside WooCommerce.
+* The plugin now identifies those listings and offers to send them again, with a count and one button. No eBay lookups are needed to find them, and the notice clears itself once they are updated. Nothing is sent until you press the button.
+
 **Logs**
 * The activity log now states which clock its timestamps use. They have always been in your WordPress timezone, not UTC — if they look wrong, change it under Settings → General.
 

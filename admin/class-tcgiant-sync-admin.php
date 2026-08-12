@@ -88,6 +88,8 @@ class TCGiant_Sync_Admin {
 		add_filter( 'handle_bulk_actions-edit-product', array( $this, 'handle_bulk_push_action' ), 10, 3 );
 		add_action( 'admin_notices', array( $this, 'bulk_push_admin_notice' ) );
 		add_action( 'admin_notices', array( $this, 'staging_admin_notice' ) );
+		add_action( 'admin_notices', array( $this, 'stale_coin_listings_notice' ) );
+		add_action( 'admin_post_tcgiant_refresh_coin_listings', array( $this, 'handle_refresh_coin_listings' ) );
 
 		// Save per-product export overrides.
 		add_action( 'woocommerce_process_product_meta', array( $this, 'save_product_export_meta' ) );
@@ -1633,6 +1635,95 @@ class TCGiant_Sync_Admin {
 	/**
 	 * Show admin notice on staging/dev environments.
 	 */
+	/**
+	 * Offer to re-push coin listings that went to eBay before the category fix.
+	 *
+	 * Fixing the code only changed what future pushes send. Listings already on
+	 * eBay stayed as they were, missing their grading descriptors and coin item
+	 * specifics, and nothing about them looks wrong from inside WooCommerce —
+	 * which is exactly why nobody reports it.
+	 *
+	 * The notice clears itself once those listings have been pushed again,
+	 * because the push records the version that sent it.
+	 */
+	public function stale_coin_listings_notice() {
+		$screen = get_current_screen();
+		if ( ! $screen || ( ! in_array( $screen->id, array( 'edit-product', 'product' ), true ) && false === strpos( $screen->id, 'tcgiant' ) ) ) {
+			return;
+		}
+
+		if ( ! current_user_can( 'manage_options' ) ) {
+			return;
+		}
+
+		// Cached: this runs on every admin page load on those screens.
+		$count = get_transient( 'tcgiant_stale_coin_count' );
+		if ( false === $count ) {
+			$count = count( TCGiant_Sync_Exporter::find_coin_listings_needing_refresh() );
+			set_transient( 'tcgiant_stale_coin_count', $count, 15 * MINUTE_IN_SECONDS );
+		}
+
+		if ( $count < 1 ) {
+			return;
+		}
+
+		$confirm = esc_js( __( 'This will send these listings to eBay again with their coin details. Continue?', 'tcgiant-sync' ) );
+		?>
+		<div class="notice notice-warning">
+			<p>
+				<strong><?php esc_html_e( 'TCGiant Sync — coin listings need updating on eBay', 'tcgiant-sync' ); ?></strong><br>
+				<?php
+				printf(
+					/* translators: %d: number of listings */
+					esc_html( _n(
+						'%d listing was sent to eBay before the plugin recognised its category as a coin category, so it is missing its grading details, Certification, Grade, Year and Circulated/Uncirculated. Sending it again adds them.',
+						'%d listings were sent to eBay before the plugin recognised their categories as coin categories, so they are missing their grading details, Certification, Grade, Year and Circulated/Uncirculated. Sending them again adds them.',
+						$count,
+						'tcgiant-sync'
+					) ),
+					(int) $count
+				);
+				?>
+			</p>
+			<p>
+				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="display:inline;">
+					<input type="hidden" name="action" value="tcgiant_refresh_coin_listings">
+					<?php wp_nonce_field( 'tcgiant_refresh_coin_listings' ); ?>
+					<button type="submit" class="button button-primary" onclick="return confirm('<?php echo $confirm; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>');">
+						<?php esc_html_e( 'Update these listings on eBay', 'tcgiant-sync' ); ?>
+					</button>
+				</form>
+			</p>
+		</div>
+		<?php
+	}
+
+	/**
+	 * Queue the stale coin listings for a fresh push.
+	 */
+	public function handle_refresh_coin_listings() {
+		check_admin_referer( 'tcgiant_refresh_coin_listings' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'Unauthorized.', 'tcgiant-sync' ) );
+		}
+
+		$product_ids = TCGiant_Sync_Exporter::find_coin_listings_needing_refresh();
+		$queued      = TCGiant_Sync_Exporter::instance()->bulk_push_products( $product_ids );
+
+		delete_transient( 'tcgiant_stale_coin_count' );
+
+		TCGiant_Sync_Logger::log( sprintf(
+			'Queued %d coin listing(s) to be sent to eBay again with their coin item specifics.',
+			$queued
+		) );
+
+		wp_safe_redirect( add_query_arg(
+			array( 'tcgiant_pushed' => $queued, 'post_type' => 'product' ),
+			admin_url( 'edit.php' )
+		) );
+		exit;
+	}
+
 	public function staging_admin_notice() {
 		if ( ! defined( 'TCGIANT_SYNC_IS_STAGING' ) || ! TCGIANT_SYNC_IS_STAGING ) {
 			return;

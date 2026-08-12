@@ -16,6 +16,11 @@
 - Images are now only taken over when the photographs are demonstrably the same ones, which keeps this working for relisted items and stops it everywhere else.
 - Products already showing the wrong photographs: turn on "Overwrite Images" (Settings -> Import Settings -> Data Mapping) and run an import from eBay. They will be replaced with the correct ones.
 
+== Coins ==
+- Coin listings that went to eBay before 3.5.6 are still missing their grading details, Certification, Grade, Year and Circulated/Uncirculated, because at the time the plugin did not recognise their category as a coin category. Fixing that changed what future pushes send; it did nothing for listings already on eBay, and nothing about them looks wrong from inside WooCommerce.
+- The plugin now finds those listings for you and offers to send them again, with a count and a single button. It needs no eBay lookups to work out which ones, and the notice disappears by itself once they have been updated.
+- Nothing is sent to eBay until you press the button.
+
 == Logs ==
 - The activity log now states which clock its timestamps use, with the current time in that zone. The times have always been in your WordPress timezone rather than UTC; if they look wrong, the timezone under Settings -> General is the place to change it.
 

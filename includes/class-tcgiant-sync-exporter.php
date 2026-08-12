@@ -717,6 +717,11 @@ class TCGiant_Sync_Exporter {
 				$product->update_meta_data( '_ebay_export_error', '' );
 				$product->update_meta_data( '_ebay_export_last_pushed', current_time( 'mysql' ) );
 
+				// Record which build sent this. Without it there is no way to tell a
+				// listing carrying the right item specifics from one sent before a fix
+				// that added them — the listing on eBay looks the same from here.
+				$product->update_meta_data( '_ebay_export_pushed_version', TCGIANT_SYNC_VERSION );
+
 				// A newly created listing is live, so clear any stale "Ended"
 				// state left over from the listing it replaced — otherwise the
 				// product keeps showing as ended and the ended-listing cron
@@ -1804,6 +1809,77 @@ class TCGiant_Sync_Exporter {
 	 * @param string $item_type Optional item type override.
 	 * @return bool True if the category is a Coins category.
 	 */
+	/**
+	 * Version in which coin categories began to be recognised by their path.
+	 *
+	 * Anything pushed before this, in a coin category, went to eBay without its
+	 * grading descriptors, Certification, Grade, Year or Circulated/Uncirculated,
+	 * because the category was not recognised as a coin category at all.
+	 */
+	const COIN_SPECIFICS_FIXED_IN = '3.5.6';
+
+	/**
+	 * Coin listings that were pushed before the fix and are still live.
+	 *
+	 * Reads stored meta only — no eBay calls — so it is cheap enough to check on
+	 * an admin page load. The listings on eBay are wrong until they are pushed
+	 * again; fixing the code did nothing for what had already been sent.
+	 *
+	 * @param int $limit Maximum number of products to return.
+	 * @return int[] Product IDs.
+	 */
+	public static function find_coin_listings_needing_refresh( $limit = 500 ) {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$candidates = $wpdb->get_col( $wpdb->prepare(
+			"SELECT p.ID
+			 FROM {$wpdb->posts} p
+			 INNER JOIN {$wpdb->postmeta} st ON p.ID = st.post_id AND st.meta_key = '_ebay_export_status'
+			 WHERE p.post_type = 'product'
+			   AND p.post_status = 'publish'
+			   AND st.meta_value = 'pushed'
+			 LIMIT %d",
+			(int) $limit
+		) );
+
+		if ( empty( $candidates ) ) {
+			return array();
+		}
+
+		$global = get_option( 'tcgiant_sync_ebay_settings', array() );
+		$stale  = array();
+
+		foreach ( $candidates as $product_id ) {
+			$product_id = (int) $product_id;
+
+			// version_compare, not a string comparison: '3.5.10' sorts below
+			// '3.5.6' lexically and would hide listings that are actually current.
+			$pushed_with = (string) get_post_meta( $product_id, '_ebay_export_pushed_version', true );
+			if ( '' !== $pushed_with && version_compare( $pushed_with, self::COIN_SPECIFICS_FIXED_IN, '>=' ) ) {
+				continue;
+			}
+
+			$category_id = (string) get_post_meta( $product_id, '_ebay_export_category_id', true );
+			if ( '' === $category_id ) {
+				$category_id = (string) ( $global['export_category_id'] ?? '' );
+			}
+
+			$category_name = (string) get_post_meta( $product_id, '_ebay_export_category_name', true );
+			if ( '' === $category_name ) {
+				$category_name = (string) ( $global['export_category_name'] ?? '' );
+			}
+
+			$item_type = (string) get_post_meta( $product_id, '_ebay_export_item_type', true );
+
+			if ( self::is_coins_category( $category_id, $item_type, $category_name ) ) {
+				$stale[] = $product_id;
+			}
+		}
+
+		return $stale;
+	}
+
 	public static function is_coins_category( $category_id, $item_type = '', $category_name = '' ) {
 		$cat_str = (string) $category_id;
 
