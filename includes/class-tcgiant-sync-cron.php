@@ -697,13 +697,24 @@ class TCGiant_Sync_Cron {
 			}
 
 			// Only relist if WC stock > 0.
+			//
+			// is_in_stock() is checked as well as the quantity because a variable
+			// product usually does not manage stock itself — its variations do — so
+			// the quantity test alone passed products with nothing left to sell,
+			// and eBay refused the relist.
 			$product = wc_get_product( $product_id );
-			if ( ! $product || ( $product->managing_stock() && $product->get_stock_quantity() <= 0 ) ) {
+			if ( ! $product || ! $product->is_in_stock() || ( $product->managing_stock() && $product->get_stock_quantity() <= 0 ) ) {
 				$skipped++;
 				continue;
 			}
 
-			$result = $api->relist_item( $ebay_item_id );
+			// A listing with variations has to be relisted through eBay's
+			// fixed-price call. Through the ordinary one eBay relists the item and
+			// silently discards the variations, which would leave the seller with a
+			// live listing that has nothing in it to buy.
+			$result = TCGiant_Sync_Exporter::instance()->uses_fixed_price_calls( $product, array(), $ebay_item_id )
+				? $api->relist_fixed_price_item( $ebay_item_id )
+				: $api->relist_item( $ebay_item_id );
 			if ( is_wp_error( $result ) ) {
 				TCGiant_Sync_Logger::error( sprintf(
 					'Auto-Relist: Failed to relist eBay #%s (WC #%d): %s',

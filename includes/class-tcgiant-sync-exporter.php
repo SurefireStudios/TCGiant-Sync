@@ -995,7 +995,7 @@ class TCGiant_Sync_Exporter {
 	 * @param string     $ebay_item_id Existing listing, when there is one.
 	 * @return bool
 	 */
-	private function uses_fixed_price_calls( WC_Product $product, array $settings, $ebay_item_id = '' ) {
+	public function uses_fixed_price_calls( WC_Product $product, array $settings = array(), $ebay_item_id = '' ) {
 		// Variations only exist on fixed-price listings, and eBay will not accept
 		// them through ReviseItem at all — it ignores them silently.
 		if ( $product->is_type( 'variable' ) ) {

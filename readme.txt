@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.7.1
+Stable tag: 3.7.2
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,12 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.7.2 - 2026-08-12 =
+**Auto-relist**
+* FIX: Auto-relisting a listing with variations would have relisted it empty. eBay relists those through a different call from ordinary listings, and the plugin used the ordinary one — which eBay accepts, recreating the listing and silently discarding every variation, then reporting success. Same fault fixed for pushing in 3.7.1, in the last place it still applied.
+* Only stores with "Auto-relist ended listings" on and variable products were exposed.
+* FIX: Auto-relist skipped its own stock check on variable products, which do not usually track stock themselves — their variations do. Sold-out variable products were being sent to eBay and refused. They are now left alone.
 
 = 3.7.1 - 2026-08-12 =
 **Variable products**
@@ -683,6 +689,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.7.2 =
+Recommended if you use "Auto-relist ended listings" with variable products. Relisting one would have recreated it on eBay with every variation discarded, reported as a success.
 
 = 3.7.1 =
 Important for variable products. Fixes "Overwrite Price" being ignored for variations, and variation changes never reaching eBay because the wrong eBay call was used. Push your variable products again after updating.

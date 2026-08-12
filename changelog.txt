@@ -1,5 +1,11 @@
 *** TCGiant Sync Changelog ***
 
+2026-08-12 - version 3.7.2
+== Auto-Relist ==
+- FIX: Auto-relisting a listing that has variations would have relisted it empty. eBay relists such a listing through a different call from an ordinary one, and the plugin used the ordinary one — which eBay accepts, recreating the listing and silently discarding every variation. The result would be a live listing with nothing in it to buy, reported in the log as a success.
+- This is the same fault fixed for pushing in 3.7.1, in the one remaining place it still applied. Only stores with "Auto-relist ended listings" switched on and variable products were exposed to it.
+- FIX: Auto-relist also skipped its own stock check on variable products. A variable product does not usually track stock itself — its variations do — so the check passed products with nothing left to sell, and eBay refused the relist. Sold-out variable products are now left alone as intended.
+
 2026-08-12 - version 3.7.1
 == Variable Products ==
 - FIX: "Overwrite Price" was ignored for variations. The setting has always been respected for ordinary products, but variation prices were written from eBay on every sync whatever it said — so a seller who priced their variations differently in WooCommerce watched that work undone hourly, and turning the setting off changed nothing because it was never consulted. Variations now follow the same rule as everything else. A variation being created for the first time still takes eBay's price, since there is nothing to preserve.

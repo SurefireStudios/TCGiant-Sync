@@ -807,6 +807,37 @@ class TCGiant_Sync_API {
 	 * @param string $item_id eBay Item ID of the ended listing.
 	 * @return array|WP_Error Response on success, WP_Error on failure.
 	 */
+	/**
+	 * Relist an ended fixed-price listing.
+	 *
+	 * Carries the same restriction as revising: a listing with variations
+	 * cannot go through RelistItem. eBay does not treat that as an error — it
+	 * relists the item and drops the variations, so an auto-relist would quietly
+	 * turn a multi-variation listing into an empty one.
+	 *
+	 * @param string $item_id Ended eBay Item ID.
+	 * @return array|WP_Error
+	 */
+	public function relist_fixed_price_item( $item_id ) {
+		$xml = '
+<Item>
+<ItemID>' . esc_attr( $item_id ) . '</ItemID>
+<UUID>' . self::generate_ebay_uuid() . '</UUID>
+</Item>';
+
+		$result = $this->trading_api_request( 'RelistFixedPriceItem', $xml );
+
+		if ( ! is_wp_error( $result ) ) {
+			$new_item_id = $result['ItemID'] ?? $item_id;
+			TCGiant_Sync_Logger::log(
+				sprintf( 'eBay listing %s relisted → new Item ID: %s', $item_id, $new_item_id ),
+				'success'
+			);
+		}
+
+		return $result;
+	}
+
 	public function relist_item( $item_id ) {
 		$xml = '
 <Item>
