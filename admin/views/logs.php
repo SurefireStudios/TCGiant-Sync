@@ -72,7 +72,7 @@ $license_ui = TCGiant_Sync_License::instance()->get_status_for_ui();
 						<?php
 						printf(
 							/* translators: 1: timezone name, 2: UTC offset, 3: current local time */
-							esc_html__( 'Times below use your WordPress timezone: %1$s (UTC%2$s). It is currently %3$s there.', 'tcgiant-sync' ),
+							esc_html__( 'Times are shown in your own timezone. The log is written in the site timezone, %1$s (UTC%2$s), where it is currently %3$s — hover any time to see it.', 'tcgiant-sync' ),
 							esc_html( $tc_tz->getName() ),
 							esc_html( $tc_now->format( 'P' ) ),
 							esc_html( $tc_now->format( 'Y-m-d H:i:s' ) )
@@ -100,7 +100,7 @@ $license_ui = TCGiant_Sync_License::instance()->get_status_for_ui();
 					?>
 					<div class="tc-log-entry <?php echo esc_attr($level_class); ?>">
 						<span class="tc-log-icon"><?php echo esc_html($icon); ?></span>
-						<span class="tc-log-time"><?php echo esc_html($entry['timestamp']); ?></span>
+						<span class="tc-log-time" data-tc-utc="<?php echo esc_attr( tcgiant_log_time_to_utc( $entry['timestamp'] ) ); ?>" title="<?php echo esc_attr( sprintf( __( 'Site time: %s', 'tcgiant-sync' ), $entry['timestamp'] ) ); ?>"><?php echo esc_html($entry['timestamp']); ?></span>
 						<span class="tc-log-msg"><?php echo esc_html($entry['message']); ?></span>
 					</div>
 				<?php endforeach; ?>
@@ -108,3 +108,31 @@ $license_ui = TCGiant_Sync_License::instance()->get_status_for_ui();
 		</div>
 	</div>
 </div>
+
+<script>
+/* The log file stays on the site's clock, which is right for a file several
+   people may read. What is on screen is restated in whoever is looking at it —
+   their machine already knows its own offset, so nothing is stored per user.
+   Hovering still shows the site time the file actually recorded. */
+( function () {
+	var nodes = document.querySelectorAll( '.tc-log-time[data-tc-utc]' );
+	if ( ! nodes.length ) {
+		return;
+	}
+
+	function pad( n ) { return ( n < 10 ? '0' : '' ) + n; }
+
+	Array.prototype.forEach.call( nodes, function ( el ) {
+		var iso = el.getAttribute( 'data-tc-utc' );
+		if ( ! iso ) {
+			return;
+		}
+		var when = new Date( iso );
+		if ( isNaN( when.getTime() ) ) {
+			return;
+		}
+		el.textContent = when.getFullYear() + '-' + pad( when.getMonth() + 1 ) + '-' + pad( when.getDate() )
+			+ ' ' + pad( when.getHours() ) + ':' + pad( when.getMinutes() ) + ':' + pad( when.getSeconds() );
+	} );
+} )();
+</script>

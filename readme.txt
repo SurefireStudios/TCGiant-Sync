@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.6.1
+Stable tag: 3.6.2
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,22 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.6.2 - 2026-08-12 =
+**Syncing**
+* FIX: Syncing could stop completely and stay stopped — the real reason new listings were not arriving on some stores. A large batch of changes was worked through in a single request, fetching each item individually; that request times out part way, so the sync never finishes, never records its position, and never clears the "in progress" marker. Every later scheduled sync was then turned away by it. One store was six days behind and falling further.
+* Changes are now processed in batches of 40, resuming where the last finished. The position only advances once the whole window is complete, so an interruption costs a repeat rather than a gap.
+* A sync showing no progress for 30 minutes is presumed failed and replaced. The file lock always released itself this way; the "in progress" marker did not, and had become the blocker.
+* Syncing resumes by itself after updating. Run Fetch Inventory if you would rather not wait for the catch-up.
+
+**Connection**
+* FIX: Intermittent "No valid eBay token" errors. The connection service sometimes returned a server warning ahead of its reply, making the reply unreadable, so a valid token was discarded and the site reported itself disconnected. The token is now recovered, and the warning logged so the cause can be addressed.
+
+**Products**
+* FIX: Listings whose barcode field holds a stand-in such as "N/A" or "None" were all given that as their SKU and collided with each other. Those values now count as no barcode, and the eBay item number is used instead.
+
+**Logs**
+* Times are now shown in your own timezone while the log continues to be written in the site timezone. Hover any time to see what the file recorded.
 
 = 3.6.1 - 2026-08-12 =
 **New listings**
@@ -650,6 +666,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.6.2 =
+Important. Fixes syncing stopping completely and staying stopped after a large batch of eBay changes, which left some stores days behind with no new listings arriving. Also fixes intermittent "No valid eBay token" errors. Syncing resumes by itself after updating.
 
 = 3.6.1 =
 Fixes new eBay listings being swallowed by an existing product that happens to share a SKU, instead of being imported. Affects stores whose WooCommerce SKUs come from a UPC or EAN. Run Fetch Inventory once after updating.

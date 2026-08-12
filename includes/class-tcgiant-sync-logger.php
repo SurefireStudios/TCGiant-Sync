@@ -11,6 +11,32 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 /**
+ * Turn a log timestamp into an absolute instant the browser can restate.
+ *
+ * Log lines are written with current_time(), so they carry the site's clock and
+ * no offset. Pairing them with the site timezone yields a real instant, which
+ * is what lets each viewer see the log in their own time without changing what
+ * is stored in the file.
+ *
+ * @param string $timestamp 'Y-m-d H:i:s' in site time.
+ * @return string ISO 8601 with offset, or empty when unparseable.
+ */
+function tcgiant_log_time_to_utc( $timestamp ) {
+	$timestamp = trim( (string) $timestamp );
+	if ( '' === $timestamp ) {
+		return '';
+	}
+
+	try {
+		$when = new DateTime( $timestamp, wp_timezone() );
+	} catch ( Exception $e ) {
+		return '';
+	}
+
+	return $when->format( DateTime::ATOM );
+}
+
+/**
  * TCGiant_Sync_Logger class
  */
 class TCGiant_Sync_Logger {

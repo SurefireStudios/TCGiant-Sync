@@ -1,5 +1,22 @@
 *** TCGiant Sync Changelog ***
 
+2026-08-12 - version 3.6.2
+== Syncing ==
+- FIX: Syncing could stop completely and stay stopped, which is the real reason new listings were not arriving on some stores. When eBay reports a large number of changes at once, the plugin worked through every one of them in a single request, fetching each item individually. That request runs out of time part way through, so the sync never reaches its own finish, never records how far it got, and never clears the "in progress" marker.
+- From then on every scheduled sync was turned away by that marker, hour after hour, and the position it reads from never moved. One store was stuck six days behind and falling further.
+- Changes are now worked through in batches of 40, picking up where the last batch finished, so a busy period is caught up over several runs instead of failing on every attempt. The position only moves once the whole window is done, so an interruption costs a repeat rather than a gap.
+- A sync that shows no progress for 30 minutes is now presumed to have failed and is replaced by a fresh one. The file lock has always released itself this way; the "in progress" marker did not, and had become the thing blocking everything.
+- After updating, syncing resumes by itself. Anything missed while it was stuck is collected as it catches up; run Fetch Inventory if you would rather not wait.
+
+== Connection ==
+- FIX: "No valid eBay token" errors that came and went for no apparent reason. The connection service was occasionally returning a server warning ahead of its reply, which left the reply unreadable, so a perfectly good token was discarded and the site reported itself disconnected until the next attempt happened to succeed. The token is now recovered from replies like that, and the warning is recorded so the cause can be dealt with.
+
+== Products ==
+- FIX: Listings whose barcode field contains a stand-in such as "N/A" or "None" were all being given that as their SKU, so they collided with each other and had the eBay item number appended to tell them apart. Those values are now treated as no barcode at all, and the item number is used on its own.
+
+== Logs ==
+- Log times are now shown in your own timezone, wherever you are, while the log itself continues to be written in the site timezone. Hover over any time to see what the file recorded.
+
 2026-08-12 - version 3.6.1
 == New Listings ==
 - FIX: A second cause of new eBay listings never appearing in WooCommerce, separate from the one fixed in 3.6.0 and affecting stores that do not filter by category at all.

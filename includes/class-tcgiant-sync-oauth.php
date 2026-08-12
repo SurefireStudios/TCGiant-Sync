@@ -246,7 +246,27 @@ class TCGiant_Sync_OAuth {
 			return false;
 		}
 
-		$body = json_decode( wp_remote_retrieve_body( $response ), true );
+		$raw  = (string) wp_remote_retrieve_body( $response );
+		$body = json_decode( $raw, true );
+
+		// The connection service can prefix its reply with a PHP warning — a
+		// locked SQLite database has done exactly this — which leaves the JSON
+		// intact but no longer parseable, so a perfectly good token was thrown
+		// away and the site reported itself disconnected. Recover the JSON rather
+		// than lose the connection over someone else's notice.
+		if ( null === $body ) {
+			$start = strpos( $raw, '{' );
+			if ( false !== $start ) {
+				$recovered = json_decode( substr( $raw, $start ), true );
+				if ( is_array( $recovered ) && isset( $recovered['access_token'] ) ) {
+					TCGiant_Sync_Logger::warning( sprintf(
+						'The connection service returned a warning before its reply; the token was recovered from it. Leading text: %s',
+						trim( substr( $raw, 0, $start ) )
+					) );
+					$body = $recovered;
+				}
+			}
+		}
 
 		if ( isset( $body['access_token'] ) ) {
 			$settings['access_token'] = $body['access_token'];

@@ -175,6 +175,27 @@ class TCGiant_Sync_Importer {
 	const PRUNE_MAX_RATIO = 0.20;
 
 	/**
+	 * How many changed items one delta run may process.
+	 *
+	 * Every item can cost a GetItem call, and on some accounts every single one
+	 * does. Processing an unbounded list in a single request is what stalled the
+	 * sync outright: a busy window returns hundreds of items, the request dies
+	 * part way through, and because the run never reaches its own completion the
+	 * position is never advanced and the state is never cleared.
+	 */
+	const DELTA_ITEMS_PER_RUN = 40;
+
+	/**
+	 * How long a sync may show no progress before it is presumed dead.
+	 *
+	 * The file lock has always broken itself after ten minutes, but the "already
+	 * in progress" status had no such release. A run that died left that status
+	 * behind for good, and every later run was turned away by it — the guard
+	 * outlived the thing it was guarding.
+	 */
+	const SYNC_STALL_MINUTES = 30;
+
+	/**
 	 * Update sync state.
 	 *
 	 * @param array $updates Key-value pairs to merge into current state.
@@ -204,6 +225,32 @@ class TCGiant_Sync_Importer {
 	 * @param string $operation Label for which operation is acquiring (for diagnostics).
 	 * @return bool True if lock acquired, false if already locked.
 	 */
+	/**
+	 * Whether a sync claiming to be running has actually stopped making progress.
+	 *
+	 * @param array $state Current sync state.
+	 * @return bool
+	 */
+	private static function sync_has_stalled( $state ) {
+		$marker = '';
+		foreach ( array( 'last_activity', 'started_at' ) as $key ) {
+			if ( ! empty( $state[ $key ] ) ) {
+				$marker = (string) $state[ $key ];
+				break;
+			}
+		}
+
+		// No timestamp at all means the state predates this check. Treat it as
+		// stalled rather than letting it block every future run for ever.
+		if ( '' === $marker ) {
+			return true;
+		}
+
+		$age = time() - (int) mysql2date( 'U', $marker, false );
+
+		return $age > ( self::SYNC_STALL_MINUTES * MINUTE_IN_SECONDS );
+	}
+
 	private static function acquire_lock( $operation = 'sync' ) {
 		$lock_file = self::get_lock_file_path();
 
@@ -369,8 +416,16 @@ class TCGiant_Sync_Importer {
 
 		// Guard: don't restart if a sync is already in progress.
 		if ( in_array( $state['status'], array( 'scanning', 'importing' ), true ) ) {
-			TCGiant_Sync_Logger::log( 'Sync already in progress — skipping delta sync request.' );
-			return;
+			if ( ! self::sync_has_stalled( $state ) ) {
+				TCGiant_Sync_Logger::log( 'Sync already in progress — skipping delta sync request.' );
+				return;
+			}
+
+			TCGiant_Sync_Logger::warning( sprintf(
+				'Previous sync has shown no progress for over %d minutes and is presumed to have failed. Starting a fresh one.',
+				self::SYNC_STALL_MINUTES
+			) );
+			self::release_lock();
 		}
 
 		// File lock: prevent concurrent execution.
@@ -412,6 +467,9 @@ class TCGiant_Sync_Importer {
 			// A delta sync never builds a complete active-ID list, so it must
 			// never leave the pruner authorised.
 			'scan_complete_clean' => false,
+			// Start of a new window, so start of the item list.
+			'delta_offset'        => 0,
+			'last_activity'       => current_time( 'mysql' ),
 		) );
 
 		TCGiant_Sync_Logger::log( sprintf(
@@ -653,6 +711,21 @@ class TCGiant_Sync_Importer {
 			return;
 		}
 
+		// Work through the window a slice at a time, resuming where the last run
+		// finished. A single request cannot be relied on to get through hundreds
+		// of items when each one may need its own eBay lookup.
+		$total_items = count( $items );
+		$offset      = max( 0, (int) ( $state['delta_offset'] ?? 0 ) );
+
+		if ( $offset >= $total_items ) {
+			$offset = 0;
+		}
+
+		$items = array_slice( $items, $offset, self::DELTA_ITEMS_PER_RUN );
+
+		@set_time_limit( 300 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+		ignore_user_abort( true );
+
 		// Category filtering (same logic as process_page_items).
 		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
 		$is_custom_filtering = ! empty( $settings['category_ids'] );
@@ -879,6 +952,32 @@ class TCGiant_Sync_Importer {
 			$processed, $errors, count( $items ), $filter_label, $fallback_label
 		), 'success' );
 
+		// More of this window still to go: record where we got to, keep the sync
+		// marked as running, and pick up from here on the next pass. The position
+		// is deliberately not advanced until the whole window is done, so an
+		// interruption costs a repeat rather than a hole.
+		$next_offset = $offset + count( $items );
+
+		if ( $next_offset < $total_items ) {
+			self::update_sync_state( array(
+				'status'          => 'scanning',
+				'delta_offset'    => $next_offset,
+				'total_found'     => $total_items,
+				'total_processed' => (int) ( $state['total_processed'] ?? 0 ) + $processed,
+				'total_errors'    => (int) ( $state['total_errors'] ?? 0 ) + $errors,
+				'last_activity'   => current_time( 'mysql' ),
+			) );
+
+			TCGiant_Sync_Logger::log( sprintf(
+				'Delta sync: %d of %d changed items done. Continuing with the rest.',
+				$next_offset, $total_items
+			) );
+
+			as_enqueue_async_action( 'tcgiant_sync_fetch_delta_events', array(), 'tcgiant_sync_group' );
+
+			return;
+		}
+
 		// The end of the window actually queried, not the clock. When the window
 		// is clamped to eBay's 48 hour maximum, "now" is beyond what was read —
 		// so the backlog the clamp exists to work through incrementally was
@@ -887,11 +986,13 @@ class TCGiant_Sync_Importer {
 		// the API call and this line was stepped over.
 		self::update_sync_state( array(
 			'status'                  => 'complete',
-			'total_found'             => count( $items ),
+			'delta_offset'            => 0,
+			'total_found'             => $total_items,
 			'total_queued'            => $processed + $errors,
-			'total_processed'         => $processed,
-			'total_errors'            => $errors,
+			'total_processed'         => (int) ( $state['total_processed'] ?? 0 ) + $processed,
+			'total_errors'            => (int) ( $state['total_errors'] ?? 0 ) + $errors,
 			'last_completed'          => current_time( 'mysql' ),
+			'last_activity'           => current_time( 'mysql' ),
 			'last_successful_sync_at' => $mod_to,
 		) );
 	}

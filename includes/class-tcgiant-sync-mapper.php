@@ -92,8 +92,11 @@ class TCGiant_Sync_Mapper {
 								   $ebay_item['ProductListingDetails']['UPC'] ?? 
 								   $ebay_item['ProductListingDetails']['EAN'] ?? '';
 			
-			// eBay sometimes returns 'Does not apply' or 'Does Not Apply' for missing identifiers
-			if ( strtolower( $product_data['sku'] ) === 'does not apply' ) {
+			// Sellers put all sorts of stand-ins in the barcode fields. Accepting one
+			// as a SKU gives every listing that used it the same SKU, and they then
+			// collide with each other for ever after - "N/A-187465771950" in the log
+			// is one of them being made unique the hard way.
+			if ( self::is_placeholder_identifier( $product_data['sku'] ) ) {
 				$product_data['sku'] = '';
 			}
 		}
@@ -106,7 +109,7 @@ class TCGiant_Sync_Mapper {
 				$name = strtolower( $spec['Name'] ?? '' );
 				if ( in_array( $name, array( 'isbn', 'upc', 'ean' ), true ) ) {
 					$val = is_array( $spec['Value'] ) ? reset( $spec['Value'] ) : $spec['Value'];
-					if ( strtolower( $val ) !== 'does not apply' ) {
+					if ( ! self::is_placeholder_identifier( $val ) ) {
 						$product_data['sku'] = $val;
 						break;
 					}
@@ -980,6 +983,35 @@ class TCGiant_Sync_Mapper {
 	 * @param mixed $entries Either plain URLs or [url, variation_id] pairs.
 	 * @return string[]
 	 */
+	/**
+	 * Whether a product identifier is really a stand-in for "none".
+	 *
+	 * @param mixed $value Candidate ISBN, UPC or EAN.
+	 * @return bool
+	 */
+	private static function is_placeholder_identifier( $value ) {
+		$normalised = strtolower( trim( (string) $value ) );
+
+		if ( '' === $normalised ) {
+			return true;
+		}
+
+		$placeholders = array(
+			'does not apply',
+			'doesnotapply',
+			'not applicable',
+			'n/a',
+			'na',
+			'none',
+			'null',
+			'unbranded',
+			'-',
+			'0',
+		);
+
+		return in_array( $normalised, $placeholders, true );
+	}
+
 	private static function plain_image_urls( $entries ) {
 		$urls = array();
 
