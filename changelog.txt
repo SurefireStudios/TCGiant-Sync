@@ -1,5 +1,12 @@
 *** TCGiant Sync Changelog ***
 
+2026-08-12 - version 3.7.3
+== Stock ==
+- FIX: Selling a variation in WooCommerce did not reduce its stock on eBay. An eBay listing is identified by its item number, but that only names the listing — not which variation within it. eBay needs the variation's SKU as well, and the plugin was not sending one, so a stock change on a variable product had nothing to land on.
+- Older listings created directly on eBay are the ones affected. Newer listings managed through eBay's inventory system were already handled correctly.
+- The SKU is sent only for products that really are variations. On an ordinary listing eBay only accepts a SKU if the listing was set up to be tracked that way, so sending one regardless would have broken the straightforward case in order to fix the awkward one.
+- Nothing to do. The next stock change on an affected product will sync as it should.
+
 2026-08-12 - version 3.7.2
 == Auto-Relist ==
 - FIX: Auto-relisting a listing that has variations would have relisted it empty. eBay relists such a listing through a different call from an ordinary one, and the plugin used the ordinary one — which eBay accepts, recreating the listing and silently discarding every variation. The result would be a live listing with nothing in it to buy, reported in the log as a success.

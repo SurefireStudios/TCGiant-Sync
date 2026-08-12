@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.7.2
+Stable tag: 3.7.3
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,13 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.7.3 - 2026-08-12 =
+**Stock**
+* FIX: Selling a variation in WooCommerce did not reduce its stock on eBay. An item number names the listing but not which variation within it, and eBay needs the variation SKU as well — which the plugin was not sending, so the stock change had nothing to land on.
+* Affects older listings created directly on eBay. Listings managed through eBay's inventory system were already handled correctly.
+* The SKU is sent only for products that really are variations — on an ordinary listing eBay only accepts one if the listing was set up to be tracked that way.
+* Nothing to do; the next stock change on an affected product syncs as it should.
 
 = 3.7.2 - 2026-08-12 =
 **Auto-relist**
@@ -689,6 +696,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.7.3 =
+Recommended if you sell variable products. Fixes variation stock not reducing on eBay when it sells in WooCommerce, which risks overselling.
 
 = 3.7.2 =
 Recommended if you use "Auto-relist ended listings" with variable products. Relisting one would have recreated it on eBay with every variation discarded, reported as a success.

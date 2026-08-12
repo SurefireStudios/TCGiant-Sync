@@ -630,7 +630,7 @@ class TCGiant_Sync_API {
 		// Check if this is a Trading API listing (EBAY-{ItemID} SKU pattern).
 		// These listings don't exist in the Inventory (REST) API and will always 404.
 		if ( preg_match( '/^EBAY-(\d+)$/', $sku, $matches ) ) {
-			return $this->update_trading_api_stock( $matches[1], $quantity );
+			return $this->update_trading_api_stock( $matches[1], $quantity, $sku );
 		}
 
 		// Try the Inventory API first.
@@ -646,7 +646,7 @@ class TCGiant_Sync_API {
 				// Look up the eBay Item ID from WooCommerce product meta.
 				$item_id = $this->resolve_ebay_item_id_from_sku( $sku );
 				if ( $item_id ) {
-					return $this->update_trading_api_stock( $item_id, $quantity );
+					return $this->update_trading_api_stock( $item_id, $quantity, $sku );
 				}
 				
 				return new WP_Error( 'not_found_on_ebay', __( 'Item not found on eBay. It may not be linked.', 'tcgiant-sync' ) );
@@ -669,20 +669,50 @@ class TCGiant_Sync_API {
 	 * @param int    $quantity New stock quantity.
 	 * @return array|WP_Error API response or error.
 	 */
-	public function update_trading_api_stock( $item_id, $quantity ) {
+	public function update_trading_api_stock( $item_id, $quantity, $sku = '' ) {
 		// eBay's ReviseInventoryStatus rejects qty = 0.
 		// When stock is depleted, the correct action is to end the listing.
 		if ( (int) $quantity <= 0 ) {
 			return $this->end_item( $item_id );
 		}
 
+		// An Item ID alone identifies a listing, but not which variation within
+		// one. eBay requires both for a listing that has variations, and without
+		// the SKU it cannot tell which quantity is being set — so stock changes on
+		// a variable product had nothing to land on.
+		//
+		// The SKU is only sent when the product really is a variation. On an
+		// ordinary listing eBay only accepts a SKU if the listing was created to
+		// be tracked that way, so sending one regardless would break the plain
+		// case to fix the awkward one.
+		$sku_xml = '';
+		if ( '' !== (string) $sku && self::sku_belongs_to_variation( $sku ) ) {
+			$sku_xml = "\t" . '<SKU>' . esc_xml( (string) $sku ) . '</SKU>' . "\n";
+		}
+
 		$xml = '
 <InventoryStatus>
 	<ItemID>' . esc_attr( $item_id ) . '</ItemID>
-	<Quantity>' . (int) $quantity . '</Quantity>
+' . $sku_xml . '	<Quantity>' . (int) $quantity . '</Quantity>
 </InventoryStatus>';
 
 		return $this->trading_api_request( 'ReviseInventoryStatus', $xml );
+	}
+
+	/**
+	 * Whether a SKU belongs to a product variation rather than a whole product.
+	 *
+	 * @param string $sku WooCommerce SKU.
+	 * @return bool
+	 */
+	private static function sku_belongs_to_variation( $sku ) {
+		if ( ! function_exists( 'wc_get_product_id_by_sku' ) ) {
+			return false;
+		}
+
+		$product_id = wc_get_product_id_by_sku( $sku );
+
+		return $product_id && 'product_variation' === get_post_type( $product_id );
 	}
 
 	/**
