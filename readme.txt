@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.6.2
+Stable tag: 3.7.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,16 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.7.0 - 2026-08-12 =
+**Connecting to eBay**
+* Your eBay tokens no longer travel through the browser. Connecting used to finish by sending them back in the web address, which wrote them into browser history and your own server access logs, where they stay — and an eBay refresh token stays valid for months.
+* The connection now finishes with a single-use collection slip. Your site exchanges it for the tokens over a direct request no browser sees. The slip expires after fifteen minutes, only answers to the site it was issued for, and is spent the first time it is presented.
+* Nothing about your eBay application changes: same keys, same registered address, same sign-in screen. Only the final step between our connection service and your site is different.
+* Existing connections keep working and need no action.
+
+**Syncing**
+* Catching up on a backlog is now reliable regardless of the order eBay answers in. Work resumes by position in the list of changes, and eBay does not promise to return that list the same way twice — so a resumed run could skip or repeat items. The order is fixed before anything is processed.
 
 = 3.6.2 - 2026-08-12 =
 **Syncing**
@@ -666,6 +676,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.7.0 =
+eBay tokens no longer pass through the browser when connecting, so they stop being recorded in browser history and server access logs. Existing connections keep working and need no action.
 
 = 3.6.2 =
 Important. Fixes syncing stopping completely and staying stopped after a large batch of eBay changes, which left some stores days behind with no new listings arriving. Also fixes intermittent "No valid eBay token" errors. Syncing resumes by itself after updating.

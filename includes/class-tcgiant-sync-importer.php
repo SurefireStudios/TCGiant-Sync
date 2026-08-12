@@ -714,6 +714,16 @@ class TCGiant_Sync_Importer {
 		// Work through the window a slice at a time, resuming where the last run
 		// finished. A single request cannot be relied on to get through hundreds
 		// of items when each one may need its own eBay lookup.
+		//
+		// Resuming by position only works if the list is in the same order every
+		// time, and eBay does not promise that — the same window queried twice may
+		// come back arranged differently. Sorting by Item ID makes the order ours
+		// rather than theirs, so a resumed run continues from exactly where the
+		// last one stopped instead of skipping or repeating items.
+		usort( $items, function ( $a, $b ) {
+			return strcmp( (string) ( $a['ItemID'] ?? '' ), (string) ( $b['ItemID'] ?? '' ) );
+		} );
+
 		$total_items = count( $items );
 		$offset      = max( 0, (int) ( $state['delta_offset'] ?? 0 ) );
 

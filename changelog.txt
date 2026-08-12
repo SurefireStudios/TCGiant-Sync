@@ -1,5 +1,15 @@
 *** TCGiant Sync Changelog ***
 
+2026-08-12 - version 3.7.0
+== Connecting to eBay ==
+- Your eBay tokens no longer travel through the browser. Connecting used to finish by sending them back in the web address, which meant they were written into your browser history and your own server access logs, where they stay. An eBay refresh token remains valid for months, so that is a long time to leave one lying about.
+- The connection now finishes with a single-use collection slip instead. Your site exchanges it for the tokens over a direct request that no browser sees. The slip expires after fifteen minutes, only answers to the site it was issued for, and is used up the first time it is presented, whether or not the request was entitled to it.
+- Nothing about your eBay application changes: same keys, same registered address, same sign-in screen. This is only the last step, between our connection service and your site.
+- Existing connections keep working and do not need redoing. The change applies the next time you connect or reconnect.
+
+== Syncing ==
+- Catching up on a backlog is now reliable regardless of the order eBay answers in. Work is resumed by position in the list of changes, and eBay does not promise to return that list the same way twice, so the same window queried again could have skipped or repeated items. The order is now fixed before any of it is processed.
+
 2026-08-12 - version 3.6.2
 == Syncing ==
 - FIX: Syncing could stop completely and stay stopped, which is the real reason new listings were not arriving on some stores. When eBay reports a large number of changes at once, the plugin worked through every one of them in a single request, fetching each item individually. That request runs out of time part way through, so the sync never reaches its own finish, never records how far it got, and never clears the "in progress" marker.

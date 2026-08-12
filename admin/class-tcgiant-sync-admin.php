@@ -826,7 +826,12 @@ class TCGiant_Sync_Admin {
 		}
 
 		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
-		if ( ! isset( $_GET['ebay_access_token'], $_GET['ebay_refresh_token'], $_GET['ebay_expires_in'] ) ) {
+		$claim_code = isset( $_GET['tcgiant_claim'] ) ? sanitize_text_field( wp_unslash( $_GET['tcgiant_claim'] ) ) : '';
+
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		$tokens_in_url = isset( $_GET['ebay_access_token'], $_GET['ebay_refresh_token'], $_GET['ebay_expires_in'] );
+
+		if ( '' === $claim_code && ! $tokens_in_url ) {
 			return;
 		}
 
@@ -852,14 +857,28 @@ class TCGiant_Sync_Admin {
 			exit;
 		}
 
-		// phpcs:disable WordPress.Security.NonceVerification.Recommended
-		$data = array(
-			'access_token'  => sanitize_text_field( wp_unslash( $_GET['ebay_access_token'] ) ),
-			'refresh_token' => sanitize_text_field( wp_unslash( $_GET['ebay_refresh_token'] ) ),
-			'expires_in'    => sanitize_text_field( wp_unslash( $_GET['ebay_expires_in'] ) ),
-			'relay_key'     => isset( $_GET['ebay_relay_key'] ) ? sanitize_text_field( wp_unslash( $_GET['ebay_relay_key'] ) ) : '',
-		);
-		// phpcs:enable WordPress.Security.NonceVerification.Recommended
+		if ( '' !== $claim_code ) {
+			// Collect the tokens over a direct request instead of reading them out
+			// of the address bar. Everything in a URL is written to the browser's
+			// history and to this server's access log, and a refresh token is good
+			// for months.
+			$data = $oauth->claim_tokens_from_relay( $claim_code );
+
+			if ( is_wp_error( $data ) ) {
+				TCGiant_Sync_Logger::error( 'Could not collect the eBay tokens: ' . $data->get_error_message() );
+				wp_safe_redirect( admin_url( 'admin.php?page=tcgiant-sync&auth=failed' ) );
+				exit;
+			}
+		} else {
+			// phpcs:disable WordPress.Security.NonceVerification.Recommended
+			$data = array(
+				'access_token'  => sanitize_text_field( wp_unslash( $_GET['ebay_access_token'] ) ),
+				'refresh_token' => sanitize_text_field( wp_unslash( $_GET['ebay_refresh_token'] ) ),
+				'expires_in'    => sanitize_text_field( wp_unslash( $_GET['ebay_expires_in'] ) ),
+				'relay_key'     => isset( $_GET['ebay_relay_key'] ) ? sanitize_text_field( wp_unslash( $_GET['ebay_relay_key'] ) ) : '',
+			);
+			// phpcs:enable WordPress.Security.NonceVerification.Recommended
+		}
 
 		if ( $oauth->save_tokens_from_relay( $data ) ) {
 			TCGiant_Sync_Logger::log( 'eBay account connected successfully.', 'success' );

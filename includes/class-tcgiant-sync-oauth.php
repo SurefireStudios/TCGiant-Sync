@@ -118,6 +118,12 @@ class TCGiant_Sync_OAuth {
 
 		$params = array(
 			'site_url' => get_site_url(),
+			// Tell the relay this build can collect its tokens over a separate
+			// server-to-server request rather than having them handed back in the
+			// browser's address bar. A relay that does not understand this simply
+			// ignores it and returns the tokens the old way, so older and newer
+			// versions of both sides keep working together.
+			'claim'    => '1',
 		);
 
 		return 'https://tcgiant.com/syncconnect/relay.php?' . http_build_query( $params );
@@ -221,6 +227,68 @@ class TCGiant_Sync_OAuth {
 	/**
 	 * Refresh Access Token.
 	 */
+	/**
+	 * Exchange a one-time claim code for the tokens it stands for.
+	 *
+	 * The tokens travel over a direct request between this site and the relay,
+	 * so they never appear in the address bar, in browser history, or in either
+	 * server's access log. The code itself is single use and short lived, and is
+	 * worthless once spent.
+	 *
+	 * @param string $code Claim code handed back on the redirect.
+	 * @return array|WP_Error Token payload, or an error describing the refusal.
+	 */
+	public function claim_tokens_from_relay( $code ) {
+		$code = trim( (string) $code );
+		if ( '' === $code ) {
+			return new WP_Error( 'claim_missing', __( 'No claim code was supplied.', 'tcgiant-sync' ) );
+		}
+
+		$response = wp_remote_post( 'https://tcgiant.com/syncconnect/relay.php', array(
+			'body'    => array(
+				'action'   => 'claim',
+				'code'     => $code,
+				'site_url' => get_site_url(),
+			),
+			'timeout' => 30,
+		) );
+
+		if ( is_wp_error( $response ) ) {
+			return $response;
+		}
+
+		$raw  = (string) wp_remote_retrieve_body( $response );
+		$body = json_decode( $raw, true );
+
+		// Same recovery as refresh_access_token(): a warning printed ahead of the
+		// reply must not cost us a valid connection.
+		if ( null === $body ) {
+			$start = strpos( $raw, '{' );
+			if ( false !== $start ) {
+				$body = json_decode( substr( $raw, $start ), true );
+			}
+		}
+
+		if ( ! is_array( $body ) || ! isset( $body['access_token'], $body['refresh_token'] ) ) {
+			return new WP_Error(
+				'claim_failed',
+				sprintf(
+					/* translators: 1: HTTP status, 2: start of the reply */
+					__( 'The connection service would not release the tokens (HTTP %1\$s). Reply began: %2\$s', 'tcgiant-sync' ),
+					wp_remote_retrieve_response_code( $response ),
+					substr( $raw, 0, 200 )
+				)
+			);
+		}
+
+		return array(
+			'access_token'  => (string) $body['access_token'],
+			'refresh_token' => (string) $body['refresh_token'],
+			'expires_in'    => (string) ( $body['expires_in'] ?? 7200 ),
+			'relay_key'     => (string) ( $body['relay_key'] ?? '' ),
+		);
+	}
+
 	public function refresh_access_token() {
 		$settings = $this->get_settings();
 		if ( empty( $settings['refresh_token'] ) ) {
