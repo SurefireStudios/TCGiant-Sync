@@ -58,6 +58,28 @@ $license_ui = TCGiant_Sync_License::instance()->get_status_for_ui();
 					<p style="color:#64748b;"><?php esc_html_e('No activity recorded yet.', 'tcgiant-sync'); ?></p>
 				</div>
 			<?php else: ?>
+				<?php
+				// Timestamps are written with current_time(), so they are already on
+				// the site's clock rather than UTC. Naming that clock removes the
+				// guesswork: if it reads UTC here, that is the WordPress setting
+				// under Settings -> General, not the plugin.
+				$tc_tz  = wp_timezone();
+				$tc_now = new DateTime( 'now', $tc_tz );
+				?>
+				<div class="tc-log-entry" style="opacity:.7;">
+					<span class="tc-log-icon">[i]</span>
+					<span class="tc-log-msg">
+						<?php
+						printf(
+							/* translators: 1: timezone name, 2: UTC offset, 3: current local time */
+							esc_html__( 'Times below use your WordPress timezone: %1$s (UTC%2$s). It is currently %3$s there.', 'tcgiant-sync' ),
+							esc_html( $tc_tz->getName() ),
+							esc_html( $tc_now->format( 'P' ) ),
+							esc_html( $tc_now->format( 'Y-m-d H:i:s' ) )
+						);
+						?>
+					</span>
+				</div>
 				<?php foreach ($log_entries as $entry):
 					$level_class = '';
 					$icon = '[Log]';

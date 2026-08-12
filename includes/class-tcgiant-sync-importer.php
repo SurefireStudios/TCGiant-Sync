@@ -698,7 +698,47 @@ class TCGiant_Sync_Importer {
 					$store_cat1  = $ebay_item['Storefront']['StoreCategoryID'] ?? '';
 					$store_cat2  = $ebay_item['Storefront']['StoreCategory2ID'] ?? '';
 
+					// GetSellerEvents frequently returns a partial item — that is
+					// the entire reason the GetItem fallback below exists. But the
+					// filter ran first and judged the item on whatever happened to
+					// be present, so an item that arrived without any category
+					// information at all was silently discarded before the call
+					// that would have identified it. Newly listed items are the
+					// ones that suffer: they never reach WooCommerce, and the only
+					// trace is the "skipped (category filter)" tally.
+					//
+					// Only pay for the lookup when there is genuinely nothing to
+					// judge by; an item that did arrive with categories is filtered
+					// as before, at no extra cost.
+					if ( '' === (string) $primary_cat && '' === (string) $store_cat1 && '' === (string) $store_cat2 ) {
+						$full_for_filter = TCGiant_Sync_API::instance()->get_item( $item_id );
+						if ( ! is_wp_error( $full_for_filter ) && isset( $full_for_filter['Item'] ) ) {
+							$ebay_item   = $full_for_filter['Item'];
+							$fallback_count++;
+							$primary_cat = $ebay_item['PrimaryCategory']['CategoryID'] ?? '';
+							$store_cat1  = $ebay_item['Storefront']['StoreCategoryID'] ?? '';
+							$store_cat2  = $ebay_item['Storefront']['StoreCategory2ID'] ?? '';
+						} else {
+							// Could not find out. Letting it through is the safer
+							// error: a product that should have been filtered is
+							// visible and can be removed, one that was wrongly
+							// dropped is invisible and never comes back.
+							TCGiant_Sync_Logger::warning( sprintf(
+								'Delta: no category data for eBay item %s and GetItem failed — importing it rather than dropping it.',
+								$item_id
+							) );
+							$primary_cat = '';
+							$store_cat1  = '';
+							$store_cat2  = '';
+						}
+					}
+
 					$match = false;
+
+					// Nothing to judge by even after asking eBay — import it.
+					if ( '' === (string) $primary_cat && '' === (string) $store_cat1 && '' === (string) $store_cat2 ) {
+						$match = true;
+					}
 					
 					// Check against Standard Categories
 					if ( ! empty( $standard_cats ) ) {

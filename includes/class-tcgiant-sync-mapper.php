@@ -842,7 +842,11 @@ class TCGiant_Sync_Mapper {
 		// its images. This handles the case where sellers relist with new Item
 		// IDs and SKUs — the old product gets trashed but its images survive.
 		if ( $is_new && $saved_id && ! empty( $product_data['meta']['_ebay_sku'] ) ) {
-			$this->migrate_images_from_orphan( $saved_id, $product_data['meta']['_ebay_sku'] );
+			$this->migrate_images_from_orphan(
+				$saved_id,
+				$product_data['meta']['_ebay_sku'],
+				isset( $product_data['images'] ) ? (array) $product_data['images'] : array()
+			);
 		}
 
 		// Mirror the listing into the indexed custom table.
@@ -921,14 +925,101 @@ class TCGiant_Sync_Mapper {
 	 * @param int $parent_id WooCommerce Parent Product ID.
 	 * @param array $variations_data Array of variation data from map_ebay_to_woo (by reference).
 	 */
+	/**
+	 * Flatten stored image entries to a sorted list of plain URLs.
+	 *
+	 * @param mixed $entries Either plain URLs or [url, variation_id] pairs.
+	 * @return string[]
+	 */
+	private static function plain_image_urls( $entries ) {
+		$urls = array();
+
+		foreach ( (array) $entries as $entry ) {
+			if ( is_array( $entry ) ) {
+				$entry = $entry[0] ?? '';
+			}
+			$entry = trim( (string) $entry );
+			if ( '' !== $entry ) {
+				$urls[] = $entry;
+			}
+		}
+
+		$urls = array_values( array_unique( $urls ) );
+		sort( $urls );
+
+		return $urls;
+	}
+
+	/**
+	 * Build a stable identifier for a variation from its attribute values.
+	 *
+	 * @param array $attributes Attribute name => value.
+	 * @return string Empty when the variation has no usable attributes.
+	 */
+	private static function variation_signature( $attributes ) {
+		$normalised = array();
+
+		foreach ( (array) $attributes as $name => $value ) {
+			$key = sanitize_title( (string) $name );
+			if ( '' === $key ) {
+				continue;
+			}
+			$normalised[ $key ] = strtolower( trim( (string) $value ) );
+		}
+
+		if ( empty( $normalised ) ) {
+			return '';
+		}
+
+		ksort( $normalised );
+
+		$parts = array();
+		foreach ( $normalised as $key => $value ) {
+			$parts[] = $key . '=' . $value;
+		}
+
+		return implode( '|', $parts );
+	}
+
 	private function save_variations( $parent_id, &$variations_data ) {
 		$product = wc_get_product( $parent_id );
 		$existing_variations = $product->get_children();
 		$processed_ids = array();
+
+		// Index what is already on the product by its attribute combination.
+		//
+		// Variations used to be matched by SKU alone, but eBay variations very
+		// often carry no SKU — it is optional and most sellers leave it blank.
+		// With nothing to match on, every sync built a fresh set of variations
+		// and retired the previous set, so the product accumulated hidden
+		// duplicates holding the same attributes and prices while stock moved to
+		// the new copies. That is what "the item gets reduplicated when it sells"
+		// looks like from outside: a sale is a modification, so the delta sync
+		// revisits the item and does it again.
+		//
+		// The attribute combination is what actually identifies a variation
+		// within a listing, so it is the right thing to match on.
+		$by_signature = array();
+		foreach ( $existing_variations as $existing_id ) {
+			$existing = wc_get_product( $existing_id );
+			if ( ! $existing ) {
+				continue;
+			}
+			$sig = self::variation_signature( $existing->get_attributes() );
+			if ( '' !== $sig && ! isset( $by_signature[ $sig ] ) ) {
+				$by_signature[ $sig ] = (int) $existing_id;
+			}
+		}
 		
 		foreach ( $variations_data as &$var_data ) {
 			$variation_id = 0;
-			
+
+			// WC needs taxonomy slugs or lowercase attribute names as keys.
+			$var_attrs = array();
+			foreach ( $var_data['attributes'] as $name => $val ) {
+				$var_attrs[ sanitize_title( $name ) ] = $val;
+			}
+
 			// Try to match by SKU
 			if ( ! empty( $var_data['sku'] ) ) {
 				$conflict_id = wc_get_product_id_by_sku( $var_data['sku'] );
@@ -941,7 +1032,18 @@ class TCGiant_Sync_Mapper {
 					}
 				}
 			}
-			
+
+			// No SKU, or one that belonged to something else: fall back to the
+			// attribute combination, which is stable for the life of the listing.
+			if ( ! $variation_id ) {
+				$signature = self::variation_signature( $var_attrs );
+				if ( '' !== $signature && isset( $by_signature[ $signature ] ) ) {
+					$variation_id = $by_signature[ $signature ];
+					// Claim it so two incoming variations cannot take the same one.
+					unset( $by_signature[ $signature ] );
+				}
+			}
+
 			$variation = $variation_id ? wc_get_product( $variation_id ) : new WC_Product_Variation();
 			$variation->set_parent_id( $parent_id );
 			
@@ -956,11 +1058,6 @@ class TCGiant_Sync_Mapper {
 			$variation->set_stock_quantity( $var_data['stock_quantity'] );
 			$variation->set_status( 'publish' );
 			
-			// Set attributes (WC requires keys to be taxonomy slugs or lowercase attribute names)
-			$var_attrs = array();
-			foreach ( $var_data['attributes'] as $name => $val ) {
-				$var_attrs[ sanitize_title( $name ) ] = $val;
-			}
 			$variation->set_attributes( $var_attrs );
 			
 			$saved_var_id = $variation->save();
@@ -1015,8 +1112,20 @@ class TCGiant_Sync_Mapper {
 	 * @param int    $new_product_id The newly created WooCommerce product ID.
 	 * @param string $ebay_sku       The eBay SKU (_ebay_sku meta value).
 	 */
-	private function migrate_images_from_orphan( $new_product_id, $ebay_sku ) {
+	private function migrate_images_from_orphan( $new_product_id, $ebay_sku, $incoming_images = array() ) {
 		global $wpdb;
+
+		// _ebay_sku is only unique when it came from the eBay Item ID. Just as
+		// often it is an EAN, a UPC or a seller SKU, none of which a seller is
+		// obliged to keep unique — the same barcode legitimately appears on
+		// several listings. Matching on it alone let a brand new product adopt the
+		// photographs of an unrelated trashed product, and because this also
+		// copies the localisation hash and marks the images as done, the wrong
+		// pictures then stuck: no later sync would revisit them.
+		//
+		// A genuine relist keeps the same photographs, so requiring the image sets
+		// to match preserves the case this exists for and removes the rest.
+		$incoming = self::plain_image_urls( $incoming_images );
 
 		// Only ever harvest images from TRASHED products.
 		//
@@ -1045,6 +1154,18 @@ class TCGiant_Sync_Mapper {
 
 		foreach ( $donor_ids as $donor_id ) {
 			$donor_id = (int) $donor_id;
+
+			// Only adopt another product's images when they are demonstrably the
+			// same photographs. Anything else is a different listing that merely
+			// shares an identifier.
+			$donor_images = self::plain_image_urls( get_post_meta( $donor_id, '_tcgiant_external_image_urls', true ) );
+			if ( empty( $incoming ) || $donor_images !== $incoming ) {
+				TCGiant_Sync_Logger::log( sprintf(
+					'Not taking images from trashed WC #%d for WC #%d: same SKU "%s" but a different set of photos.',
+					$donor_id, $new_product_id, $ebay_sku
+				) );
+				continue;
+			}
 
 			// Check if the donor has a real (non-external) thumbnail.
 			$thumb_id = get_post_thumbnail_id( $donor_id );

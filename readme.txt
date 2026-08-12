@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.5.6
+Stable tag: 3.6.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,25 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.6.0 - 2026-08-12 =
+**New listings**
+* FIX: New eBay listings were not appearing in WooCommerce. With category filtering on, items are checked against your chosen categories before import — but the hourly sync asks eBay only for what changed, and eBay often answers with a partial record that omits the category, so those items failed the check and were dropped before the follow-up request that would have identified them. Newly listed items arrive through that route almost every time.
+* Items are now looked up in full before being judged, and only when their categories really are missing. If eBay cannot be reached the item is imported rather than dropped.
+* If listings are missing, run Fetch Inventory once to collect them.
+
+**Variable products**
+* FIX: Variations duplicated on every sync of a variable product, most visibly when one sold. Variations were recognised only by their eBay SKU and eBay leaves that blank on most variations, so every sync built a fresh set and retired the previous one — hidden copies with the same attributes and prices, stock moving to the newest. The "Variation #... is no longer on eBay" lines for variations that were still there were this happening.
+* Variations are now recognised by their combination of options. Existing ones are reused; one genuinely removed from eBay is still retired.
+* Hidden duplicates already created are left alone — they may be attached to past orders. They are the variations set to Private with zero stock.
+
+**Images**
+* FIX: Products given photographs from a completely different listing. On creation the plugin adopts the images of a deleted product with the same SKU instead of downloading again — but a SKU is often a barcode or seller reference shared across listings, so the wrong photographs were taken, and marked finished so nothing corrected them.
+* Images are now only adopted when they are demonstrably the same photographs.
+* Already affected: turn on "Overwrite Images" under Settings → Import Settings → Data Mapping and run an import from eBay.
+
+**Logs**
+* The activity log now states which clock its timestamps use. They have always been in your WordPress timezone, not UTC — if they look wrong, change it under Settings → General.
 
 = 3.5.6 - 2026-08-07 =
 **Coins**
@@ -621,6 +640,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.6.0 =
+Fixes new eBay listings never being imported when category filtering is on, variations duplicating on every sync of a variable product, and products being given photographs from unrelated listings. Run Fetch Inventory once after updating to collect anything that was missed.
 
 = 3.5.6 =
 Coin listings in sub-categories such as "Coins: US > Mint Sets" are now recognised as coins. Previously only five top-level categories were, so grading descriptors and coin item specifics were skipped unless you set Item Type to Coins on every product by hand.
