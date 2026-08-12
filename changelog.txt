@@ -1,5 +1,13 @@
 *** TCGiant Sync Changelog ***
 
+2026-08-12 - version 3.6.1
+== New Listings ==
+- FIX: A second cause of new eBay listings never appearing in WooCommerce, separate from the one fixed in 3.6.0 and affecting stores that do not filter by category at all.
+- When a new listing arrived carrying the same SKU as an existing product, the plugin assumed the seller had relisted the same item under a new number, and moved the existing product across to the new listing. If that was not what happened, the new listing was swallowed by an unrelated product instead of becoming one of its own — so the new stock never appeared — and the product it took over was detached from the listing it was actually selling, then overwritten with the newcomer's title, price and images. Both happened silently.
+- This is easy to hit when "eBay SKU Maps To" is set to Bin Location, because the WooCommerce SKU then falls back to the UPC or EAN, and a manufacturer barcode is not unique to one listing.
+- The plugin now checks with eBay whether the older listing has actually finished before moving anything. If it is still live, the new listing is imported as its own product with a unique SKU, and the existing product is left attached to its own listing. If eBay cannot be reached, nothing is moved.
+- The check only happens when two listings really do share a SKU, and only once per collision.
+
 2026-08-12 - version 3.6.0
 == New Listings ==
 - FIX: New eBay listings were not appearing in WooCommerce. When you filter imports by category, each item is checked against your chosen categories before being imported. The hourly sync asks eBay only for what has changed, and eBay often answers with a partial record that leaves the category out entirely — so those items failed the check and were quietly dropped, before the follow-up request that would have identified them. Newly listed items were the worst affected, because they arrive through that route almost every time.

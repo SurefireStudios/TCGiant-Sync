@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.6.0
+Stable tag: 3.6.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,12 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.6.1 - 2026-08-12 =
+**New listings**
+* FIX: A second cause of new eBay listings never appearing, separate from 3.6.0 and affecting stores that do not filter by category at all. When a new listing carried the same SKU as an existing product, the plugin assumed a relist and moved that product across to the new listing — so the new stock never appeared as its own product, and the one it took over was detached from the listing it was actually selling and overwritten with the newcomer's title, price and images. Both silent.
+* Easy to hit when "eBay SKU Maps To" is set to Bin Location, since the WooCommerce SKU then falls back to the UPC or EAN, and a manufacturer barcode is not unique to one listing.
+* eBay is now asked whether the older listing has actually finished before anything is moved. If it is still live the new listing becomes its own product with a unique SKU; if eBay cannot be reached, nothing is moved. Only happens on a genuine SKU collision, once each.
 
 = 3.6.0 - 2026-08-12 =
 **New listings**
@@ -644,6 +650,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.6.1 =
+Fixes new eBay listings being swallowed by an existing product that happens to share a SKU, instead of being imported. Affects stores whose WooCommerce SKUs come from a UPC or EAN. Run Fetch Inventory once after updating.
 
 = 3.6.0 =
 Fixes new eBay listings never being imported when category filtering is on, variations duplicating on every sync of a variable product, and products being given photographs from unrelated listings. Run Fetch Inventory once after updating to collect anything that was missed.

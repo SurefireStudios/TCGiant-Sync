@@ -563,17 +563,37 @@ class TCGiant_Sync_Mapper {
 					if ( empty( $existing_item_id ) || $existing_item_id === $item_id ) {
 						// No eBay link or same item → safe to link.
 						$product_id = $sku_product_id;
-					} else {
-						// SKU matches but _ebay_item_id is different. This usually means
-						// eBay expired the old listing and the seller created a new one.
-						// Re-link the WC product to the new eBay listing.
+					} elseif ( $this->ebay_listing_is_over( $sku_product_id, $existing_item_id ) ) {
+						// The listing this product belonged to really has finished, and
+						// the seller has put the same item back up under a new number.
+						// Point the product at the new listing.
 						TCGiant_Sync_Logger::log( sprintf(
-							'SKU "%s" matched WC #%d which has old eBay Item ID %s → re-linking to new eBay Item ID %s.',
+							'SKU "%s" matched WC #%d, whose listing %s has ended → re-linking it to the new listing %s.',
 							$product_data['sku'], $sku_product_id, $existing_item_id, $item_id
 						) );
 						$product_id = $sku_product_id;
 						// Clear the old item ID so it gets replaced with the new one.
 						update_post_meta( $sku_product_id, '_ebay_item_id', $item_id );
+					} else {
+						// Two live listings that merely share an identifier. This is
+						// ordinary whenever the WooCommerce SKU comes from a UPC or EAN
+						// rather than the eBay item number — a manufacturer barcode is
+						// not unique to one listing.
+						//
+						// This used to re-link regardless, on the assumption that a SKU
+						// collision meant a relist. When it did not, the new listing was
+						// swallowed by an unrelated product instead of becoming one of
+						// its own — so newly added inventory never appeared — and that
+						// product was detached from the listing it was actually selling,
+						// then overwritten with the newcomer's title, price and images.
+						// Both silent.
+						//
+						// Leaving it alone costs at worst a visible duplicate, which can
+						// be deleted. The SKU is made unique further down.
+						TCGiant_Sync_Logger::log( sprintf(
+							'SKU "%s" is also used by WC #%d, whose listing %s is still live — importing %s as a separate product rather than taking that one over.',
+							$product_data['sku'], $sku_product_id, $existing_item_id, $item_id
+						), 'warning' );
 					}
 				}
 			}
@@ -885,6 +905,35 @@ class TCGiant_Sync_Mapper {
 	 * @param string $sku SKU to look up.
 	 * @return int|false Product ID of a non-variation product, or false.
 	 */
+	/**
+	 * Whether the eBay listing a product is currently attached to has finished.
+	 *
+	 * @param int    $product_id       WooCommerce product holding the link.
+	 * @param string $existing_item_id The eBay Item ID it is attached to.
+	 * @return bool True only when the listing is known to be over.
+	 */
+	private function ebay_listing_is_over( $product_id, $existing_item_id ) {
+		if ( 'Ended' === (string) get_post_meta( $product_id, '_ebay_listing_status', true ) ) {
+			return true;
+		}
+
+		// Recorded as active, but that record can lag — and a relist is exactly
+		// the case this branch exists to serve. Ask eBay rather than guess. Only
+		// reached on a genuine SKU collision, and only once: whichever way it
+		// resolves, the next sync matches on the item number instead.
+		$response = TCGiant_Sync_API::instance()->get_item( $existing_item_id );
+
+		if ( is_wp_error( $response ) || ! isset( $response['Item'] ) ) {
+			// Unknown. Treat as still live: a duplicate product is visible and can
+			// be removed, whereas a product taken from a live listing is neither.
+			return false;
+		}
+
+		$status = $response['Item']['SellingStatus']['ListingStatus'] ?? '';
+
+		return '' !== $status && 'Active' !== $status;
+	}
+
 	private function find_matchable_product_id_by_sku( $sku ) {
 		$found_id = wc_get_product_id_by_sku( $sku );
 		if ( ! $found_id ) {
