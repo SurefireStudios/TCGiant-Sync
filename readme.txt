@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.7.3
+Stable tag: 3.7.4
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,12 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.7.4 - 2026-08-12 =
+**Installing**
+* FIX: A second copy of the plugin left in place would take the whole site down. Two copies in wp-content/plugins — the normal folder plus something like "tcgiant-sync-2" from an interrupted manual install — both tried to set up the same things and PHP stopped dead, taking out the WordPress admin too. The only way back was to delete a folder over FTP, and reinstalling brought it straight back because the other copy was still there.
+* The second copy now stands aside quietly and the site keeps working, with an admin notice explaining which folder to remove.
+* Currently affected: delete every TCGiant Sync folder from wp-content/plugins, then install this version fresh. Settings, connection and synced products live in the database and are not affected by removing the folder.
 
 = 3.7.3 - 2026-08-12 =
 **Stock**
@@ -696,6 +702,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.7.4 =
+Fixes a second copy of the plugin taking the whole site down, including the WordPress admin, which previously required FTP access to recover from.
 
 = 3.7.3 =
 Recommended if you sell variable products. Fixes variation stock not reducing on eBay when it sells in WooCommerce, which risks overselling.

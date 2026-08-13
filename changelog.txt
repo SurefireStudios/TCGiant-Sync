@@ -1,5 +1,11 @@
 *** TCGiant Sync Changelog ***
 
+2026-08-12 - version 3.7.4
+== Installing ==
+- FIX: A second copy of the plugin left in place would take the whole site down. If wp-content/plugins ended up holding two copies — the normal folder plus something like "tcgiant-sync-2" left behind by an interrupted manual install — both tried to set up the same things and PHP stopped dead. That takes out the WordPress admin as well, so the only way back in was to delete a folder over FTP, and installing again brought it straight back because the other copy was still there.
+- The second copy now stands aside quietly and the site keeps working. A notice in the admin explains that the plugin is installed twice and which folder to remove.
+- If a site is currently affected: delete every TCGiant Sync folder from wp-content/plugins, then install this version fresh. Your settings, connection and synced products are stored in the database and are not touched by removing the folder.
+
 2026-08-12 - version 3.7.3
 == Stock ==
 - FIX: Selling a variation in WooCommerce did not reduce its stock on eBay. An eBay listing is identified by its item number, but that only names the listing — not which variation within it. eBay needs the variation's SKU as well, and the plugin was not sending one, so a stock change on a variable product had nothing to land on.
