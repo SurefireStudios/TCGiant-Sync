@@ -29,8 +29,10 @@ jobs:
       - name: Admin view markup
         run: php tools/check-views.php
 
-      # PHPStan itself needs a modern PHP; the analysis still targets 7.4 via
-      # the platform setting in composer.json.
+      # PHPStan itself needs a modern PHP to run on, but the code is still
+      # analysed as 7.4 — it reads config.platform.php from composer.json.
+      # Verified rather than assumed: a file calling str_contains() is reported
+      # as an unknown function under this setup.
       - name: Set up PHP for analysis
         uses: shivammathur/setup-php@v2
         with:

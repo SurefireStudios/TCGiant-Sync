@@ -10,6 +10,15 @@
 parameters:
     level: 5
 
+    # The analysed PHP version is NOT set here on purpose. PHPStan takes it from
+    # composer.json (config.platform.php = 7.4.33, matching "Requires PHP: 7.4"
+    # in the plugin header), so it is stated once rather than in two files that
+    # can drift apart.
+    #
+    # It really is in effect: analysing a file that calls str_contains(), which
+    # is PHP 8.0, reports "Function str_contains not found" rather than passing.
+    # Change the version in composer.json, not here.
+
     # The WordPress stub file is a single ~10 MB PHP file. Each parallel worker
     # loads its own copy, which exhausts memory before analysis starts. One
     # process is slower but actually completes.
