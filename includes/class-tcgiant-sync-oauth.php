@@ -270,13 +270,20 @@ class TCGiant_Sync_OAuth {
 		}
 
 		if ( ! is_array( $body ) || ! isset( $body['access_token'], $body['refresh_token'] ) ) {
+			// Note the plain concatenation below rather than sprintf(). This is
+			// the path taken when something has already gone wrong, and it once
+			// took a site down on its own: a stray backslash in the format
+			// string made sprintf() throw, so instead of reporting why the
+			// connection failed, the plugin produced a fatal error and left the
+			// merchant staring at a broken admin screen. An error handler is
+			// the last place that should be able to fail.
 			return new WP_Error(
 				'claim_failed',
-				sprintf(
-					/* translators: 1: HTTP status, 2: start of the reply */
-					__( 'The connection service would not release the tokens (HTTP %1\$s). Reply began: %2\$s', 'tcgiant-sync' ),
-					wp_remote_retrieve_response_code( $response ),
-					substr( $raw, 0, 200 )
+				(
+					__( 'The connection service would not release the tokens.', 'tcgiant-sync' )
+					. ' HTTP ' . (string) wp_remote_retrieve_response_code( $response )
+					. '. ' . __( 'Reply began:', 'tcgiant-sync' ) . ' '
+					. substr( $raw, 0, 200 )
 				)
 			);
 		}

@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.7.5
+Stable tag: 3.7.6
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,13 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.7.6 - 2026-08-17 =
+**Connecting to eBay**
+* CRITICAL: Fixed a fatal error that could take a site down while connecting or reconnecting an eBay account. When the final step failed, the code meant to report the problem contained a typing mistake and crashed instead, leaving a broken WordPress admin recoverable only over FTP. Reloading reproduced it.
+* Affects 3.7.0 to 3.7.5, and only when the connection step failed for some other reason — which is why most stores never saw it.
+* The message now reports what actually went wrong, and no longer uses the mechanism that failed: an error handler is the last thing that should be able to break.
+* If affected, update and connect again — the real reason for the failure will now be shown on screen and in the activity log.
 
 = 3.7.5 - 2026-08-17 =
 **Product screen**
@@ -709,6 +716,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.7.6 =
+Critical. Fixes a fatal error that could take a site down while connecting an eBay account, leaving FTP as the only way to recover. Affects 3.7.0 to 3.7.5.
 
 = 3.7.5 =
 Adds an Active or Ended badge to the eBay panel on each product, so you can see at a glance whether a listing is still live.

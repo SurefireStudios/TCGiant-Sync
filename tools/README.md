@@ -40,12 +40,22 @@ Double-click **`tools\check.bat`**, or run:
 
 ```
 php tools/lint.php
+php tools/check-views.php
+php tools/check-formats.php
 php vendor/phpstan/phpstan/phpstan.phar analyse --memory-limit=3G
 ```
 
 Run this before tagging. The same checks run in CI on every push
 (`.github/workflows/static-analysis.yml`), linting against PHP 7.4 — the
 oldest version the plugin claims to support — and analysing on 8.3.
+
+`check-formats.php` exists because of a live incident. A translator string
+picked up a stray backslash, giving `sprintf()` a specifier it could not
+read. On PHP 8 that is a `ValueError` rather than a warning, so instead of
+reporting why a connection had failed, the plugin took the site down —
+including wp-admin, leaving FTP as the only way back in. The file parses
+cleanly, so `php -l` sees nothing, and PHPStan does not check the shape of
+the string. This runs each one through `sprintf()` and reports what throws.
 
 ## Reinstalling the analysis dependencies
 

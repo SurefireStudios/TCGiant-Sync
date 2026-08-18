@@ -27,6 +27,11 @@ php tools\check-views.php
 if errorlevel 1 goto failed
 
 echo.
+echo === Format strings ===
+php tools\check-formats.php
+if errorlevel 1 goto failed
+
+echo.
 echo === Static analysis ===
 if not exist "vendor\phpstan\phpstan\phpstan.phar" (
     echo PHPStan is not installed. Installing dependencies...

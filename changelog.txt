@@ -1,5 +1,12 @@
 *** TCGiant Sync Changelog ***
 
+2026-08-17 - version 3.7.6
+== Connecting to eBay ==
+- CRITICAL: Fixed a fatal error that could take a site down while connecting or reconnecting an eBay account. If anything went wrong during the final step, the code meant to report the problem contained a typing mistake and crashed instead — so rather than being told what had failed, you were left with a broken WordPress admin and no way in except FTP. Reloading produced the same crash.
+- Affects 3.7.0 to 3.7.5. Only triggered when the connection step failed for some other reason, which is why most stores never saw it.
+- The message now reports what actually went wrong, so a failed connection can be diagnosed instead of taking the site with it. That reporting no longer uses the mechanism that failed — an error handler is the last thing that should be able to break.
+- If you were affected, update and connect again; the underlying reason for the failed connection will now be shown on screen and in the activity log.
+
 2026-08-17 - version 3.7.5
 == Product Screen ==
 - NEW: The eBay panel on a product now says whether the listing is still live. An ended listing looked exactly like an active one — same green box, same item number — so there was no way to tell from the product itself that it had finished, whether you ended it yourself or it ran out on its own.
