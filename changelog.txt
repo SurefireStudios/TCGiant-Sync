@@ -1,5 +1,12 @@
 *** TCGiant Sync Changelog ***
 
+2026-08-17 - version 3.7.5
+== Product Screen ==
+- NEW: The eBay panel on a product now says whether the listing is still live. An ended listing looked exactly like an active one — same green box, same item number — so there was no way to tell from the product itself that it had finished, whether you ended it yourself or it ran out on its own.
+- Listings now carry an Active or Ended badge, and an ended one shows the date and time it finished and turns amber rather than green.
+- An ended listing also explains what pushing will do: it creates a new listing with a new item number, because eBay does not allow an ended one to be revised. That was already how it behaved; it just was not said anywhere.
+- The product screen and the Products list now decide "ended" the same way, so the two can no longer disagree about the same listing.
+
 2026-08-12 - version 3.7.4
 == Installing ==
 - FIX: A second copy of the plugin left in place would take the whole site down. If wp-content/plugins ended up holding two copies — the normal folder plus something like "tcgiant-sync-2" left behind by an interrupted manual install — both tried to set up the same things and PHP stopped dead. That takes out the WordPress admin as well, so the only way back in was to delete a folder over FTP, and installing again brought it straight back because the other copy was still there.

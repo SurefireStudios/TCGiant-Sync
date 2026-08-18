@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.7.4
+Stable tag: 3.7.5
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,13 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.7.5 - 2026-08-17 =
+**Product screen**
+* NEW: The eBay panel on a product now says whether the listing is still live. An ended listing looked identical to an active one, so there was no way to tell from the product that it had finished — whether you ended it yourself or it ran out.
+* Listings carry an Active or Ended badge; an ended one shows when it finished and turns amber rather than green.
+* An ended listing also explains that pushing will create a new listing with a new item number, since eBay does not allow an ended one to be revised. That was always the behaviour, it just was not stated.
+* The product screen and the Products list now decide "ended" the same way and can no longer disagree.
 
 = 3.7.4 - 2026-08-12 =
 **Installing**
@@ -702,6 +709,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.7.5 =
+Adds an Active or Ended badge to the eBay panel on each product, so you can see at a glance whether a listing is still live.
 
 = 3.7.4 =
 Fixes a second copy of the plugin taking the whole site down, including the WordPress admin, which previously required FTP access to recover from.
