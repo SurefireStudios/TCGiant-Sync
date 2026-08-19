@@ -269,6 +269,19 @@ class TCGiant_Sync_OAuth {
 			}
 		}
 
+		// A reply that starts with markup did not come from the connection
+		// service at all — something between this site and it answered instead,
+		// which is almost always bot protection or a security filter. Saying
+		// "would not release the tokens" there sends people looking in the wrong
+		// place entirely.
+		if ( null === $body && preg_match( '/^[\s]*<(?:!doctype|html)/i', $raw ) ) {
+			return new WP_Error(
+				'claim_intercepted',
+				__( 'A web page was returned instead of data, so something between this site and the connection service intercepted the request — usually bot protection or a security filter on one of the two hosts. The eBay account cannot finish connecting until that request is allowed through. Ask your host to permit outbound requests to tcgiant.com.', 'tcgiant-sync' )
+				. ' HTTP ' . (string) wp_remote_retrieve_response_code( $response )
+			);
+		}
+
 		if ( ! is_array( $body ) || ! isset( $body['access_token'], $body['refresh_token'] ) ) {
 			// Note the plain concatenation below rather than sprintf(). This is
 			// the path taken when something has already gone wrong, and it once

@@ -1,5 +1,13 @@
 *** TCGiant Sync Changelog ***
 
+2026-08-19 - version 3.7.7
+== Connecting to eBay ==
+- FIX: The activity log claimed the eBay tokens had been collected and then, on the very next line, reported that they had not. The success message was written before the result was known. It is now written only once the connection has actually succeeded.
+- A connection that is being blocked before it reaches us is now named as such. If a web page comes back instead of data — which is what bot protection and security filters return — the log says so and points at the request being intercepted, rather than reporting that the connection service refused.
+
+== Logs ==
+- FIX: A message containing line breaks broke the log. Each entry is one line by design, so the extra lines appeared as separate entries with no time or type against them — an error page quoted in a message turned into a dozen meaningless rows. Messages are now kept to a single line.
+
 2026-08-17 - version 3.7.6
 == Connecting to eBay ==
 - CRITICAL: Fixed a fatal error that could take a site down while connecting or reconnecting an eBay account. If anything went wrong during the final step, the code meant to report the problem contained a typing mistake and crashed instead — so rather than being told what had failed, you were left with a broken WordPress admin and no way in except FTP. Reloading produced the same crash.

@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.7.6
+Stable tag: 3.7.7
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,14 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.7.7 - 2026-08-19 =
+**Connecting to eBay**
+* FIX: The activity log claimed the tokens had been collected and then immediately reported that they had not. The success message was written before the result was known; it is now written only once the connection has succeeded.
+* A connection blocked before it reaches us is now named as such. If a web page comes back instead of data — what bot protection and security filters return — the log says the request was intercepted, rather than blaming the connection service.
+
+**Logs**
+* FIX: A message containing line breaks broke the log. Each entry is one line by design, so the extra lines showed as separate entries with no time or type — an error page quoted in a message became a dozen meaningless rows. Messages are now kept to one line.
 
 = 3.7.6 - 2026-08-17 =
 **Connecting to eBay**
@@ -716,6 +724,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.7.7 =
+Makes a failed eBay connection diagnosable: the log no longer reports success and failure together, names a request that was intercepted before reaching us, and keeps each entry to a single line.
 
 = 3.7.6 =
 Critical. Fixes a fatal error that could take a site down while connecting an eBay account, leaving FTP as the only way to recover. Affects 3.7.0 to 3.7.5.

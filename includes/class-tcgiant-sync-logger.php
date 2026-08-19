@@ -164,6 +164,14 @@ class TCGiant_Sync_Logger {
 			return;
 		}
 
+		// Collapse the message onto a single line. Every entry is one line by
+		// construction — timestamp, level, text — and a message containing
+		// newlines silently broke that: the continuation lines carried no
+		// timestamp or level, so the reader showed each of them as its own
+		// entry. Pasting an HTML error page into the log turned it into a
+		// dozen meaningless rows.
+		$message = trim( preg_replace( '/\s+/', ' ', (string) $message ) );
+
 		$timestamp = current_time( 'Y-m-d H:i:s' );
 		self::$buffer[] = "[$timestamp] [$level] $message" . PHP_EOL;
 
