@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.7.8
+Stable tag: 3.7.9
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,13 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.7.9 - 2026-08-21 =
+**Syncing**
+* FIX: Syncing could stop permanently on a busy store — the reason new listings were still not arriving. eBay refuses to return more than 3000 changes at once and asks for a shorter period instead. The plugin always asked for the same 48 hours, so a store with more changes than that was refused every time; and because a failed sync keeps its place rather than skipping anything, the next attempt asked for the same period and was refused again. One store sat five days behind with nothing new coming in.
+* The plugin now halves the period and tries again until eBay accepts, exactly as eBay asks. The sync position never moves while this happens, so nothing is skipped.
+* Once the backlog clears it returns to the full 48 hours.
+* Syncing resumes on its own after updating; run Fetch Inventory if you would rather not wait for the catch-up.
 
 = 3.7.8 - 2026-08-20 =
 **New listings**
@@ -732,6 +739,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.7.9 =
+Important for busy stores. Fixes syncing stopping permanently when a 48 hour period holds more changes than eBay will return at once, which left some stores days behind with no new listings arriving.
 
 = 3.7.8 =
 Fixes new eBay listings being merged into an existing product that happens to share a barcode, instead of being added. Affects stores whose WooCommerce SKUs come from barcodes, including anyone mapping the eBay SKU to Bin Location. Run Fetch Inventory once after updating.

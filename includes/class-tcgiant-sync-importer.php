@@ -186,6 +186,22 @@ class TCGiant_Sync_Importer {
 	const DELTA_ITEMS_PER_RUN = 40;
 
 	/**
+	 * Widest delta window, in minutes. eBay refuses more than 48 hours.
+	 */
+	const DELTA_WINDOW_MAX_MINUTES = 2880;
+
+	/**
+	 * Narrowest the window may be squeezed before we stop trying.
+	 *
+	 * eBay also refuses any window whose answer would exceed 3000 records,
+	 * however short it is. A busy seller can breach that well inside 48 hours,
+	 * and the only remedy eBay offers is to ask for less time — its own error
+	 * says exactly that. Halving reaches a quarter of an hour in eight steps,
+	 * which is far enough for any plausible volume.
+	 */
+	const DELTA_WINDOW_MIN_MINUTES = 15;
+
+	/**
 	 * How long a sync may show no progress before it is presumed dead.
 	 *
 	 * The file lock has always broken itself after ten minutes, but the "already
@@ -231,6 +247,28 @@ class TCGiant_Sync_Importer {
 	 * @param array $state Current sync state.
 	 * @return bool
 	 */
+	/**
+	 * Whether eBay refused a request because the answer would be too large.
+	 *
+	 * Matched on the wording rather than an error number: eBay returns this from
+	 * several different calls and the number is not consistent between them, but
+	 * the sentence about a smaller result set is.
+	 *
+	 * @param WP_Error $error Error returned by the API layer.
+	 * @return bool
+	 */
+	private static function is_result_set_too_large( $error ) {
+		$message = strtolower( $error->get_error_message() );
+
+		foreach ( array( 'smaller complete result set', 'results are supported at a time' ) as $phrase ) {
+			if ( false !== strpos( $message, $phrase ) ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
 	private static function sync_has_stalled( $state ) {
 		$marker = '';
 		foreach ( array( 'last_activity', 'started_at' ) as $key ) {
@@ -638,17 +676,21 @@ class TCGiant_Sync_Importer {
 
 		$mod_to = gmdate( 'Y-m-d\TH:i:s.000\Z' );
 
-		// GetSellerEvents has a max 48-hour window. Chunk if needed.
+		// How much time to ask for. Starts at eBay's maximum and is cut down
+		// whenever eBay says the answer would be too large — see the refusal
+		// handling below.
+		$window_minutes = (int) ( $state['delta_window_minutes'] ?? self::DELTA_WINDOW_MAX_MINUTES );
+		$window_minutes = max( self::DELTA_WINDOW_MIN_MINUTES, min( self::DELTA_WINDOW_MAX_MINUTES, $window_minutes ) );
+
 		$from_ts = strtotime( $mod_from );
 		$to_ts   = strtotime( $mod_to );
-		$max_window = 48 * 3600; // 48 hours in seconds
+		$window  = $window_minutes * 60;
 
-		if ( ( $to_ts - $from_ts ) > $max_window ) {
-			// Clamp to 48hr window and log a note. Next delta sync will pick up the rest.
-			$mod_to = gmdate( 'Y-m-d\TH:i:s.000\Z', $from_ts + $max_window );
+		if ( ( $to_ts - $from_ts ) > $window ) {
+			$mod_to = gmdate( 'Y-m-d\TH:i:s.000\Z', $from_ts + $window );
 			TCGiant_Sync_Logger::log( sprintf(
-				'Delta window exceeds the eBay maximum of 48 hours. Reading %s → %s this run; the next sync resumes from there.',
-				$mod_from, $mod_to
+				'Reading changes from %s to %s this run (a %d minute window); the next sync resumes from there.',
+				$mod_from, $mod_to, $window_minutes
 			), 'warning' );
 		}
 
@@ -669,6 +711,57 @@ class TCGiant_Sync_Importer {
 				$retries + 1, $retry_delay / 60
 			), 'warning' );
 			as_schedule_single_action( time() + $retry_delay, 'tcgiant_sync_fetch_delta_events', array(), 'tcgiant_sync_group' );
+			return;
+		}
+
+		// eBay refuses any window whose answer would exceed 3000 records, and
+		// says to ask for less time. Retrying the same window can only ever earn
+		// the same refusal, so a busy period stopped the sync outright: the
+		// position is held (rightly — nothing may be skipped), the window is
+		// recalculated identically, and eBay says no again. One seller sat five
+		// days behind exactly this way, with no new listings arriving at all.
+		//
+		// So halve the window and try again.
+		if ( is_wp_error( $response ) && self::is_result_set_too_large( $response ) ) {
+
+			if ( $window_minutes > self::DELTA_WINDOW_MIN_MINUTES ) {
+				$narrower = max( self::DELTA_WINDOW_MIN_MINUTES, (int) floor( $window_minutes / 2 ) );
+
+				self::update_sync_state( array(
+					'status'               => 'complete',
+					'last_completed'       => current_time( 'mysql' ),
+					'last_activity'        => current_time( 'mysql' ),
+					'delta_window_minutes' => $narrower,
+					'delta_offset'         => 0,
+				) );
+
+				TCGiant_Sync_Logger::log( sprintf(
+					'eBay will not return that many changes at once. Asking for %d minutes instead of %d and trying again — the sync position is unchanged, so nothing is skipped.',
+					$narrower,
+					$window_minutes
+				), 'warning' );
+
+				as_enqueue_async_action( 'tcgiant_sync_fetch_delta_events', array(), 'tcgiant_sync_group' );
+				return;
+			}
+
+			// Already at the shortest window we are prepared to ask for, and
+			// still too much. Refusing to move would deadlock for ever, which is
+			// worse than stepping over it and saying so plainly.
+			TCGiant_Sync_Logger::error( sprintf(
+				'eBay will not return the changes between %s and %s even at a %d minute window. Moving past it so syncing continues — run Fetch Inventory to pick up anything altered during that period.',
+				$mod_from,
+				$mod_to,
+				self::DELTA_WINDOW_MIN_MINUTES
+			) );
+
+			self::update_sync_state( array(
+				'status'                  => 'complete',
+				'last_completed'          => current_time( 'mysql' ),
+				'last_activity'           => current_time( 'mysql' ),
+				'last_successful_sync_at' => $mod_to,
+				'delta_offset'            => 0,
+			) );
 			return;
 		}
 
@@ -994,9 +1087,16 @@ class TCGiant_Sync_Importer {
 		// skipped instead, despite the log promising the next sync would
 		// continue. It also closes a small gap where anything modified between
 		// the API call and this line was stepped over.
+		// Back to the widest window once the backlog is gone. While catching up a
+		// narrowed window is doing real work and should be left alone, but a
+		// store in step with eBay has little in any given window, so there is no
+		// reason to keep asking for slivers of time for ever.
+		$caught_up = ( time() - strtotime( $mod_to ) ) < ( 2 * MINUTE_IN_SECONDS );
+
 		self::update_sync_state( array(
 			'status'                  => 'complete',
 			'delta_offset'            => 0,
+			'delta_window_minutes'    => $caught_up ? self::DELTA_WINDOW_MAX_MINUTES : $window_minutes,
 			'total_found'             => $total_items,
 			'total_queued'            => $processed + $errors,
 			'total_processed'         => (int) ( $state['total_processed'] ?? 0 ) + $processed,
