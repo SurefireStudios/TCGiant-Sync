@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.7.7
+Stable tag: 3.7.8
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,14 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.7.8 - 2026-08-20 =
+**New listings**
+* FIX: New eBay listings could be absorbed into an existing product instead of added, so the new stock never appeared. This is the remaining half of the 3.6.1 fault, which only covered the case where the older listing was still running.
+* When a new listing shared a SKU with an existing product, the plugin assumed a relist and moved that product onto the new listing. Right when the SKU is the seller own reference; wrong when it is a barcode, since one part number covers every listing of that part — so two different items were merged.
+* Worst where the eBay SKU is mapped to Bin Location, because the WooCommerce SKU then comes from the barcode. On a store whose listings end and are replaced constantly, it happened repeatedly and silently.
+* The plugin now tracks where each SKU came from and only re-points a product when the SKU is the seller own reference.
+* After updating, run Fetch Inventory once — absorbed listings will be created as their own products. Existing duplicates (SKU ending in a dash and the eBay item number) are left alone.
 
 = 3.7.7 - 2026-08-19 =
 **Connecting to eBay**
@@ -724,6 +732,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.7.8 =
+Fixes new eBay listings being merged into an existing product that happens to share a barcode, instead of being added. Affects stores whose WooCommerce SKUs come from barcodes, including anyone mapping the eBay SKU to Bin Location. Run Fetch Inventory once after updating.
 
 = 3.7.7 =
 Makes a failed eBay connection diagnosable: the log no longer reports success and failure together, names a request that was intercepted before reaching us, and keeps each entry to a single line.

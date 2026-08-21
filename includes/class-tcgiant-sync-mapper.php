@@ -73,6 +73,14 @@ class TCGiant_Sync_Mapper {
 		$product_data['description'] = $ebay_item['Description'] ?? '';
 		$product_data['sku'] = $ebay_item['SKU'] ?? '';
 
+		// Where the SKU came from decides how much it can be trusted to identify
+		// a listing. The seller's own SKU is theirs to keep unique. A barcode is
+		// not: one manufacturer part number covers every listing of that part,
+		// from this seller and everyone else. The eBay item number is unique but
+		// belongs to one listing only, so it can never legitimately match a
+		// different one.
+		$product_data['sku_source'] = ! empty( $product_data['sku'] ) ? 'seller' : 'none';
+
 		// Check if eBay SKU should be routed to a bin location instead of WooCommerce SKU.
 		$product_data['bin_location'] = '';
 		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
@@ -81,6 +89,7 @@ class TCGiant_Sync_Mapper {
 		if ( 'bin_location' === $sku_maps_to && ! empty( $product_data['sku'] ) ) {
 			$product_data['bin_location'] = $product_data['sku'];
 			$product_data['sku'] = ''; // Clear so it falls through to ISBN/UPC/EAN or EBAY-{ItemID}
+			$product_data['sku_source'] = 'none';
 		} elseif ( 'both' === $sku_maps_to && ! empty( $product_data['sku'] ) ) {
 			$product_data['bin_location'] = $product_data['sku'];
 			// Do not clear SKU so it gets assigned to both WooCommerce SKU and Bin Location.
@@ -98,6 +107,8 @@ class TCGiant_Sync_Mapper {
 			// is one of them being made unique the hard way.
 			if ( self::is_placeholder_identifier( $product_data['sku'] ) ) {
 				$product_data['sku'] = '';
+			} elseif ( ! empty( $product_data['sku'] ) ) {
+				$product_data['sku_source'] = 'barcode';
 			}
 		}
 
@@ -111,6 +122,7 @@ class TCGiant_Sync_Mapper {
 					$val = is_array( $spec['Value'] ) ? reset( $spec['Value'] ) : $spec['Value'];
 					if ( ! self::is_placeholder_identifier( $val ) ) {
 						$product_data['sku'] = $val;
+						$product_data['sku_source'] = 'barcode';
 						break;
 					}
 				}
@@ -122,6 +134,7 @@ class TCGiant_Sync_Mapper {
 		if ( empty( $product_data['sku'] ) && ! empty( $item_id ) ) {
 			$sku_prefix = ! empty( $settings['sku_prefix'] ) ? $settings['sku_prefix'] : 'none';
 			$product_data['sku'] = ( 'ebay' === $sku_prefix ) ? 'EBAY-' . $item_id : $item_id;
+			$product_data['sku_source'] = 'item_id';
 		}
 
 		// Map Quantity (available = total - sold).
@@ -566,6 +579,28 @@ class TCGiant_Sync_Mapper {
 					if ( empty( $existing_item_id ) || $existing_item_id === $item_id ) {
 						// No eBay link or same item → safe to link.
 						$product_id = $sku_product_id;
+					} elseif ( 'seller' !== ( $product_data['sku_source'] ?? '' ) ) {
+						// Same SKU, different listing — but this SKU is not something
+						// that identifies a listing, so the match proves nothing.
+						//
+						// A barcode is shared by every listing of that part. Moving an
+						// existing product onto a new listing because they share one
+						// merges two different items: the new stock never appears as a
+						// product of its own, and the product it lands on is taken away
+						// from the listing it was actually selling. On a store whose
+						// SKUs come from barcodes, and whose listings end and are
+						// replaced constantly, that happens continually and silently.
+						//
+						// An item-number SKU cannot legitimately match another listing
+						// either; if it does, an earlier bad re-link left it behind.
+						TCGiant_Sync_Logger::log( sprintf(
+							'SKU "%s" is also on WC #%d (listing %s), but it came from %s rather than the seller SKU, so it does not identify a listing. Importing %s as a separate product.',
+							$product_data['sku'],
+							$sku_product_id,
+							$existing_item_id,
+							'barcode' === ( $product_data['sku_source'] ?? '' ) ? 'a barcode' : 'the eBay item number',
+							$item_id
+						), 'warning' );
 					} elseif ( $this->ebay_listing_is_over( $sku_product_id, $existing_item_id ) ) {
 						// The listing this product belonged to really has finished, and
 						// the seller has put the same item back up under a new number.

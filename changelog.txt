@@ -1,5 +1,13 @@
 *** TCGiant Sync Changelog ***
 
+2026-08-20 - version 3.7.8
+== New Listings ==
+- FIX: New eBay listings could be absorbed into an existing product instead of being added, so the new stock never appeared. This is the remaining half of the fault addressed in 3.6.1, which only covered the case where the older listing was still running.
+- When a new listing shared a SKU with a product already in WooCommerce, the plugin assumed the seller had relisted the same item and moved that product onto the new listing. That is right when the SKU is the seller own reference, because those are theirs to keep unique. It is wrong when the SKU is a barcode: one manufacturer part number covers every listing of that part, so two genuinely different items were being merged.
+- It matters most where the eBay SKU is mapped to Bin Location, because the WooCommerce SKU then comes from the barcode instead — and on a store whose listings end and are replaced constantly, this happened over and over, silently.
+- The plugin now tracks where each SKU came from, and only moves a product onto a different listing when the SKU is the seller own reference. A barcode match is treated as what it is: two listings that happen to share a part number.
+- After updating, run Fetch Inventory once. Listings that were absorbed will be created as their own products. Any duplicates already created — the ones whose SKU ends in a dash followed by the eBay item number — are left alone, since only you can say which copy to keep.
+
 2026-08-19 - version 3.7.7
 == Connecting to eBay ==
 - FIX: The activity log claimed the eBay tokens had been collected and then, on the very next line, reported that they had not. The success message was written before the result was known. It is now written only once the connection has actually succeeded.
