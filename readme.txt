@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.7.11
+Stable tag: 3.7.12
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,18 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.7.12 - 2026-08-24 =
+**Stock**
+* FIX: The hourly ended-listing check marked products Ended without settling their stock, so a sale that ended a listing could still leave the item showing as available. 3.7.11 fixed this in the scheduled sync; this fixes the same fault in the hourly check. Both now share one rule and cannot drift apart again.
+* A listing whose run has expired has its stock settled before being marked Ended. If eBay will not report the figures, the log says so and your stock is left alone rather than zeroed on a guess.
+
+**Free tier**
+* FIX: Going over the free product limit stopped the sync completely rather than just declining new imports — stock, prices and ended listings all stopped updating on products already imported.
+* The limit now caps how many products a store holds. Products already imported keep syncing normally; only new listings are held back. Queued imports are no longer cancelled, as that queue carries updates to existing products too.
+
+**Performance**
+* The free-limit check counted every product on the store once per listing. It now runs at most once per sync, and not at all on Pro.
 
 = 3.7.11 - 2026-08-24 =
 **Stock**
@@ -751,6 +763,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.7.12 =
+Completes the stock fix from 3.7.11 by covering the hourly ended-listing check as well. Also fixes the free product limit stopping the sync outright instead of only holding back new imports.
 
 = 3.7.11 =
 Important if you sell single-quantity items. Fixes WooCommerce stock not reducing when an eBay sale ends the listing, which risks overselling. Items already sold will still show in stock and need correcting by hand.

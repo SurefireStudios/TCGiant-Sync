@@ -1,5 +1,19 @@
 *** TCGiant Sync Changelog ***
 
+2026-08-24 - version 3.7.12
+== Stock ==
+- FIX: The hourly ended-listing check marked products as Ended without settling their stock, so a sale that ended a listing could still leave the item showing as available. 3.7.11 fixed this for the sync that runs on your schedule; this fixes the same fault in the hourly check, which is the other place a listing is seen to end.
+- Both paths now share one rule, so they cannot drift apart again.
+- A listing whose run has simply expired now has its stock settled before being marked Ended, rather than dropping out of the check with its quantity still wrong. If eBay will not report the figures, the log says so and your stock is left alone rather than zeroed on a guess.
+
+== Free tier ==
+- FIX: Going over the free product limit stopped the sync completely instead of just declining to import anything new. Stock, prices and ended listings all stopped updating on products already imported, while the store carried on selling from figures that were no longer true.
+- The limit now caps how many products a store holds, which is what it was always meant to do. Products already imported keep syncing normally however far over the limit a store is; only new listings are held back.
+- Queued imports are no longer cancelled when the limit is hit, because that queue carries updates to existing products as well as new ones.
+
+== Performance ==
+- The free-limit check counted every product on the store once per listing, on every sync. It now runs at most once per sync, and not at all for stores on Pro or for syncs with no new listings.
+
 2026-08-24 - version 3.7.11
 == Stock ==
 - FIX: Selling an item on eBay did not reduce its WooCommerce stock when the sale ended the listing. A listing with one of something ends the moment it sells, so this affected every single-quantity listing — which for coins, cards and other one-off items is all of them.

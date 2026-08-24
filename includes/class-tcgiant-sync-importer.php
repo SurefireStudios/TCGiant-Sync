@@ -175,6 +175,14 @@ class TCGiant_Sync_Importer {
 	const PRUNE_MAX_RATIO = 0.20;
 
 	/**
+	 * Whether the free-limit notice has already been logged this request, so a
+	 * store over the limit gets one line rather than one per listing.
+	 *
+	 * @var bool
+	 */
+	private static $limit_reported = false;
+
+	/**
 	 * How many changed items one delta run may process.
 	 *
 	 * Every item can cost a GetItem call, and on some accounts every single one
@@ -257,6 +265,34 @@ class TCGiant_Sync_Importer {
 	 * @param WP_Error $error Error returned by the API layer.
 	 * @return bool
 	 */
+	/**
+	 * Is there already a product for this eBay listing?
+	 *
+	 * Used to tell importing a new product from updating one already imported,
+	 * which the free limit treats very differently.
+	 *
+	 * @param string $item_id eBay Item ID.
+	 * @return bool
+	 */
+	private static function product_exists_for_item( $item_id ) {
+		global $wpdb;
+
+		if ( empty( $item_id ) ) {
+			return false;
+		}
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		return (bool) $wpdb->get_var( $wpdb->prepare(
+			"SELECT pm.post_id FROM {$wpdb->postmeta} pm
+			 INNER JOIN {$wpdb->posts} p ON pm.post_id = p.ID
+			 WHERE pm.meta_key = '_ebay_item_id' AND pm.meta_value = %s
+			   AND p.post_type IN ( 'product', 'product_variation' )
+			   AND p.post_status != 'trash'
+			 LIMIT 1",
+			$item_id
+		) );
+	}
+
 	private static function is_result_set_too_large( $error ) {
 		$message = strtolower( $error->get_error_message() );
 
@@ -857,10 +893,35 @@ class TCGiant_Sync_Importer {
 		foreach ( $items as $ebay_item ) {
 			try {
 				// License check.
-				if ( ! $license->can_import() ) {
-					self::update_sync_state( array( 'status' => 'limit_reached' ) );
-					TCGiant_Sync_Logger::log( 'Import limit reached during delta sync. Remaining items skipped.', 'warning' );
-					break;
+				//
+				// The free limit caps how many products a store may hold, not
+				// whether the ones it already has stay in step with eBay. This
+				// stopped the loop outright, so a store that went over stopped
+				// syncing altogether — no stock, no prices, no ended listings
+				// — while the seller carried on trading from figures that were
+				// no longer true. Only listings that would create a new product
+				// are held back now.
+				//
+				// Cheap lookup first, and the verdict is remembered. can_import()
+				// runs an uncached COUNT over every product on the store, and it
+				// used to run once per listing; asking it only about listings that
+				// have no product yet, and only until it has said no once, takes
+				// that from thousands of counts a sync down to at most one. Once a
+				// store is over the limit it stays over, because nothing further
+				// is imported.
+				if ( ! self::product_exists_for_item( isset( $ebay_item['ItemID'] ) ? $ebay_item['ItemID'] : '' )
+					&& ( self::$limit_reported || ! $license->can_import() ) ) {
+					if ( ! self::$limit_reported ) {
+						self::$limit_reported = true;
+						self::update_sync_state( array( 'status' => 'limit_reached' ) );
+						TCGiant_Sync_Logger::log( sprintf(
+							'Import limit reached (%d/%d products). New listings will not be imported; products already imported carry on syncing normally.',
+							$license->get_active_product_count(),
+							TCGiant_Sync_License::FREE_LIMIT
+						), 'warning' );
+					}
+					$skipped++;
+					continue;
 				}
 
 				$item_id = $ebay_item['ItemID'] ?? '';
@@ -997,30 +1058,15 @@ class TCGiant_Sync_Importer {
 						}
 					}
 
-					if ( null !== $listed && null !== $sold ) {
-						$remaining = max( 0, (int) $listed - (int) $sold );
-						$ended_product = wc_get_product( (int) $existing_id );
+					$remaining = TCGiant_Sync_Inventory::apply_ended_listing_stock( (int) $existing_id, $listed, $sold );
 
-						if ( $ended_product ) {
-							// eBay has already accounted for the sale, so this must
-							// not be echoed back as a stock change of our own.
-							TCGiant_Sync_Inventory::begin_ebay_origin();
-							try {
-								if ( $ended_product->managing_stock() ) {
-									wc_update_product_stock( (int) $existing_id, $remaining, 'set' );
-								}
-								wc_update_product_stock_status( (int) $existing_id, $remaining > 0 ? 'instock' : 'outofstock' );
-							} finally {
-								TCGiant_Sync_Inventory::end_ebay_origin();
-							}
-
-							TCGiant_Sync_Logger::log( sprintf(
-								'Delta: eBay item %s is %s — WC #%d marked ended and stock set to %d (%d listed, %d sold).',
-								$item_id, $listing_status, (int) $existing_id, $remaining, (int) $listed, (int) $sold
-							) );
-							$skipped++;
-							continue;
-						}
+					if ( null !== $remaining ) {
+						TCGiant_Sync_Logger::log( sprintf(
+							'Delta: eBay item %s is %s — WC #%d marked ended and stock set to %d (%d listed, %d sold).',
+							$item_id, $listing_status, (int) $existing_id, $remaining, (int) $listed, (int) $sold
+						) );
+						$skipped++;
+						continue;
 					}
 
 					TCGiant_Sync_Logger::log( sprintf(
@@ -1494,10 +1540,26 @@ class TCGiant_Sync_Importer {
 			}
 
 			// License check per item.
-			if ( ! $license->can_import() ) {
-				self::update_sync_state( array( 'status' => 'limit_reached' ) );
-				TCGiant_Sync_Logger::log( 'Import limit reached. Remaining items skipped.', 'warning' );
-				break;
+			//
+			// The free limit caps how many products a store may hold, not
+			// whether the ones it already has stay in step with eBay. This
+			// stopped the loop outright, so a store that went over stopped
+			// syncing altogether — no stock, no prices, no ended listings
+			// — while the seller carried on trading from figures that were
+			// no longer true. Only listings that would create a new product
+			// are held back now.
+			if ( ! self::product_exists_for_item( isset( $item['ItemID'] ) ? $item['ItemID'] : '' )
+				&& ( self::$limit_reported || ! $license->can_import() ) ) {
+				if ( ! self::$limit_reported ) {
+					self::$limit_reported = true;
+					self::update_sync_state( array( 'status' => 'limit_reached' ) );
+					TCGiant_Sync_Logger::log( sprintf(
+						'Import limit reached (%d/%d products). New listings will not be imported; products already imported carry on syncing normally.',
+						$license->get_active_product_count(),
+						TCGiant_Sync_License::FREE_LIMIT
+					), 'warning' );
+				}
+				continue;
 			}
 
 			// Determine if this item needs a GetItem fallback.
@@ -1754,20 +1816,27 @@ class TCGiant_Sync_Importer {
 	public function process_item_import( $item_id ) {
 		try {
 			// Per-item license check.
+			//
+			// Only for listings that would create a new product. An item already
+			// imported is queued here because eBay's list response was short of
+			// detail, and refusing to finish it would freeze that product at
+			// whatever it last held. The queue is no longer cleared for the same
+			// reason: it holds updates to existing products as well as new ones,
+			// and this returns before spending an API call anyway.
 			$license = TCGiant_Sync_License::instance();
-			if ( ! $license->can_import() ) {
-				self::update_sync_state( array( 'status' => 'limit_reached' ) );
-				TCGiant_Sync_Logger::log(
-					sprintf(
-						'Import limit reached (%d/%d products). Remaining queued items skipped. Upgrade to Pro for unlimited.',
-						$license->get_active_product_count(),
-						TCGiant_Sync_License::FREE_LIMIT
-					),
-					'warning'
-				);
-				// Cancel remaining queued jobs to avoid wasting API calls.
-				if ( function_exists( 'as_unschedule_all_actions' ) ) {
-					as_unschedule_all_actions( 'tcgiant_sync_process_item_import', null, 'tcgiant_sync_imports' );
+			if ( ! self::product_exists_for_item( $item_id )
+				&& ( self::$limit_reported || ! $license->can_import() ) ) {
+				if ( ! self::$limit_reported ) {
+					self::$limit_reported = true;
+					self::update_sync_state( array( 'status' => 'limit_reached' ) );
+					TCGiant_Sync_Logger::log(
+						sprintf(
+							'Import limit reached (%d/%d products). New listings will not be imported; products already imported carry on syncing normally. Upgrade to Pro for unlimited.',
+							$license->get_active_product_count(),
+							TCGiant_Sync_License::FREE_LIMIT
+						),
+						'warning'
+					);
 				}
 				return;
 			}

@@ -130,6 +130,51 @@ class TCGiant_Sync_Inventory {
 	 *
 	 * @param WC_Product $product The product whose stock changed.
 	 */
+	/**
+	 * Bring a product's stock into line once its eBay listing has ended.
+	 *
+	 * A listing holding one of something ends the moment it sells, so an ended
+	 * listing is where a sale of a single item is seen — the ordinary import
+	 * never runs for one. Two separate places notice a listing ending and both
+	 * recorded only the status, leaving sold goods showing as in stock.
+	 *
+	 * eBay's own figures answer both cases: sold out leaves nothing, while a
+	 * listing the seller ended by hand still reports whatever went unsold, and
+	 * that stock is genuinely still theirs.
+	 *
+	 * @param int      $product_id WooCommerce product.
+	 * @param int|null $listed     Quantity the listing held.
+	 * @param int|null $sold       Quantity eBay reports as sold.
+	 * @return int|null Stock applied, or null when eBay gave nothing to go on.
+	 */
+	public static function apply_ended_listing_stock( $product_id, $listed, $sold ) {
+		if ( null === $listed || null === $sold ) {
+			return null;
+		}
+
+		$product = wc_get_product( (int) $product_id );
+		if ( ! $product ) {
+			return null;
+		}
+
+		$remaining = max( 0, (int) $listed - (int) $sold );
+
+		// eBay has already accounted for the sale, so this must not travel back
+		// to eBay as a stock change of our own.
+		self::begin_ebay_origin();
+
+		try {
+			if ( $product->managing_stock() ) {
+				wc_update_product_stock( (int) $product_id, $remaining, 'set' );
+			}
+			wc_update_product_stock_status( (int) $product_id, $remaining > 0 ? 'instock' : 'outofstock' );
+		} finally {
+			self::end_ebay_origin();
+		}
+
+		return $remaining;
+	}
+
 	public function on_product_stock_change( $product ) {
 		if ( ! $product ) {
 			return;

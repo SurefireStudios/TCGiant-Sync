@@ -150,6 +150,54 @@ class TCGiant_Sync_Cron {
 			// A fixed-length listing genuinely is over once its end time passes,
 			// so the stored value can be trusted and costs nothing to act on.
 			if ( '' !== $duration && 0 === strpos( $duration, 'Days_' ) ) {
+				// A listing that has run its course may equally have sold out, and
+				// once this product is marked Ended it drops out of this query and
+				// never gets another chance to have its stock put right. So settle
+				// it first, and only for a product still showing stock: there is
+				// nothing to settle otherwise and no call worth spending.
+				$stock_product = wc_get_product( $pid );
+
+				if ( $stock_product && $stock_product->get_stock_quantity() > 0 ) {
+					// Out of budget for this run. Leave the product unmarked so it
+					// comes back round next hour rather than being lost with its
+					// stock still wrong.
+					if ( $verified >= self::ENDED_VERIFY_PER_RUN ) {
+						continue;
+					}
+
+					$expired_id = get_post_meta( $pid, '_ebay_item_id', true );
+
+					if ( ! empty( $expired_id ) ) {
+						$verified++;
+						$expired = TCGiant_Sync_API::instance()->get_item( $expired_id );
+
+						if ( ! is_wp_error( $expired ) && isset( $expired['Item'] ) ) {
+							$settled = TCGiant_Sync_Inventory::apply_ended_listing_stock(
+								$pid,
+								isset( $expired['Item']['Quantity'] ) ? $expired['Item']['Quantity'] : null,
+								isset( $expired['Item']['SellingStatus']['QuantitySold'] ) ? $expired['Item']['SellingStatus']['QuantitySold'] : null
+							);
+
+							if ( null !== $settled ) {
+								TCGiant_Sync_Logger::log( sprintf(
+									'Ended listing check: WC #%d stock set to %d now its listing has finished.',
+									$pid, $settled
+								) );
+							}
+						} else {
+							// eBay drops old listings, so this can fail for good.
+							// Mark it ended regardless rather than retry forever,
+							// but say so: leaving the stock alone is safer than
+							// zeroing it on no evidence, and the seller may need
+							// to correct it by hand.
+							TCGiant_Sync_Logger::log( sprintf(
+								'Ended listing check: WC #%d listing has finished but eBay would not report its quantities, so stock is unchanged. Check this product by hand.',
+								$pid
+							), 'warning' );
+						}
+					}
+				}
+
 				update_post_meta( $pid, '_ebay_listing_status', 'Ended' );
 				$ended++;
 				continue;
@@ -201,6 +249,23 @@ class TCGiant_Sync_Cron {
 			if ( '' !== $status ) {
 				update_post_meta( $pid, '_ebay_listing_status', 'Ended' );
 				$ended++;
+
+				// And settle the stock. Recording the status and stopping there
+				// left sold goods showing as available, the same fault the hourly
+				// sync had in the other place a listing is seen to end. The item
+				// is already in hand here, so this costs nothing.
+				$settled = TCGiant_Sync_Inventory::apply_ended_listing_stock(
+					$pid,
+					isset( $item['Quantity'] ) ? $item['Quantity'] : null,
+					isset( $item['SellingStatus']['QuantitySold'] ) ? $item['SellingStatus']['QuantitySold'] : null
+				);
+
+				if ( null !== $settled ) {
+					TCGiant_Sync_Logger::log( sprintf(
+						'Ended listing check: WC #%d stock set to %d now its listing has finished.',
+						$pid, $settled
+					) );
+				}
 			}
 		}
 
