@@ -962,15 +962,71 @@ class TCGiant_Sync_Importer {
 						continue;
 					}
 
-					// Known product — record that its listing is over and move on.
+					// Known product — record that its listing is over.
 					update_post_meta( (int) $existing_id, '_ebay_listing_status', 'Ended' );
 					if ( ! empty( $ebay_item['ListingDetails']['EndTime'] ) ) {
 						update_post_meta( (int) $existing_id, '_ebay_end_time', $ebay_item['ListingDetails']['EndTime'] );
 					}
+
+					// And bring its stock into line, which used to be missed entirely.
+					//
+					// A listing with one of something ends the moment it sells, so
+					// this branch — not the ordinary import — is where a sale of a
+					// single item is seen. It only recorded the status and moved on,
+					// while the order sync had stopped adjusting stock for linked
+					// products on the grounds that "the mapper sets it from eBay
+					// anyway". That is true of a live listing and false of an ended
+					// one, because an ended listing never reaches the mapper. So a
+					// sold coin stayed in stock in WooCommerce indefinitely.
+					//
+					// eBay's own figures answer both cases correctly: sold out gives
+					// nothing left, while a listing the seller ended by hand still
+					// reports whatever was unsold, so stock is left where it is.
+					$listed = $ebay_item['Quantity'] ?? null;
+					$sold   = $ebay_item['SellingStatus']['QuantitySold'] ?? null;
+
+					// The events feed is often partial, which is why the fallback
+					// below exists at all. Ask for the item outright rather than
+					// guess at a quantity.
+					if ( null === $listed || null === $sold ) {
+						$ended_detail = $api->get_item( $item_id );
+						if ( ! is_wp_error( $ended_detail ) && isset( $ended_detail['Item'] ) ) {
+							$fallback_count++;
+							$listed = $ended_detail['Item']['Quantity'] ?? null;
+							$sold   = $ended_detail['Item']['SellingStatus']['QuantitySold'] ?? null;
+						}
+					}
+
+					if ( null !== $listed && null !== $sold ) {
+						$remaining = max( 0, (int) $listed - (int) $sold );
+						$ended_product = wc_get_product( (int) $existing_id );
+
+						if ( $ended_product ) {
+							// eBay has already accounted for the sale, so this must
+							// not be echoed back as a stock change of our own.
+							TCGiant_Sync_Inventory::begin_ebay_origin();
+							try {
+								if ( $ended_product->managing_stock() ) {
+									wc_update_product_stock( (int) $existing_id, $remaining, 'set' );
+								}
+								wc_update_product_stock_status( (int) $existing_id, $remaining > 0 ? 'instock' : 'outofstock' );
+							} finally {
+								TCGiant_Sync_Inventory::end_ebay_origin();
+							}
+
+							TCGiant_Sync_Logger::log( sprintf(
+								'Delta: eBay item %s is %s — WC #%d marked ended and stock set to %d (%d listed, %d sold).',
+								$item_id, $listing_status, (int) $existing_id, $remaining, (int) $listed, (int) $sold
+							) );
+							$skipped++;
+							continue;
+						}
+					}
+
 					TCGiant_Sync_Logger::log( sprintf(
-						'Delta: eBay item %s is %s — marked WC #%d as ended (not re-imported).',
+						'Delta: eBay item %s is %s — marked WC #%d as ended. eBay did not report quantities, so stock is unchanged.',
 						$item_id, $listing_status, (int) $existing_id
-					) );
+					), 'warning' );
 					$skipped++;
 					continue;
 				}

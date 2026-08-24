@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.7.10
+Stable tag: 3.7.11
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,13 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.7.11 - 2026-08-24 =
+**Stock**
+* FIX: Selling an item on eBay did not reduce its WooCommerce stock when the sale ended the listing. A listing with one of something ends as soon as it sells, so this affected every single-quantity listing — for coins, cards and other one-off items, that is all of them.
+* The plugin recorded the listing as ended but left the stock alone, and the separate post-sale stock adjustment had been switched off for eBay-linked products because the ordinary sync sets the quantity from eBay. True of a running listing; false of an ended one, which is never re-imported.
+* Stock is now settled from eBay's own figures whenever a listing ends — sold out leaves nothing in stock, while a listing you ended yourself keeps whatever was unsold.
+* Items sold while this was happening will still show in stock and need correcting by hand. Look for products marked Ended that still show a quantity.
 
 = 3.7.10 - 2026-08-24 =
 **Connecting to eBay**
@@ -744,6 +751,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.7.11 =
+Important if you sell single-quantity items. Fixes WooCommerce stock not reducing when an eBay sale ends the listing, which risks overselling. Items already sold will still show in stock and need correcting by hand.
 
 = 3.7.10 =
 Diagnostic only. If connecting an eBay account fails because a web page is returned instead of data, the log now names the server that produced the page.

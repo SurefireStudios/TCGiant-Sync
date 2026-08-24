@@ -1,5 +1,12 @@
 *** TCGiant Sync Changelog ***
 
+2026-08-24 - version 3.7.11
+== Stock ==
+- FIX: Selling an item on eBay did not reduce its WooCommerce stock when the sale ended the listing. A listing with one of something ends the moment it sells, so this affected every single-quantity listing — which for coins, cards and other one-off items is all of them.
+- The plugin recorded that the listing had ended but left the stock untouched, and the separate check that used to adjust stock after a sale had been switched off for eBay-linked products, on the basis that the ordinary sync sets the quantity from eBay anyway. That is true of a listing that is still running and false of one that has ended, because an ended listing is never re-imported.
+- Stock is now settled from eBay's own figures whenever a listing ends. A sold-out listing leaves nothing in stock; a listing you ended yourself with items unsold keeps them, because they are still yours to sell.
+- Anything sold while this was happening will still be showing in stock. The next sale of that product will correct itself, but existing quantities need setting by hand — the products to check are the ones marked Ended that still show stock.
+
 2026-08-24 - version 3.7.10
 == Connecting to eBay ==
 - When a web page is returned instead of data during connection, the log now records which server produced it, along with the page title and the opening of the page itself.
