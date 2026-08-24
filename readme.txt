@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.7.9
+Stable tag: 3.7.10
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,11 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.7.10 - 2026-08-24 =
+**Connecting to eBay**
+* When a web page is returned instead of data during connection, the log now records which server produced it, plus the page title and its opening characters.
+* Saying that "something" intercepted the request left both the merchant and their host searching with nothing to go on, and both could honestly report their own end looked fine. The reply itself carries the answer — our connection service runs LiteSpeed, so a page from anything else came from in between, and such pages usually name the product that produced them.
 
 = 3.7.9 - 2026-08-21 =
 **Syncing**
@@ -739,6 +744,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.7.10 =
+Diagnostic only. If connecting an eBay account fails because a web page is returned instead of data, the log now names the server that produced the page.
 
 = 3.7.9 =
 Important for busy stores. Fixes syncing stopping permanently when a 48 hour period holds more changes than eBay will return at once, which left some stores days behind with no new listings arriving.

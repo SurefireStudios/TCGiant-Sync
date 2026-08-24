@@ -1,5 +1,10 @@
 *** TCGiant Sync Changelog ***
 
+2026-08-24 - version 3.7.10
+== Connecting to eBay ==
+- When a web page is returned instead of data during connection, the log now records which server produced it, along with the page title and the opening of the page itself.
+- Saying that "something" intercepted the request left both the merchant and their host hunting with nothing to go on, and each could honestly report that their own end looked fine. The reply carries the answer: our connection service runs LiteSpeed, so a page served by anything else came from somewhere in between, and these pages usually name the product that produced them in their title.
+
 2026-08-21 - version 3.7.9
 == Syncing ==
 - FIX: Syncing could stop permanently on a busy store, which is why new listings were still not arriving. eBay refuses to return more than 3000 changes at once and asks you to request a shorter period instead. The plugin was always asking for the same 48 hours, so on a store with more changes than that it was refused every single time — and because a failed sync correctly keeps its place rather than skipping anything, the next attempt asked for exactly the same period and was refused again. One store sat five days behind this way with nothing new coming in.

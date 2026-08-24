@@ -275,9 +275,38 @@ class TCGiant_Sync_OAuth {
 		// "would not release the tokens" there sends people looking in the wrong
 		// place entirely.
 		if ( null === $body && preg_match( '/^[\s]*<(?:!doctype|html)/i', $raw ) ) {
+
+			// Record who actually answered. Telling a merchant that "something"
+			// intercepted the request sends them and their host hunting with
+			// nothing to go on, and both sides can honestly report that their
+			// own end looks fine. The reply headers say whose server produced
+			// the page: our connection service runs LiteSpeed, so anything else
+			// came from somewhere in between, and the title of the page usually
+			// names the product doing it.
+			$served_by = array();
+
+			foreach ( array( 'server', 'x-powered-by', 'cf-ray', 'x-sucuri-id', 'x-cache', 'via', 'content-type' ) as $header ) {
+				$value = wp_remote_retrieve_header( $response, $header );
+				if ( ! empty( $value ) ) {
+					$served_by[] = $header . ': ' . ( is_array( $value ) ? implode( ', ', $value ) : $value );
+				}
+			}
+
+			$title = '';
+			if ( preg_match( '/<title[^>]*>(.*?)<\/title>/is', $raw, $found ) ) {
+				$title = trim( wp_strip_all_tags( $found[1] ) );
+			}
+
+			TCGiant_Sync_Logger::error(
+				'The reply to the token request was a web page, not data. '
+				. 'Served by — ' . ( $served_by ? implode( ' | ', $served_by ) : 'no identifying headers' )
+				. ( '' !== $title ? ' | page title: ' . $title : '' )
+				. ' | first 300 characters: ' . substr( $raw, 0, 300 )
+			);
+
 			return new WP_Error(
 				'claim_intercepted',
-				__( 'A web page was returned instead of data, so something between this site and the connection service intercepted the request — usually bot protection or a security filter on one of the two hosts. The eBay account cannot finish connecting until that request is allowed through. Ask your host to permit outbound requests to tcgiant.com.', 'tcgiant-sync' )
+				__( 'A web page was returned instead of data, so something answered the request before it reached the connection service. The eBay account cannot finish connecting until that request gets through. The activity log records which server produced the page, which says where to look.', 'tcgiant-sync' )
 				. ' HTTP ' . (string) wp_remote_retrieve_response_code( $response )
 			);
 		}

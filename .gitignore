@@ -20,3 +20,7 @@ phpstan-baseline.neon
 AUDIT-*.md
 # Composer binary, kept locally for the dev scripts.
 /composer.phar
+
+# Server access logs pulled in for debugging. Contain client domains and IPs.
+*ssl_log*
+*access_log*
