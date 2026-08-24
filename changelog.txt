@@ -1,5 +1,17 @@
 *** TCGiant Sync Changelog ***
 
+2026-08-24 - version 3.8.0
+== New: Stock Review ==
+- NEW: A Stock Review page that lists any product whose eBay listing has ended but which is still showing stock, with a button to settle them from eBay.
+- This is the recovery step for anything sold before 3.7.11. Settling asks eBay what each listing held and what sold, then sets your WooCommerce stock to the difference. A listing that sold out leaves nothing in stock; one you ended yourself with items unsold keeps them, because they are still yours to sell.
+- Where eBay will not report the figures, the stock is left alone rather than guessed at, and the product stays on the list. Nothing is changed without you pressing the button.
+- A warning now appears in the admin when products are in this state, because the failure is otherwise silent: the item is sold, the listing is gone, and the shop is still offering it.
+
+== Stock checking ==
+- The weekly stock check now also reports products whose listing has ended but which still show stock. It could only see listings that were still running, which is precisely where this kind of fault does not show up.
+- The weekly check is now a visible setting rather than something that just happened. It was always on and could not be turned off.
+- A listing that has run its course is now settled even when the product does not track a quantity, which was previously skipped.
+
 2026-08-24 - version 3.7.12
 == Stock ==
 - FIX: The hourly ended-listing check marked products as Ended without settling their stock, so a sale that ended a listing could still leave the item showing as available. 3.7.11 fixed this for the sync that runs on your schedule; this fixes the same fault in the hourly check, which is the other place a listing is seen to end.

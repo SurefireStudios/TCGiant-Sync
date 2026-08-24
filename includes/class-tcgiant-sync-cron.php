@@ -155,9 +155,13 @@ class TCGiant_Sync_Cron {
 				// never gets another chance to have its stock put right. So settle
 				// it first, and only for a product still showing stock: there is
 				// nothing to settle otherwise and no call worth spending.
+				//
+				// is_in_stock() rather than a quantity, so a product with stock
+				// management switched off is covered as well: it has no number to
+				// compare but it can still be sitting there for sale.
 				$stock_product = wc_get_product( $pid );
 
-				if ( $stock_product && $stock_product->get_stock_quantity() > 0 ) {
+				if ( $stock_product && $stock_product->is_in_stock() ) {
 					// Out of budget for this run. Leave the product unmarked so it
 					// comes back round next hour rather than being lost with its
 					// stock still wrong.

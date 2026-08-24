@@ -552,6 +552,62 @@ class TCGiant_Sync_Inventory {
 	// ───────────────────────────────────────────────────────────────────────────
 
 	/**
+	 * Products whose eBay listing has ended but which still show as in stock.
+	 *
+	 * This is the shape every stock fault this plugin has had leaves behind: the
+	 * listing is over, so nothing will import it again, yet WooCommerce is still
+	 * offering the item. Sound stores return nothing here.
+	 *
+	 * Deliberately a database question and not an eBay one, so it is cheap
+	 * enough to ask on an admin page load and needs no API budget.
+	 *
+	 * @param int $limit Maximum rows, or 0 for all.
+	 * @return int[] Product and variation IDs, newest first.
+	 */
+	public static function find_unsettled_ended_products( $limit = 0 ) {
+		global $wpdb;
+
+		$sql = "SELECT p.ID
+			FROM {$wpdb->posts} p
+			INNER JOIN {$wpdb->postmeta} listing ON listing.post_id = p.ID AND listing.meta_key = '_ebay_listing_status'
+			INNER JOIN {$wpdb->postmeta} stock   ON stock.post_id   = p.ID AND stock.meta_key   = '_stock_status'
+			WHERE p.post_type IN ( 'product', 'product_variation' )
+			  AND p.post_status NOT IN ( 'trash', 'auto-draft' )
+			  AND listing.meta_value = 'Ended'
+			  AND stock.meta_value = 'instock'
+			ORDER BY p.ID DESC";
+
+		if ( $limit > 0 ) {
+			// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+			$sql = $wpdb->prepare( $sql . ' LIMIT %d', (int) $limit );
+		}
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared
+		return array_map( 'intval', (array) $wpdb->get_col( $sql ) );
+	}
+
+	/**
+	 * How many products are in the state above.
+	 *
+	 * @return int
+	 */
+	public static function count_unsettled_ended_products() {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		return (int) $wpdb->get_var(
+			"SELECT COUNT(*)
+			 FROM {$wpdb->posts} p
+			 INNER JOIN {$wpdb->postmeta} listing ON listing.post_id = p.ID AND listing.meta_key = '_ebay_listing_status'
+			 INNER JOIN {$wpdb->postmeta} stock   ON stock.post_id   = p.ID AND stock.meta_key   = '_stock_status'
+			 WHERE p.post_type IN ( 'product', 'product_variation' )
+			   AND p.post_status NOT IN ( 'trash', 'auto-draft' )
+			   AND listing.meta_value = 'Ended'
+			   AND stock.meta_value = 'instock'"
+		);
+	}
+
+	/**
 	 * Background inventory reconciliation.
 	 *
 	 * Compares WooCommerce stock quantities against eBay active listing quantities.
@@ -690,5 +746,18 @@ class TCGiant_Sync_Inventory {
 			'Reconciliation: Complete. Checked %d items, found %d mismatch(es).',
 			$checked, $mismatches
 		), $mismatches > 0 ? 'warning' : 'success' );
+
+		// The pass above can only see listings that are still running, which is
+		// precisely where stock faults do not show up: a listing that has ended
+		// is never fetched again, so its stock could sit wrong indefinitely with
+		// nothing to notice. Ask the database directly.
+		$unsettled = self::count_unsettled_ended_products();
+
+		if ( $unsettled > 0 ) {
+			TCGiant_Sync_Logger::warning( sprintf(
+				'Reconciliation: %d product(s) whose eBay listing has ended are still showing stock. Review them under TCGiant Sync, Stock Review.',
+				$unsettled
+			) );
+		}
 	}
 }

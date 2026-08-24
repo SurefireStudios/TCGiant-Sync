@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.7.12
+Stable tag: 3.8.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,18 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.8.0 - 2026-08-24 =
+**New: Stock Review**
+* NEW: A Stock Review page listing any product whose eBay listing has ended but which still shows stock, with a button to settle them from eBay. This is the recovery step for anything sold before 3.7.11.
+* Settling asks eBay what each listing held and what sold, then sets your stock to the difference — sold out leaves nothing, while a listing you ended yourself keeps whatever was unsold.
+* Where eBay will not report the figures, your stock is left alone rather than guessed at. Nothing changes without you pressing the button.
+* An admin warning now appears when products are in this state, because the failure is otherwise silent.
+
+**Stock checking**
+* The weekly stock check now also reports ended listings that still show stock — it could only see live listings before, which is exactly where this fault does not appear.
+* The weekly check is now a visible setting. It was always on with no way to turn it off.
+* A listing that has run its course is now settled even when the product does not track a quantity.
 
 = 3.7.12 - 2026-08-24 =
 **Stock**
@@ -763,6 +775,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.8.0 =
+Adds a Stock Review page that finds products whose eBay listing has ended but which still show stock, and settles them from eBay. Run it once after upgrading to correct anything sold before 3.7.11.
 
 = 3.7.12 =
 Completes the stock fix from 3.7.11 by covering the hourly ended-listing check as well. Also fixes the free product limit stopping the sync outright instead of only holding back new imports.

@@ -204,11 +204,18 @@ class TCGiant_Sync_Jobs {
 		$product_ids = array_map( 'absint', (array) ( $_POST['product_ids'] ?? array() ) );
 		$product_ids = array_filter( $product_ids );
 
+		// "Settle all" cannot post thousands of IDs through a form without
+		// running into max_input_vars, so it asks for the set by name and the
+		// server resolves it from the same query the screen displays.
+		if ( 'bulk_settle' === $type && ! empty( $_POST['select_all'] ) ) {
+			$product_ids = TCGiant_Sync_Inventory::find_unsettled_ended_products();
+		}
+
 		if ( empty( $type ) || empty( $product_ids ) ) {
 			wp_send_json_error( array( 'message' => 'Missing type or product_ids.' ) );
 		}
 
-		$valid_types = array( 'bulk_push', 'bulk_end', 'bulk_verify', 'bulk_relist' );
+		$valid_types = array( 'bulk_push', 'bulk_end', 'bulk_verify', 'bulk_relist', 'bulk_settle' );
 		if ( ! in_array( $type, $valid_types, true ) ) {
 			wp_send_json_error( array( 'message' => 'Invalid job type.' ) );
 		}
@@ -308,6 +315,53 @@ class TCGiant_Sync_Jobs {
 						$failed++;
 						$errors[] = sprintf( '#%d: %s', $product_id, $valid->get_error_message() );
 					} else {
+						$succeeded++;
+					}
+					break;
+
+				case 'bulk_settle':
+					// Put right the stock of a product whose listing has ended,
+					// from eBay's own record of what the listing held and what
+					// sold. Recovery for stock that went wrong before the fault
+					// was found; nothing else can know the figures.
+					$ebay_id = get_post_meta( $product_id, '_ebay_item_id', true );
+					if ( empty( $ebay_id ) ) {
+						$failed++;
+						$errors[] = sprintf( '#%d: No eBay Item ID.', $product_id );
+						break;
+					}
+
+					$detail = $api->get_item( $ebay_id );
+					if ( is_wp_error( $detail ) || ! isset( $detail['Item'] ) ) {
+						$failed++;
+						$errors[] = sprintf(
+							'#%d: %s',
+							$product_id,
+							is_wp_error( $detail ) ? $detail->get_error_message() : 'eBay returned nothing for this listing.'
+						);
+						break;
+					}
+
+					$settled = TCGiant_Sync_Inventory::apply_ended_listing_stock(
+						$product_id,
+						isset( $detail['Item']['Quantity'] ) ? $detail['Item']['Quantity'] : null,
+						isset( $detail['Item']['SellingStatus']['QuantitySold'] ) ? $detail['Item']['SellingStatus']['QuantitySold'] : null
+					);
+
+					if ( null === $settled ) {
+						// Never guess at a quantity. Saying so and leaving the
+						// stock alone is the safe direction.
+						$failed++;
+						$errors[] = sprintf( '#%d: eBay did not report quantities, so stock was left as it was.', $product_id );
+					} else {
+						TCGiant_Sync_Logger::log( sprintf(
+							'Stock review: WC #%d settled to %d from ended eBay listing %s.',
+							$product_id, $settled, $ebay_id
+						) );
+						// The notice reads a 15-minute cache; without this it
+						// would keep naming products that have just been put
+						// right.
+						delete_transient( 'tcgiant_unsettled_stock_count' );
 						$succeeded++;
 					}
 					break;

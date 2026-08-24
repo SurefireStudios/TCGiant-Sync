@@ -351,6 +351,14 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						<p class="tc-hint"><?php esc_html_e( 'Only applies to products that are not linked to an eBay listing. Linked products always take their quantity from eBay directly.', 'tcgiant-sync' ); ?></p>
 					</div>
 					<div class="tc-field">
+						<label class="tc-label"><?php esc_html_e( 'Check stock against eBay weekly?', 'tcgiant-sync' ); ?></label>
+						<div class="tc-radio-group">
+							<label><input type="radio" name="tcgiant_sync_ebay_settings[enable_reconciliation]" value="1" <?php checked( $settings['enable_reconciliation'] ?? '1', '1' ); ?>> Yes</label>
+							<label><input type="radio" name="tcgiant_sync_ebay_settings[enable_reconciliation]" value="0" <?php checked( $settings['enable_reconciliation'] ?? '1', '0' ); ?>> No</label>
+						</div>
+						<p class="tc-hint"><?php esc_html_e( 'Compares your stock against eBay once a week and writes anything that disagrees to the log, including products whose listing has ended but which are still showing stock. It only reports; nothing is changed without you asking. Leave this on unless the weekly run is a problem for your host.', 'tcgiant-sync' ); ?></p>
+					</div>
+					<div class="tc-field">
 						<label class="tc-label"><?php esc_html_e( 'Import eBay orders into WooCommerce?', 'tcgiant-sync' ); ?></label>
 						<div class="tc-radio-group">
 							<label><input type="radio" name="tcgiant_sync_ebay_settings[enable_order_import]" value="1" <?php checked( $settings['enable_order_import'] ?? '0', '1' ); ?>> Yes</label>
@@ -454,7 +462,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 				<?php settings_fields( 'tcgiant_sync_ebay_group' ); ?>
 				<?php
 				// Preserve all non-export fields.
-				$all_preserve = array_merge( $preserve_keys, array( 'custom_saved_categories', 'category_ids', 'woo_category_ids', 'preserve_woo_category_ids', 'import_specs_as_tags', 'bake_shipping_into_price', 'sku_maps_to', 'sku_prefix', 'sync_interval', 'enable_order_sync', 'enable_order_import', 'auto_end_zero_stock', 'disable_image_localization', 'auto_relist_enabled', 'overwrite_title', 'overwrite_desc', 'overwrite_price', 'overwrite_images', 'overwrite_taxonomy', 'overwrite_weight_dims' ) );
+				$all_preserve = array_merge( $preserve_keys, array( 'custom_saved_categories', 'category_ids', 'woo_category_ids', 'preserve_woo_category_ids', 'import_specs_as_tags', 'bake_shipping_into_price', 'sku_maps_to', 'sku_prefix', 'sync_interval', 'enable_order_sync', 'enable_order_import', 'enable_reconciliation', 'auto_end_zero_stock', 'disable_image_localization', 'auto_relist_enabled', 'overwrite_title', 'overwrite_desc', 'overwrite_price', 'overwrite_images', 'overwrite_taxonomy', 'overwrite_weight_dims' ) );
 				// Note: export condition descriptor fields are handled by the export form itself.
 				foreach ( $all_preserve as $key ) {
 					$val = $settings[ $key ] ?? null;

@@ -89,6 +89,7 @@ class TCGiant_Sync_Admin {
 		add_action( 'admin_notices', array( $this, 'bulk_push_admin_notice' ) );
 		add_action( 'admin_notices', array( $this, 'staging_admin_notice' ) );
 		add_action( 'admin_notices', array( $this, 'stale_coin_listings_notice' ) );
+		add_action( 'admin_notices', array( $this, 'unsettled_stock_notice' ) );
 		add_action( 'admin_post_tcgiant_refresh_coin_listings', array( $this, 'handle_refresh_coin_listings' ) );
 
 		// Save per-product export overrides.
@@ -547,6 +548,15 @@ class TCGiant_Sync_Admin {
 
 		add_submenu_page(
 			'tcgiant-sync',
+			__( 'Stock Review', 'tcgiant-sync' ),
+			__( 'Stock Review', 'tcgiant-sync' ),
+			'manage_options',
+			'tcgiant-stock-review',
+			array( $this, 'render_stock_review_page' )
+		);
+
+		add_submenu_page(
+			'tcgiant-sync',
 			__( 'Push to eBay', 'tcgiant-sync' ),
 			__( 'Push to eBay', 'tcgiant-sync' ),
 			'manage_options',
@@ -630,6 +640,13 @@ class TCGiant_Sync_Admin {
 	 */
 	public function render_listings_page() {
 		include_once TCGIANT_SYNC_PATH . 'admin/views/listings.php';
+	}
+
+	/**
+	 * Render the Stock Review page.
+	 */
+	public function render_stock_review_page() {
+		include_once TCGIANT_SYNC_PATH . 'admin/views/stock-review.php';
 	}
 
 	/**
@@ -1682,6 +1699,66 @@ class TCGiant_Sync_Admin {
 	 * The notice clears itself once those listings have been pushed again,
 	 * because the push records the version that sent it.
 	 */
+	/**
+	 * Warn when products whose eBay listing has ended still show stock.
+	 *
+	 * Worth interrupting for, because the failure is silent and it is the shape
+	 * overselling takes: the item is sold, the listing is gone, and the shop is
+	 * still offering it. Nothing else surfaces this — an ended listing is never
+	 * imported again, so the ordinary sync cannot notice.
+	 */
+	public function unsettled_stock_notice() {
+		$screen = get_current_screen();
+		if ( ! $screen || ( ! in_array( $screen->id, array( 'edit-product', 'product' ), true ) && false === strpos( $screen->id, 'tcgiant' ) ) ) {
+			return;
+		}
+
+		if ( ! current_user_can( 'manage_options' ) ) {
+			return;
+		}
+
+		// The Stock Review page lists these itself; saying it twice on the same
+		// screen is noise.
+		if ( isset( $_GET['page'] ) && 'tcgiant-stock-review' === $_GET['page'] ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			return;
+		}
+
+		// Cached: this runs on every admin page load on those screens.
+		$count = get_transient( 'tcgiant_unsettled_stock_count' );
+		if ( false === $count ) {
+			$count = TCGiant_Sync_Inventory::count_unsettled_ended_products();
+			set_transient( 'tcgiant_unsettled_stock_count', $count, 15 * MINUTE_IN_SECONDS );
+		}
+
+		if ( $count < 1 ) {
+			return;
+		}
+		?>
+		<div class="notice notice-warning">
+			<p>
+				<strong><?php esc_html_e( 'TCGiant Sync — stock may be overstated', 'tcgiant-sync' ); ?></strong><br>
+				<?php
+				printf(
+					/* translators: %d: number of products */
+					esc_html( _n(
+						'%d product is still showing stock although its eBay listing has ended. If it sold, your shop is offering something you no longer have.',
+						'%d products are still showing stock although their eBay listings have ended. If they sold, your shop is offering items you no longer have.',
+						$count,
+						'tcgiant-sync'
+					) ),
+					(int) $count
+				);
+				?>
+			</p>
+			<p>
+				<a href="<?php echo esc_url( admin_url( 'admin.php?page=tcgiant-stock-review' ) ); ?>" class="button button-primary">
+					<?php esc_html_e( 'Review and settle from eBay', 'tcgiant-sync' ); ?>
+				</a>
+			</p>
+		</div>
+		<?php
+	}
+
 	public function stale_coin_listings_notice() {
 		$screen = get_current_screen();
 		if ( ! $screen || ( ! in_array( $screen->id, array( 'edit-product', 'product' ), true ) && false === strpos( $screen->id, 'tcgiant' ) ) ) {
