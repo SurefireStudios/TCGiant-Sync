@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.8.0
+Stable tag: 3.8.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,13 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.8.1 - 2026-08-25 =
+**Connecting to eBay**
+* FIX: Some hosts run security software that challenges the request the plugin makes to collect your eBay tokens, answering with a "checking your browser" page. That page expects a browser to retry after passing a check, which the plugin cannot do — so affected stores could never finish connecting, however many times they tried.
+* The plugin now retries the same request by a route those filters do not object to. Stores that were already connecting are unaffected and make exactly one request as before.
+* Token renewal takes the same route, so a store that connected while the filter was quiet no longer breaks at its first renewal.
+* If both routes are blocked, the log still names the server that answered.
 
 = 3.8.0 - 2026-08-24 =
 **New: Stock Review**
@@ -775,6 +782,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.8.1 =
+Fixes stores that could never finish connecting to eBay because their host answered the plugin with a security challenge page. Only affects stores seeing that error; everyone else is unchanged.
 
 = 3.8.0 =
 Adds a Stock Review page that finds products whose eBay listing has ended but which still show stock, and settles them from eBay. Run it once after upgrading to correct anything sold before 3.7.11.

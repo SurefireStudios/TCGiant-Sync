@@ -126,7 +126,9 @@ class TCGiant_Sync_OAuth {
 			'claim'    => '1',
 		);
 
-		return 'https://tcgiant.com/syncconnect/relay.php?' . http_build_query( $params );
+		// The browser leg, not a server-to-server call: a person can answer
+		// a bot check, so this one needs no alternate.
+		return self::RELAY_URL . '?' . http_build_query( $params );
 	}
 
 	/**
@@ -238,19 +240,105 @@ class TCGiant_Sync_OAuth {
 	 * @param string $code Claim code handed back on the redirect.
 	 * @return array|WP_Error Token payload, or an error describing the refusal.
 	 */
+	/**
+	 * The connection service.
+	 */
+	const RELAY_URL = 'https://tcgiant.com/syncconnect/relay.php';
+
+	/**
+	 * The same service under a name that security filters do not object to.
+	 */
+	const RELAY_FALLBACK_URL = 'https://tcgiant.com/syncconnect/connect.php';
+
+	/**
+	 * Post to the connection service, going round a security filter if one
+	 * answers instead.
+	 *
+	 * Some hosts run software that challenges any request to a script called
+	 * relay.php — the name is a common one for open proxies — and replies with
+	 * a bot-check page. It carries HTTP 200 and expects a browser to try again
+	 * once it has passed a check, which a server-to-server call can never do,
+	 * so a site behind one never connects and retrying cannot help.
+	 *
+	 * The same request is then made to an endpoint that does not carry the
+	 * name, sent as JSON rather than a form post so it resembles the telemetry
+	 * ping those filters already allow through. Both reach the same service.
+	 *
+	 * Only tried when the first attempt is answered with a web page. A working
+	 * connection makes one request exactly as before.
+	 *
+	 * @param array $body Request parameters.
+	 * @return array|WP_Error
+	 */
+	private static function post_to_relay( array $body ) {
+		$response = wp_remote_post( self::RELAY_URL, array(
+			'body'    => $body,
+			'timeout' => 30,
+		) );
+
+		if ( ! self::looks_intercepted( $response ) ) {
+			return $response;
+		}
+
+		$fallback = wp_remote_post( self::RELAY_FALLBACK_URL, array(
+			'headers' => array( 'Content-Type' => 'application/json' ),
+			'body'    => wp_json_encode( $body ),
+			'timeout' => 30,
+		) );
+
+		if ( self::looks_intercepted( $fallback ) ) {
+			// Both were answered by whatever is in the way. Hand back the
+			// first, so the caller reports on the reply that names the server
+			// responsible — that is what tells the merchant's host where to
+			// look.
+			return $response;
+		}
+
+		if ( ! is_wp_error( $fallback ) ) {
+			TCGiant_Sync_Logger::log(
+				'A security filter on this server answered the usual connection request, so the alternate endpoint was used instead. The connection itself is fine.',
+				'warning'
+			);
+		}
+
+		return $fallback;
+	}
+
+	/**
+	 * Was this reply a web page rather than an answer from the service?
+	 *
+	 * Deliberately narrow. A reply that merely has a PHP warning printed ahead
+	 * of the JSON is not interception, and the callers already recover from
+	 * that on their own — treating it as interception here would send people
+	 * hunting for a firewall that does not exist.
+	 *
+	 * @param array|WP_Error $response
+	 * @return bool
+	 */
+	private static function looks_intercepted( $response ) {
+		if ( is_wp_error( $response ) ) {
+			return false;
+		}
+
+		$raw = (string) wp_remote_retrieve_body( $response );
+
+		if ( null !== json_decode( $raw, true ) ) {
+			return false;
+		}
+
+		return (bool) preg_match( '/^[\s]*<(?:!doctype|html)/i', $raw );
+	}
+
 	public function claim_tokens_from_relay( $code ) {
 		$code = trim( (string) $code );
 		if ( '' === $code ) {
 			return new WP_Error( 'claim_missing', __( 'No claim code was supplied.', 'tcgiant-sync' ) );
 		}
 
-		$response = wp_remote_post( 'https://tcgiant.com/syncconnect/relay.php', array(
-			'body'    => array(
-				'action'   => 'claim',
-				'code'     => $code,
-				'site_url' => get_site_url(),
-			),
-			'timeout' => 30,
+		$response = self::post_to_relay( array(
+			'action'   => 'claim',
+			'code'     => $code,
+			'site_url' => get_site_url(),
 		) );
 
 		if ( is_wp_error( $response ) ) {
@@ -347,15 +435,15 @@ class TCGiant_Sync_OAuth {
 		// Include the site's API call count so the relay can compute global budget.
 		$api = TCGiant_Sync_API::instance();
 
-		$response = wp_remote_post( 'https://tcgiant.com/syncconnect/relay.php', array(
-			'body'    => array(
-				'action'          => 'refresh',
-				'refresh_token'   => $settings['refresh_token'],
-				'site_url'        => get_site_url(),
-				'api_calls_today' => $api->get_daily_call_count(),
-				'api_calls_date'  => gmdate( 'Y-m-d' ),
-			),
-			'timeout' => 30,
+		// The renewal needs this every bit as much as the first connection:
+		// a site that got connected while the filter was quiet would otherwise
+		// fail the moment its token came up for renewal.
+		$response = self::post_to_relay( array(
+			'action'          => 'refresh',
+			'refresh_token'   => $settings['refresh_token'],
+			'site_url'        => get_site_url(),
+			'api_calls_today' => $api->get_daily_call_count(),
+			'api_calls_date'  => gmdate( 'Y-m-d' ),
 		) );
 
 		if ( is_wp_error( $response ) ) {

@@ -1,5 +1,12 @@
 *** TCGiant Sync Changelog ***
 
+2026-08-25 - version 3.8.1
+== Connecting to eBay ==
+- FIX: Some hosts run security software that challenges the request the plugin makes to collect your eBay tokens, answering it with a "checking your browser" page instead of letting it through. The page expects a web browser to try again once it has passed a check, which the plugin cannot do, so those stores could never finish connecting no matter how many times they tried.
+- When that happens the plugin now makes the same request again by a different route that these filters do not object to, and connects normally. Stores that were already connecting are unaffected and make exactly one request as before.
+- Token renewal goes the same way, so a store that connected while the filter was quiet no longer breaks when its token comes up for renewal.
+- If both routes are blocked, the log still names the server that answered, which is what tells your host where to look.
+
 2026-08-24 - version 3.8.0
 == New: Stock Review ==
 - NEW: A Stock Review page that lists any product whose eBay listing has ended but which is still showing stock, with a button to settle them from eBay.
