@@ -1071,7 +1071,7 @@ class TCGiant_Sync_Importer {
 					}
 
 					TCGiant_Sync_Logger::log( sprintf(
-						'Delta: eBay item %s is %s — marked WC #%d as ended. eBay did not report quantities, so stock is unchanged.',
+						'Delta: eBay item %s is %s — marked WC #%d as ended. Its stock could not be settled, so it is unchanged; the preceding line says why.',
 						$item_id, $listing_status, (int) $existing_id
 					), 'warning' );
 					$skipped++;

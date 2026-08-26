@@ -166,11 +166,43 @@ class TCGiant_Sync_Inventory {
 		try {
 			if ( $product->managing_stock() ) {
 				wc_update_product_stock( (int) $product_id, $remaining, 'set' );
+
+				// Confirm the quantity landed before touching anything else.
+				//
+				// The status write used to come first, so a quantity that
+				// failed to save still left the product marked out of stock —
+				// which is how the review screen decides a product no longer
+				// needs looking at. It would have vanished from the one list
+				// that could have caught it, with its quantity untouched.
+				$after = wc_get_product( (int) $product_id );
+
+				if ( ! $after || (int) $after->get_stock_quantity() !== $remaining ) {
+					TCGiant_Sync_Logger::warning( sprintf(
+						'Tried to set WC #%d to %d after its eBay listing ended, but the quantity did not change. Something else on this site is holding it, so nothing further was altered and the product stays on the Stock Review list.',
+						(int) $product_id,
+						$remaining
+					) );
+
+					// finally still runs, so the origin guard closes cleanly.
+					return null;
+				}
 			}
+
 			wc_update_product_stock_status( (int) $product_id, $remaining > 0 ? 'instock' : 'outofstock' );
 		} finally {
 			self::end_ebay_origin();
 		}
+
+		// Remember that eBay has been asked about this one.
+		//
+		// A listing that ended without selling reports its stock as still
+		// present, quite correctly — the goods are unsold and remain the
+		// seller's. But "ended and in stock" is also how an unsettled product
+		// looks, so without this the review screen could never tell a product
+		// it had already checked from one it had not, and a legitimately
+		// unsold item sat on the list for ever, unchanged however many times
+		// the button was pressed.
+		update_post_meta( (int) $product_id, '_ebay_stock_settled_at', current_time( 'mysql' ) );
 
 		return $remaining;
 	}
@@ -552,6 +584,20 @@ class TCGiant_Sync_Inventory {
 	// ───────────────────────────────────────────────────────────────────────────
 
 	/**
+	 * Forget that a product was settled, because its listing is live again.
+	 *
+	 * Settling is a statement about one ended listing. Once the item is back on
+	 * eBay that statement is spent, and if the new listing ends badly the
+	 * product must be reviewable again rather than permanently excused.
+	 *
+	 * @param int $product_id
+	 * @return void
+	 */
+	public static function clear_settled_mark( $product_id ) {
+		delete_post_meta( (int) $product_id, '_ebay_stock_settled_at' );
+	}
+
+	/**
 	 * Products whose eBay listing has ended but which still show as in stock.
 	 *
 	 * This is the shape every stock fault this plugin has had leaves behind: the
@@ -571,10 +617,12 @@ class TCGiant_Sync_Inventory {
 			FROM {$wpdb->posts} p
 			INNER JOIN {$wpdb->postmeta} listing ON listing.post_id = p.ID AND listing.meta_key = '_ebay_listing_status'
 			INNER JOIN {$wpdb->postmeta} stock   ON stock.post_id   = p.ID AND stock.meta_key   = '_stock_status'
+			LEFT JOIN  {$wpdb->postmeta} settled ON settled.post_id = p.ID AND settled.meta_key = '_ebay_stock_settled_at'
 			WHERE p.post_type IN ( 'product', 'product_variation' )
 			  AND p.post_status NOT IN ( 'trash', 'auto-draft' )
 			  AND listing.meta_value = 'Ended'
 			  AND stock.meta_value = 'instock'
+			  AND settled.post_id IS NULL
 			ORDER BY p.ID DESC";
 
 		if ( $limit > 0 ) {
@@ -600,10 +648,12 @@ class TCGiant_Sync_Inventory {
 			 FROM {$wpdb->posts} p
 			 INNER JOIN {$wpdb->postmeta} listing ON listing.post_id = p.ID AND listing.meta_key = '_ebay_listing_status'
 			 INNER JOIN {$wpdb->postmeta} stock   ON stock.post_id   = p.ID AND stock.meta_key   = '_stock_status'
+			 LEFT JOIN  {$wpdb->postmeta} settled ON settled.post_id = p.ID AND settled.meta_key = '_ebay_stock_settled_at'
 			 WHERE p.post_type IN ( 'product', 'product_variation' )
 			   AND p.post_status NOT IN ( 'trash', 'auto-draft' )
 			   AND listing.meta_value = 'Ended'
-			   AND stock.meta_value = 'instock'"
+			   AND stock.meta_value = 'instock'
+			   AND settled.post_id IS NULL"
 		);
 	}
 

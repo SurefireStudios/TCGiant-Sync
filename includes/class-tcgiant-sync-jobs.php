@@ -352,7 +352,7 @@ class TCGiant_Sync_Jobs {
 						// Never guess at a quantity. Saying so and leaving the
 						// stock alone is the safe direction.
 						$failed++;
-						$errors[] = sprintf( '#%d: eBay did not report quantities, so stock was left as it was.', $product_id );
+						$errors[] = sprintf( '#%d: could not be settled — stock left exactly as it was. The log says why.', $product_id );
 					} else {
 						TCGiant_Sync_Logger::log( sprintf(
 							'Stock review: WC #%d settled to %d from ended eBay listing %s.',

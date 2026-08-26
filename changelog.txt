@@ -1,5 +1,13 @@
 *** TCGiant Sync Changelog ***
 
+2026-08-26 - version 3.8.4
+== Stock Review ==
+- FIX: Settling a product whose listing ended without selling appeared to do nothing. It worked correctly — eBay reported the item as unsold, so its stock was rightly left alone — but the product then still matched the list’s own description of "ended and still showing stock", so it stayed there however many times you pressed the button.
+- The screen now remembers which products it has already checked with eBay, so anything settled leaves the list whether the answer was nothing left or keep what you have.
+- If the listing goes back up for sale, that is forgotten again, so the product can be reviewed afresh if the new listing ends badly.
+- FIX: A product is only recorded as settled once the new quantity has been confirmed as saved. If something else on the site prevents the change, the product stays on the list and the log says so, rather than quietly disappearing with its stock still wrong.
+- The stock quantity is now confirmed before the in-stock status is touched. The status was written first, so a quantity that failed to save still left the product marked out of stock — which is how this screen decides a product no longer needs looking at. It would have vanished from the one list that could have caught it.
+
 2026-08-26 - version 3.8.3
 == eBay connection controls ==
 - The connection card now reads Connect to eBay, then Test connection, then Disconnect, with the clearing action last where a destructive button belongs.

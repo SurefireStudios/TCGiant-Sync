@@ -246,6 +246,11 @@ class TCGiant_Sync_Cron {
 
 			if ( 'Active' === $status ) {
 				update_post_meta( $pid, '_ebay_listing_status', 'Active' );
+
+				// Back on sale, so any earlier settlement is spent: if this
+				// listing ends badly the product must be reviewable again.
+				TCGiant_Sync_Inventory::clear_settled_mark( $pid );
+
 				$active++;
 				continue;
 			}

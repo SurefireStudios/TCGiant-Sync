@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.8.3
+Stable tag: 3.8.4
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,14 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.8.4 - 2026-08-26 =
+**Stock Review**
+* FIX: Settling a product whose listing ended without selling looked like it did nothing. It worked correctly — eBay reported the item unsold, so the stock was rightly left alone — but the product still matched "ended and showing stock" and stayed on the list.
+* The screen now remembers what it has already checked with eBay, so anything settled leaves the list either way.
+* If the listing goes back up for sale that is forgotten, so it can be reviewed again if the new listing ends badly.
+* FIX: A product is only recorded as settled once the new quantity is confirmed saved. If something else on the site blocks the change, it stays on the list and the log says so.
+* The quantity is confirmed before the in-stock status is touched — previously a failed quantity write still left the product marked out of stock, removing it from the one list that could have caught it.
 
 = 3.8.3 - 2026-08-26 =
 **eBay connection controls**
@@ -796,6 +804,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.8.4 =
+Fixes Stock Review appearing to do nothing for listings that ended without selling. Recommended if you have used that screen.
 
 = 3.8.3 =
 Adds a Reset connection button for sites stuck part way through connecting, and makes disconnecting clear the handshake so reconnecting actually starts fresh.
