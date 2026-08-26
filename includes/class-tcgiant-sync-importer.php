@@ -161,6 +161,7 @@ class TCGiant_Sync_Importer {
 			'last_successful_sync_at' => '',           // ISO 8601 UTC timestamp of last successful sync (used as ModTimeFrom for next delta)
 			'rate_limit_retries'      => 0,            // Number of consecutive rate limit hits (for escalating backoff)
 			'scan_complete_clean'     => false,        // True only when every page was scanned without error — gates orphan pruning
+			'last_error'              => '',           // Why the last run stopped, so the dashboard can say rather than show a red dot
 		) );
 	}
 
@@ -1373,6 +1374,14 @@ class TCGiant_Sync_Importer {
 					'status'              => 'error',
 					'current_page'        => max( 1, $current_page - 1 ), // Last page we actually completed.
 					'scan_complete_clean' => false,
+					// Kept so the dashboard can say what went wrong. It showed a
+					// red dot and the word "Error", and the reason lived only in
+					// the log where nobody thought to look.
+					'last_error'          => sprintf(
+						'Stopped on page %d: %s',
+						$current_page,
+						$response->get_error_message()
+					),
 				) );
 				self::release_lock();
 				return;

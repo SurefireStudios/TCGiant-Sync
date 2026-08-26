@@ -42,6 +42,7 @@ class TCGiant_Sync_Admin {
 		add_action( 'admin_init', array( $this, 'handle_oauth_callback' ) );
 		add_action( 'admin_init', array( $this, 'register_settings' ) );
 		add_action( 'admin_post_tcgiant_oauth_start', array( $this, 'handle_oauth_start' ) );
+		add_action( 'wp_ajax_tcgiant_test_connection', array( $this, 'ajax_test_connection' ) );
 		add_action( 'admin_post_tcgiant_sync_now', array( $this, 'handle_manual_sync' ) );
 		add_action( 'admin_post_tcgiant_sync_specific', array( $this, 'handle_sync_specific' ) );
 		add_action( 'admin_post_tcgiant_force_queue', array( $this, 'handle_force_queue' ) );
@@ -90,6 +91,7 @@ class TCGiant_Sync_Admin {
 		add_action( 'admin_notices', array( $this, 'staging_admin_notice' ) );
 		add_action( 'admin_notices', array( $this, 'stale_coin_listings_notice' ) );
 		add_action( 'admin_notices', array( $this, 'unsettled_stock_notice' ) );
+		add_action( 'admin_notices', array( $this, 'connect_failed_notice' ) );
 		add_action( 'admin_post_tcgiant_refresh_coin_listings', array( $this, 'handle_refresh_coin_listings' ) );
 
 		// Save per-product export overrides.
@@ -645,6 +647,41 @@ class TCGiant_Sync_Admin {
 	/**
 	 * Render the Stock Review page.
 	 */
+	/**
+	 * AJAX: report what answers our endpoints from this server.
+	 */
+	public function ajax_test_connection() {
+		check_ajax_referer( 'tcgiant_sync_ajax' );
+
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => __( 'Unauthorized.', 'tcgiant-sync' ) ) );
+		}
+
+		$results = TCGiant_Sync_OAuth::instance()->run_connection_test();
+
+		$reachable = false;
+		foreach ( $results as $result ) {
+			if ( 'ok' === $result['state'] ) {
+				$reachable = true;
+			}
+		}
+
+		foreach ( $results as $result ) {
+			TCGiant_Sync_Logger::log(
+				sprintf( 'Connection test — %s: %s', $result['label'], $result['detail'] ),
+				'ok' === $result['state'] ? 'info' : 'warning'
+			);
+		}
+
+		wp_send_json_success( array(
+			'results'   => $results,
+			'reachable' => $reachable,
+			'summary'   => $reachable
+				? __( 'This server can reach the connection service. If connecting still fails, the problem is later in the handshake — the activity log will say where.', 'tcgiant-sync' )
+				: __( 'This server cannot reach the connection service on either route. Connecting to eBay cannot work until that is resolved. The detail below names what answered, which is what your host needs to know.', 'tcgiant-sync' ),
+		) );
+	}
+
 	public function render_stock_review_page() {
 		include_once TCGIANT_SYNC_PATH . 'admin/views/stock-review.php';
 	}
@@ -816,6 +853,14 @@ class TCGiant_Sync_Admin {
 		// connecting entirely.
 		$oauth->begin_authorization();
 
+		// Leave a mark. When someone reports that pressing Connect "does
+		// nothing", the first thing worth knowing is whether the press reached
+		// the site at all — a stale nonce, a caching layer or a dead link all
+		// look identical from the outside, and none of them left any trace
+		// here before.
+		TCGiant_Sync_Logger::log( 'Connect to eBay: sending the browser to the connection service to sign in.' );
+		set_transient( 'tcgiant_connect_started_at', time(), 20 * MINUTE_IN_SECONDS );
+
 		// External host, so wp_redirect() rather than wp_safe_redirect().
 		wp_redirect( $oauth->get_relay_authorization_url() ); // phpcs:ignore WordPress.Security.SafeRedirect.wp_redirect_wp_redirect
 		exit;
@@ -847,6 +892,32 @@ class TCGiant_Sync_Admin {
 
 		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
 		$tokens_in_url = isset( $_GET['ebay_access_token'], $_GET['ebay_refresh_token'], $_GET['ebay_expires_in'] );
+
+		// eBay and the connection service both report failure by sending the
+		// browser back with an error on the address instead of a code. Nothing
+		// read these, so a refused or abandoned sign-in returned to a page that
+		// looked exactly as it had before: no message, no log line, nothing to
+		// act on. That is the "clicking Connect does nothing" report.
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		$oauth_error = isset( $_GET['error'] ) ? sanitize_text_field( wp_unslash( $_GET['error'] ) ) : '';
+
+		if ( '' !== $oauth_error && current_user_can( 'manage_options' ) ) {
+			// phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			$described = isset( $_GET['error_description'] ) ? sanitize_text_field( wp_unslash( $_GET['error_description'] ) ) : '';
+
+			TCGiant_Sync_Logger::error( sprintf(
+				'Connecting to eBay was refused: %s%s',
+				$oauth_error,
+				'' !== $described ? ' — ' . $described : ''
+			) );
+
+			set_transient( 'tcgiant_connect_error', array(
+				'error'       => $oauth_error,
+				'description' => $described,
+			), 10 * MINUTE_IN_SECONDS );
+
+			delete_transient( 'tcgiant_connect_started_at' );
+		}
 
 		if ( '' === $claim_code && ! $tokens_in_url ) {
 			return;
@@ -1707,6 +1778,43 @@ class TCGiant_Sync_Admin {
 	 * still offering it. Nothing else surfaces this — an ended listing is never
 	 * imported again, so the ordinary sync cannot notice.
 	 */
+	/**
+	 * Say so when a connection attempt came back refused.
+	 *
+	 * Without this the browser returns from eBay to a page that looks exactly
+	 * as it did before, which reads as the button having done nothing at all.
+	 */
+	public function connect_failed_notice() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			return;
+		}
+
+		$failure = get_transient( 'tcgiant_connect_error' );
+		if ( empty( $failure ) || ! is_array( $failure ) ) {
+			return;
+		}
+
+		delete_transient( 'tcgiant_connect_error' );
+		?>
+		<div class="notice notice-error">
+			<p>
+				<strong><?php esc_html_e( 'TCGiant Sync — connecting to eBay did not complete', 'tcgiant-sync' ); ?></strong><br>
+				<?php
+				printf(
+					/* translators: %s: the reason eBay gave */
+					esc_html__( 'eBay sent you back without completing the connection. Reason given: %s', 'tcgiant-sync' ),
+					'<code>' . esc_html( $failure['error'] ) . '</code>'
+				);
+				?>
+				<?php if ( ! empty( $failure['description'] ) ) : ?>
+					<br><?php echo esc_html( $failure['description'] ); ?>
+				<?php endif; ?>
+			</p>
+			<p><?php esc_html_e( 'If you did not cancel it yourself, try again — and if it keeps happening, run the connection test on the Settings page and send us what it says.', 'tcgiant-sync' ); ?></p>
+		</div>
+		<?php
+	}
+
 	public function unsettled_stock_notice() {
 		$screen = get_current_screen();
 		if ( ! $screen || ( ! in_array( $screen->id, array( 'edit-product', 'product' ), true ) && false === strpos( $screen->id, 'tcgiant' ) ) ) {

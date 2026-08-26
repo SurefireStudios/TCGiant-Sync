@@ -76,8 +76,71 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 				<?php else : ?>
 					<a href="<?php echo esc_url( $auth_url ); ?>" class="tc-button success"><?php esc_html_e( 'Connect to eBay', 'tcgiant-sync' ); ?></a>
 				<?php endif; ?>
+				<button type="button" class="tc-button secondary" id="tc-test-connection"><?php esc_html_e( 'Test connection', 'tcgiant-sync' ); ?></button>
 			</div>
 		</div>
+
+		<?php // Where the test writes its answer. Connecting fails in places a
+		      // merchant cannot see, and "it does not work" is not something a
+		      // host can act on; this turns it into a sentence they can. ?>
+		<div id="tc-connection-test" style="display:none;margin:-6px 0 14px;padding:12px 14px;border-radius:4px;border:1px solid #dbe0e7;background:#fff;">
+			<p id="tc-connection-test-summary" style="margin:0 0 8px;font-weight:600;"></p>
+			<div id="tc-connection-test-rows" style="display:flex;flex-direction:column;gap:6px;"></div>
+		</div>
+
+		<script>
+		(function($){
+			var btn = $('#tc-test-connection');
+			if (!btn.length) { return; }
+
+			var box     = $('#tc-connection-test');
+			var summary = $('#tc-connection-test-summary');
+			var rows    = $('#tc-connection-test-rows');
+			var nonce   = '<?php echo esc_js( wp_create_nonce( 'tcgiant_sync_ajax' ) ); ?>';
+			var ajaxUrl = '<?php echo esc_url( admin_url( 'admin-ajax.php' ) ); ?>';
+			var idle    = btn.text();
+
+			var colours = {
+				ok:          '#2b6a52',
+				intercepted: '#a2352a',
+				unreachable: '#a2352a',
+				unexpected:  '#8a6d1f'
+			};
+
+			btn.on('click', function(){
+				btn.prop('disabled', true).text('<?php echo esc_js( __( 'Testing…', 'tcgiant-sync' ) ); ?>');
+				rows.empty();
+				summary.text('');
+				box.show();
+
+				$.post(ajaxUrl, { action: 'tcgiant_test_connection', _ajax_nonce: nonce })
+					.done(function(r){
+						if (!r || !r.success) {
+							summary.css('color', '#a2352a').text(
+								(r && r.data && r.data.message) ? r.data.message : '<?php echo esc_js( __( 'The test could not be run.', 'tcgiant-sync' ) ); ?>'
+							);
+							return;
+						}
+						summary.css('color', r.data.reachable ? '#2b6a52' : '#a2352a').text(r.data.summary);
+						$.each(r.data.results, function(i, row){
+							// .text() throughout: these carry whatever a strange
+							// server chose to send back, and it is never markup
+							// as far as this page is concerned.
+							var line = $('<div/>').css({fontSize:'13px', lineHeight:'1.5'});
+							$('<strong/>').css('color', colours[row.state] || '#59636f').text(row.label + ': ').appendTo(line);
+							$('<span/>').text(row.detail).appendTo(line);
+							line.appendTo(rows);
+						});
+					})
+					.fail(function(){
+						summary.css('color', '#a2352a').text('<?php echo esc_js( __( 'The test could not be run — the request to this site failed.', 'tcgiant-sync' ) ); ?>');
+					})
+					.always(function(){
+						btn.prop('disabled', false).text(idle);
+					});
+			});
+		})(jQuery);
+		</script>
 
 		<!-- License -->
 		<div class="tc-top-card" id="tc-license-section">

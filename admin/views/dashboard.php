@@ -192,6 +192,23 @@ if ( empty( $settings['redirect_uri'] ) ) {
 										$sync_state['total_pages'] ? '/' . absint( $sync_state['total_pages'] ) : '',
 										absint( $sync_state['total_processed'] )
 									);
+								} elseif ( 'error' === $sync_state['status'] ) {
+									// A red dot and the word "Error" told nobody
+									// anything; the reason was only ever in the log.
+									echo esc_html(
+										! empty( $sync_state['last_error'] )
+											? $sync_state['last_error']
+											: 'The last run stopped early. See the log for the reason.'
+									);
+								} elseif ( 'limit_reached' === $sync_state['status'] ) {
+									printf(
+										/* translators: 1: products held, 2: free limit */
+										esc_html__( '%1$d of %2$d free products used. Products already imported keep syncing; new listings are not imported.', 'tcgiant-sync' ),
+										absint( TCGiant_Sync_License::instance()->get_active_product_count() ),
+										absint( TCGiant_Sync_License::FREE_LIMIT )
+									);
+								} elseif ( 'stopped' === $sync_state['status'] ) {
+									echo esc_html__( 'Stopped by hand. Use Resume Import to carry on.', 'tcgiant-sync' );
 								} elseif ( ! empty( $sync_state['last_completed'] ) ) {
 									echo 'Last: ' . esc_html( $sync_state['last_completed'] );
 								} else {

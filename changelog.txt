@@ -1,5 +1,13 @@
 *** TCGiant Sync Changelog ***
 
+2026-08-26 - version 3.8.2
+== Knowing why a connection failed ==
+- NEW: A "Test connection" button on the Settings page. It asks whether this server can reach our connection service, and if something is in the way it names the server that answered instead. That is the sentence your host needs; "it will not connect" is not.
+- FIX: If eBay sent you back without completing the connection, nothing said so. The page looked exactly as it had before, which reads as the button having done nothing at all. The reason eBay gave is now shown on screen and written to the log.
+- FIX: The dashboard showed a red dot and the word "Error" with no indication of what had gone wrong, because the reason was only ever written to the log. It now says what stopped the last run, on the dashboard, where the dot is.
+- The same is true of the other states: reaching the free product limit and stopping a sync by hand both now explain themselves rather than leaving a coloured dot to be interpreted.
+- Pressing "Connect to eBay" is now recorded in the log. When connecting appears to do nothing at all, the first thing worth knowing is whether the button reached the site, and there was previously no way to tell.
+
 2026-08-25 - version 3.8.1
 == Connecting to eBay ==
 - FIX: Some hosts run security software that challenges the request the plugin makes to collect your eBay tokens, answering it with a "checking your browser" page instead of letting it through. The page expects a web browser to try again once it has passed a check, which the plugin cannot do, so those stores could never finish connecting no matter how many times they tried.

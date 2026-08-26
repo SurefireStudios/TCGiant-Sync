@@ -315,6 +315,132 @@ class TCGiant_Sync_OAuth {
 	 * @param array|WP_Error $response
 	 * @return bool
 	 */
+	/**
+	 * Say who answered, when the answer was a web page.
+	 *
+	 * Telling a merchant that "something" intercepted the request sends them
+	 * and their host hunting with nothing to go on, and both sides can
+	 * honestly report that their own end looks fine. The reply headers say
+	 * whose server produced the page: the connection service runs LiteSpeed,
+	 * so anything else came from somewhere in between, and the page title
+	 * usually names the product responsible.
+	 *
+	 * @param array $response
+	 * @return string
+	 */
+	private static function describe_interception( $response ) {
+		$raw       = (string) wp_remote_retrieve_body( $response );
+		$served_by = array();
+
+		foreach ( array( 'server', 'x-powered-by', 'cf-ray', 'x-sucuri-id', 'x-cache', 'via', 'content-type' ) as $header ) {
+			$value = wp_remote_retrieve_header( $response, $header );
+			if ( ! empty( $value ) ) {
+				$served_by[] = $header . ': ' . ( is_array( $value ) ? implode( ', ', $value ) : $value );
+			}
+		}
+
+		$title = '';
+		if ( preg_match( '/<title[^>]*>(.*?)<\/title>/is', $raw, $found ) ) {
+			$title = trim( wp_strip_all_tags( $found[1] ) );
+		}
+
+		return 'Served by — ' . ( $served_by ? implode( ' | ', $served_by ) : 'no identifying headers' )
+			. ( '' !== $title ? ' | page title: ' . $title : '' )
+			. ' | first 300 characters: ' . substr( $raw, 0, 300 );
+	}
+
+	/**
+	 * Ask both endpoints whether they can be reached from this server.
+	 *
+	 * Connecting fails in places a merchant cannot see: the browser goes off
+	 * to eBay and comes back, and if the site could not collect the tokens
+	 * there is nothing on screen to say why. This asks the question directly
+	 * and reports what actually answered, which is the difference between
+	 * "it does not work" and a sentence their host can act on.
+	 *
+	 * Uses the service's own health check, so nothing is created, spent or
+	 * changed by running it.
+	 *
+	 * @return array[] One entry per endpoint.
+	 */
+	public function run_connection_test() {
+		$endpoints = array(
+			__( 'Usual route', 'tcgiant-sync' )     => self::RELAY_URL,
+			__( 'Alternate route', 'tcgiant-sync' ) => self::RELAY_FALLBACK_URL,
+		);
+
+		$results = array();
+
+		foreach ( $endpoints as $label => $url ) {
+			$results[] = self::probe_endpoint( $label, $url );
+		}
+
+		return $results;
+	}
+
+	/**
+	 * Reach one endpoint and classify what came back.
+	 *
+	 * @param string $label
+	 * @param string $url
+	 * @return array
+	 */
+	private static function probe_endpoint( $label, $url ) {
+		$response = wp_remote_get( add_query_arg( 'debug_challenge', '1', $url ), array( 'timeout' => 20 ) );
+
+		if ( is_wp_error( $response ) ) {
+			// Never got off this server, or nothing answered at all.
+			return array(
+				'label'  => $label,
+				'state'  => 'unreachable',
+				'detail' => sprintf(
+					/* translators: %s: error message */
+					__( 'This server could not reach the connection service at all. %s', 'tcgiant-sync' ),
+					$response->get_error_message()
+				),
+			);
+		}
+
+		$code = (int) wp_remote_retrieve_response_code( $response );
+		$raw  = (string) wp_remote_retrieve_body( $response );
+
+		if ( false !== stripos( $raw, 'Relay is active' ) ) {
+			return array(
+				'label'  => $label,
+				'state'  => 'ok',
+				'detail' => sprintf(
+					/* translators: %d: HTTP status code */
+					__( 'Reached normally (HTTP %d). Nothing is in the way on this route.', 'tcgiant-sync' ),
+					$code
+				),
+			);
+		}
+
+		if ( self::looks_intercepted( $response ) ) {
+			return array(
+				'label'  => $label,
+				'state'  => 'intercepted',
+				'detail' => sprintf(
+					/* translators: 1: HTTP status code, 2: description of what answered */
+					__( 'A web page was returned instead of an answer, so something on this server\'s network replied before the request reached us (HTTP %1$d). %2$s', 'tcgiant-sync' ),
+					$code,
+					self::describe_interception( $response )
+				),
+			);
+		}
+
+		return array(
+			'label'  => $label,
+			'state'  => 'unexpected',
+			'detail' => sprintf(
+				/* translators: 1: HTTP status code, 2: start of the reply */
+				__( 'Something answered but not in the expected form (HTTP %1$d). The reply began: %2$s', 'tcgiant-sync' ),
+				$code,
+				substr( trim( preg_replace( '/\s+/', ' ', $raw ) ), 0, 200 )
+			),
+		);
+	}
+
 	private static function looks_intercepted( $response ) {
 		if ( is_wp_error( $response ) ) {
 			return false;
@@ -364,32 +490,9 @@ class TCGiant_Sync_OAuth {
 		// place entirely.
 		if ( null === $body && preg_match( '/^[\s]*<(?:!doctype|html)/i', $raw ) ) {
 
-			// Record who actually answered. Telling a merchant that "something"
-			// intercepted the request sends them and their host hunting with
-			// nothing to go on, and both sides can honestly report that their
-			// own end looks fine. The reply headers say whose server produced
-			// the page: our connection service runs LiteSpeed, so anything else
-			// came from somewhere in between, and the title of the page usually
-			// names the product doing it.
-			$served_by = array();
-
-			foreach ( array( 'server', 'x-powered-by', 'cf-ray', 'x-sucuri-id', 'x-cache', 'via', 'content-type' ) as $header ) {
-				$value = wp_remote_retrieve_header( $response, $header );
-				if ( ! empty( $value ) ) {
-					$served_by[] = $header . ': ' . ( is_array( $value ) ? implode( ', ', $value ) : $value );
-				}
-			}
-
-			$title = '';
-			if ( preg_match( '/<title[^>]*>(.*?)<\/title>/is', $raw, $found ) ) {
-				$title = trim( wp_strip_all_tags( $found[1] ) );
-			}
-
 			TCGiant_Sync_Logger::error(
 				'The reply to the token request was a web page, not data. '
-				. 'Served by — ' . ( $served_by ? implode( ' | ', $served_by ) : 'no identifying headers' )
-				. ( '' !== $title ? ' | page title: ' . $title : '' )
-				. ' | first 300 characters: ' . substr( $raw, 0, 300 )
+				. self::describe_interception( $response )
 			);
 
 			return new WP_Error(

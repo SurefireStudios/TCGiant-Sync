@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.8.1
+Stable tag: 3.8.2
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,14 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.8.2 - 2026-08-26 =
+**Knowing why a connection failed**
+* NEW: A "Test connection" button on the Settings page. It asks whether your server can reach our connection service, and names whatever answered if something is in the way — which is the detail your host needs.
+* FIX: If eBay sent you back without completing the connection, nothing said so; the page looked unchanged, which reads as the button doing nothing. The reason is now shown on screen and logged.
+* FIX: The dashboard showed a red dot and the word "Error" with no reason, which lived only in the log. It now says what stopped the last run.
+* Reaching the free product limit and stopping a sync by hand now explain themselves too.
+* Pressing "Connect to eBay" is recorded in the log, so it is possible to tell whether the button reached the site at all.
 
 = 3.8.1 - 2026-08-25 =
 **Connecting to eBay**
@@ -782,6 +790,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.8.2 =
+Adds a "Test connection" button and makes failed connections explain themselves instead of showing a red dot. Worth having if you have ever had trouble connecting to eBay.
 
 = 3.8.1 =
 Fixes stores that could never finish connecting to eBay because their host answered the plugin with a security challenge page. Only affects stores seeing that error; everyone else is unchanged.
