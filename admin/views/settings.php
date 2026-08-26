@@ -69,14 +69,41 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 					<?php endif; ?>
 				</div>
 			</div>
+			<?php
+			// A connection counts as live only when both tokens are present, so a
+			// handshake that got part way through leaves a site looking entirely
+			// unconnected while still holding something. Hiding the clear-out
+			// button in that state stranded the leftovers with no way to shift
+			// them, which is exactly when someone is told to disconnect and
+			// reconnect and finds there is nothing to press.
+			$leftover_connection = $is_authenticated
+				|| ! empty( $settings['access_token'] )
+				|| ! empty( $settings['refresh_token'] )
+				|| ! empty( $settings['store_name'] )
+				|| (bool) get_transient( 'tcgiant_oauth_state' );
+
+			$clear_label = $is_authenticated
+				? __( 'Disconnect', 'tcgiant-sync' )
+				: __( 'Reset connection', 'tcgiant-sync' );
+
+			$clear_confirm = $is_authenticated
+				? __( 'Disconnect eBay account? This will stop synchronization until reconnected.', 'tcgiant-sync' )
+				: __( 'Clear the leftover connection details and start fresh? Nothing on eBay is changed.', 'tcgiant-sync' );
+			?>
 			<div class="tc-top-card-right" style="display:flex;gap:6px;">
 				<?php if ( $is_authenticated ) : ?>
 					<a href="<?php echo esc_url( $auth_url ); ?>" class="tc-button secondary"><?php esc_html_e( 'Reconnect', 'tcgiant-sync' ); ?></a>
-					<a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin-post.php?action=tcgiant_sync_disconnect' ), 'tcgiant_sync_disconnect' ) ); ?>" class="tc-button danger" onclick="return confirm('<?php esc_attr_e( 'Disconnect eBay account? This will stop synchronization until reconnected.', 'tcgiant-sync' ); ?>');"><?php esc_html_e( 'Disconnect', 'tcgiant-sync' ); ?></a>
 				<?php else : ?>
 					<a href="<?php echo esc_url( $auth_url ); ?>" class="tc-button success"><?php esc_html_e( 'Connect to eBay', 'tcgiant-sync' ); ?></a>
 				<?php endif; ?>
+
 				<button type="button" class="tc-button secondary" id="tc-test-connection"><?php esc_html_e( 'Test connection', 'tcgiant-sync' ); ?></button>
+
+				<?php // Last, and only when there is something to clear: a button
+				      // that wipes nothing is worse than no button at all. ?>
+				<?php if ( $leftover_connection ) : ?>
+					<a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin-post.php?action=tcgiant_sync_disconnect' ), 'tcgiant_sync_disconnect' ) ); ?>" class="tc-button danger" onclick="return confirm('<?php echo esc_js( $clear_confirm ); ?>');"><?php echo esc_html( $clear_label ); ?></a>
+				<?php endif; ?>
 			</div>
 		</div>
 

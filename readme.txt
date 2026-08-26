@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.8.2
+Stable tag: 3.8.3
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,12 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.8.3 - 2026-08-26 =
+**eBay connection controls**
+* The connection card now reads Connect to eBay, Test connection, Disconnect — clearing action last.
+* FIX: A part-finished connection left a site looking unconnected while still holding leftover details, and the button to clear them was hidden in exactly that state. It now appears as "Reset connection" whenever there is anything to clear.
+* FIX: Disconnecting left a half-finished handshake in place, which is what makes the next attempt come back refused. It is now cleared too, so reconnecting genuinely starts fresh.
 
 = 3.8.2 - 2026-08-26 =
 **Knowing why a connection failed**
@@ -790,6 +796,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.8.3 =
+Adds a Reset connection button for sites stuck part way through connecting, and makes disconnecting clear the handshake so reconnecting actually starts fresh.
 
 = 3.8.2 =
 Adds a "Test connection" button and makes failed connections explain themselves instead of showing a red dot. Worth having if you have ever had trouble connecting to eBay.

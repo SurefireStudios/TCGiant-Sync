@@ -1,5 +1,11 @@
 *** TCGiant Sync Changelog ***
 
+2026-08-26 - version 3.8.3
+== eBay connection controls ==
+- The connection card now reads Connect to eBay, then Test connection, then Disconnect, with the clearing action last where a destructive button belongs.
+- FIX: A connection that only got part way through left a site looking completely unconnected while still holding leftover details, and the button to clear them was hidden in exactly that state. So being told to disconnect and reconnect meant looking for a button that was not there. It now appears as "Reset connection" whenever there is anything to clear.
+- FIX: Disconnecting cleared your tokens but left a half-finished handshake in place, which is what makes the next attempt come back refused. Disconnecting now clears that too, so reconnecting genuinely starts fresh.
+
 2026-08-26 - version 3.8.2
 == Knowing why a connection failed ==
 - NEW: A "Test connection" button on the Settings page. It asks whether this server can reach our connection service, and if something is in the way it names the server that answered instead. That is the sentence your host needs; "it will not connect" is not.

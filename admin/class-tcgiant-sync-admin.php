@@ -501,7 +501,15 @@ class TCGiant_Sync_Admin {
 		unset( $settings['access_token'], $settings['refresh_token'], $settings['token_expiry'], $settings['store_name'], $settings['store_username'], $settings['store_id'] );
 		update_option( 'tcgiant_sync_ebay_settings', $settings );
 
-		TCGiant_Sync_Logger::log( 'eBay account disconnected by user.', 'warning' );
+		// The pending handshake has to go as well, or "disconnect and reconnect"
+		// does not do what it says: a stale or half-spent state token is what
+		// makes the next attempt come back refused, and clearing the tokens
+		// alone left it sitting there to do it again.
+		delete_transient( TCGiant_Sync_OAuth::STATE_TRANSIENT );
+		delete_transient( 'tcgiant_connect_started_at' );
+		delete_transient( 'tcgiant_connect_error' );
+
+		TCGiant_Sync_Logger::log( 'eBay connection cleared by user, including any handshake still in progress.', 'warning' );
 
 		wp_safe_redirect( admin_url( 'admin.php?page=tcgiant-settings&disconnected=1' ) );
 		exit;
