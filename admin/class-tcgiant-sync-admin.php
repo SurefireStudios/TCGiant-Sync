@@ -608,12 +608,18 @@ class TCGiant_Sync_Admin {
 	 * Render the horizontal tab navigation.
 	 */
 	public function render_tabs( $active_tab = 'dashboard' ) {
+		// Same pages as the sidebar, in the same order. Two of them were
+		// missing here, so the row of tabs and the menu beside it disagreed
+		// about what the plugin contains, and the two pages left out had no
+		// tabs of their own to get back from.
 		$tabs = array(
-			'dashboard' => array( 'title' => __( 'Dashboard', 'tcgiant-sync' ), 'icon' => 'dashicons-dashboard', 'page' => 'tcgiant-sync' ),
-			'import'    => array( 'title' => __( 'Import from eBay', 'tcgiant-sync' ), 'icon' => 'dashicons-download', 'page' => 'tcgiant-import' ),
-			'export'    => array( 'title' => __( 'Push to eBay', 'tcgiant-sync' ), 'icon' => 'dashicons-upload', 'page' => 'tcgiant-export' ),
-			'settings'  => array( 'title' => __( 'Settings', 'tcgiant-sync' ), 'icon' => 'dashicons-admin-settings', 'page' => 'tcgiant-settings' ),
-			'logs'      => array( 'title' => __( 'Logs', 'tcgiant-sync' ), 'icon' => 'dashicons-list-view', 'page' => 'tcgiant-logs' ),
+			'dashboard'     => array( 'title' => __( 'Dashboard', 'tcgiant-sync' ), 'icon' => 'dashicons-dashboard', 'page' => 'tcgiant-sync' ),
+			'import'        => array( 'title' => __( 'Import from eBay', 'tcgiant-sync' ), 'icon' => 'dashicons-download', 'page' => 'tcgiant-import' ),
+			'listings'      => array( 'title' => __( 'Listings', 'tcgiant-sync' ), 'icon' => 'dashicons-products', 'page' => 'tcgiant-listings' ),
+			'stock_review'  => array( 'title' => __( 'Stock Review', 'tcgiant-sync' ), 'icon' => 'dashicons-clipboard', 'page' => 'tcgiant-stock-review' ),
+			'export'        => array( 'title' => __( 'Push to eBay', 'tcgiant-sync' ), 'icon' => 'dashicons-upload', 'page' => 'tcgiant-export' ),
+			'settings'      => array( 'title' => __( 'Settings', 'tcgiant-sync' ), 'icon' => 'dashicons-admin-settings', 'page' => 'tcgiant-settings' ),
+			'logs'          => array( 'title' => __( 'Logs', 'tcgiant-sync' ), 'icon' => 'dashicons-list-view', 'page' => 'tcgiant-logs' ),
 		);
 
 		echo '<div class="tc-nav-tabs">';

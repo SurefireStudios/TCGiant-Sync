@@ -32,6 +32,11 @@ php tools\check-formats.php
 if errorlevel 1 goto failed
 
 echo.
+echo === Menu and tabs ===
+php tools\check-tabs.php
+if errorlevel 1 goto failed
+
+echo.
 echo === Static analysis ===
 if not exist "vendor\phpstan\phpstan\phpstan.phar" (
     echo PHPStan is not installed. Installing dependencies...

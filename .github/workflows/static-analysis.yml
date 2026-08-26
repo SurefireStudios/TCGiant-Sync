@@ -32,6 +32,9 @@ jobs:
       - name: Format strings
         run: php tools/check-formats.php
 
+      - name: Menu and tabs agree
+        run: php tools/check-tabs.php
+
       # PHPStan itself needs a modern PHP; the analysis still targets 7.4 via
       # the platform setting in composer.json.
       - name: Set up PHP for analysis

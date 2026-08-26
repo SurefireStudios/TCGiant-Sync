@@ -785,7 +785,11 @@
 
 .wrap.tc-dashboard-wrap .tc-nav-tabs {
     display: flex;
-    gap: 16px;
+    /* Seven tabs now rather than five, so they have to be able to fall onto a
+       second line: without this they overflow the panel on a narrower screen
+       or with the admin menu expanded. */
+    flex-wrap: wrap;
+    gap: 0 16px;
     border-bottom: 1px solid var(--tc-border);
     margin-bottom: 24px;
 }

@@ -27,9 +27,11 @@ $page_ids  = array_slice( $all_ids, ( $paged - 1 ) * $per_page, $per_page );
 $base_url  = admin_url( 'admin.php?page=tcgiant-stock-review' );
 ?>
 
-<div class="wrap">
+<div class="wrap tc-dashboard-wrap">
 	<h1 class="wp-heading-inline"><?php esc_html_e( 'Stock Review', 'tcgiant-sync' ); ?></h1>
 	<hr class="wp-header-end" />
+
+	<?php TCGiant_Sync_Admin::instance()->render_tabs( 'stock_review' ); ?>
 
 	<?php if ( 0 === $total ) : ?>
 

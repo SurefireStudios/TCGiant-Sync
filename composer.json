@@ -26,11 +26,13 @@
             "@lint",
             "@check-views",
             "@check-formats",
+            "@check-tabs",
             "@analyse"
         ],
         "build": "@php tools/build-zip.php",
         "check-views": "@php tools/check-views.php",
-        "check-formats": "@php tools/check-formats.php"
+        "check-formats": "@php tools/check-formats.php",
+        "check-tabs": "@php tools/check-tabs.php"
     },
     "scripts-descriptions": {
         "lint": "Run php -l over every plugin source file.",
@@ -38,6 +40,7 @@
         "check": "Run lint then analyse \u2014 use this before tagging a release.",
         "build": "Build a distributable plugin zip into zips/.",
         "check-views": "Verify admin view markup is balanced and grid layouts have their columns.",
-        "check-formats": "Run every printf-style format string through sprintf to catch ones that would throw at runtime."
+        "check-formats": "Run every printf-style format string through sprintf to catch ones that would throw at runtime.",
+        "check-tabs": "Verify the in-page tab bar lists the same pages as the admin menu, in the same order."
     }
 }

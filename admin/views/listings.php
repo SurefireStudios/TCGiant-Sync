@@ -45,9 +45,11 @@ $sort_order = 'ASC' === strtoupper( $order ) ? 'DESC' : 'ASC';
 $base_url = admin_url( 'admin.php?page=tcgiant-listings' );
 ?>
 
-<div class="wrap">
+<div class="wrap tc-dashboard-wrap">
 	<h1 class="wp-heading-inline"><?php esc_html_e( 'eBay Listings', 'tcgiant-sync' ); ?></h1>
 	<hr class="wp-header-end" />
+
+	<?php TCGiant_Sync_Admin::instance()->render_tabs( 'listings' ); ?>
 
 	<?php if ( empty( $stats['total'] ) && empty( $search ) ) : ?>
 		<div class="notice notice-info">

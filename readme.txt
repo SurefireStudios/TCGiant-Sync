@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.8.4
+Stable tag: 3.8.5
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,12 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.8.5 - 2026-08-26 =
+**Navigation**
+* The tabs on each page now list the same pages as the menu on the left, in the same order — Listings and Stock Review were missing from them.
+* Listings and Stock Review now show the tabs too. They had none, so the only way off those pages was the left-hand menu.
+* The tabs wrap onto a second line rather than overflowing on a narrow window.
 
 = 3.8.4 - 2026-08-26 =
 **Stock Review**
@@ -804,6 +810,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.8.5 =
+Cosmetic: the page tabs now match the left-hand menu, and Listings and Stock Review have tabs of their own.
 
 = 3.8.4 =
 Fixes Stock Review appearing to do nothing for listings that ended without selling. Recommended if you have used that screen.
