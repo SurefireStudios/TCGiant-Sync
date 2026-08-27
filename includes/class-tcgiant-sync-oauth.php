@@ -246,9 +246,19 @@ class TCGiant_Sync_OAuth {
 	const RELAY_URL = 'https://tcgiant.com/syncconnect/relay.php';
 
 	/**
-	 * The same service under a name that security filters do not object to.
+	 * The same service under a different name.
 	 */
 	const RELAY_FALLBACK_URL = 'https://tcgiant.com/syncconnect/connect.php';
+
+	/**
+	 * The reporting endpoint. Not part of connecting, but the connection test
+	 * asks it too, because it is the one address we have evidence of reaching
+	 * us from a site that cannot connect. Whether it answers or is stopped
+	 * like the others is the single most useful thing the test can find out:
+	 * one says a filter is picking on particular requests, the other says
+	 * nothing from that server reaches us at all.
+	 */
+	const TELEMETRY_URL = 'https://tcgiant.com/syncconnect/telemetry.php';
 
 	/**
 	 * Post to the connection service, going round a security filter if one
@@ -365,14 +375,32 @@ class TCGiant_Sync_OAuth {
 	 */
 	public function run_connection_test() {
 		$endpoints = array(
-			__( 'Usual route', 'tcgiant-sync' )     => self::RELAY_URL,
-			__( 'Alternate route', 'tcgiant-sync' ) => self::RELAY_FALLBACK_URL,
+			array(
+				'label' => __( 'Usual route', 'tcgiant-sync' ),
+				'url'   => self::RELAY_URL,
+				'probe' => 'health',
+				'role'  => 'connect',
+			),
+			array(
+				'label' => __( 'Alternate route', 'tcgiant-sync' ),
+				'url'   => self::RELAY_FALLBACK_URL,
+				'probe' => 'health',
+				'role'  => 'connect',
+			),
+			array(
+				'label' => __( 'Reporting route', 'tcgiant-sync' ),
+				'url'   => self::TELEMETRY_URL,
+				'probe' => 'reject',
+				'role'  => 'report',
+			),
 		);
 
 		$results = array();
 
-		foreach ( $endpoints as $label => $url ) {
-			$results[] = self::probe_endpoint( $label, $url );
+		foreach ( $endpoints as $endpoint ) {
+			$result         = self::probe_endpoint( $endpoint['label'], $endpoint['url'], $endpoint['probe'] );
+			$result['role'] = $endpoint['role'];
+			$results[]      = $result;
 		}
 
 		return $results;
@@ -381,12 +409,30 @@ class TCGiant_Sync_OAuth {
 	/**
 	 * Reach one endpoint and classify what came back.
 	 *
+	 * Two ways of asking, because the endpoints answer differently:
+	 *
+	 *   health  the connection service has its own health check, which replies
+	 *           in plain text and touches nothing.
+	 *   reject  the reporting endpoint has no health check, so it is sent a
+	 *           deliberately incomplete post. It refuses with a bare 400 and
+	 *           records nothing, and a bare 400 is proof enough that our own
+	 *           server answered: an interception is a 200 carrying a web page.
+	 *
 	 * @param string $label
 	 * @param string $url
+	 * @param string $probe 'health' or 'reject'.
 	 * @return array
 	 */
-	private static function probe_endpoint( $label, $url ) {
-		$response = wp_remote_get( add_query_arg( 'debug_challenge', '1', $url ), array( 'timeout' => 20 ) );
+	private static function probe_endpoint( $label, $url, $probe = 'health' ) {
+		if ( 'reject' === $probe ) {
+			$response = wp_remote_post( $url, array(
+				'timeout' => 20,
+				'headers' => array( 'Content-Type' => 'application/json' ),
+				'body'    => '{}',
+			) );
+		} else {
+			$response = wp_remote_get( add_query_arg( 'debug_challenge', '1', $url ), array( 'timeout' => 20 ) );
+		}
 
 		if ( is_wp_error( $response ) ) {
 			// Never got off this server, or nothing answered at all.
@@ -403,6 +449,20 @@ class TCGiant_Sync_OAuth {
 
 		$code = (int) wp_remote_retrieve_response_code( $response );
 		$raw  = (string) wp_remote_retrieve_body( $response );
+
+		// The reporting endpoint refusing an incomplete post is our own server
+		// talking, which is all this needs to establish.
+		if ( 'reject' === $probe && $code >= 400 && $code < 500 && ! self::looks_intercepted( $response ) ) {
+			return array(
+				'label'  => $label,
+				'state'  => 'ok',
+				'detail' => sprintf(
+					/* translators: %d: HTTP status code */
+					__( 'Reached normally (HTTP %d, which is this endpoint correctly refusing a deliberately empty test). Nothing is in the way on this route.', 'tcgiant-sync' ),
+					$code
+				),
+			);
+		}
 
 		if ( false !== stripos( $raw, 'Relay is active' ) ) {
 			return array(

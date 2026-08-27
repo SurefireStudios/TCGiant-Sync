@@ -1,5 +1,11 @@
 *** TCGiant Sync Changelog ***
 
+2026-08-26 - version 3.8.6
+== Connection test ==
+- The test now checks a third address as well: the one the plugin uses to report its sync totals. That address has nothing to do with connecting, which is exactly why it is useful — it separates a server that cannot reach us at all from one that reaches us perfectly well but has the connection requests picked out and stopped.
+- Those are very different problems. The first is a network that cannot get out; the second is a rule singling out particular requests, which a host can lift. The test now says which it is instead of reporting both as "cannot reach".
+- The check writes nothing and records nothing: the reporting address is sent a deliberately incomplete test, and correctly refuses it.
+
 2026-08-26 - version 3.8.5
 == Navigation ==
 - The row of tabs on each page now lists the same pages as the menu on the left, in the same order. Listings and Stock Review were missing from it, so the two disagreed about what the plugin contains.

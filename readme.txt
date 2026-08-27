@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.8.5
+Stable tag: 3.8.6
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,12 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.8.6 - 2026-08-26 =
+**Connection test**
+* The test now checks a third address: the one used to report sync totals. It has nothing to do with connecting, which is why it helps — it separates a server that cannot reach us at all from one that reaches us fine but has the connection requests singled out and stopped.
+* Those need different fixes, and the test now says which it is rather than reporting both as "cannot reach".
+* Nothing is written or recorded by the check.
 
 = 3.8.5 - 2026-08-26 =
 **Navigation**
@@ -810,6 +816,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.8.6 =
+Improves the connection test so it can tell a blocked network apart from a filter singling out the connection requests. Useful only if you have had trouble connecting.
 
 = 3.8.5 =
 Cosmetic: the page tabs now match the left-hand menu, and Listings and Stock Review have tabs of their own.

@@ -673,11 +673,35 @@ class TCGiant_Sync_Admin {
 
 		$results = TCGiant_Sync_OAuth::instance()->run_connection_test();
 
-		$reachable = false;
+		$connect_ok = false;
+		$report_ok  = false;
+
 		foreach ( $results as $result ) {
-			if ( 'ok' === $result['state'] ) {
-				$reachable = true;
+			if ( 'ok' !== $result['state'] ) {
+				continue;
 			}
+			if ( 'report' === $result['role'] ) {
+				$report_ok = true;
+			} else {
+				$connect_ok = true;
+			}
+		}
+
+		$reachable = $connect_ok;
+
+		// Three different answers, and the middle one is the one worth naming.
+		// A server that can reach the reporting address but not the connection
+		// address is not cut off from us at all: something is reading its
+		// requests and stopping those particular ones. That is a far more
+		// useful thing to hand a hosting provider than "it will not connect",
+		// and it is the difference between a rule that can be lifted and a
+		// network that cannot get out.
+		if ( $connect_ok ) {
+			$summary = __( 'This server can reach the connection service. If connecting still fails, the problem is later in the handshake — the activity log will say where.', 'tcgiant-sync' );
+		} elseif ( $report_ok ) {
+			$summary = __( 'This server can reach us, but not on the addresses used to connect your eBay account — those are being answered by something else before they arrive. So the network itself is fine and a rule is singling out these particular requests. Your host can lift that; the detail below names the server doing it.', 'tcgiant-sync' );
+		} else {
+			$summary = __( 'This server cannot reach us on any address, including the one it normally reports to. Connecting to eBay cannot work until that is resolved. The detail below names what answered, which is what your host needs to know.', 'tcgiant-sync' );
 		}
 
 		foreach ( $results as $result ) {
@@ -690,9 +714,8 @@ class TCGiant_Sync_Admin {
 		wp_send_json_success( array(
 			'results'   => $results,
 			'reachable' => $reachable,
-			'summary'   => $reachable
-				? __( 'This server can reach the connection service. If connecting still fails, the problem is later in the handshake — the activity log will say where.', 'tcgiant-sync' )
-				: __( 'This server cannot reach the connection service on either route. Connecting to eBay cannot work until that is resolved. The detail below names what answered, which is what your host needs to know.', 'tcgiant-sync' ),
+			'partial'   => ( ! $connect_ok && $report_ok ),
+			'summary'   => $summary,
 		) );
 	}
 
