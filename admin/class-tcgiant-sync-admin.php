@@ -675,6 +675,7 @@ class TCGiant_Sync_Admin {
 
 		$connect_ok = false;
 		$report_ok  = false;
+		$control_ok = false;
 
 		foreach ( $results as $result ) {
 			if ( 'ok' !== $result['state'] ) {
@@ -682,6 +683,8 @@ class TCGiant_Sync_Admin {
 			}
 			if ( 'report' === $result['role'] ) {
 				$report_ok = true;
+			} elseif ( 'control' === $result['role'] ) {
+				$control_ok = true;
 			} else {
 				$connect_ok = true;
 			}
@@ -700,8 +703,14 @@ class TCGiant_Sync_Admin {
 			$summary = __( 'This server can reach the connection service. If connecting still fails, the problem is later in the handshake — the activity log will say where.', 'tcgiant-sync' );
 		} elseif ( $report_ok ) {
 			$summary = __( 'This server can reach us, but not on the addresses used to connect your eBay account — those are being answered by something else before they arrive. So the network itself is fine and a rule is singling out these particular requests. Your host can lift that; the detail below names the server doing it.', 'tcgiant-sync' );
+		} elseif ( $control_ok ) {
+			// The one that says whose problem it is. This server is not cut off
+			// from the internet, so nothing is wrong with its connection in
+			// general: something objects to us in particular, by address rather
+			// than by anything in the request.
+			$summary = __( 'This server reaches unrelated sites perfectly well, but every one of our addresses is answered by the same security page. So nothing is wrong with this site or its connection generally — something is stopping traffic to us specifically, and it decides that before it has seen what is being asked. The detail below names the server doing it: send it to your host and ask why traffic to that destination is being intercepted.', 'tcgiant-sync' );
 		} else {
-			$summary = __( 'This server cannot reach us on any address, including the one it normally reports to. Connecting to eBay cannot work until that is resolved. The detail below names what answered, which is what your host needs to know.', 'tcgiant-sync' );
+			$summary = __( 'Nothing this server sends is getting out untouched, including a request to a completely unrelated site. So this is not about us at all: something on this server\'s network is intercepting its outgoing traffic generally. That is for your host to resolve, and the detail below names what is answering.', 'tcgiant-sync' );
 		}
 
 		foreach ( $results as $result ) {

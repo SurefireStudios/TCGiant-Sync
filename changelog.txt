@@ -1,5 +1,11 @@
 *** TCGiant Sync Changelog ***
 
+2026-08-27 - version 3.8.7
+== Connection test ==
+- The test now also tries one address that has nothing to do with us. Asking only our own addresses could never tell apart a server having trouble reaching US from one having trouble reaching ANYTHING, and those two problems have different owners.
+- If unrelated sites answer normally while every one of our addresses is intercepted, the block is aimed at us specifically and is decided before the request is even read. If nothing gets out untouched, the interference is general and is for the host to resolve. The test now says which.
+- The check sends nothing about your site: no address, no credentials, no data. It runs only when you press the button, never during ordinary syncing.
+
 2026-08-26 - version 3.8.6
 == Connection test ==
 - The test now checks a third address as well: the one the plugin uses to report its sync totals. That address has nothing to do with connecting, which is exactly why it is useful — it separates a server that cannot reach us at all from one that reaches us perfectly well but has the connection requests picked out and stopped.

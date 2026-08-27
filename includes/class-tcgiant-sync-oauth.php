@@ -261,6 +261,22 @@ class TCGiant_Sync_OAuth {
 	const TELEMETRY_URL = 'https://tcgiant.com/syncconnect/telemetry.php';
 
 	/**
+	 * Somewhere that is nothing to do with us, for the connection test only.
+	 *
+	 * When every one of our own addresses is answered by the same security
+	 * page, one question decides who can fix it: is this server having trouble
+	 * reaching US, or reaching ANYTHING? Asking our own addresses can never
+	 * tell the two apart, so the test asks one address that is not ours.
+	 *
+	 * Google publish this URL for exactly this purpose — checking whether a
+	 * network is interfering with traffic. It answers 204 with an empty body,
+	 * and the request carries nothing about the site making it: no site
+	 * address, no credentials, no data of any kind. It is sent only when
+	 * someone presses the test button, never during ordinary syncing.
+	 */
+	const CONTROL_URL = 'https://www.google.com/generate_204';
+
+	/**
 	 * Post to the connection service, going round a security filter if one
 	 * answers instead.
 	 *
@@ -393,6 +409,12 @@ class TCGiant_Sync_OAuth {
 				'probe' => 'reject',
 				'role'  => 'report',
 			),
+			array(
+				'label' => __( 'Somewhere unrelated', 'tcgiant-sync' ),
+				'url'   => self::CONTROL_URL,
+				'probe' => 'reachable',
+				'role'  => 'control',
+			),
 		);
 
 		$results = array();
@@ -424,7 +446,10 @@ class TCGiant_Sync_OAuth {
 	 * @return array
 	 */
 	private static function probe_endpoint( $label, $url, $probe = 'health' ) {
-		if ( 'reject' === $probe ) {
+		if ( 'reachable' === $probe ) {
+			// Nothing is sent but the request itself.
+			$response = wp_remote_get( $url, array( 'timeout' => 20 ) );
+		} elseif ( 'reject' === $probe ) {
 			$response = wp_remote_post( $url, array(
 				'timeout' => 20,
 				'headers' => array( 'Content-Type' => 'application/json' ),
@@ -449,6 +474,21 @@ class TCGiant_Sync_OAuth {
 
 		$code = (int) wp_remote_retrieve_response_code( $response );
 		$raw  = (string) wp_remote_retrieve_body( $response );
+
+		// For the unrelated address, any straight answer at all will do. The
+		// question is only whether this server can reach somewhere that is not
+		// us without being stopped.
+		if ( 'reachable' === $probe && ! self::looks_intercepted( $response ) ) {
+			return array(
+				'label'  => $label,
+				'state'  => 'ok',
+				'detail' => sprintf(
+					/* translators: %d: HTTP status code */
+					__( 'Reached normally (HTTP %d). This server can reach sites that are nothing to do with us.', 'tcgiant-sync' ),
+					$code
+				),
+			);
+		}
 
 		// The reporting endpoint refusing an incomplete post is our own server
 		// talking, which is all this needs to establish.
