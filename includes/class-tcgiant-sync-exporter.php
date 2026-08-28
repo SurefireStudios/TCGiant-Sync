@@ -758,6 +758,7 @@ class TCGiant_Sync_Exporter {
 
 				// Send telemetry ping to TCGiant
 				wp_remote_post( 'https://tcgiant.com/syncconnect/telemetry.php', array(
+					'user-agent' => TCGiant_Sync_OAuth::user_agent_public(),
 					'blocking' => false,
 					'headers'  => array(
 						'Content-Type' => 'application/json',

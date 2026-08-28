@@ -1,5 +1,12 @@
 *** TCGiant Sync Changelog ***
 
+2026-08-28 - version 3.9.4
+== Connecting to eBay ==
+- FIX: The plugin now identifies itself when it contacts us, instead of arriving as a generic WordPress client that looks like any other script on any other site.
+- FIX: Calls to our service are spaced a couple of seconds apart rather than sent in quick succession. Several requests inside one second is the shape automated abuse takes, and protection in front of our service was treating it that way and answering with a browser check the plugin cannot pass.
+- The connection test was the worst offender: it fired four checks in about a second, so the tool built to diagnose this was provoking it. It now paces itself, and takes a few seconds longer as a result.
+- Stores that connect normally are unaffected and wait for nothing; the pause only happens when a first attempt has already been interrupted.
+
 2026-08-28 - version 3.9.3
 == Connection test ==
 - The test can now say when the fault is OURS, and says so instead of leaving you to work it out.

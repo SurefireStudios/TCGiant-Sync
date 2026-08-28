@@ -277,6 +277,36 @@ class TCGiant_Sync_OAuth {
 	const CONTROL_URL = 'https://www.google.com/generate_204';
 
 	/**
+	 * How long to wait between consecutive calls to the connection service.
+	 *
+	 * The protection in front of that service watches for bursts. Three calls
+	 * inside one second is what a scraper looks like, and our own connection
+	 * test was making exactly that shape while trying to diagnose why the
+	 * connection was being challenged.
+	 */
+	const PACING_SECONDS = 2;
+
+	/**
+	 * Identify ourselves rather than arriving as a generic client.
+	 *
+	 * WordPress sends "WordPress/7.1; https://example.com" by default, which
+	 * says nothing about what is calling or why, and is indistinguishable from
+	 * any other script on any other site. Naming the application and its
+	 * version gives anyone inspecting the traffic something to recognise, and
+	 * gives us something to point at when asking for it to be recognised.
+	 *
+	 * @return string
+	 */
+	public static function user_agent_public() {
+		return self::user_agent();
+	}
+
+	private static function user_agent() {
+		return 'TCGiantSync/' . ( defined( 'TCGIANT_SYNC_VERSION' ) ? TCGIANT_SYNC_VERSION : '0' )
+			. ' (+https://tcgiant.com)';
+	}
+
+	/**
 	 * Post to the connection service, going round a security filter if one
 	 * answers instead.
 	 *
@@ -298,18 +328,26 @@ class TCGiant_Sync_OAuth {
 	 */
 	private static function post_to_relay( array $body ) {
 		$response = wp_remote_post( self::RELAY_URL, array(
-			'body'    => $body,
-			'timeout' => 30,
+			'body'       => $body,
+			'timeout'    => 30,
+			'user-agent' => self::user_agent(),
 		) );
 
 		if ( ! self::looks_intercepted( $response ) ) {
 			return $response;
 		}
 
+		// Leave a gap before trying again. Two calls a few milliseconds apart is
+		// the burst the protection in front of the service is watching for, and
+		// arriving twice in quick succession while being challenged is the worst
+		// possible moment to look like a scraper.
+		sleep( self::PACING_SECONDS );
+
 		$fallback = wp_remote_post( self::RELAY_FALLBACK_URL, array(
-			'headers' => array( 'Content-Type' => 'application/json' ),
-			'body'    => wp_json_encode( $body ),
-			'timeout' => 30,
+			'headers'    => array( 'Content-Type' => 'application/json' ),
+			'body'       => wp_json_encode( $body ),
+			'timeout'    => 30,
+			'user-agent' => self::user_agent(),
 		) );
 
 		if ( self::looks_intercepted( $fallback ) ) {
@@ -519,7 +557,21 @@ class TCGiant_Sync_OAuth {
 		// machine it actually reached. Nobody's firewall need be involved.
 		$results = array( self::probe_name(), self::probe_certificate() );
 
+		// Spaced out, because this test was part of the problem.
+		//
+		// The host's own log shows our three probes arriving inside one second
+		// and the protection treating that burst as automated traffic. A
+		// diagnostic that provokes the fault it is measuring is worse than no
+		// diagnostic. A few seconds is nothing on a button someone presses by
+		// hand.
+		$first = true;
+
 		foreach ( $endpoints as $endpoint ) {
+			if ( ! $first ) {
+				sleep( self::PACING_SECONDS );
+			}
+			$first = false;
+
 			$result         = self::probe_endpoint( $endpoint['label'], $endpoint['url'], $endpoint['probe'] );
 			$result['role'] = $endpoint['role'];
 			$results[]      = $result;
@@ -731,15 +783,22 @@ class TCGiant_Sync_OAuth {
 	private static function probe_endpoint( $label, $url, $probe = 'health' ) {
 		if ( 'reachable' === $probe ) {
 			// Nothing is sent but the request itself.
-			$response = wp_remote_get( $url, array( 'timeout' => 20 ) );
+			$response = wp_remote_get( $url, array(
+				'timeout'    => 20,
+				'user-agent' => self::user_agent(),
+			) );
 		} elseif ( 'reject' === $probe ) {
 			$response = wp_remote_post( $url, array(
-				'timeout' => 20,
-				'headers' => array( 'Content-Type' => 'application/json' ),
-				'body'    => '{}',
+				'timeout'    => 20,
+				'headers'    => array( 'Content-Type' => 'application/json' ),
+				'body'       => '{}',
+				'user-agent' => self::user_agent(),
 			) );
 		} else {
-			$response = wp_remote_get( add_query_arg( 'debug_challenge', '1', $url ), array( 'timeout' => 20 ) );
+			$response = wp_remote_get( add_query_arg( 'debug_challenge', '1', $url ), array(
+				'timeout'    => 20,
+				'user-agent' => self::user_agent(),
+			) );
 		}
 
 		if ( is_wp_error( $response ) ) {

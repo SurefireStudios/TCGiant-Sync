@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.9.3
+Stable tag: 3.9.4
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,13 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.9.4 - 2026-08-28 =
+**Connecting to eBay**
+* FIX: The plugin identifies itself when contacting us rather than arriving as a generic WordPress client.
+* FIX: Calls are spaced a couple of seconds apart rather than sent in quick succession — several requests inside a second is the shape automated abuse takes, and protection in front of our service was answering it with a browser check the plugin cannot pass.
+* The connection test was the worst offender, firing four checks in about a second. The tool built to diagnose this was provoking it. It now paces itself.
+* Stores connecting normally wait for nothing; the pause only applies after an attempt has been interrupted.
 
 = 3.9.3 - 2026-08-28 =
 **Connection test**
@@ -857,6 +864,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.9.4 =
+Recommended for anyone who cannot connect to eBay. The plugin now identifies itself and paces its calls, which stops hosting protection mistaking it for automated abuse.
 
 = 3.9.3 =
 The connection test now recognises when a blocked connection is our fault rather than yours, and says so.
