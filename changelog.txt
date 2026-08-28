@@ -1,5 +1,13 @@
 *** TCGiant Sync Changelog ***
 
+2026-08-28 - version 3.9.5
+== Images ==
+- FIX: Photographs you uploaded yourself were being downloaded back from eBay and attached to the product a second time, shortly after it was pushed. You would find a duplicate of every picture named -1-1.jpg beside your -1.jpg, titled from the filename rather than the product, and with no author — because it was a background task that created them rather than a person.
+- Your own pictures are now recognised as yours. If a product already has images and none have ever been imported for it, what eBay offers back is a copy of what we sent, and it is left alone.
+- Products imported from eBay are unaffected and still download their pictures as before, including when you change them on eBay.
+- If you would rather eBay’s copies won, turn on "Overwrite Images" in Settings. That still works and takes precedence.
+- Duplicates already created are not removed automatically — deleting pictures is not something to do on your behalf. They are the ones with no author, added minutes after a push.
+
 2026-08-28 - version 3.9.4
 == Connecting to eBay ==
 - FIX: The plugin now identifies itself when it contacts us, instead of arriving as a generic WordPress client that looks like any other script on any other site.

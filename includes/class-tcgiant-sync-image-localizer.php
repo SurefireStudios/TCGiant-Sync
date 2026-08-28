@@ -489,6 +489,31 @@ class TCGiant_Sync_Image_Localizer {
 			return;
 		}
 
+		// Photographs that came from the shop rather than from eBay.
+		//
+		// Nothing has ever been imported for this product — no external
+		// addresses have ever been stored against it — and yet it already has
+		// a real local image. So the pictures are the seller's own, and what
+		// eBay is offering back is a copy of what we sent it.
+		//
+		// Downloading that copy attached a second set of every photograph:
+		// -1-1.jpg beside the -1.jpg they uploaded, titled from the filename
+		// rather than the product, and with no author because cron did it and
+		// not a person. The check further down stops placeholders being
+		// attached over local images, but nothing stopped the download itself
+		// being queued, and it is the download that creates the duplicates.
+		//
+		// The hash is recorded so this is not reconsidered on every sync.
+		// Turning on "Overwrite Images" changes the hash and bypasses this,
+		// which is precisely what that setting is for.
+		$never_imported = ! get_post_meta( $product_id, '_tcgiant_external_image_urls', true );
+
+		if ( ! $force && ! $overwrite_images && $has_thumbnail && $never_imported ) {
+			update_post_meta( $product_id, '_tcgiant_image_urls_hash', $new_hash );
+			update_post_meta( $product_id, '_tcgiant_images_localized', 1 );
+			return;
+		}
+
 		// Store the hash and external URLs for the localizer to use later.
 		update_post_meta( $product_id, '_tcgiant_image_urls_hash', $new_hash );
 		update_post_meta( $product_id, '_tcgiant_external_image_urls', $image_entries );
