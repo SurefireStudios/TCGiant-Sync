@@ -1,5 +1,12 @@
 *** TCGiant Sync Changelog ***
 
+2026-08-28 - version 3.10.0
+== New: Image Cleanup ==
+- NEW: An Image Cleanup page that finds products holding duplicate copies of their own photographs, and puts the originals back.
+- This is the tidy-up for the duplication fixed in 3.9.5. Your own pictures are still there, but the downloaded copies had replaced them as the product image and gallery — so simply deleting whatever was unused would have deleted exactly the wrong ones.
+- Cleaning up restores your photographs first and only then removes the copies. Nothing you uploaded is ever deleted: only files the plugin downloaded itself, and only where your own pictures exist to put back. A product with nothing of its own is left alone.
+- Both sets are shown as pictures on the page before you press anything, because nobody should approve a deletion they cannot see.
+
 2026-08-28 - version 3.9.5
 == Images ==
 - FIX: Photographs you uploaded yourself were being downloaded back from eBay and attached to the product a second time, shortly after it was pushed. You would find a duplicate of every picture named -1-1.jpg beside your -1.jpg, titled from the filename rather than the product, and with no author — because it was a background task that created them rather than a person.

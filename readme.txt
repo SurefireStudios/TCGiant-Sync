@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.9.5
+Stable tag: 3.10.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,13 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.10.0 - 2026-08-28 =
+**New: Image Cleanup**
+* NEW: An Image Cleanup page that finds products holding duplicate copies of their own photographs and puts the originals back.
+* The downloaded copies had replaced your pictures as the product image and gallery, so deleting whatever was unused would have deleted exactly the wrong ones.
+* Your photographs are restored first, and only then are the copies removed. Nothing you uploaded is ever deleted.
+* Both sets are shown as pictures before you press anything.
 
 = 3.9.5 - 2026-08-28 =
 **Images**
@@ -872,6 +879,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.10.0 =
+Adds an Image Cleanup page that restores your own product photographs and removes the duplicates created before 3.9.5.
 
 = 3.9.5 =
 Fixes your own product photographs being duplicated after a push to eBay. Recommended for anyone who pushes products rather than only importing them.

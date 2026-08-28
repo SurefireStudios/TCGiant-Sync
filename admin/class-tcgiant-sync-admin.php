@@ -567,6 +567,15 @@ class TCGiant_Sync_Admin {
 
 		add_submenu_page(
 			'tcgiant-sync',
+			__( 'Image Cleanup', 'tcgiant-sync' ),
+			__( 'Image Cleanup', 'tcgiant-sync' ),
+			'manage_options',
+			'tcgiant-image-cleanup',
+			array( $this, 'render_image_cleanup_page' )
+		);
+
+		add_submenu_page(
+			'tcgiant-sync',
 			__( 'Push to eBay', 'tcgiant-sync' ),
 			__( 'Push to eBay', 'tcgiant-sync' ),
 			'manage_options',
@@ -617,6 +626,7 @@ class TCGiant_Sync_Admin {
 			'import'        => array( 'title' => __( 'Import from eBay', 'tcgiant-sync' ), 'icon' => 'dashicons-download', 'page' => 'tcgiant-import' ),
 			'listings'      => array( 'title' => __( 'Listings', 'tcgiant-sync' ), 'icon' => 'dashicons-products', 'page' => 'tcgiant-listings' ),
 			'stock_review'  => array( 'title' => __( 'Stock Review', 'tcgiant-sync' ), 'icon' => 'dashicons-clipboard', 'page' => 'tcgiant-stock-review' ),
+			'image_cleanup' => array( 'title' => __( 'Image Cleanup', 'tcgiant-sync' ), 'icon' => 'dashicons-images-alt2', 'page' => 'tcgiant-image-cleanup' ),
 			'export'        => array( 'title' => __( 'Push to eBay', 'tcgiant-sync' ), 'icon' => 'dashicons-upload', 'page' => 'tcgiant-export' ),
 			'settings'      => array( 'title' => __( 'Settings', 'tcgiant-sync' ), 'icon' => 'dashicons-admin-settings', 'page' => 'tcgiant-settings' ),
 			'logs'          => array( 'title' => __( 'Logs', 'tcgiant-sync' ), 'icon' => 'dashicons-list-view', 'page' => 'tcgiant-logs' ),
@@ -753,6 +763,13 @@ class TCGiant_Sync_Admin {
 
 	public function render_stock_review_page() {
 		include_once TCGIANT_SYNC_PATH . 'admin/views/stock-review.php';
+	}
+
+	/**
+	 * Render the Image Cleanup page.
+	 */
+	public function render_image_cleanup_page() {
+		include_once TCGIANT_SYNC_PATH . 'admin/views/image-cleanup.php';
 	}
 
 	/**

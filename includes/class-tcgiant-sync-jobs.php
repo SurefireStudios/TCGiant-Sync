@@ -211,11 +211,15 @@ class TCGiant_Sync_Jobs {
 			$product_ids = TCGiant_Sync_Inventory::find_unsettled_ended_products();
 		}
 
+		if ( 'bulk_restore_images' === $type && ! empty( $_POST['select_all'] ) ) {
+			$product_ids = TCGiant_Sync_Image_Localizer::find_products_with_duplicate_images();
+		}
+
 		if ( empty( $type ) || empty( $product_ids ) ) {
 			wp_send_json_error( array( 'message' => 'Missing type or product_ids.' ) );
 		}
 
-		$valid_types = array( 'bulk_push', 'bulk_end', 'bulk_verify', 'bulk_relist', 'bulk_settle' );
+		$valid_types = array( 'bulk_push', 'bulk_end', 'bulk_verify', 'bulk_relist', 'bulk_settle', 'bulk_restore_images' );
 		if ( ! in_array( $type, $valid_types, true ) ) {
 			wp_send_json_error( array( 'message' => 'Invalid job type.' ) );
 		}
@@ -314,6 +318,21 @@ class TCGiant_Sync_Jobs {
 					if ( is_wp_error( $valid ) ) {
 						$failed++;
 						$errors[] = sprintf( '#%d: %s', $product_id, $valid->get_error_message() );
+					} else {
+						$succeeded++;
+					}
+					break;
+
+				case 'bulk_restore_images':
+					// Put a shop's own photographs back and remove the copies we
+					// fetched from eBay. Everything about which is which, and
+					// the refusal to leave a product with no pictures, lives in
+					// restore_own_images(); this only reports what it did.
+					$restored = TCGiant_Sync_Image_Localizer::restore_own_images( $product_id );
+
+					if ( is_wp_error( $restored ) ) {
+						$failed++;
+						$errors[] = sprintf( '#%d: %s', $product_id, $restored->get_error_message() );
 					} else {
 						$succeeded++;
 					}

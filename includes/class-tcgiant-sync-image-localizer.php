@@ -426,6 +426,151 @@ class TCGiant_Sync_Image_Localizer {
 	 *                              the images-only tool, whose entire purpose is to
 	 *                              re-download images that are wrong or missing.
 	 */
+	/**
+	 * Attachments belonging to a product, split by who put them there.
+	 *
+	 * Anything we downloaded carries _tcgiant_source_url. Anything we attached
+	 * as a stand-in carries _tcgiant_external_url as well, and those are left
+	 * alone entirely — they are not files and deleting them fixes nothing.
+	 *
+	 * So an attachment with a source address and no external address is one we
+	 * fetched; an attachment with neither is one the shop uploaded. That is a
+	 * matter of record rather than inference, which is the only basis on which
+	 * anything here is allowed to delete a photograph.
+	 *
+	 * @param int  $product_id
+	 * @param bool $ours True for images we downloaded, false for the shop's own.
+	 * @return int[] Attachment IDs, oldest first.
+	 */
+	public static function attachments_by_origin( $product_id, $ours ) {
+		global $wpdb;
+
+		$having = $ours ? 'src.post_id IS NOT NULL' : 'src.post_id IS NULL';
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$ids = $wpdb->get_col( $wpdb->prepare(
+			"SELECT a.ID FROM {$wpdb->posts} a
+			 LEFT JOIN {$wpdb->postmeta} src ON src.post_id = a.ID AND src.meta_key = '_tcgiant_source_url'
+			 LEFT JOIN {$wpdb->postmeta} ext ON ext.post_id = a.ID AND ext.meta_key = '_tcgiant_external_url'
+			 WHERE a.post_type = 'attachment'
+			   AND a.post_parent = %d
+			   AND ext.post_id IS NULL
+			   AND {$having}
+			 ORDER BY a.ID ASC",
+			(int) $product_id
+		) );
+
+		return array_map( 'intval', (array) $ids );
+	}
+
+	/**
+	 * Products holding both their own photographs and copies we downloaded.
+	 *
+	 * The shape the duplication bug leaves behind. Before 3.9.5, pushing a
+	 * product meant eBay served its pictures back and we fetched them as though
+	 * they were new, then made our copies the product\'s images — so the shop\'s
+	 * originals are still attached but no longer shown anywhere.
+	 *
+	 * @return int[] Product IDs.
+	 */
+	public static function find_products_with_duplicate_images() {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$ids = $wpdb->get_col(
+			"SELECT DISTINCT mine.post_parent
+			 FROM {$wpdb->posts} mine
+			 INNER JOIN {$wpdb->postmeta} src ON src.post_id = mine.ID AND src.meta_key = '_tcgiant_source_url'
+			 LEFT JOIN  {$wpdb->postmeta} ext ON ext.post_id = mine.ID AND ext.meta_key = '_tcgiant_external_url'
+			 INNER JOIN {$wpdb->posts} prod ON prod.ID = mine.post_parent
+			 WHERE mine.post_type = 'attachment'
+			   AND ext.post_id IS NULL
+			   AND prod.post_type = 'product'
+			   AND prod.post_status NOT IN ( 'trash', 'auto-draft' )
+			   AND EXISTS (
+				   SELECT 1 FROM {$wpdb->posts} theirs
+				   LEFT JOIN {$wpdb->postmeta} tsrc ON tsrc.post_id = theirs.ID AND tsrc.meta_key = '_tcgiant_source_url'
+				   LEFT JOIN {$wpdb->postmeta} text ON text.post_id = theirs.ID AND text.meta_key = '_tcgiant_external_url'
+				   WHERE theirs.post_type = 'attachment'
+					 AND theirs.post_parent = mine.post_parent
+					 AND tsrc.post_id IS NULL
+					 AND text.post_id IS NULL
+			   )
+			 ORDER BY mine.post_parent DESC"
+		);
+
+		return array_map( 'intval', (array) $ids );
+	}
+
+	/**
+	 * Put a shop\'s own photographs back, and remove the copies we fetched.
+	 *
+	 * Order matters. The shop\'s images are restored as the product\'s pictures
+	 * BEFORE anything is deleted, so there is no moment at which the product
+	 * has none. And every deletion re-checks the record of where that file came
+	 * from immediately beforehand, because the list was gathered a moment
+	 * earlier and this cannot be undone.
+	 *
+	 * @param int $product_id
+	 * @return int|WP_Error Number of copies removed.
+	 */
+	public static function restore_own_images( $product_id ) {
+		$product_id = (int) $product_id;
+		$theirs     = self::attachments_by_origin( $product_id, false );
+		$ours       = self::attachments_by_origin( $product_id, true );
+
+		// Never strip a product bare. If there is nothing of the shop\'s own to
+		// put back, the pictures we fetched are the only ones it has, and they
+		// stay whatever else is true.
+		if ( empty( $theirs ) ) {
+			return new WP_Error(
+				'no_own_images',
+				__( 'This product has no images of its own to restore, so nothing was removed.', 'tcgiant-sync' )
+			);
+		}
+
+		if ( empty( $ours ) ) {
+			return 0;
+		}
+
+		// Restore first.
+		set_post_thumbnail( $product_id, $theirs[0] );
+		update_post_meta( $product_id, '_product_image_gallery', implode( ',', array_slice( $theirs, 1 ) ) );
+
+		$removed = 0;
+
+		foreach ( $ours as $attachment_id ) {
+			// Re-read the record rather than trusting the list.
+			if ( ! get_post_meta( $attachment_id, '_tcgiant_source_url', true ) ) {
+				continue;
+			}
+			if ( get_post_meta( $attachment_id, '_tcgiant_external_url', true ) ) {
+				continue;
+			}
+			if ( in_array( $attachment_id, $theirs, true ) ) {
+				continue;
+			}
+
+			wp_delete_attachment( $attachment_id, true );
+			$removed++;
+		}
+
+		// Forget that anything was ever imported for this product, which is the
+		// truth of it now and is what stops 3.9.5 fetching them all over again.
+		delete_post_meta( $product_id, '_tcgiant_external_image_urls' );
+		delete_post_meta( $product_id, '_tcgiant_image_urls_hash' );
+		update_post_meta( $product_id, '_tcgiant_images_localized', 1 );
+
+		TCGiant_Sync_Logger::log( sprintf(
+			'Image cleanup: WC #%d restored to its own %d image(s); %d downloaded copy(ies) removed.',
+			$product_id,
+			count( $theirs ),
+			$removed
+		) );
+
+		return $removed;
+	}
+
 	public static function set_external_images( $product_id, $image_entries, $force = false ) {
 		if ( empty( $image_entries ) || ! is_array( $image_entries ) ) {
 			return;
