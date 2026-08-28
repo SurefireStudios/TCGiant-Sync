@@ -370,8 +370,34 @@ class TCGiant_Sync_OAuth {
 			$title = trim( wp_strip_all_tags( $found[1] ) );
 		}
 
+		// Whatever the page loads its own icon, styles and scripts from is the
+		// one thing in it that names its owner, and the 300-character excerpt
+		// below was cutting off at exactly the point the icon address begins.
+		// Two people can each look at their own equipment, find it innocent and
+		// be telling the truth; an address belonging to one of them ends that.
+		$icon = '';
+		if ( preg_match( '/<link[^>]*rel=[^>]*icon[^>]*>/i', $raw, $tag )
+			&& preg_match( '/href=["]?([^"\s>]+)/i', $tag[0], $href ) ) {
+			$icon = $href[1];
+		}
+
+		$hosts = array();
+		if ( preg_match_all( '#https?://[^\s"<>]+#i', $raw, $found_urls ) ) {
+			foreach ( $found_urls[0] as $url ) {
+				$host = wp_parse_url( $url, PHP_URL_HOST );
+				if ( $host && ! in_array( $host, $hosts, true ) ) {
+					$hosts[] = $host;
+				}
+				if ( count( $hosts ) >= 5 ) {
+					break;
+				}
+			}
+		}
+
 		return 'Served by — ' . ( $served_by ? implode( ' | ', $served_by ) : 'no identifying headers' )
 			. ( '' !== $title ? ' | page title: ' . $title : '' )
+			. ( '' !== $icon ? ' | icon: ' . $icon : '' )
+			. ( $hosts ? ' | addresses in the page: ' . implode( ', ', $hosts ) : ' | the page names no addresses' )
 			. ' | first 300 characters: ' . substr( $raw, 0, 300 );
 	}
 

@@ -1,5 +1,11 @@
 *** TCGiant Sync Changelog ***
 
+2026-08-27 - version 3.8.9
+== Connection test ==
+- The log now records the address the intercepting page loads its own icon and scripts from. That address belongs to whoever is running the equipment, and it is the one thing in the page that identifies them.
+- It was being lost: the log kept the first 300 characters of the page, and on the page in question that cuts off at exactly the point the icon address begins.
+- This matters when two parties each check their own equipment, find nothing, and are both telling the truth. An address belonging to one of them settles it.
+
 2026-08-27 - version 3.8.8
 == Connection test ==
 - FIX: When the test found that traffic to us specifically was being stopped, it told you to take it to your host. It cannot actually tell whose equipment is responsible — a rule about where your server may connect and a rule at our end about which visitors we accept look identical from where the test stands.
