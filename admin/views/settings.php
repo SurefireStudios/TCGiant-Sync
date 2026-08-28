@@ -127,6 +127,14 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 			var ajaxUrl = '<?php echo esc_url( admin_url( 'admin-ajax.php' ) ); ?>';
 			var idle    = btn.text();
 
+			function select(node){
+				var range = document.createRange();
+				range.selectNodeContents(node);
+				var sel = window.getSelection();
+				sel.removeAllRanges();
+				sel.addRange(range);
+			}
+
 			var colours = {
 				ok:          '#2b6a52',
 				intercepted: '#a2352a',
@@ -157,6 +165,43 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 							$('<strong/>').css('color', colours[row.state] || '#59636f').text(row.label + ': ').appendTo(line);
 							$('<span/>').text(row.detail).appendTo(line);
 							line.appendTo(rows);
+
+							// The whole reply, for anything that was not a clean
+							// answer. The summary line above is trimmed to stay
+							// readable, and the log keeps a single line, so
+							// asking someone to "send us what you received" was
+							// asking for something they had no way to get at.
+							if (row.raw) {
+								var box = $('<details/>').css({marginTop:'2px'});
+								$('<summary/>')
+									.css({cursor:'pointer', fontSize:'12px', color:'#59636f'})
+									.text('<?php echo esc_js( __( 'Show everything that came back', 'tcgiant-sync' ) ); ?>')
+									.appendTo(box);
+
+								var pre = $('<pre/>').css({
+									whiteSpace:'pre-wrap', wordBreak:'break-word', fontSize:'11px',
+									lineHeight:'1.45', margin:'6px 0 0', padding:'8px',
+									background:'#f6f7f9', border:'1px solid #dbe0e7',
+									borderRadius:'2px', maxHeight:'260px', overflow:'auto'
+								}).text(row.raw);
+
+								$('<button type="button" class="button"/>')
+									.css({fontSize:'11px', height:'auto', padding:'2px 8px', marginTop:'6px'})
+									.text('<?php echo esc_js( __( 'Copy', 'tcgiant-sync' ) ); ?>')
+									.on('click', function(){
+										var btn = $(this);
+										var done = function(){ btn.text('<?php echo esc_js( __( 'Copied', 'tcgiant-sync' ) ); ?>'); };
+										if (navigator.clipboard && navigator.clipboard.writeText) {
+											navigator.clipboard.writeText(row.raw).then(done, function(){ select(pre[0]); });
+										} else {
+											select(pre[0]);
+										}
+									})
+									.appendTo(box);
+
+								pre.appendTo(box);
+								box.appendTo(rows);
+							}
 						});
 					})
 					.fail(function(){

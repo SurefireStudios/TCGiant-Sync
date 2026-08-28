@@ -342,6 +342,70 @@ class TCGiant_Sync_OAuth {
 	 * @return bool
 	 */
 	/**
+	 * Every response header, flattened, with cookie values withheld.
+	 *
+	 * A challenge page almost always sets a cookie to remember the check, and
+	 * the cookie's NAME is usually the clearest identification of the product
+	 * anywhere in the exchange. The value is of no interest and does not belong
+	 * in a merchant's log, so only the name is kept.
+	 *
+	 * @param array $response
+	 * @return array<string,string>
+	 */
+	private static function response_headers( $response ) {
+		$headers = wp_remote_retrieve_headers( $response );
+
+		if ( is_object( $headers ) && method_exists( $headers, 'getAll' ) ) {
+			$headers = $headers->getAll();
+		}
+
+		$flat = array();
+
+		foreach ( (array) $headers as $name => $value ) {
+			$value = is_array( $value ) ? implode( ', ', $value ) : (string) $value;
+
+			if ( 'set-cookie' === strtolower( (string) $name ) ) {
+				$names = array();
+				foreach ( explode( ',', $value ) as $cookie ) {
+					$cookie = trim( $cookie );
+					$eq     = strpos( $cookie, '=' );
+					if ( false !== $eq && $eq > 0 ) {
+						$names[] = substr( $cookie, 0, $eq );
+					}
+				}
+				$value = $names ? implode( ', ', array_unique( $names ) ) . ' (names only)' : '(unreadable)';
+			}
+
+			$flat[ (string) $name ] = $value;
+		}
+
+		return $flat;
+	}
+
+	/**
+	 * The whole reply, for showing on screen.
+	 *
+	 * The log keeps one line and the excerpt stops at 300 characters, which on
+	 * the page in question cuts off before anything identifying. When a
+	 * merchant is asked to send us what they received, they need to be able to
+	 * copy all of it rather than whatever survived the trimming.
+	 *
+	 * @param array $response
+	 * @return string
+	 */
+	private static function capture_response( $response ) {
+		$lines = array( 'HTTP ' . (int) wp_remote_retrieve_response_code( $response ) );
+
+		foreach ( self::response_headers( $response ) as $header => $value ) {
+			$lines[] = $header . ': ' . $value;
+		}
+
+		$body = (string) wp_remote_retrieve_body( $response );
+
+		return implode( "\n", $lines ) . "\n\n" . substr( $body, 0, 4000 );
+	}
+
+	/**
 	 * Say who answered, when the answer was a web page.
 	 *
 	 * Telling a merchant that "something" intercepted the request sends them
@@ -358,11 +422,13 @@ class TCGiant_Sync_OAuth {
 		$raw       = (string) wp_remote_retrieve_body( $response );
 		$served_by = array();
 
-		foreach ( array( 'server', 'x-powered-by', 'cf-ray', 'x-sucuri-id', 'x-cache', 'via', 'content-type' ) as $header ) {
-			$value = wp_remote_retrieve_header( $response, $header );
-			if ( ! empty( $value ) ) {
-				$served_by[] = $header . ': ' . ( is_array( $value ) ? implode( ', ', $value ) : $value );
-			}
+		// Every header, rather than the seven someone thought of in advance.
+		// The page that prompted this sets no icon, references nothing but the
+		// W3C namespace, and identifies itself nowhere in its markup — while
+		// the one header that names such products, Set-Cookie, was not among
+		// the seven. Guessing which headers matter is how that happened.
+		foreach ( self::response_headers( $response ) as $header => $value ) {
+			$served_by[] = $header . ': ' . $value;
 		}
 
 		$title = '';
@@ -546,6 +612,7 @@ class TCGiant_Sync_OAuth {
 			return array(
 				'label'  => $label,
 				'state'  => 'intercepted',
+				'raw'    => self::capture_response( $response ),
 				'detail' => sprintf(
 					/* translators: 1: HTTP status code, 2: description of what answered */
 					__( 'A web page was returned instead of an answer, so something on this server\'s network replied before the request reached us (HTTP %1$d). %2$s', 'tcgiant-sync' ),
@@ -558,6 +625,7 @@ class TCGiant_Sync_OAuth {
 		return array(
 			'label'  => $label,
 			'state'  => 'unexpected',
+			'raw'    => self::capture_response( $response ),
 			'detail' => sprintf(
 				/* translators: 1: HTTP status code, 2: start of the reply */
 				__( 'Something answered but not in the expected form (HTTP %1$d). The reply began: %2$s', 'tcgiant-sync' ),

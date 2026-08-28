@@ -1,5 +1,11 @@
 *** TCGiant Sync Changelog ***
 
+2026-08-28 - version 3.9.0
+== Connection test ==
+- You can now see the whole of whatever answered, on screen, with a Copy button. Previously the summary was trimmed to stay readable and the log kept a single line, so being asked to send us what you received was asking for something there was no way to get at.
+- Every response header is now recorded, rather than the handful chosen in advance. One of the ones missing was Set-Cookie, which is usually the clearest identification of a security product anywhere in the exchange.
+- Cookie names are kept because they identify the product. Cookie values are not: they are of no use in diagnosing this and do not belong in your log.
+
 2026-08-27 - version 3.8.9
 == Connection test ==
 - The log now records the address the intercepting page loads its own icon and scripts from. That address belongs to whoever is running the equipment, and it is the one thing in the page that identifies them.
