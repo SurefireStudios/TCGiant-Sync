@@ -517,7 +517,7 @@ class TCGiant_Sync_OAuth {
 		// exactly this: our addresses all unreachable, unrelated sites fine,
 		// nothing in our logs, and a security page belonging to whichever
 		// machine it actually reached. Nobody's firewall need be involved.
-		$results = array( self::probe_name() );
+		$results = array( self::probe_name(), self::probe_certificate() );
 
 		foreach ( $endpoints as $endpoint ) {
 			$result         = self::probe_endpoint( $endpoint['label'], $endpoint['url'], $endpoint['probe'] );
@@ -591,6 +591,122 @@ class TCGiant_Sync_OAuth {
 				__( 'This server resolves %1$s to %2$s. Check that against the address we publish: if it differs, the requests are reaching the wrong machine and nothing else here matters.', 'tcgiant-sync' ),
 				$host,
 				$resolved
+			),
+		);
+	}
+
+	/**
+	 * Which certificate does this server actually receive from our address?
+	 *
+	 * This is the one reading that separates the two remaining possibilities,
+	 * and it took a week to arrive at. Everything else measured what came back
+	 * and was equally consistent with either.
+	 *
+	 * The plugin's requests verify TLS, so a reply arriving at all proves the
+	 * responder presented a certificate this server trusts for our name. There
+	 * are only two ways that happens. Either the responder holds our real
+	 * certificate, in which case it stands at our end in front of our own
+	 * server; or something on this network is inspecting encrypted traffic
+	 * using an authority installed on this machine, and is impersonating us.
+	 *
+	 * Verification is deliberately off here: the point is to SEE the
+	 * certificate, including one that would be rejected. Nothing is sent and
+	 * nothing is trusted — the connection is opened and immediately closed.
+	 *
+	 * @return array
+	 */
+	private static function probe_certificate() {
+		$label = __( 'Certificate', 'tcgiant-sync' );
+		$host  = wp_parse_url( self::RELAY_URL, PHP_URL_HOST );
+
+		if ( ! $host || ! function_exists( 'stream_socket_client' ) || ! function_exists( 'openssl_x509_parse' ) ) {
+			return array(
+				'label'  => $label,
+				'state'  => 'unexpected',
+				'role'   => 'tls',
+				'detail' => __( 'This server cannot inspect certificates, so this check was skipped.', 'tcgiant-sync' ),
+			);
+		}
+
+		$context = stream_context_create( array(
+			'ssl' => array(
+				'capture_peer_cert' => true,
+				'verify_peer'       => false,
+				'verify_peer_name'  => false,
+				'SNI_enabled'       => true,
+				'peer_name'         => $host,
+			),
+		) );
+
+		$errno  = 0;
+		$errstr = '';
+		// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+		$socket = @stream_socket_client(
+			'ssl://' . $host . ':443',
+			$errno,
+			$errstr,
+			15,
+			STREAM_CLIENT_CONNECT,
+			$context
+		);
+
+		if ( ! $socket ) {
+			return array(
+				'label'  => $label,
+				'state'  => 'unreachable',
+				'role'   => 'tls',
+				'detail' => sprintf(
+					/* translators: %s: connection error */
+					__( 'Could not open an encrypted connection to look at the certificate. %s', 'tcgiant-sync' ),
+					$errstr ? $errstr : __( 'No reason given.', 'tcgiant-sync' )
+				),
+			);
+		}
+
+		$params = stream_context_get_params( $socket );
+		fclose( $socket );
+
+		$cert = isset( $params['options']['ssl']['peer_certificate'] ) ? $params['options']['ssl']['peer_certificate'] : null;
+
+		if ( ! $cert ) {
+			return array(
+				'label'  => $label,
+				'state'  => 'unexpected',
+				'role'   => 'tls',
+				'detail' => __( 'The connection opened but presented no certificate to look at.', 'tcgiant-sync' ),
+			);
+		}
+
+		$parsed = openssl_x509_parse( $cert );
+
+		// openssl_x509_fingerprint(), so the value matches what anyone else
+		// gets from `openssl x509 -fingerprint -sha256`. Hashing the exported
+		// text instead would be stable but would agree with nobody, which
+		// defeats the point of quoting it to a hosting provider.
+		$fingerprint = function_exists( 'openssl_x509_fingerprint' )
+			? strtoupper( (string) openssl_x509_fingerprint( $cert, 'sha256' ) )
+			: '';
+
+		$subject = isset( $parsed['subject']['CN'] ) ? $parsed['subject']['CN'] : __( 'unnamed', 'tcgiant-sync' );
+		$issuer  = isset( $parsed['issuer']['O'] ) ? $parsed['issuer']['O'] : '';
+		$issuer .= isset( $parsed['issuer']['CN'] ) ? ( $issuer ? ' / ' : '' ) . $parsed['issuer']['CN'] : '';
+		$issuer  = $issuer ? $issuer : __( 'unnamed', 'tcgiant-sync' );
+
+		// A certificate that issued itself is nobody's public authority.
+		$self_signed = ( isset( $parsed['subject'] ) && isset( $parsed['issuer'] ) && $parsed['subject'] === $parsed['issuer'] );
+
+		return array(
+			'label'  => $label,
+			'state'  => $self_signed ? 'unexpected' : 'ok',
+			'role'   => 'tls',
+			'detail' => sprintf(
+				/* translators: 1: hostname, 2: certificate name, 3: issuer, 4: fingerprint, 5: extra warning */
+				__( 'The address for %1$s presents a certificate for "%2$s" issued by %3$s. Its fingerprint is %4$s.%5$s Compare that against the certificate we publish: if it differs, this connection is being decrypted and answered by equipment on this network rather than reaching us, and that is your host\'s to explain.', 'tcgiant-sync' ),
+				$host,
+				$subject,
+				$issuer,
+				$fingerprint ? $fingerprint : __( 'unavailable', 'tcgiant-sync' ),
+				$self_signed ? ' ' . __( 'It issued itself, which no public authority does.', 'tcgiant-sync' ) : ''
 			),
 		);
 	}

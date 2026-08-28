@@ -1,5 +1,12 @@
 *** TCGiant Sync Changelog ***
 
+2026-08-28 - version 3.9.2
+== Connection test ==
+- The test now reports which security certificate your server actually receives from our address, and its fingerprint.
+- This is the reading that settles who is interrupting a connection, and none of the earlier checks could. The plugin verifies encryption, so a reply arriving at all proves whatever answered presented a certificate your server trusts for our name. Either it holds our real certificate, in which case it stands at our end; or something on your network is decrypting traffic using an authority installed on your machine, and impersonating us.
+- Compare the fingerprint against the one we publish. If it differs, the connection is not reaching us at all.
+- Nothing is sent by this check. The connection is opened to look at the certificate and closed again.
+
 2026-08-28 - version 3.9.1
 == Connection test ==
 - The test now begins by reporting which address this server thinks ours has. Everything it measured before was of what came back, and a server that looks our name up wrongly would produce exactly the same readings while its requests quietly went to a different machine altogether.
