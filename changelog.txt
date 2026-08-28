@@ -1,5 +1,11 @@
 *** TCGiant Sync Changelog ***
 
+2026-08-28 - version 3.9.3
+== Connection test ==
+- The test can now say when the fault is OURS, and says so instead of leaving you to work it out.
+- Every request the plugin makes checks the encryption, so a reply arriving at all proves whatever answered held a certificate your server trusts for our name — and a certificate cannot be held without the private key that goes with it, which exists only on our own equipment. If your requests reach our address, over a connection your server verified, presenting our own certificate, then whatever is interrupting them is inside our hosting.
+- In that case the test now tells you plainly that there is nothing for you or your host to change, and asks you to send the result to us.
+
 2026-08-28 - version 3.9.2
 == Connection test ==
 - The test now reports which security certificate your server actually receives from our address, and its fingerprint.

@@ -676,6 +676,7 @@ class TCGiant_Sync_Admin {
 		$connect_ok = false;
 		$report_ok  = false;
 		$control_ok = false;
+		$cert_ok    = false;
 
 		foreach ( $results as $result ) {
 			if ( 'ok' !== $result['state'] ) {
@@ -691,6 +692,8 @@ class TCGiant_Sync_Admin {
 				$control_ok = true;
 			} elseif ( 'connect' === $result['role'] ) {
 				$connect_ok = true;
+			} elseif ( 'tls' === $result['role'] ) {
+				$cert_ok = true;
 			}
 		}
 
@@ -707,6 +710,22 @@ class TCGiant_Sync_Admin {
 			$summary = __( 'This server can reach the connection service. If connecting still fails, the problem is later in the handshake — the activity log will say where.', 'tcgiant-sync' );
 		} elseif ( $report_ok ) {
 			$summary = __( 'This server can reach us, but not on the addresses used to connect your eBay account — those are being answered by something else before they arrive. So the network itself is fine and a rule is singling out these particular requests. Your host can lift that; the detail below names the server doing it.', 'tcgiant-sync' );
+		} elseif ( $control_ok && $cert_ok ) {
+			// The certificate settles what nothing else could.
+			//
+			// Every request the plugin makes checks the encryption. So a reply
+			// arriving at all proves the thing that answered held a certificate
+			// this server trusts for our name — and a certificate cannot be
+			// held without the private key that goes with it, which exists only
+			// on our own equipment. Whatever produced that page is therefore
+			// inside our encryption rather than in front of it, which puts it
+			// on our side of the wire.
+			//
+			// One thing would overturn this: a certificate whose fingerprint is
+			// not the one we publish, which would mean an authority installed
+			// on this machine is impersonating us. That is why the fingerprint
+			// is quoted in full above rather than summarised.
+			$summary = __( 'This is ours, not yours. Your requests are reaching our address over an encrypted connection that your server checked and accepted, presenting our own certificate — so whatever is answering with that security page is inside our hosting, not on your network. Please send us the result below and we will take it up with our provider. There is nothing for you or your host to change. The one thing that would change this conclusion is the certificate fingerprint above differing from the one we publish; if it matches, the fault is at our end.', 'tcgiant-sync' );
 		} elseif ( $control_ok ) {
 			// The one that says whose problem it is. This server is not cut off
 			// from the internet, so nothing is wrong with its connection in
