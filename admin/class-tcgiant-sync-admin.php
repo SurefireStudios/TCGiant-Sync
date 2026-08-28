@@ -681,11 +681,15 @@ class TCGiant_Sync_Admin {
 			if ( 'ok' !== $result['state'] ) {
 				continue;
 			}
+			// Match the role by name rather than falling through to "connect".
+			// The name lookup is a reading, not a route, and letting it land in
+			// the else branch would have reported a reachable connection
+			// service on the strength of a successful DNS query.
 			if ( 'report' === $result['role'] ) {
 				$report_ok = true;
 			} elseif ( 'control' === $result['role'] ) {
 				$control_ok = true;
-			} else {
+			} elseif ( 'connect' === $result['role'] ) {
 				$connect_ok = true;
 			}
 		}

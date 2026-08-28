@@ -1,5 +1,11 @@
 *** TCGiant Sync Changelog ***
 
+2026-08-28 - version 3.9.1
+== Connection test ==
+- The test now begins by reporting which address this server thinks ours has. Everything it measured before was of what came back, and a server that looks our name up wrongly would produce exactly the same readings while its requests quietly went to a different machine altogether.
+- If the name resolves to a private address, or to this very server, the test says so plainly: the requests never left the building, and no firewall is involved.
+- FIX: A successful name lookup could be counted as the connection service having answered, because the test matched roles by elimination rather than by name. It would have reported a working connection on the strength of a DNS query.
+
 2026-08-28 - version 3.9.0
 == Connection test ==
 - You can now see the whole of whatever answered, on screen, with a Copy button. Previously the summary was trimmed to stay readable and the log kept a single line, so being asked to send us what you received was asking for something there was no way to get at.

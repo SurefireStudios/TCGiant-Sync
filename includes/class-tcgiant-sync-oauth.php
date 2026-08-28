@@ -509,7 +509,15 @@ class TCGiant_Sync_OAuth {
 			),
 		);
 
-		$results = array();
+		// Before asking anything, establish where "us" even is from here.
+		//
+		// Every reading so far has been of what came BACK, and all of them are
+		// equally explained by the requests arriving somewhere else entirely.
+		// A server that resolves our name to the wrong address would show
+		// exactly this: our addresses all unreachable, unrelated sites fine,
+		// nothing in our logs, and a security page belonging to whichever
+		// machine it actually reached. Nobody's firewall need be involved.
+		$results = array( self::probe_name() );
 
 		foreach ( $endpoints as $endpoint ) {
 			$result         = self::probe_endpoint( $endpoint['label'], $endpoint['url'], $endpoint['probe'] );
@@ -518,6 +526,73 @@ class TCGiant_Sync_OAuth {
 		}
 
 		return $results;
+	}
+
+	/**
+	 * What address does this server think our hostname has?
+	 *
+	 * @return array
+	 */
+	private static function probe_name() {
+		$label = __( 'Name lookup', 'tcgiant-sync' );
+		$host  = wp_parse_url( self::RELAY_URL, PHP_URL_HOST );
+
+		if ( ! $host ) {
+			return array(
+				'label' => $label,
+				'state' => 'unexpected',
+				'role'  => 'dns',
+				'detail' => __( 'Could not work out which name to look up.', 'tcgiant-sync' ),
+			);
+		}
+
+		// gethostbyname() hands the name straight back when it cannot resolve.
+		$resolved = gethostbyname( $host );
+		$own      = isset( $_SERVER['SERVER_ADDR'] ) ? sanitize_text_field( wp_unslash( $_SERVER['SERVER_ADDR'] ) ) : '';
+
+		if ( $resolved === $host ) {
+			return array(
+				'label' => $label,
+				'state' => 'unreachable',
+				'role'  => 'dns',
+				'detail' => sprintf(
+					/* translators: %s: hostname */
+					__( 'This server cannot look up %s at all. Nothing can reach us until name lookups work.', 'tcgiant-sync' ),
+					$host
+				),
+			);
+		}
+
+		$public = filter_var( $resolved, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE );
+
+		// Resolving to a private address, or to this very machine, means the
+		// requests never left the building. That is not a firewall.
+		if ( ! $public || ( '' !== $own && $resolved === $own ) ) {
+			return array(
+				'label' => $label,
+				'state' => 'unexpected',
+				'role'  => 'dns',
+				'detail' => sprintf(
+					/* translators: 1: hostname, 2: address it resolved to, 3: this server's own address */
+					__( 'This server resolves %1$s to %2$s, which is not a public address on the internet%3$s. Requests meant for us are going somewhere on this network instead, which would explain everything above without any firewall being involved. This is for your host: ask why that name resolves locally.', 'tcgiant-sync' ),
+					$host,
+					$resolved,
+					'' !== $own ? sprintf( ' (this server is %s)', $own ) : ''
+				),
+			);
+		}
+
+		return array(
+			'label' => $label,
+			'state' => 'ok',
+			'role'  => 'dns',
+			'detail' => sprintf(
+				/* translators: 1: hostname, 2: resolved address */
+				__( 'This server resolves %1$s to %2$s. Check that against the address we publish: if it differs, the requests are reaching the wrong machine and nothing else here matters.', 'tcgiant-sync' ),
+				$host,
+				$resolved
+			),
+		);
 	}
 
 	/**
