@@ -1,5 +1,10 @@
 *** TCGiant Sync Changelog ***
 
+2026-08-27 - version 3.8.8
+== Connection test ==
+- FIX: When the test found that traffic to us specifically was being stopped, it told you to take it to your host. It cannot actually tell whose equipment is responsible — a rule about where your server may connect and a rule at our end about which visitors we accept look identical from where the test stands.
+- It now says so, and asks you to send the result to us first. We can check our own end straight away, and it is not right to send you arguing with your host about something that may turn out to be ours.
+
 2026-08-27 - version 3.8.7
 == Connection test ==
 - The test now also tries one address that has nothing to do with us. Asking only our own addresses could never tell apart a server having trouble reaching US from one having trouble reaching ANYTHING, and those two problems have different owners.

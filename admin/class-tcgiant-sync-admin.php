@@ -708,7 +708,7 @@ class TCGiant_Sync_Admin {
 			// from the internet, so nothing is wrong with its connection in
 			// general: something objects to us in particular, by address rather
 			// than by anything in the request.
-			$summary = __( 'This server reaches unrelated sites perfectly well, but every one of our addresses is answered by the same security page. So nothing is wrong with this site or its connection generally — something is stopping traffic to us specifically, and it decides that before it has seen what is being asked. The detail below names the server doing it: send it to your host and ask why traffic to that destination is being intercepted.', 'tcgiant-sync' );
+			$summary = __( 'This server reaches unrelated sites perfectly well, but every one of our addresses is answered by the same security page. So nothing is wrong with this site or its connection generally: something is stopping traffic between this server and ours in particular, and it decides that before it has seen what is being asked. That can sit at either end — a rule here about where this server may connect, or one at our end about which visitors we accept — and this test cannot tell which. Send us the detail below before approaching your host: we can check our own end immediately, and it would be unfair to send you arguing with them over something that may be ours.', 'tcgiant-sync' );
 		} else {
 			$summary = __( 'Nothing this server sends is getting out untouched, including a request to a completely unrelated site. So this is not about us at all: something on this server\'s network is intercepting its outgoing traffic generally. That is for your host to resolve, and the detail below names what is answering.', 'tcgiant-sync' );
 		}
