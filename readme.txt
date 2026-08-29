@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.10.0
+Stable tag: 3.11.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,13 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.11.0 - 2026-08-28 =
+**Connecting to eBay**
+* Groundwork for stores whose hosting address is judged badly by security software in front of our service, where neither host can resolve it. The plugin can now be pointed at a different way of reaching us.
+* Only ever used after both ordinary routes have been answered with a browser check. Stores that connect normally never touch it.
+* No alternate address is set in this release, so nothing changes for anyone yet.
+* The connection test reports on that route too, when one is configured.
 
 = 3.10.0 - 2026-08-28 =
 **New: Image Cleanup**
@@ -879,6 +886,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.11.0 =
+Groundwork only — nothing changes unless an alternate connection address is configured for your site.
 
 = 3.10.0 =
 Adds an Image Cleanup page that restores your own product photographs and removes the duplicates created before 3.9.5.

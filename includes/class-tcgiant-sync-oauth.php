@@ -277,6 +277,52 @@ class TCGiant_Sync_OAuth {
 	const CONTROL_URL = 'https://www.google.com/generate_204';
 
 	/**
+	 * A way to reach the connection service that does not go to our host.
+	 *
+	 * Empty until one exists. Our host runs protection that judges callers by
+	 * the reputation of their address, and a shop sharing a hosting address
+	 * with strangers can be refused for things it did not do. Our host cannot
+	 * make an exception on a shared server and the shop cannot mend a
+	 * reputation it does not own, so neither of them can fix it. This can.
+	 *
+	 * Only ever reached after both direct routes have been answered with a web
+	 * page. A shop that connects normally never touches it, and there is a
+	 * good reason to keep it that way: whatever stands here can read the
+	 * credentials passing through it.
+	 */
+	const RELAY_LAST_RESORT_URL = '';
+
+	/**
+	 * The alternate address in force for this site, if any.
+	 *
+	 * A single site can be pointed at one without waiting for a release, which
+	 * is how a fix gets tested on the shop that needs it:
+	 *
+	 *   define( 'TCGIANT_SYNC_RELAY_FALLBACK', 'https://...' );  in wp-config.php
+	 *   add_filter( 'tcgiant_sync_relay_fallback', ... );
+	 *
+	 * @return string Base address with no trailing slash, or '' when unset.
+	 */
+	public static function last_resort_url() {
+		$url = self::RELAY_LAST_RESORT_URL;
+
+		if ( defined( 'TCGIANT_SYNC_RELAY_FALLBACK' ) && TCGIANT_SYNC_RELAY_FALLBACK ) {
+			$url = (string) TCGIANT_SYNC_RELAY_FALLBACK;
+		}
+
+		$url = (string) apply_filters( 'tcgiant_sync_relay_fallback', $url );
+		$url = trim( $url );
+
+		// Only somewhere that is actually an address, and only over TLS: this
+		// carries eBay credentials and must never be talked to in the clear.
+		if ( '' === $url || 0 !== strpos( $url, 'https://' ) ) {
+			return '';
+		}
+
+		return untrailingslashit( $url );
+	}
+
+	/**
 	 * How long to wait between consecutive calls to the connection service.
 	 *
 	 * The protection in front of that service watches for bursts. Three calls
@@ -351,10 +397,32 @@ class TCGiant_Sync_OAuth {
 		) );
 
 		if ( self::looks_intercepted( $fallback ) ) {
-			// Both were answered by whatever is in the way. Hand back the
-			// first, so the caller reports on the reply that names the server
-			// responsible — that is what tells the merchant's host where to
-			// look.
+			// Both direct routes answered with a web page. If somewhere else
+			// has been set up to reach the service, that is what it is for.
+			$last_resort = self::last_resort_url();
+
+			if ( '' !== $last_resort ) {
+				sleep( self::PACING_SECONDS );
+
+				$alternate = wp_remote_post( $last_resort . '/relay.php', array(
+					'body'       => $body,
+					'timeout'    => 30,
+					'user-agent' => self::user_agent(),
+				) );
+
+				if ( ! self::looks_intercepted( $alternate ) && ! is_wp_error( $alternate ) ) {
+					TCGiant_Sync_Logger::log(
+						'Both direct routes to the connection service were answered by a security filter, so the alternate route was used. The connection itself is fine.',
+						'warning'
+					);
+
+					return $alternate;
+				}
+			}
+
+			// Nothing got through. Hand back the first reply, so the caller
+			// reports on the one that names the server responsible — that is
+			// what says where to look.
 			return $response;
 		}
 
@@ -555,6 +623,19 @@ class TCGiant_Sync_OAuth {
 		// exactly this: our addresses all unreachable, unrelated sites fine,
 		// nothing in our logs, and a security page belonging to whichever
 		// machine it actually reached. Nobody's firewall need be involved.
+		// Only when one has been set up. Listing a route that does not exist
+		// would report a failure nobody can act on.
+		$last_resort = self::last_resort_url();
+
+		if ( '' !== $last_resort ) {
+			$endpoints[] = array(
+				'label' => __( 'Alternate route (not via our host)', 'tcgiant-sync' ),
+				'url'   => $last_resort . '/relay.php',
+				'probe' => 'health',
+				'role'  => 'connect',
+			);
+		}
+
 		$results = array( self::probe_name(), self::probe_certificate() );
 
 		// Spaced out, because this test was part of the problem.

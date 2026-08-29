@@ -1,5 +1,12 @@
 *** TCGiant Sync Changelog ***
 
+2026-08-28 - version 3.11.0
+== Connecting to eBay ==
+- Groundwork for stores whose hosting address has been judged badly by security software in front of our service. Where neither host can resolve it — ours cannot make an exception on a shared server, and the store cannot mend the reputation of an address it shares with strangers — the plugin can now be pointed at a different way of reaching us.
+- It is only ever used after both ordinary routes have been answered with a browser check. A store that connects normally never touches it and waits for nothing.
+- No alternate address is set in this release, so nothing changes for anyone yet. A single site can be pointed at one by adding TCGIANT_SYNC_RELAY_FALLBACK to its wp-config.php.
+- The connection test reports on that route too, when one is configured.
+
 2026-08-28 - version 3.10.0
 == New: Image Cleanup ==
 - NEW: An Image Cleanup page that finds products holding duplicate copies of their own photographs, and puts the originals back.
