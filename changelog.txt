@@ -1,5 +1,18 @@
 *** TCGiant Sync Changelog ***
 
+2026-08-30 - version 3.12.0
+== Sold items now leave your shop on their own ==
+- Products are removed when their eBay listing sells out, without waiting for you to run a full sync by hand. This is what the plugin has always been meant to do; until now only a manual full sync did it, so a store on the scheduled sync kept sold items on the shelf indefinitely.
+- Only listings that actually SOLD OUT. One that ran out of time, or that you ended yourself, keeps its product and whatever stock went unsold — those goods are still yours.
+- Products you pushed to eBay yourself are never removed. Your shop is the source of those, not eBay, and selling out there says nothing about whether you want the product.
+- Anything in your Preserve Categories is left alone, exactly as it already is for pruning.
+- Removed products go to the Trash, not permanently. You can restore anything you would rather keep.
+- There is a new setting under Settings if you would rather this did not happen: "Remove products when their eBay listing sells out?"
+
+== A weekly full sync ==
+- A complete sync now runs once a week on its own. The ordinary sync only asks eBay what changed in the last 48 hours, so a listing that ended while your site was unreachable was never mentioned again and its product stayed on the shelf for good.
+- It respects your Auto-Sync setting: if you have that on Disabled, nothing runs on its own here either.
+
 2026-08-30 - version 3.11.1
 == Free tier ==
 - FIX: Going over the free product limit still stopped syncing altogether. 3.7.12 was meant to fix this and did not — it corrected the checks inside the import loops, but every way into those loops still refused before reaching them, so nothing actually changed.

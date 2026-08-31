@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.11.1
+Stable tag: 3.12.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,18 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.12.0 - 2026-08-30 =
+**Sold items now leave your shop on their own**
+* Products are removed when their eBay listing sells out, without waiting for a manual full sync. Until now only a full sync did this, so stores on the scheduled sync kept sold items on the shelf.
+* Only listings that actually sold out. One that ran out of time or that you ended yourself keeps its product and any unsold stock.
+* Products you pushed to eBay yourself are never removed, and neither is anything in your Preserve Categories.
+* Removed products go to the Trash, so anything can be restored.
+* New setting if you would rather it did not: "Remove products when their eBay listing sells out?"
+
+**A weekly full sync**
+* A complete sync now runs weekly. The ordinary sync only sees the last 48 hours, so listings that ended while a site was unreachable were never noticed again.
+* Respects your Auto-Sync setting — nothing runs on its own if you have that disabled.
 
 = 3.11.1 - 2026-08-30 =
 **Free tier**
@@ -892,6 +904,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.12.0 =
+Sold items now leave your shop automatically instead of waiting for a manual full sync. Removed products go to the Trash, and there is a setting to turn it off.
 
 = 3.11.1 =
 Important for anyone on the free tier. Going over the product limit was still stopping all syncing, not just new imports — 3.7.12 did not actually fix this.

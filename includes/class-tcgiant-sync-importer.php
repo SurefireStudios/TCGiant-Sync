@@ -275,6 +275,65 @@ class TCGiant_Sync_Importer {
 	 * @param string $item_id eBay Item ID.
 	 * @return bool
 	 */
+	/**
+	 * Remove a product whose listing sold out, if the shop wants that.
+	 *
+	 * The plugin's whole promise is that an item leaves the shop when it sells
+	 * on eBay, and until now only a full sync run by hand did that — the
+	 * scheduled sync recorded the listing as ended and left the product sitting
+	 * there in stock.
+	 *
+	 * Four things must be true before anything is removed, and each protects a
+	 * case where removing would be wrong.
+	 *
+	 * @param int      $product_id
+	 * @param int|null $listed Quantity the listing held.
+	 * @param int|null $sold   Quantity eBay reports as sold.
+	 * @return bool Whether the product was trashed.
+	 */
+	private static function maybe_remove_sold_out_product( $product_id, $listed, $sold ) {
+		// Ended is not the same as sold. A listing that ran out without selling,
+		// or that the seller ended by hand, leaves goods the shop still owns —
+		// which is exactly why 3.7.11 keeps their stock rather than zeroing it.
+		// Removing the product would contradict the quantity just written.
+		if ( null === $listed || null === $sold ) {
+			return false;
+		}
+
+		if ( (int) $listed < 1 || (int) $sold < (int) $listed ) {
+			return false;
+		}
+
+		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
+
+		// Absent means on. This is what the plugin is for, and a shop that would
+		// rather keep its products can say so.
+		if ( isset( $settings['remove_sold_products'] ) && empty( $settings['remove_sold_products'] ) ) {
+			return false;
+		}
+
+		// A product the shop pushed to eBay is its own catalogue entry, not
+		// something eBay lent it. Selling out there says nothing about whether
+		// the shop still wants the product, and it may be restocked tomorrow.
+		if ( 'pushed' === get_post_meta( (int) $product_id, '_ebay_export_status', true ) ) {
+			return false;
+		}
+
+		// The same categories the pruner is told to leave alone. Somebody who
+		// has said "do not trash these" meant it here too.
+		$preserve = isset( $settings['preserve_woo_category_ids'] ) && is_array( $settings['preserve_woo_category_ids'] )
+			? $settings['preserve_woo_category_ids']
+			: array();
+
+		if ( ! empty( $preserve ) && has_term( $preserve, 'product_cat', (int) $product_id ) ) {
+			return false;
+		}
+
+		wp_trash_post( (int) $product_id );
+
+		return true;
+	}
+
 	private static function product_exists_for_item( $item_id ) {
 		global $wpdb;
 
@@ -1064,6 +1123,19 @@ class TCGiant_Sync_Importer {
 					$remaining = TCGiant_Sync_Inventory::apply_ended_listing_stock( (int) $existing_id, $listed, $sold );
 
 					if ( null !== $remaining ) {
+						// Settle the stock first and decide afterwards whether the
+						// product should still be here at all. In that order,
+						// because a removal that is refused must still leave the
+						// quantity correct.
+						if ( self::maybe_remove_sold_out_product( (int) $existing_id, $listed, $sold ) ) {
+							TCGiant_Sync_Logger::log( sprintf(
+								'Delta: eBay item %s sold out — WC #%d moved to the trash (%d listed, %d sold).',
+								$item_id, (int) $existing_id, (int) $listed, (int) $sold
+							) );
+							$skipped++;
+							continue;
+						}
+
 						TCGiant_Sync_Logger::log( sprintf(
 							'Delta: eBay item %s is %s — WC #%d marked ended and stock set to %d (%d listed, %d sold).',
 							$item_id, $listing_status, (int) $existing_id, $remaining, (int) $listed, (int) $sold

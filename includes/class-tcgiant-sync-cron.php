@@ -57,6 +57,7 @@ class TCGiant_Sync_Cron {
 		// and wp-cron.php requests are not is_admin(), so the event fired with
 		// no callback attached and the check never ran.
 		add_action( 'tcgiant_sync_check_ended_listings', array( $this, 'check_ended_listings' ) );
+		add_action( 'tcgiant_sync_weekly_full', array( $this, 'run_weekly_full_sync' ) );
 		
 		// One-time listing type backfill on upgrade.
 		add_action( 'admin_init', array( $this, 'maybe_backfill_listing_type' ) );
@@ -97,6 +98,27 @@ class TCGiant_Sync_Cron {
 		if ( ! wp_next_scheduled( 'tcgiant_sync_check_ended_listings' ) ) {
 			wp_schedule_event( time(), 'hourly', 'tcgiant_sync_check_ended_listings' );
 		}
+
+		// A full sweep once a week, for everything the ordinary sync cannot see.
+		//
+		// The scheduled sync asks eBay what changed in the last 48 hours, so a
+		// listing that ended while a site was unreachable is never mentioned
+		// again. One store lost a fortnight that way and would have gone on
+		// offering sold goods indefinitely. Only a full scan walks the whole
+		// account, and until now only a person pressing a button ever ran one.
+		//
+		// Weekly rather than monthly because the fault this guards against is a
+		// sold item still showing in stock, and a month of that is a month of
+		// overselling. A scan pages eBay two hundred listings at a time, so even
+		// a large account is a couple of dozen calls.
+		//
+		// Someone who has turned the automatic sync off has said they want
+		// nothing running on its own, and that applies here too.
+		if ( 'disabled' === $interval ) {
+			wp_clear_scheduled_hook( 'tcgiant_sync_weekly_full' );
+		} elseif ( ! wp_next_scheduled( 'tcgiant_sync_weekly_full' ) ) {
+			wp_schedule_event( time() + DAY_IN_SECONDS, 'weekly', 'tcgiant_sync_weekly_full' );
+		}
 	}
 
 	/**
@@ -113,6 +135,23 @@ class TCGiant_Sync_Cron {
 	/**
 	 * Mark listings whose end time has passed as Ended.
 	 */
+	/**
+	 * The weekly full sweep.
+	 *
+	 * A wrapper so the schedule has something to call that cannot take an
+	 * argument by accident, and so a failure here is reported as itself rather
+	 * than as a mysterious cron error.
+	 */
+	public function run_weekly_full_sync() {
+		TCGiant_Sync_Logger::log( 'Weekly full sync: starting a complete scan to catch anything the ordinary sync could not see.' );
+
+		$result = TCGiant_Sync_Importer::instance()->start_full_sync();
+
+		if ( is_wp_error( $result ) ) {
+			TCGiant_Sync_Logger::warning( 'Weekly full sync did not start: ' . $result->get_error_message() );
+		}
+	}
+
 	public function check_ended_listings() {
 		global $wpdb;
 
@@ -872,6 +911,7 @@ class TCGiant_Sync_Cron {
 		wp_clear_scheduled_hook( 'tcgiant_sync_poll_ebay_cron' );
 		wp_clear_scheduled_hook( 'tcgiant_sync_daily_maintenance' );
 		wp_clear_scheduled_hook( 'tcgiant_sync_check_ended_listings' );
+		wp_clear_scheduled_hook( 'tcgiant_sync_weekly_full' );
 		wp_clear_scheduled_hook( 'tcgiant_sync_reconcile_inventory' );
 		wp_clear_scheduled_hook( 'tcgiant_sync_import_orders' );
 		wp_clear_scheduled_hook( 'tcgiant_sync_scan_resume' );

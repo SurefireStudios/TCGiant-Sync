@@ -518,6 +518,14 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						<p class="tc-hint"><?php esc_html_e( 'When enabled, product images remain as eBay-hosted URLs and are never downloaded. This saves disk space and speeds up sync dramatically.', 'tcgiant-sync' ); ?></p>
 					</div>
 					<div class="tc-field">
+						<label class="tc-label"><?php esc_html_e( 'Remove products when their eBay listing sells out?', 'tcgiant-sync' ); ?></label>
+						<div class="tc-radio-group">
+							<label><input type="radio" name="tcgiant_sync_ebay_settings[remove_sold_products]" value="1" <?php checked( $settings['remove_sold_products'] ?? '1', '1' ); ?>> Yes</label>
+							<label><input type="radio" name="tcgiant_sync_ebay_settings[remove_sold_products]" value="0" <?php checked( $settings['remove_sold_products'] ?? '1', '0' ); ?>> No</label>
+						</div>
+						<p class="tc-hint"><?php esc_html_e( 'Moves the product to the trash once its listing has sold out, so sold items leave your shop on their own. Only applies to listings that actually sold: one that ran out or that you ended yourself keeps its product and whatever stock was unsold. Products you pushed to eBay yourself are never removed, and neither is anything in your Preserve Categories.', 'tcgiant-sync' ); ?></p>
+					</div>
+					<div class="tc-field">
 						<label class="tc-label"><?php esc_html_e( 'Auto-relist ended listings?', 'tcgiant-sync' ); ?></label>
 						<div class="tc-radio-group">
 							<label><input type="radio" name="tcgiant_sync_ebay_settings[auto_relist_enabled]" value="1" <?php checked( $settings['auto_relist_enabled'] ?? '0', '1' ); ?>> Yes</label>
@@ -597,7 +605,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 				<?php settings_fields( 'tcgiant_sync_ebay_group' ); ?>
 				<?php
 				// Preserve all non-export fields.
-				$all_preserve = array_merge( $preserve_keys, array( 'custom_saved_categories', 'category_ids', 'woo_category_ids', 'preserve_woo_category_ids', 'import_specs_as_tags', 'bake_shipping_into_price', 'sku_maps_to', 'sku_prefix', 'sync_interval', 'enable_order_sync', 'enable_order_import', 'enable_reconciliation', 'auto_end_zero_stock', 'disable_image_localization', 'auto_relist_enabled', 'overwrite_title', 'overwrite_desc', 'overwrite_price', 'overwrite_images', 'overwrite_taxonomy', 'overwrite_weight_dims' ) );
+				$all_preserve = array_merge( $preserve_keys, array( 'custom_saved_categories', 'category_ids', 'woo_category_ids', 'preserve_woo_category_ids', 'import_specs_as_tags', 'bake_shipping_into_price', 'sku_maps_to', 'sku_prefix', 'sync_interval', 'enable_order_sync', 'enable_order_import', 'enable_reconciliation', 'remove_sold_products', 'auto_end_zero_stock', 'disable_image_localization', 'auto_relist_enabled', 'overwrite_title', 'overwrite_desc', 'overwrite_price', 'overwrite_images', 'overwrite_taxonomy', 'overwrite_weight_dims' ) );
 				// Note: export condition descriptor fields are handled by the export form itself.
 				foreach ( $all_preserve as $key ) {
 					$val = $settings[ $key ] ?? null;
