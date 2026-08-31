@@ -27,12 +27,14 @@
             "@check-views",
             "@check-formats",
             "@check-tabs",
+            "@check-limit-gates",
             "@analyse"
         ],
         "build": "@php tools/build-zip.php",
         "check-views": "@php tools/check-views.php",
         "check-formats": "@php tools/check-formats.php",
-        "check-tabs": "@php tools/check-tabs.php"
+        "check-tabs": "@php tools/check-tabs.php",
+        "check-limit-gates": "@php tools/check-limit-gates.php"
     },
     "scripts-descriptions": {
         "lint": "Run php -l over every plugin source file.",
@@ -41,6 +43,7 @@
         "build": "Build a distributable plugin zip into zips/.",
         "check-views": "Verify admin view markup is balanced and grid layouts have their columns.",
         "check-formats": "Run every printf-style format string through sprintf to catch ones that would throw at runtime.",
-        "check-tabs": "Verify the in-page tab bar lists the same pages as the admin menu, in the same order."
+        "check-tabs": "Verify the in-page tab bar lists the same pages as the admin menu, in the same order.",
+        "check-limit-gates": "Verify the free product limit holds back new listings without stopping a sync outright."
     }
 }

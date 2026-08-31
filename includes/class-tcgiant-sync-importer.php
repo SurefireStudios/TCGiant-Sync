@@ -377,19 +377,26 @@ class TCGiant_Sync_Importer {
 	public function start_full_sync( $force = false ) {
 		// License check: can the user import more products?
 		$license = TCGiant_Sync_License::instance();
+		// The limit caps how many products a store may hold, not whether the
+		// ones it already has stay in step with eBay.
+		//
+		// This is the fault 3.7.12 set out to fix and did not. That release
+		// corrected the per-item checks inside the import loops, but every way
+		// INTO those loops still refused at the door — so the loops it fixed
+		// were never reached and nothing changed. A store over the limit went
+		// on receiving nothing at all: no stock, no prices, no ended listings,
+		// and no pruning either, since pruning only follows a scan that ran.
+		//
+		// The per-item checks hold back listings that would create a new
+		// product. Everything already imported carries on.
 		if ( ! $license->can_import() ) {
-			self::update_sync_state( array( 'status' => 'limit_reached' ) );
 			TCGiant_Sync_Logger::log(
 				sprintf(
-					'Free tier limit reached (%d/%d active products). Upgrade to TCGiant Sync Pro for unlimited imports.',
+					'Free tier limit reached (%d/%d active products). Products already imported carry on syncing; only new listings are held back. Upgrade to TCGiant Sync Pro for unlimited imports.',
 					$license->get_active_product_count(),
 					TCGiant_Sync_License::FREE_LIMIT
 				),
 				'warning'
-			);
-			return new WP_Error(
-				'limit_reached',
-				__( 'Import limit reached. Upgrade to Pro for unlimited imports.', 'tcgiant-sync' )
 			);
 		}
 
@@ -482,12 +489,9 @@ class TCGiant_Sync_Importer {
 			return;
 		}
 
-		// License check.
-		$license = TCGiant_Sync_License::instance();
-		if ( ! $license->can_import() ) {
-			self::update_sync_state( array( 'status' => 'limit_reached' ) );
-			return;
-		}
+		// No licence check here. Being over the limit holds back new listings,
+		// which the per-item check in run_delta_events() does; it is not a
+		// reason to stop updating the products a store already has.
 
 		// Guard: don't restart if a sync is already in progress.
 		if ( in_array( $state['status'], array( 'scanning', 'importing' ), true ) ) {
@@ -561,11 +565,9 @@ class TCGiant_Sync_Importer {
 	 * @param array $item_ids List of eBay Item IDs to sync.
 	 */
 	public function start_specific_sync( $item_ids ) {
-		$license = TCGiant_Sync_License::instance();
-		if ( ! $license->can_import() ) {
-			self::update_sync_state( array( 'status' => 'limit_reached' ) );
-			return;
-		}
+		// No licence check here either. Someone asking for particular items by
+		// hand is usually asking about ones they already have, and refusing
+		// outright meant they could not refresh anything at all.
 
 		$state = self::get_sync_state();
 		$new_queued = $state['total_queued'] + count( $item_ids );
@@ -1242,12 +1244,9 @@ class TCGiant_Sync_Importer {
 			return;
 		}
 
-		// License check.
-		$license = TCGiant_Sync_License::instance();
-		if ( ! $license->can_import() ) {
-			self::update_sync_state( array( 'status' => 'limit_reached' ) );
-			return;
-		}
+		// No licence check here. A scan that stopped part way through has
+		// products of its own still to update, and refusing to resume left it
+		// stranded with no way to finish.
 
 		// Clear any stale scheduled actions.
 		if ( function_exists( 'as_unschedule_all_actions' ) ) {

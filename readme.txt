@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.11.0
+Stable tag: 3.11.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,12 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.11.1 - 2026-08-30 =
+**Free tier**
+* FIX: Going over the free product limit still stopped syncing altogether. 3.7.12 was meant to fix this and did not — it corrected the checks inside the import loops, but every way into those loops still refused before reaching them.
+* A store over the limit received nothing at all: no stock, no prices, no ended listings, and no removal of products whose listings had finished.
+* All four ways of starting a sync now run; only new listings are held back.
 
 = 3.11.0 - 2026-08-28 =
 **Connecting to eBay**
@@ -886,6 +892,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.11.1 =
+Important for anyone on the free tier. Going over the product limit was still stopping all syncing, not just new imports — 3.7.12 did not actually fix this.
 
 = 3.11.0 =
 Groundwork only — nothing changes unless an alternate connection address is configured for your site.

@@ -1,5 +1,11 @@
 *** TCGiant Sync Changelog ***
 
+2026-08-30 - version 3.11.1
+== Free tier ==
+- FIX: Going over the free product limit still stopped syncing altogether. 3.7.12 was meant to fix this and did not — it corrected the checks inside the import loops, but every way into those loops still refused before reaching them, so nothing actually changed.
+- A store over the limit was receiving nothing at all: no stock, no prices, no ended listings, and no removal of products whose listings had finished, since that only follows a sync that ran.
+- All four ways of starting a sync now run. Only listings that would create a new product are held back, which is what the limit is for.
+
 2026-08-28 - version 3.11.0
 == Connecting to eBay ==
 - Groundwork for stores whose hosting address has been judged badly by security software in front of our service. Where neither host can resolve it — ours cannot make an exception on a shared server, and the store cannot mend the reputation of an address it shares with strangers — the plugin can now be pointed at a different way of reaching us.
