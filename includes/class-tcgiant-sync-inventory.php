@@ -322,6 +322,13 @@ class TCGiant_Sync_Inventory {
 
 		$new_stock = $product->get_stock_quantity();
 
+		// Same guard as the order path. The stock-set hooks should only fire
+		// for tracked products, but nothing here depended on that being true,
+		// and a null arriving downstream reads as zero and ends the listing.
+		if ( null === $new_stock || '' === $new_stock ) {
+			return;
+		}
+
 		// Dedup: don't queue if an identical update is already pending.
 		$dedup_key = 'tcgiant_stock_pending_' . md5( $ebay_sku . '_' . $new_stock );
 		if ( get_transient( $dedup_key ) ) {
@@ -421,7 +428,24 @@ class TCGiant_Sync_Inventory {
 				continue;
 			}
 
+			// A product that does not track stock has no quantity to report.
+			//
+			// This hook fires on every order, whatever the line items are, and
+			// get_stock_quantity() returns null for an untracked product. That
+			// null was queued as the new quantity, arrived at
+			// process_ebay_stock_update() where (int) null is 0, and with
+			// auto-end-on-zero turned on - which is the default - ENDED the eBay
+			// listing. Selling one on the website took the eBay listing with it.
+			if ( ! $product->managing_stock() ) {
+				continue;
+			}
+
 			$new_stock = $product->get_stock_quantity();
+
+			// Never queue an absent figure as though it were zero.
+			if ( null === $new_stock || '' === $new_stock ) {
+				continue;
+			}
 
 			// Schedule background update to eBay.
 			// We use background sync to avoid slowing down the customer checkout.

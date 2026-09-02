@@ -1,5 +1,25 @@
 *** TCGiant Sync Changelog ***
 
+2026-09-02 - version 3.13.1
+== Selling an item no longer ends its eBay listing ==
+- FIX: If a product had WooCommerce stock management turned OFF, selling one on your website could end that product's eBay listing outright. For those products there is no quantity to read, and the plugin treated the missing figure as zero, which is its signal to end a listing. Nothing reported it — the listing was simply gone.
+- Every order was affected, not only orders containing that product, because the check ran over the whole order.
+
+== Item condition ==
+- FIX: Three condition options were labelled one rung off eBay's own scale. "Very Good" sent the code eBay publishes as Used, "Good" sent Very Good, and "Acceptable" sent Good. Anyone choosing "Good" was describing an item as better than they meant to.
+- Your live listings do not change. The same code is still sent and eBay's wording for it never changed — what changes is the name shown in Settings, which now matches eBay.
+- Added the conditions that were missing altogether: New other, New with defects, both Refurbished grades, and For parts or not working.
+- The four grades eBay only accepts on books, film, music and games are now grouped under a heading that says so, instead of sitting alongside the ones that work anywhere.
+
+== Titles ==
+- FIX: Ampersands, apostrophes, hashes, exclamation marks, at-signs and asterisks were stripped from every title before sending. "Base Set #4" arrived at eBay as "Base Set 4", losing the card number; "Levi's" became "Levis". eBay accepts all of these, and the characters that matter to the underlying format were already handled elsewhere, so this was removing them for no reason.
+
+== Quantity ==
+- Products with stock management turned off used to list as a single unit, with nothing to say so. They now list a quantity you choose, under a new setting in Push to eBay Settings. It is set to 1, so nothing changes until you say otherwise.
+
+== Uninstalling ==
+- FIX: A leftover folder whose name merely began with tcgiant-sync — a kept backup, say — was read as a second copy of the plugin, and stopped uninstall clearing its scheduled jobs. Those are now always cleared. Your settings are still kept unless you asked for them to go.
+
 2026-09-01 - version 3.13.0
 == Deleting the plugin no longer deletes your settings ==
 - Removing the plugin used to take its own records with it: your settings, your eBay connection, and the links recording which product came from which listing. Those links cannot be rebuilt. A later sync would not recognise products it had already imported and would bring them in a second time.

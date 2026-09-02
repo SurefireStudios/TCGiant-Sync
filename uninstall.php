@@ -30,24 +30,6 @@ if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
 global $wpdb;
 
 /*
- * Do nothing at all if another edition is still installed.
- *
- * Lite, Standard and Pro share the same options, the same meta keys, the same
- * table and the same scheduled events — that shared storage is what lets a shop
- * move between them without reconnecting to eBay or re-linking a single
- * product. It also means this file, run for one of them, would strip the
- * ground out from under another that is still running.
- *
- * The likely way to hit this is the obvious way to upgrade: install the new
- * edition, then delete the old one. So the check is not a nicety.
- */
-$tcgiant_siblings = glob( WP_PLUGIN_DIR . '/tcgiant-sync*/tcgiant-sync.php' );
-
-if ( is_array( $tcgiant_siblings ) && count( $tcgiant_siblings ) > 1 ) {
-	return;
-}
-
-/*
  * Scheduled events always go.
  *
  * These are cleared whether or not the shop asked for its data to be removed,
@@ -94,6 +76,31 @@ if ( function_exists( 'as_unschedule_all_actions' ) ) {
 	foreach ( $tcgiant_as_hooks as $tcgiant_as_hook ) {
 		as_unschedule_all_actions( $tcgiant_as_hook );
 	}
+}
+
+/*
+ * Do nothing at all if another edition is still installed.
+ *
+ * Lite, Standard and Pro share the same options, the same meta keys, the same
+ * table and the same scheduled events — that shared storage is what lets a shop
+ * move between them without reconnecting to eBay or re-linking a single
+ * product. It also means this file, run for one of them, would strip the
+ * ground out from under another that is still running.
+ *
+ * The likely way to hit this is the obvious way to upgrade: install the new
+ * edition, then delete the old one. So the check is not a nicety.
+ *
+ * It guards the DATA only, deliberately, and sits below the schedule
+ * clearing for that reason. The glob matches any folder whose name merely
+ * begins with tcgiant-sync, so a kept backup - tcgiant-sync-old,
+ * tcgiant-sync-3.12.0 - reads as a sibling. With this above the schedule
+ * clearing, one such folder meant a real uninstall cleared nothing at all
+ * and left every cron event firing with nothing to answer it.
+ */
+$tcgiant_siblings = glob( WP_PLUGIN_DIR . '/tcgiant-sync*/tcgiant-sync.php' );
+
+if ( is_array( $tcgiant_siblings ) && count( $tcgiant_siblings ) > 1 ) {
+	return;
 }
 
 /*

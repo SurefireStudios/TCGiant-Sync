@@ -262,7 +262,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 					}
 				}
 				// Preserve export settings too so they aren't wiped by this form.
-				$export_preserve = array( 'export_category_id', 'export_category_name', 'export_condition_id', 'export_condition_type', 'export_grader_id', 'export_grade_value', 'export_cert_number', 'export_ungraded_condition', 'export_location', 'export_postal_code', 'export_fulfillment_policy', 'export_return_policy', 'export_payment_policy', 'export_listing_type', 'export_listing_duration' );
+				$export_preserve = array( 'export_category_id', 'export_category_name', 'export_condition_id', 'export_condition_type', 'export_grader_id', 'export_grade_value', 'export_cert_number', 'export_ungraded_condition', 'export_location', 'export_postal_code', 'export_fulfillment_policy', 'export_return_policy', 'export_payment_policy', 'export_listing_type', 'export_listing_duration', 'export_default_quantity' );
 				foreach ( $export_preserve as $key ) {
 					if ( ! empty( $settings[ $key ] ) ) {
 						echo '<input type="hidden" name="tcgiant_sync_ebay_settings[' . esc_attr( $key ) . ']" value="' . esc_attr( $settings[ $key ] ) . '">';
@@ -753,10 +753,34 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 					<div class="tc-field">
 						<label class="tc-label" for="export_condition_id"><?php esc_html_e( 'Legacy Condition', 'tcgiant-sync' ); ?></label>
 						<select class="tc-select" id="export_condition_id" name="tcgiant_sync_ebay_settings[export_condition_id]">
-							<?php foreach ( TCGiant_Sync_Exporter::CONDITIONS as $cid => $clabel ) : ?>
-								<option value="<?php echo esc_attr( $cid ); ?>" <?php selected( $settings['export_condition_id'] ?? '1000', $cid ); ?>>
-									<?php echo esc_html( $clabel ); ?>
-								</option>
+							<?php
+							// Grouped, so the restricted grades cannot be picked by mistake.
+							//
+							// eBay refuses the media grades outside books, film, music and games,
+							// and two of them read as ordinary words - "Very Good", "Good" - that a
+							// shop selling anything else would reach for first.
+							$tc_cond_saved  = $settings['export_condition_id'] ?? '1000';
+							$tc_cond_groups = array(
+								__( 'Any category', 'tcgiant-sync' )                       => array(),
+								__( 'Books, film, music and games only', 'tcgiant-sync' ) => array(),
+							);
+							$tc_cond_names  = array_keys( $tc_cond_groups );
+
+							foreach ( TCGiant_Sync_Exporter::CONDITIONS as $cid => $clabel ) {
+								$tc_media = in_array( (string) $cid, TCGiant_Sync_Exporter::CONDITIONS_MEDIA_ONLY, true );
+								$tc_cond_groups[ $tc_cond_names[ $tc_media ? 1 : 0 ] ][ $cid ] = $clabel;
+							}
+							?>
+							<?php foreach ( $tc_cond_groups as $tc_group => $tc_items ) : ?>
+								<?php if ( ! empty( $tc_items ) ) : ?>
+									<optgroup label="<?php echo esc_attr( $tc_group ); ?>">
+										<?php foreach ( $tc_items as $cid => $clabel ) : ?>
+											<option value="<?php echo esc_attr( $cid ); ?>" <?php selected( $tc_cond_saved, $cid ); ?>>
+												<?php echo esc_html( $clabel ); ?>
+											</option>
+										<?php endforeach; ?>
+									</optgroup>
+								<?php endif; ?>
 							<?php endforeach; ?>
 						</select>
 						<p class="tc-hint"><?php esc_html_e( 'Used for categories that do not require ConditionDescriptors (non-TCG/Coins).', 'tcgiant-sync' ); ?></p>
@@ -848,6 +872,15 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						</div>
 					</div>
 					<p class="tc-hint"><?php esc_html_e( 'Default for all listings. Can be overridden per-product. Fixed Price supports GTC & 30 Days. Auctions support 1-10 Days.', 'tcgiant-sync' ); ?></p>
+				</div>
+
+				<!-- Quantity when stock is not tracked -->
+				<div class="tc-field">
+					<label class="tc-label" for="export_default_quantity"><?php esc_html_e( 'Quantity When Stock Is Not Tracked', 'tcgiant-sync' ); ?></label>
+					<input type="number" min="1" step="1" class="tc-input" id="export_default_quantity"
+						name="tcgiant_sync_ebay_settings[export_default_quantity]"
+						value="<?php echo esc_attr( $settings['export_default_quantity'] ?? '1' ); ?>" style="max-width:120px;">
+					<p class="tc-hint"><?php esc_html_e( 'Only used for products with WooCommerce stock management turned off, where there is no quantity to read. Products that do track stock always list their real quantity. Leave at 1 if you sell single items.', 'tcgiant-sync' ); ?></p>
 				</div>
 
 				<!-- Best Offer -->

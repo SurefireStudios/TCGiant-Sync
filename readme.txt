@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.13.0
+Stable tag: 3.13.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,24 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.13.1 - 2026-09-02 =
+**Selling an item no longer ends its eBay listing**
+* FIX: With stock management turned off on a product, selling one on your website could end that product's eBay listing. There is no quantity to read for those products, and the missing figure was treated as zero — the signal to end a listing.
+
+**Item condition**
+* FIX: Three options were labelled one rung off eBay's scale — "Very Good" sent Used, "Good" sent Very Good, "Acceptable" sent Good. Live listings are unchanged; only the name shown in Settings changes.
+* Added New other, New with defects, both Refurbished grades and For parts or not working.
+* The grades eBay only allows on books, film, music and games are now grouped separately.
+
+**Titles**
+* FIX: Ampersands, apostrophes, hashes and asterisks were stripped from titles. "Base Set #4" became "Base Set 4".
+
+**Quantity**
+* Products with stock management off now list a quantity you choose rather than always 1. New setting, defaulting to 1.
+
+**Uninstalling**
+* FIX: A leftover backup folder stopped uninstall clearing scheduled jobs.
 
 = 3.13.0 - 2026-09-01 =
 **Deleting the plugin no longer deletes your settings**

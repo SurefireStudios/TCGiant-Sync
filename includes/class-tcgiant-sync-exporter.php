@@ -35,14 +35,60 @@ class TCGiant_Sync_Exporter {
 	const PUSH_ACTION = 'tcgiant_export_push_product';
 
 	/**
-	 * eBay condition IDs relevant to TCG / collectibles (legacy fallback).
+	 * eBay condition IDs, for categories that do not use ConditionDescriptors.
+	 *
+	 * Three of these were labelled one rung off eBay's own ladder: 3000 was
+	 * shown as "Very Good" when eBay calls it Used, 4000 as "Good" when eBay
+	 * calls it Very Good, and 5000 as "Acceptable" when eBay calls it Good.
+	 * A seller picking "Good" was therefore sending the code eBay publishes as
+	 * "Very Good" - overstating the item on a live listing, which is where
+	 * returns and disputes come from. Verified against two independent
+	 * tables before correcting.
+	 *
+	 * eBay's exact display name for an ID varies by category - 1000 reads
+	 * "Brand New" in one and "New with tags" in another - and the VALID set
+	 * varies too. The four media grades below are rejected outright in
+	 * categories like Computers/Networking, which is why they are marked.
+	 *
+	 * DO NOT let the "media only" labels lead you to "correct" build_item_xml()
+	 * around the ConditionDescriptor branch. In Trading Card categories eBay
+	 * gives two of these IDs entirely different meanings - 2750 is Graded and
+	 * 4000 is Ungraded, not Like New and Very Good - which is exactly what that
+	 * branch sends, and it is right. The labels here describe what these IDs
+	 * mean in the categories this list is OFFERED for, which are the ones that
+	 * do not use descriptors. Same numbers, different vocabulary.
+	 *
+	 * This list is the fallback. get_condition_policies() in the API class
+	 * returns what eBay actually permits for a chosen category, and that is
+	 * what should populate the field.
 	 */
+	/**
+	 * Of the above, the ones eBay only accepts on books, film, music and games.
+	 *
+	 * Kept separate so the settings field can group them under a heading that
+	 * says so. Correcting the labels moved the words "Very Good" off 3000,
+	 * which every category accepts, onto 4000, which most refuse - so a shop
+	 * that had 3000 saved would open Settings, read "Used" where it used to
+	 * say "Very Good", assume something had changed under it, and re-pick the
+	 * words it recognised. That swaps a working condition for one eBay throws
+	 * out, and nothing in the plugin would have caught it.
+	 */
+	const CONDITIONS_MEDIA_ONLY = array( '2750', '4000', '5000', '6000' );
+
 	const CONDITIONS = array(
-		'1000' => 'New / Sealed',
+		'1000' => 'New',
+		'1500' => 'New — other (see description)',
+		'1750' => 'New — with defects',
+		'2000' => 'Refurbished — certified',
+		'2500' => 'Refurbished — by seller',
+		'3000' => 'Used',
+		'7000' => 'For parts or not working',
+
+		// Books, films, music and games only. eBay refuses these elsewhere.
 		'2750' => 'Like New',
-		'3000' => 'Very Good',
-		'4000' => 'Good',
-		'5000' => 'Acceptable',
+		'4000' => 'Very Good',
+		'5000' => 'Good',
+		'6000' => 'Acceptable',
 	);
 
 	/**
@@ -998,10 +1044,39 @@ class TCGiant_Sync_Exporter {
 		$title       = $this->sanitize_title( $product->get_name() );
 		$description = $this->build_description( $product );
 		$price       = wc_format_decimal( $product->get_regular_price(), 2 );
-		// Floored at 1 so VerifyAddItem still gets valid XML for a zero-stock
-		// product. do_push() blocks the real listing separately — do not rely
-		// on this clamp to prevent overselling.
-		$quantity    = max( 1, (int) $product->get_stock_quantity() );
+		// How many to offer.
+		//
+		// When the shop tracks stock, that figure decides it, floored at 1 so
+		// VerifyAddItem still gets valid XML for a zero-stock product. do_push()
+		// blocks the real listing separately - do not rely on this clamp to
+		// prevent overselling.
+		//
+		// When the shop does NOT track stock, get_stock_quantity() returns null,
+		// which fell through the same clamp and listed exactly one unit. For a
+		// card shop selling singles that is right and is why it went unnoticed.
+		// For anyone holding multiples it is not: a distributor with forty
+		// switches listed one and sold out immediately, with nothing to say so.
+		// Worse, the out-of-stock guard in do_push() only fires when stock IS
+		// managed, and its own message suggests turning stock management off as
+		// the way to list - which walked people straight into this.
+		//
+		// The setting defaults to 1, so nothing changes for anyone until they
+		// say otherwise.
+		// Ask for the figure first, and only fall back when there is none.
+		//
+		// Branching on managing_stock() was wrong: it returns false for EVERY
+		// product when the shop-wide stock option is off, even where a real
+		// per-product quantity is stored. That threw away a good figure and
+		// listed the fallback instead - the same fault as before, pointed at a
+		// different set of shops.
+		$stock = $product->get_stock_quantity();
+
+		if ( null !== $stock && '' !== $stock ) {
+			$quantity = max( 1, (int) $stock );
+		} else {
+			$quantity = max( 1, (int) ( $settings['default_quantity'] ?? 1 ) );
+		}
+
 		$sku         = $product->get_sku();
 		$images      = $this->get_product_image_urls( $product );
 
@@ -1264,6 +1339,7 @@ class TCGiant_Sync_Exporter {
 			'payment_policy_id'     => $global['export_payment_policy'] ?? '',
 			'listing_type'          => $global['export_listing_type'] ?? 'FixedPriceItem',
 			'listing_duration'      => $global['export_listing_duration'] ?? 'GTC',
+			'default_quantity'      => max( 1, (int) ( $global['export_default_quantity'] ?? 1 ) ),
 		);
 
 		if ( $product ) {
@@ -2071,8 +2147,24 @@ class TCGiant_Sync_Exporter {
 	 * @return string Sanitized, truncated title.
 	 */
 	private function sanitize_title( $title ) {
-		// eBay disallows some characters in titles.
-		$title = preg_replace( '/[<>&"\'!@#*]/', '', $title );
+		// Angle brackets only.
+		//
+		// This stripped < > & " ' ! @ # and * on the grounds that eBay
+		// disallows them. eBay does not: they are ordinary characters in a
+		// title, and the ones that matter to XML are already handled where the
+		// title is placed in the payload, which runs it through esc_xml().
+		// So they were being removed twice over, and the second removal was
+		// destructive rather than protective.
+		//
+		// The cost fell hardest on exactly the sellers this was written for. A
+		// card number is written "Base Set #4", and stripping the hash left
+		// "Base Set 4". Apostrophes and ampersands went the same way out of
+		// brand names, and asterisks out of part numbers.
+		//
+		// Angle brackets stay out. Nothing legitimate in a product title has
+		// them, and eBay treats markup in a title as a policy matter rather
+		// than escaping it away.
+		$title = preg_replace( '/[<>]/', '', $title );
 		$title = trim( $title );
 
 		if ( mb_strlen( $title ) > self::MAX_TITLE_LENGTH ) {
