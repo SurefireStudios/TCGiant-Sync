@@ -24,17 +24,26 @@
         "analyse-baseline": "@php vendor/phpstan/phpstan/phpstan.phar analyse --memory-limit=3G --generate-baseline",
         "check": [
             "@lint",
+            "@check-version",
             "@check-views",
             "@check-formats",
             "@check-tabs",
             "@check-limit-gates",
+            "@check-hooks",
             "@analyse"
         ],
         "build": "@php tools/build-zip.php",
         "check-views": "@php tools/check-views.php",
         "check-formats": "@php tools/check-formats.php",
         "check-tabs": "@php tools/check-tabs.php",
-        "check-limit-gates": "@php tools/check-limit-gates.php"
+        "check-limit-gates": "@php tools/check-limit-gates.php",
+        "check-version": "@php tools/check-version.php",
+        "check-hooks": "@php tools/check-hooks.php",
+        "check-archive-parity": "@php tools/check-archive-parity.php",
+        "check-release": [
+            "@check",
+            "@check-archive-parity"
+        ]
     },
     "scripts-descriptions": {
         "lint": "Run php -l over every plugin source file.",

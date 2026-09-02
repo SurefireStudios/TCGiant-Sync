@@ -29,6 +29,7 @@ define( 'TCGIANT_SYNC_IS_STAGING', false );
 
 // --- WordPress core constants set at runtime ---
 define( 'ABSPATH', __DIR__ . '/' );
+define( 'WP_PLUGIN_DIR', __DIR__ . '/plugins' );
 define( 'MINUTE_IN_SECONDS', 60 );
 define( 'HOUR_IN_SECONDS', 3600 );
 define( 'DAY_IN_SECONDS', 86400 );

@@ -1,5 +1,28 @@
 *** TCGiant Sync Changelog ***
 
+2026-09-01 - version 3.13.0
+== Deleting the plugin no longer deletes your settings ==
+- Removing the plugin used to take its own records with it: your settings, your eBay connection, and the links recording which product came from which listing. Those links cannot be rebuilt. A later sync would not recognise products it had already imported and would bring them in a second time.
+- They are now kept unless you ask for them to go. There is a new setting under Settings, "Also delete the settings and eBay links?", and it is set to No.
+- Your products and orders were never deleted by this and still are not.
+- If you have more than one version of the plugin installed, deleting one now leaves the other completely alone. They share the same settings and the same product links, so removing one used to pull the ground out from under the other.
+
+== Fixes to what uninstalling clears ==
+- FIX: Products still queued to be pushed to eBay were never cancelled. The plugin was cancelling a job by a name it has never used, so that queue survived every uninstall and reinstall.
+- FIX: The weekly full sync added in 3.12.0 was not being cleared either, leaving a scheduled job with nothing left to run it.
+
+== Reporting ==
+- FIX: Pushing products to eBay sent us a separate report for every single product. Pushing five thousand products meant five thousand requests, all arriving at the same place your site uses to renew its eBay connection, and that contention has caused real failures. There is now one report per sync, carrying the same figures.
+- Reporting can now be switched off. Add TCGIANT_SYNC_DISABLE_TELEMETRY to wp-config.php, or use the tcgiant_sync_telemetry_enabled filter. There was previously no way to decline.
+- The report is now signed with the key your site was issued when it connected, so it can be told apart from anything else claiming to be your shop.
+
+== eBay account deletion ==
+- FIX: When eBay tells us a customer has asked for their data to be deleted, we pass that on to every connected shop. Those messages were signed with the wrong key and every shop was rejecting them, and because nothing checked the replies, it went unnoticed. They are now signed with the key your shop was actually given.
+- If your shop connected before we started issuing those keys, the plugin used to invent one of its own. That could never match, so those shops refused every message permanently while appearing to be set up correctly. It no longer does that. If yours is affected, pressing Connect to eBay once will sort it.
+
+== The connection test ==
+- The test asked an unrelated site whether the wider internet was reachable, every single time it ran. It now does that only when our own addresses have already failed, which is the only case where the answer changes the verdict. A test that passes contacts nobody but us.
+
 2026-08-30 - version 3.12.0
 == Sold items now leave your shop on their own ==
 - Products are removed when their eBay listing sells out, without waiting for you to run a full sync by hand. This is what the plugin has always been meant to do; until now only a manual full sync did it, so a store on the scheduled sync kept sold items on the shelf indefinitely.

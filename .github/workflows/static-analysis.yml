@@ -23,6 +23,9 @@ jobs:
           coverage: none
           tools: none
 
+      - name: Version agrees with itself
+        run: php tools/check-version.php
+
       - name: Syntax check (php -l)
         run: php tools/lint.php
 
@@ -37,6 +40,17 @@ jobs:
 
       - name: Free limit gates
         run: php tools/check-limit-gates.php
+
+      # A lost add_action produces no fatal, no warning and no log line - stock
+      # just stops flowing to eBay. This is the only thing that would notice.
+      - name: Hook registrations intact
+        run: php tools/check-hooks.php
+
+      # Needs a committed tree, which is exactly what CI has and a working
+      # copy usually does not. Compares what auto-updating sites receive
+      # against what the uploaded zip contains.
+      - name: Distribution routes agree
+        run: php tools/check-archive-parity.php
 
       # PHPStan itself needs a modern PHP; the analysis still targets 7.4 via
       # the platform setting in composer.json.

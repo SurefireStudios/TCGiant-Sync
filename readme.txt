@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.12.0
+Stable tag: 3.13.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,29 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.13.0 - 2026-09-01 =
+**Deleting the plugin no longer deletes your settings**
+* Removing the plugin used to take its own records with it: your settings, your eBay connection, and the links recording which product came from which listing. Those links cannot be rebuilt, so a later sync would re-import products it already had.
+* They are now kept unless you ask for them to go. New setting: "Also delete the settings and eBay links?", set to No.
+* Products and orders were never deleted by this and still are not.
+* Deleting one version of the plugin now leaves any other installed version completely alone.
+
+**Fixes to what uninstalling clears**
+* FIX: Products queued to be pushed to eBay were never cancelled — the plugin cancelled a job by a name it has never used.
+* FIX: The weekly full sync added in 3.12.0 was not cleared either.
+
+**Reporting**
+* FIX: Pushing products sent one report per product — five thousand requests for a five thousand product push, arriving at the same place your site renews its eBay connection. Now one report per sync.
+* Reporting can be switched off with the TCGIANT_SYNC_DISABLE_TELEMETRY constant or the tcgiant_sync_telemetry_enabled filter.
+* The report is signed with the key your site was issued when it connected.
+
+**eBay account deletion**
+* FIX: Deletion messages passed on to your shop were signed with the wrong key, so every shop rejected them and nothing noticed. They are now signed correctly.
+* Shops that connected before per-site keys existed had one invented locally, which could never match. Press Connect to eBay once if yours is affected.
+
+**The connection test**
+* The test now only contacts an unrelated site when our own addresses have already failed, which is the only case where it changes the verdict.
 
 = 3.12.0 - 2026-08-30 =
 **Sold items now leave your shop on their own**

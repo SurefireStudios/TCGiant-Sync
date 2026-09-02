@@ -560,6 +560,19 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 					<?php endforeach; ?>
 				</div>
 
+				<!-- On Uninstall -->
+				<div class="tc-section">
+					<h3 class="tc-section-title"><?php esc_html_e( 'When This Plugin Is Deleted', 'tcgiant-sync' ); ?></h3>
+					<div class="tc-field">
+						<label class="tc-label"><?php esc_html_e( 'Also delete the settings and eBay links?', 'tcgiant-sync' ); ?></label>
+						<div class="tc-radio-group">
+							<label><input type="radio" name="tcgiant_sync_ebay_settings[delete_data_on_uninstall]" value="1" <?php checked( $settings['delete_data_on_uninstall'] ?? '0', '1' ); ?>> Yes</label>
+							<label><input type="radio" name="tcgiant_sync_ebay_settings[delete_data_on_uninstall]" value="0" <?php checked( $settings['delete_data_on_uninstall'] ?? '0', '0' ); ?>> No</label>
+						</div>
+						<p class="tc-hint"><?php esc_html_e( 'Your products and orders are never deleted either way. This covers only the records this plugin keeps: your settings, the eBay connection, and the links saying which product came from which listing. Leave this on No if you might reinstall or move to a different version, because those links cannot be rebuilt and a later sync would not recognise products it had already imported.', 'tcgiant-sync' ); ?></p>
+					</div>
+				</div>
+
 				<div class="tc-form-footer" style="padding-top:16px;margin-top:16px;border-top:1px solid var(--tc-border);">
 					<button type="submit" class="tc-button full-width" style="font-size:14px;padding:12px 20px;"><?php esc_html_e( 'Save Import Settings', 'tcgiant-sync' ); ?></button>
 				</div>
@@ -605,7 +618,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 				<?php settings_fields( 'tcgiant_sync_ebay_group' ); ?>
 				<?php
 				// Preserve all non-export fields.
-				$all_preserve = array_merge( $preserve_keys, array( 'custom_saved_categories', 'category_ids', 'woo_category_ids', 'preserve_woo_category_ids', 'import_specs_as_tags', 'bake_shipping_into_price', 'sku_maps_to', 'sku_prefix', 'sync_interval', 'enable_order_sync', 'enable_order_import', 'enable_reconciliation', 'remove_sold_products', 'auto_end_zero_stock', 'disable_image_localization', 'auto_relist_enabled', 'overwrite_title', 'overwrite_desc', 'overwrite_price', 'overwrite_images', 'overwrite_taxonomy', 'overwrite_weight_dims' ) );
+				$all_preserve = array_merge( $preserve_keys, array( 'custom_saved_categories', 'category_ids', 'woo_category_ids', 'preserve_woo_category_ids', 'import_specs_as_tags', 'bake_shipping_into_price', 'sku_maps_to', 'sku_prefix', 'sync_interval', 'enable_order_sync', 'enable_order_import', 'enable_reconciliation', 'remove_sold_products', 'auto_end_zero_stock', 'disable_image_localization', 'auto_relist_enabled', 'overwrite_title', 'overwrite_desc', 'overwrite_price', 'overwrite_images', 'overwrite_taxonomy', 'overwrite_weight_dims', 'delete_data_on_uninstall' ) );
 				// Note: export condition descriptor fields are handled by the export form itself.
 				foreach ( $all_preserve as $key ) {
 					$val = $settings[ $key ] ?? null;

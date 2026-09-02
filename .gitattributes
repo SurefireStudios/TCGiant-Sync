@@ -33,3 +33,8 @@
 *.txt text eol=lf
 *.md  text eol=lf
 *.bat text eol=crlf
+
+# The vendored update library ships its own composer.json. build-manifest.php
+# strips every composer.json from the zip; without this, git archive did not,
+# so auto-updating sites received a file uploaded installs never had.
+/includes/plugin-update-checker/composer.json export-ignore

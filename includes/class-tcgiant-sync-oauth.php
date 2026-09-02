@@ -186,10 +186,19 @@ class TCGiant_Sync_OAuth {
 			// Marketplace Account Deletion notifications from the relay.
 			if ( ! empty( $data['relay_key'] ) ) {
 				$settings['relay_secret'] = sanitize_text_field( $data['relay_key'] );
-			} elseif ( empty( $settings['relay_secret'] ) ) {
-				// Fallback: generate locally if relay didn't provide one (legacy relay).
-				$settings['relay_secret'] = wp_generate_password( 32, false );
 			}
+
+			// Nothing is invented when the relay sends no key.
+			//
+			// This used to generate one locally and call it a fallback. It is not a
+			// fallback: the key exists to check that a deletion notice really came
+			// from the relay, and a key the relay has never seen cannot match
+			// anything it sends. The site then refused every notice for good, while
+			// appearing to be configured. Three stores were doing exactly that.
+			//
+			// Left empty, the endpoint answers "not configured" instead, which is at
+			// least the truth. Connecting to eBay again is what fixes it, because
+			// that is when the relay issues a real key.
 
 			update_option( 'tcgiant_sync_ebay_settings', $settings );
 			return true;
@@ -272,7 +281,9 @@ class TCGiant_Sync_OAuth {
 	 * network is interfering with traffic. It answers 204 with an empty body,
 	 * and the request carries nothing about the site making it: no site
 	 * address, no credentials, no data of any kind. It is sent only when
-	 * someone presses the test button, never during ordinary syncing.
+	 * someone presses the test button, never during ordinary syncing, and
+	 * then only if our own routes have already failed, because that is the
+	 * only case in which the answer depends on it.
 	 */
 	const CONTROL_URL = 'https://www.google.com/generate_204';
 
@@ -607,12 +618,6 @@ class TCGiant_Sync_OAuth {
 				'probe' => 'reject',
 				'role'  => 'report',
 			),
-			array(
-				'label' => __( 'Somewhere unrelated', 'tcgiant-sync' ),
-				'url'   => self::CONTROL_URL,
-				'probe' => 'reachable',
-				'role'  => 'control',
-			),
 		);
 
 		// Before asking anything, establish where "us" even is from here.
@@ -655,6 +660,41 @@ class TCGiant_Sync_OAuth {
 
 			$result         = self::probe_endpoint( $endpoint['label'], $endpoint['url'], $endpoint['probe'] );
 			$result['role'] = $endpoint['role'];
+			$results[]      = $result;
+		}
+
+		// The unrelated site is only asked when it would change the answer.
+		//
+		// Its job is to tell "something objects to us in particular" apart
+		// from "this server's traffic is intercepted generally", which is the
+		// distinction that identified the fault at one store: our routes came
+		// back with a security page and unrelated sites did not. It earns its
+		// place there and keeps it.
+		//
+		// But the verdict only consults it once both of our own routes have
+		// failed. If either answered, the reading is already settled and a
+		// third party settles nothing further; asking anyway sends a request
+		// on behalf of a shop that had no reason to make one. So it runs when
+		// it is needed and not otherwise, which is also the only time anyone
+		// reads it.
+		$ours_answered = false;
+
+		foreach ( $results as $result ) {
+			if ( ! isset( $result['role'], $result['state'] ) || 'ok' !== $result['state'] ) {
+				continue;
+			}
+
+			if ( 'connect' === $result['role'] || 'report' === $result['role'] ) {
+				$ours_answered = true;
+				break;
+			}
+		}
+
+		if ( ! $ours_answered ) {
+			sleep( self::PACING_SECONDS );
+
+			$result         = self::probe_endpoint( __( 'Somewhere unrelated', 'tcgiant-sync' ), self::CONTROL_URL, 'reachable' );
+			$result['role'] = 'control';
 			$results[]      = $result;
 		}
 

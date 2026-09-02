@@ -17,6 +17,11 @@ if errorlevel 1 (
     exit /b 1
 )
 
+echo === Version agreement ===
+php tools\check-version.php
+if errorlevel 1 goto failed
+
+echo.
 echo === Syntax check ===
 php tools\lint.php
 if errorlevel 1 goto failed
@@ -37,6 +42,11 @@ php tools\check-tabs.php
 if errorlevel 1 goto failed
 
 echo.
+echo === Hook registrations ===
+php tools\check-hooks.php
+if errorlevel 1 goto failed
+
+echo.
 echo === Free limit gates ===
 php tools\check-limit-gates.php
 if errorlevel 1 goto failed
@@ -53,6 +63,10 @@ if errorlevel 1 goto failed
 
 echo.
 echo All checks passed.
+echo.
+echo Before tagging a release, also run:  composer check-release
+echo   (compares what auto-updating sites get against the uploaded zip;
+echo    needs a committed tree, so it is not part of the routine run)
 echo.
 pause
 exit /b 0
