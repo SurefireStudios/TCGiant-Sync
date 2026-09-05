@@ -63,17 +63,17 @@ $export_state = TCGiant_Sync_Exporter::get_export_state();
 				<?php
 				$cond_type = $settings['export_condition_type'] ?? '';
 				if ( 'graded' === $cond_type ) {
-					$graders    = array_merge( TCGiant_Sync_Exporter::GRADERS_TCG, TCGiant_Sync_Exporter::GRADERS_COINS );
+					$graders    = array_merge( TCGiant_Sync_Catalog::GRADERS_TCG, TCGiant_Sync_Catalog::GRADERS_COINS );
 					$grader_id  = $settings['export_grader_id'] ?? '';
 					$grader_lbl = array_search( $grader_id, $graders, true );
 					$grade_val  = $settings['export_grade_value'] ?? '';
 					$cond_label = 'Graded' . ( $grader_lbl ? ' · ' . $grader_lbl : '' ) . ( $grade_val ? ' ' . $grade_val : '' );
 				} elseif ( 'ungraded' === $cond_type ) {
-					$all_ungraded = TCGiant_Sync_Exporter::UNGRADED_TCG + TCGiant_Sync_Exporter::UNGRADED_COINS;
+					$all_ungraded = TCGiant_Sync_Catalog::UNGRADED_TCG + TCGiant_Sync_Catalog::UNGRADED_COINS;
 					$ungraded_val = $settings['export_ungraded_condition'] ?? '';
 					$cond_label   = 'Ungraded' . ( isset( $all_ungraded[ $ungraded_val ] ) ? ' · ' . $all_ungraded[ $ungraded_val ] : '' );
 				} else {
-					$conditions = TCGiant_Sync_Exporter::CONDITIONS;
+					$conditions = TCGiant_Sync_Catalog::CONDITIONS;
 					$cond_id    = $settings['export_condition_id'] ?? '1000';
 					$cond_label = $conditions[ $cond_id ] ?? $cond_id;
 				}
@@ -208,7 +208,7 @@ $export_state = TCGiant_Sync_Exporter::get_export_state();
 					<?php
 					$cond_type = $settings['export_condition_type'] ?? '';
 					if ( 'graded' === $cond_type ) {
-						$graders    = array_merge( TCGiant_Sync_Exporter::GRADERS_TCG, TCGiant_Sync_Exporter::GRADERS_COINS );
+						$graders    = array_merge( TCGiant_Sync_Catalog::GRADERS_TCG, TCGiant_Sync_Catalog::GRADERS_COINS );
 						$grader_id  = $settings['export_grader_id'] ?? '';
 						$grader_lbl = array_search( $grader_id, $graders, true );
 						$grade_val  = $settings['export_grade_value'] ?? '';
@@ -221,14 +221,14 @@ $export_state = TCGiant_Sync_Exporter::get_export_state();
 						}
 					} elseif ( 'ungraded' === $cond_type ) {
 						$ungraded_val   = $settings['export_ungraded_condition'] ?? '';
-						$all_ungraded   = TCGiant_Sync_Exporter::UNGRADED_TCG + TCGiant_Sync_Exporter::UNGRADED_COINS;
+						$all_ungraded   = TCGiant_Sync_Catalog::UNGRADED_TCG + TCGiant_Sync_Catalog::UNGRADED_COINS;
 						$ungraded_label = $all_ungraded[ $ungraded_val ] ?? $ungraded_val;
 						echo '<strong>' . esc_html__( 'Ungraded', 'tcgiant-sync' ) . '</strong>';
 						if ( $ungraded_label ) {
 							echo ' &middot; ' . esc_html( $ungraded_label );
 						}
 					} else {
-						$conditions  = TCGiant_Sync_Exporter::CONDITIONS;
+						$conditions  = TCGiant_Sync_Catalog::CONDITIONS;
 						$cond_id     = $settings['export_condition_id'] ?? '1000';
 						echo esc_html( $conditions[ $cond_id ] ?? $cond_id );
 						echo ' <span style="color:#888; font-size:11px;">' . esc_html__( '(legacy)', 'tcgiant-sync' ) . '</span>';

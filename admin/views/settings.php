@@ -22,7 +22,7 @@ $license_ui       = $license->get_status_for_ui();
 $preserve_keys = array( 'access_token', 'refresh_token', 'token_expiry', 'relay_secret', 'redirect_uri', 'app_id', 'cert_id', 'store_name', 'import_status', 'marketplace' );
 
 // TCG-relevant eBay category map (ID => label).
-$tcg_categories = TCGiant_Sync_Exporter::get_categories();
+$tcg_categories = TCGiant_Sync_Catalog::get_categories();
 
 $current_category = $settings['export_category_id'] ?? '';
 // If the saved value isn't in our curated list, it's a custom ID.
@@ -340,7 +340,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						<div class="tc-field" style="margin-top:24px;">
 							<label class="tc-label"><?php esc_html_e( 'eBay Standard Categories to Import', 'tcgiant-sync' ); ?></label>
 							<?php
-							$standard_cats = TCGiant_Sync_Exporter::get_categories();
+							$standard_cats = TCGiant_Sync_Catalog::get_categories();
 							$selected_standard_cats = isset( $settings['import_standard_category_ids'] ) && is_array( $settings['import_standard_category_ids'] ) ? $settings['import_standard_category_ids'] : array();
 							?>
 							<div class="tc-checkbox-group" style="max-height:160px;overflow-y:auto;border:1px solid var(--tc-border);padding:12px;border-radius:4px;background:#fff;">
@@ -692,7 +692,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						<select class="tc-select" id="export_grader_id" name="tcgiant_sync_ebay_settings[export_grader_id]">
 							<option value=""><?php esc_html_e( '— Select grader —', 'tcgiant-sync' ); ?></option>
 							<?php 
-							$all_graders = array_merge( TCGiant_Sync_Exporter::GRADERS_TCG, TCGiant_Sync_Exporter::GRADERS_COINS );
+							$all_graders = array_merge( TCGiant_Sync_Catalog::GRADERS_TCG, TCGiant_Sync_Catalog::GRADERS_COINS );
 							foreach ( $all_graders as $gname => $gid ) : ?>
 								<option value="<?php echo esc_attr( $gid ); ?>" <?php selected( $settings['export_grader_id'] ?? '', $gid ); ?>>
 									<?php echo esc_html( $gname ); ?>
@@ -705,7 +705,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						<select class="tc-select" id="export_grade_value" name="tcgiant_sync_ebay_settings[export_grade_value]">
 							<option value=""><?php esc_html_e( '— Select grade —', 'tcgiant-sync' ); ?></option>
 							<?php
-							$all_grades = array_merge( TCGiant_Sync_Exporter::GRADES_TCG, TCGiant_Sync_Exporter::GRADES_COINS );
+							$all_grades = array_merge( TCGiant_Sync_Catalog::GRADES_TCG, TCGiant_Sync_Catalog::GRADES_COINS );
 							foreach ( array_unique( $all_grades ) as $grade ) : ?>
 								<option value="<?php echo esc_attr( $grade ); ?>" <?php selected( $settings['export_grade_value'] ?? '', $grade ); ?>>
 									<?php echo esc_html( $grade ); ?>
@@ -730,14 +730,14 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						<select class="tc-select" id="export_ungraded_condition" name="tcgiant_sync_ebay_settings[export_ungraded_condition]">
 							<option value=""><?php esc_html_e( '— Select condition —', 'tcgiant-sync' ); ?></option>
 							<optgroup label="<?php esc_attr_e( 'Trading Cards', 'tcgiant-sync' ); ?>" id="tc-ungraded-tcg-group">
-								<?php foreach ( TCGiant_Sync_Exporter::UNGRADED_TCG as $uid => $ulabel ) : ?>
+								<?php foreach ( TCGiant_Sync_Catalog::UNGRADED_TCG as $uid => $ulabel ) : ?>
 									<option value="<?php echo esc_attr( $uid ); ?>" <?php selected( $settings['export_ungraded_condition'] ?? '', $uid ); ?>>
 										<?php echo esc_html( $ulabel ); ?>
 									</option>
 								<?php endforeach; ?>
 							</optgroup>
 							<optgroup label="<?php esc_attr_e( 'Coins', 'tcgiant-sync' ); ?>" id="tc-ungraded-coins-group">
-								<?php foreach ( TCGiant_Sync_Exporter::UNGRADED_COINS as $uid => $ulabel ) : ?>
+								<?php foreach ( TCGiant_Sync_Catalog::UNGRADED_COINS as $uid => $ulabel ) : ?>
 									<option value="<?php echo esc_attr( $uid ); ?>" <?php selected( $settings['export_ungraded_condition'] ?? '', $uid ); ?>>
 										<?php echo esc_html( $ulabel ); ?>
 									</option>
@@ -766,8 +766,8 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 							);
 							$tc_cond_names  = array_keys( $tc_cond_groups );
 
-							foreach ( TCGiant_Sync_Exporter::CONDITIONS as $cid => $clabel ) {
-								$tc_media = in_array( (string) $cid, TCGiant_Sync_Exporter::CONDITIONS_MEDIA_ONLY, true );
+							foreach ( TCGiant_Sync_Catalog::CONDITIONS as $cid => $clabel ) {
+								$tc_media = in_array( (string) $cid, TCGiant_Sync_Catalog::CONDITIONS_MEDIA_ONLY, true );
 								$tc_cond_groups[ $tc_cond_names[ $tc_media ? 1 : 0 ] ][ $cid ] = $clabel;
 							}
 							?>
@@ -853,7 +853,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						<div style="flex:1;min-width:180px;">
 							<label style="font-size:12px;color:#555;display:block;margin-bottom:3px;"><?php esc_html_e( 'Listing Type', 'tcgiant-sync' ); ?></label>
 							<select class="tc-select" name="tcgiant_sync_ebay_settings[export_listing_type]" id="export_listing_type">
-								<?php foreach ( TCGiant_Sync_Exporter::LISTING_TYPES as $lt_val => $lt_label ) : ?>
+								<?php foreach ( TCGiant_Sync_Catalog::LISTING_TYPES as $lt_val => $lt_label ) : ?>
 									<option value="<?php echo esc_attr( $lt_val ); ?>" <?php selected( $settings['export_listing_type'] ?? 'FixedPriceItem', $lt_val ); ?>>
 										<?php echo esc_html( $lt_label ); ?>
 									</option>
@@ -863,7 +863,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						<div style="flex:1;min-width:180px;">
 							<label style="font-size:12px;color:#555;display:block;margin-bottom:3px;"><?php esc_html_e( 'Listing Duration', 'tcgiant-sync' ); ?></label>
 							<select class="tc-select" name="tcgiant_sync_ebay_settings[export_listing_duration]" id="export_listing_duration">
-								<?php foreach ( TCGiant_Sync_Exporter::LISTING_DURATIONS as $ld_val => $ld_label ) : ?>
+								<?php foreach ( TCGiant_Sync_Catalog::LISTING_DURATIONS as $ld_val => $ld_label ) : ?>
 									<option value="<?php echo esc_attr( $ld_val ); ?>" <?php selected( $settings['export_listing_duration'] ?? 'GTC', $ld_val ); ?>>
 										<?php echo esc_html( $ld_label ); ?>
 									</option>

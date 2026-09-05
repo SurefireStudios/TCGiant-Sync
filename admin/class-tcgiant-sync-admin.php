@@ -2216,7 +2216,7 @@ class TCGiant_Sync_Admin {
 		$global_cat      = $global_settings['export_category_id'] ?? '';
 		$exporter        = TCGiant_Sync_Exporter::instance();
 		$merged_settings = $exporter->get_export_settings( $product_id );
-		$tcg_categories  = TCGiant_Sync_Exporter::get_categories();
+		$tcg_categories  = TCGiant_Sync_Catalog::get_categories();
 		?>
 		<div id="tcgiant_ebay_listing_data" class="panel woocommerce_options_panel hide_if_grouped hide_if_external">
 		<style>
@@ -2379,11 +2379,11 @@ class TCGiant_Sync_Admin {
 				<span><?php esc_html_e( '3. Condition', 'tcgiant-sync' ); ?></span>
 				<span id="tc-step3-summary" style="font-weight:400;color:#888;font-size:12px;margin-left:auto;"><?php
 					if ( 'graded' === $cond_type ) {
-						$all_g = TCGiant_Sync_Exporter::GRADERS_TCG + TCGiant_Sync_Exporter::GRADERS_COINS;
+						$all_g = TCGiant_Sync_Catalog::GRADERS_TCG + TCGiant_Sync_Catalog::GRADERS_COINS;
 						$gl    = $grader_id ? array_search( $grader_id, $all_g, true ) : '';
 						echo esc_html( 'Graded' . ( $gl ? ' - ' . $gl : '' ) . ( $grade_val ? ' ' . $grade_val : '' ) );
 					} elseif ( 'ungraded' === $cond_type ) {
-						$all_u = TCGiant_Sync_Exporter::UNGRADED_TCG + TCGiant_Sync_Exporter::UNGRADED_COINS;
+						$all_u = TCGiant_Sync_Catalog::UNGRADED_TCG + TCGiant_Sync_Catalog::UNGRADED_COINS;
 						echo esc_html( 'Ungraded' . ( isset( $all_u[ $ungraded ] ) ? ' - ' . $all_u[ $ungraded ] : '' ) );
 					}
 				?></span>
@@ -2409,18 +2409,18 @@ class TCGiant_Sync_Admin {
 					</div>
 					<div id="tcgiant-graded-tcg-fields" style="<?php echo ( 'graded' !== $cond_type || 'tcg' !== $item_type ) ? 'display:none;' : ''; ?>"><?php
 						$go1 = array( '' => __( '-- Select grader --', 'tcgiant-sync' ) );
-						foreach ( TCGiant_Sync_Exporter::GRADERS_TCG as $gn => $gi ) { $go1[ $gi ] = $gn; }
+						foreach ( TCGiant_Sync_Catalog::GRADERS_TCG as $gn => $gi ) { $go1[ $gi ] = $gn; }
 						woocommerce_wp_select( array( 'id' => '_ebay_export_grader_id_tcg', 'label' => __( 'Professional Grader', 'tcgiant-sync' ), 'options' => $go1, 'value' => 'tcg' === $item_type ? $grader_id : '' ) );
 						$go2 = array( '' => __( '-- Select grade --', 'tcgiant-sync' ) );
-						foreach ( TCGiant_Sync_Exporter::GRADES_TCG as $g ) { $go2[ $g ] = $g; }
+						foreach ( TCGiant_Sync_Catalog::GRADES_TCG as $g ) { $go2[ $g ] = $g; }
 						woocommerce_wp_select( array( 'id' => '_ebay_export_grade_value_tcg', 'label' => __( 'Grade', 'tcgiant-sync' ), 'options' => $go2, 'value' => 'tcg' === $item_type ? $grade_val : '' ) );
 					?></div>
 					<div id="tcgiant-graded-coins-fields" style="<?php echo ( 'graded' !== $cond_type || 'coins' !== $item_type ) ? 'display:none;' : ''; ?>"><?php
 						$co1 = array( '' => __( '-- Select grader --', 'tcgiant-sync' ) );
-						foreach ( TCGiant_Sync_Exporter::GRADERS_COINS as $gn => $gi ) { $co1[ $gi ] = $gn; }
+						foreach ( TCGiant_Sync_Catalog::GRADERS_COINS as $gn => $gi ) { $co1[ $gi ] = $gn; }
 						woocommerce_wp_select( array( 'id' => '_ebay_export_grader_id_coins', 'label' => __( 'Professional Grader', 'tcgiant-sync' ), 'options' => $co1, 'value' => 'coins' === $item_type ? $grader_id : '' ) );
 						$co2 = array( '' => __( '-- Select grade --', 'tcgiant-sync' ) );
-						foreach ( TCGiant_Sync_Exporter::GRADES_COINS as $g ) { $co2[ $g ] = $g; }
+						foreach ( TCGiant_Sync_Catalog::GRADES_COINS as $g ) { $co2[ $g ] = $g; }
 						woocommerce_wp_select( array( 'id' => '_ebay_export_grade_value_coins', 'label' => __( 'Grade', 'tcgiant-sync' ), 'options' => $co2, 'value' => 'coins' === $item_type ? $grade_val : '' ) );
 					?></div>
 					<div id="tcgiant-graded-shared-fields" style="<?php echo ( 'graded' !== $cond_type || empty( $item_type ) ) ? 'display:none;' : ''; ?>"><?php
@@ -2431,12 +2431,12 @@ class TCGiant_Sync_Admin {
 					?></div>
 					<div id="tcgiant-ungraded-tcg-fields" style="<?php echo ( 'ungraded' !== $cond_type || 'tcg' !== $item_type ) ? 'display:none;' : ''; ?>"><?php
 						$uo1 = array( '' => __( '-- Select condition --', 'tcgiant-sync' ) );
-						foreach ( TCGiant_Sync_Exporter::UNGRADED_TCG as $uid => $ul ) { $uo1[ $uid ] = $ul; }
+						foreach ( TCGiant_Sync_Catalog::UNGRADED_TCG as $uid => $ul ) { $uo1[ $uid ] = $ul; }
 						woocommerce_wp_select( array( 'id' => '_ebay_export_ungraded_condition_tcg', 'label' => __( 'Condition', 'tcgiant-sync' ), 'options' => $uo1, 'value' => 'tcg' === $item_type ? $ungraded : '' ) );
 					?></div>
 					<div id="tcgiant-ungraded-coins-fields" style="<?php echo ( 'ungraded' !== $cond_type || 'coins' !== $item_type ) ? 'display:none;' : ''; ?>"><?php
 						$uo2 = array( '' => __( '-- Select condition --', 'tcgiant-sync' ) );
-						foreach ( TCGiant_Sync_Exporter::UNGRADED_COINS as $uid => $ul ) { $uo2[ $uid ] = $ul; }
+						foreach ( TCGiant_Sync_Catalog::UNGRADED_COINS as $uid => $ul ) { $uo2[ $uid ] = $ul; }
 						woocommerce_wp_select( array( 'id' => '_ebay_export_ungraded_condition_coins', 'label' => __( 'Condition', 'tcgiant-sync' ), 'options' => $uo2, 'value' => 'coins' === $item_type ? $ungraded : '' ) );
 					?></div>
 				</div>
@@ -2451,8 +2451,8 @@ class TCGiant_Sync_Admin {
 				<span id="tc-step4-summary" style="font-weight:400;color:#888;font-size:12px;margin-left:auto;"><?php
 					$lt = $merged_settings['listing_type'] ?? 'FixedPriceItem';
 					$ld = $merged_settings['listing_duration'] ?? 'GTC';
-					$lt_label = TCGiant_Sync_Exporter::LISTING_TYPES[ $lt ] ?? $lt;
-					$ld_label = TCGiant_Sync_Exporter::LISTING_DURATIONS[ $ld ] ?? $ld;
+					$lt_label = TCGiant_Sync_Catalog::LISTING_TYPES[ $lt ] ?? $lt;
+					$ld_label = TCGiant_Sync_Catalog::LISTING_DURATIONS[ $ld ] ?? $ld;
 					echo esc_html( $lt_label . ' · ' . $ld_label );
 				?></span>
 			</div>
@@ -2464,7 +2464,7 @@ class TCGiant_Sync_Admin {
 					'label'   => __( 'Listing Type', 'tcgiant-sync' ),
 					'options' => array_merge(
 						array( '' => __( '-- use profile setting --', 'tcgiant-sync' ) ),
-						TCGiant_Sync_Exporter::LISTING_TYPES
+						TCGiant_Sync_Catalog::LISTING_TYPES
 					),
 					'value'   => $listing_type_override,
 				) );
@@ -2475,7 +2475,7 @@ class TCGiant_Sync_Admin {
 					'label'   => __( 'Listing Duration', 'tcgiant-sync' ),
 					'options' => array_merge(
 						array( '' => __( '-- use profile setting --', 'tcgiant-sync' ) ),
-						TCGiant_Sync_Exporter::LISTING_DURATIONS
+						TCGiant_Sync_Catalog::LISTING_DURATIONS
 					),
 					'value'   => $listing_dur_override,
 				) );
@@ -2521,21 +2521,21 @@ class TCGiant_Sync_Admin {
 			  $cte = $merged_settings['condition_type'] ?? ''; $ite = $merged_settings['item_type'] ?? '';
 			  if ( 'other' === $ite ) {
 				  // "All Other" uses simple ConditionID, no grading required.
-				  $conditions = TCGiant_Sync_Exporter::CONDITIONS;
+				  $conditions = TCGiant_Sync_Catalog::CONDITIONS;
 				  $cond_id    = $merged_settings['condition_id'] ?? '1000';
 				  $cond_label = $conditions[ $cond_id ] ?? $cond_id;
 				  $checks[] = array( 'ok' => true, 'label' => 'Condition: ' . $cond_label );
 			  } elseif ( ! empty( $cte ) ) {
 				  if ( 'graded' === $cte ) {
 					  $gi = $merged_settings['grader_id'] ?? ''; $gv = $merged_settings['grade_value'] ?? '';
-					  $gm = 'coins' === $ite ? TCGiant_Sync_Exporter::GRADERS_COINS : TCGiant_Sync_Exporter::GRADERS_TCG;
+					  $gm = 'coins' === $ite ? TCGiant_Sync_Catalog::GRADERS_COINS : TCGiant_Sync_Catalog::GRADERS_TCG;
 					  $gn = $gi ? array_search( $gi, $gm, true ) : '';
 					  $cl = 'Graded' . ( $gn ? ' - ' . $gn : '' ) . ( $gv ? ' ' . $gv : '' );
 					  $co = ! empty( $gi ) && ! empty( $gv );
 					  if ( ! $co ) { $cl .= ' - grader and grade required'; }
 				  } else {
 					  $uv = $merged_settings['ungraded_condition'] ?? '';
-					  $um = 'coins' === $ite ? TCGiant_Sync_Exporter::UNGRADED_COINS : TCGiant_Sync_Exporter::UNGRADED_TCG;
+					  $um = 'coins' === $ite ? TCGiant_Sync_Catalog::UNGRADED_COINS : TCGiant_Sync_Catalog::UNGRADED_TCG;
 					  $cl = 'Ungraded' . ( isset( $um[ $uv ] ) ? ' - ' . $um[ $uv ] : '' );
 					  $co = ! empty( $uv );
 					  if ( ! $co ) { $cl .= ' - condition required'; }
@@ -2764,7 +2764,7 @@ class TCGiant_Sync_Admin {
 
 		// Also check the built-in categories list for a label.
 		if ( ! empty( $display_cat_id ) && empty( $display_cat_name ) ) {
-			$all_cats = TCGiant_Sync_Exporter::get_categories();
+			$all_cats = TCGiant_Sync_Catalog::get_categories();
 			if ( isset( $all_cats[ $display_cat_id ] ) ) {
 				$display_cat_name = $all_cats[ $display_cat_id ];
 			}
