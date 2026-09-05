@@ -85,17 +85,17 @@ class TCGiant_Sync_Exporter {
 
 	/** @deprecated 3.14.1 Use TCGiant_Sync_Listing_Link::on_product_duplicated(). */
 	public static function on_product_duplicated( $duplicate, $original = null ) {
-		return TCGiant_Sync_Listing_Link::on_product_duplicated( $duplicate, $original );
+		TCGiant_Sync_Listing_Link::on_product_duplicated( $duplicate, $original );
 	}
 
 	/** @deprecated 3.14.1 Use TCGiant_Sync_Listing_Link::on_third_party_duplicate(). */
 	public static function on_third_party_duplicate( $new_post_id, $post = null ) {
-		return TCGiant_Sync_Listing_Link::on_third_party_duplicate( $new_post_id, $post );
+		TCGiant_Sync_Listing_Link::on_third_party_duplicate( $new_post_id, $post );
 	}
 
 	/** @deprecated 3.14.1 Use TCGiant_Sync_Listing_Link::unlink_product_from_ebay(). */
 	public static function unlink_product_from_ebay( $product_id, $reason = 'unlinked' ) {
-		return TCGiant_Sync_Listing_Link::unlink_product_from_ebay( $product_id, $reason );
+		TCGiant_Sync_Listing_Link::unlink_product_from_ebay( $product_id, $reason );
 	}
 
 	/** @deprecated 3.14.1 Use TCGiant_Sync_Listing_Link::find_products_sharing_item_id(). */
