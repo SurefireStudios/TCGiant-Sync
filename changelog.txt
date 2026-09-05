@@ -1,5 +1,12 @@
 *** TCGiant Sync Changelog ***
 
+2026-09-05 - version 3.14.1
+== Internal restructuring - nothing changes for you ==
+- Four pieces of the plugin have moved into files of their own: the eBay reference data the settings screens show (categories, conditions, graders, grades, listing types and durations), the protection that stops a duplicated product inheriting its original's eBay link, the answer to "may another product be imported", and the usage report. Each was cut out and placed whole; none was rewritten.
+- This is groundwork. The plugin will soon be offered in editions built from the same source by leaving files out, and these four pieces are needed by editions that will not carry the files they used to live in.
+- No setting, no behaviour and no listing is affected. If anything looks different after updating, that is not this release, and we want to hear about it.
+- If your site has its own code that reached for any of these through the exporter class, it still works: the old names forward to the new ones. The usage report's callback now belongs to its own class rather than the cron class; the supported ways to switch it off are unchanged - the TCGIANT_SYNC_DISABLE_TELEMETRY constant or the tcgiant_sync_telemetry_enabled filter.
+
 2026-09-05 - version 3.14.0
 == Package weight and size now go to eBay ==
 - NEW: Pushing a product can now send its WooCommerce weight and dimensions with the listing. Nothing was ever sent before: a shop that set a weight saw eBay reject the listing for having none, and no setting would have changed it - the figure simply did not travel.

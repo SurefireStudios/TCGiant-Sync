@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.14.0
+Stable tag: 3.14.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,10 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.14.1 - 2026-09-05 =
+**Internal restructuring - nothing changes for you**
+* Four pieces of the plugin moved into files of their own, cut out and placed whole, as groundwork for editions built from one source. No setting, behaviour or listing is affected.
 
 = 3.14.0 - 2026-09-05 =
 **Package weight and size now go to eBay**

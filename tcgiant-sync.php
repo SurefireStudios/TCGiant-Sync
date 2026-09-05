@@ -4,7 +4,7 @@
  * Plugin URI:  https://github.com/SurefireStudios/TCGiant-Sync
  * Update URI:  https://github.com/SurefireStudios/TCGiant-Sync
  * Description: Sync your eBay store to WooCommerce — import listings, images, and inventory with automated stock updates.
- * Version:     3.14.0
+ * Version:     3.14.1
  * Author:      TCGiant Team
  * Author URI:  https://surefirestudios.io
  * Text Domain: tcgiant-sync
@@ -62,7 +62,7 @@ if ( defined( 'TCGIANT_SYNC_VERSION' ) ) {
 }
 
 // Define constants.
-define('TCGIANT_SYNC_VERSION', '3.14.0');
+define('TCGIANT_SYNC_VERSION', '3.14.1');
 define('TCGIANT_SYNC_FILE', __FILE__);
 define('TCGIANT_SYNC_PATH', plugin_dir_path(__FILE__));
 define('TCGIANT_SYNC_URL', plugin_dir_url(__FILE__));
