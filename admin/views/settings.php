@@ -262,7 +262,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 					}
 				}
 				// Preserve export settings too so they aren't wiped by this form.
-				$export_preserve = array( 'export_category_id', 'export_category_name', 'export_condition_id', 'export_condition_type', 'export_grader_id', 'export_grade_value', 'export_cert_number', 'export_ungraded_condition', 'export_location', 'export_postal_code', 'export_fulfillment_policy', 'export_return_policy', 'export_payment_policy', 'export_listing_type', 'export_listing_duration', 'export_default_quantity' );
+				$export_preserve = array( 'export_category_id', 'export_category_name', 'export_condition_id', 'export_condition_type', 'export_grader_id', 'export_grade_value', 'export_cert_number', 'export_ungraded_condition', 'export_location', 'export_postal_code', 'export_fulfillment_policy', 'export_return_policy', 'export_payment_policy', 'export_listing_type', 'export_listing_duration', 'export_default_quantity', 'export_send_package_details' );
 				foreach ( $export_preserve as $key ) {
 					if ( ! empty( $settings[ $key ] ) ) {
 						echo '<input type="hidden" name="tcgiant_sync_ebay_settings[' . esc_attr( $key ) . ']" value="' . esc_attr( $settings[ $key ] ) . '">';
@@ -881,6 +881,16 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						name="tcgiant_sync_ebay_settings[export_default_quantity]"
 						value="<?php echo esc_attr( $settings['export_default_quantity'] ?? '1' ); ?>" style="max-width:120px;">
 					<p class="tc-hint"><?php esc_html_e( 'Only used for products with WooCommerce stock management turned off, where there is no quantity to read. Products that do track stock always list their real quantity. Leave at 1 if you sell single items.', 'tcgiant-sync' ); ?></p>
+				</div>
+
+				<!-- Package weight and size -->
+				<div class="tc-field">
+					<label class="tc-label"><?php esc_html_e( 'Send Package Weight and Size to eBay?', 'tcgiant-sync' ); ?></label>
+					<div class="tc-radio-group">
+						<label><input type="radio" name="tcgiant_sync_ebay_settings[export_send_package_details]" value="1" <?php checked( $settings['export_send_package_details'] ?? '0', '1' ); ?>> Yes</label>
+						<label><input type="radio" name="tcgiant_sync_ebay_settings[export_send_package_details]" value="0" <?php checked( $settings['export_send_package_details'] ?? '0', '0' ); ?>> No</label>
+					</div>
+					<p class="tc-hint"><?php esc_html_e( 'Sends each product\'s WooCommerce weight and dimensions with the listing. Needed if your eBay shipping policy calculates postage by weight; not needed for flat-rate postage. Off by default so existing listings are not changed until you choose. For a variable product the heaviest variation is used.', 'tcgiant-sync' ); ?></p>
 				</div>
 
 				<!-- Best Offer -->

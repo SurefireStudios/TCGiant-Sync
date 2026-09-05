@@ -3296,6 +3296,18 @@ class TCGiant_Sync_Admin {
 			wp_send_json_error( array( 'message' => 'Product not found.' ) );
 		}
 
+		// The check Push runs, so Verify names the missing fields too. It did not:
+		// a merchant who pressed Verify twice got eBay's wording each time and
+		// never learned that the plugin could have told them which attribute to add.
+		$missing_aspects = $exporter->find_missing_required_aspects( $product, $settings );
+		if ( ! empty( $missing_aspects ) ) {
+			wp_send_json_error( array( 'message' => sprintf(
+				/* translators: %s: comma-separated list of eBay aspect names */
+				__( 'eBay requires these item specifics for the selected category and they are empty: %s. Add them as product attributes (Product data, Attributes tab), then try again.', 'tcgiant-sync' ),
+				implode( ', ', $missing_aspects )
+			) ) );
+		}
+
 		// Build item XML and call VerifyAddItem.
 		$item_xml = $exporter->build_item_xml_public( $product, $settings );
 		$full_xml = '<Item>' . "\n" . $item_xml . "\n" . '</Item>';

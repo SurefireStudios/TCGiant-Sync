@@ -1,5 +1,17 @@
 *** TCGiant Sync Changelog ***
 
+2026-09-05 - version 3.14.0
+== Package weight and size now go to eBay ==
+- NEW: Pushing a product can now send its WooCommerce weight and dimensions with the listing. Nothing was ever sent before: a shop that set a weight saw eBay reject the listing for having none, and no setting would have changed it - the figure simply did not travel.
+- OFF BY DEFAULT. Every shop that has ever pushed did so without weights, and their listings work: flat-rate postage needs none. Turning this on rewrites listings on the next push, so it is your choice. Settings, Push to eBay Settings, "Send Package Weight and Size to eBay". A shop whose eBay shipping policy calculates postage by weight will want it on.
+- Figures are sent in the system your eBay site uses - pounds and ounces for the United States, kilograms and grams everywhere else - converted from whatever unit your shop uses, with exact constants and nearest rounding. Nearest matters: weights are read back from eBay on every scheduled sync, and rounding up made a 3 oz card gain an ounce every cycle, without end. Nearest holds steady in every store unit. This was measured, not assumed.
+- For a variable product the heaviest published variation describes the parcel, never simply the first one.
+- Known limit: a weight cannot be removed from a live listing this way. A blank field sends nothing, and eBay keeps what it had. To change a wrong weight, set the right one.
+
+== Verify now tells you what is missing ==
+- FIX: The Push button checked, on your own site and before contacting eBay, that every item specific eBay requires for your category had a value, and named the ones that did not. Verify did not run that check, so pressing Verify gave you eBay's wording instead of ours. It now runs the same check.
+- FIX: When looking up which item specifics a category requires, a failed lookup was silent and indistinguishable from "none required". It is now logged.
+
 2026-09-05 - version 3.13.2
 == Weights and sizes for shops outside the United States ==
 - FIX: Listings on eBay UK, Germany, Australia and the other metric sites were imported as though they were in pounds, ounces and inches. A 0.6 kg oil filter arrived as 17.01 kg; a 350 g part as 9.92 kg; a 10 cm box as 25.4 cm. The plugin was reading the system from a marketplace setting that defaults to the United States - and which, because of the next fix, most new shops had never been shown.

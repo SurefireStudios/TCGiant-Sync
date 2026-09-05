@@ -1159,6 +1159,7 @@ class TCGiant_Sync_Exporter {
 		}
 		$xml .= '<Currency>' . esc_attr( $marketplace['currency'] ) . '</Currency>' . "\n";
 		$xml .= '<DispatchTimeMax>3</DispatchTimeMax>' . "\n";
+		$xml .= $this->build_shipping_package_xml( $product, $settings );
 
 		// Listing type and duration: default to FixedPriceItem/GTC, overridable per-product.
 		$listing_type     = $settings['listing_type'] ?? 'FixedPriceItem';
@@ -1340,6 +1341,7 @@ class TCGiant_Sync_Exporter {
 			'listing_type'          => $global['export_listing_type'] ?? 'FixedPriceItem',
 			'listing_duration'      => $global['export_listing_duration'] ?? 'GTC',
 			'default_quantity'      => max( 1, (int) ( $global['export_default_quantity'] ?? 1 ) ),
+			'send_package_details'  => ! empty( $global['export_send_package_details'] ),
 		);
 
 		if ( $product ) {
@@ -2139,6 +2141,176 @@ class TCGiant_Sync_Exporter {
 	// -------------------------------------------------------------------------
 	// Helper Methods
 	// -------------------------------------------------------------------------
+
+	/**
+	 * Package weight and size for the listing, when the shop has asked for it.
+	 *
+	 * Nothing was ever sent. A shop that set a weight in WooCommerce saw eBay
+	 * reject the listing for having none, and there was no setting anywhere
+	 * that would have changed it - it simply did not travel.
+	 *
+	 * OFF BY DEFAULT, deliberately. Every shop that has ever pushed did so
+	 * without weights, and their listings work: flat-rate postage needs none.
+	 * Switching this on for them would rewrite every live listing on the next
+	 * bulk push. They can choose it; a shop on calculated postage will want to.
+	 *
+	 * ROUNDING IS TO NEAREST, NOT UP, AND THIS MATTERS. The importer writes
+	 * weights back from eBay on every scheduled sync, so what goes out comes
+	 * back in and goes out again. Rounding up looks safe - the shop, not the
+	 * buyer, pays for an under-declared parcel - but it ratchets: a 3 oz card
+	 * in a gram-unit shop went 3, 4, 5, 6, 7, 8 oz, one more each cycle, with
+	 * no fixed point. Nearest rounding is stable in all four store units.
+	 * Measured, not reasoned.
+	 *
+	 * A variable product has one package for every variation, so the heaviest
+	 * published one is used - never the first, whose order is arbitrary.
+	 *
+	 * Known limit: a weight cannot be REMOVED from a live listing this way.
+	 * Leaving the field blank sends nothing, and on a revise eBay keeps what it
+	 * had. To change a wrong weight, set the right one.
+	 *
+	 * @param WC_Product $product  The product being listed.
+	 * @param array      $settings Merged export settings.
+	 * @return string XML, or empty when there is nothing to send.
+	 */
+	private function build_shipping_package_xml( WC_Product $product, array $settings ) {
+		if ( empty( $settings['send_package_details'] ) ) {
+			return '';
+		}
+
+		$source = $this->package_source_product( $product );
+		$weight = (float) $source->get_weight();
+
+		if ( $weight <= 0 ) {
+			return '';
+		}
+
+		$system    = $this->export_measurement_system();
+		$is_metric = ( 'Metric' === $system );
+		$w_unit    = get_option( 'woocommerce_weight_unit', 'kg' );
+		$d_unit    = get_option( 'woocommerce_dimension_unit', 'cm' );
+
+		list( $major, $minor ) = self::weight_to_ebay( $weight, $w_unit, $system );
+
+		// MeasurementUnit is the load-bearing field: it fixes what Major and Minor
+		// mean. The unit attributes are for anyone reading the payload in a log.
+		$xml  = '<ShippingPackageDetails>' . "\n";
+		$xml .= "\t<MeasurementUnit>" . $system . "</MeasurementUnit>\n";
+		$xml .= "\t<WeightMajor unit=\"" . ( $is_metric ? 'kg' : 'lbs' ) . "\">" . $major . "</WeightMajor>\n";
+		$xml .= "\t<WeightMinor unit=\"" . ( $is_metric ? 'g' : 'oz' ) . "\">" . $minor . "</WeightMinor>\n";
+
+		$dims = array(
+			'PackageLength' => $source->get_length(),
+			'PackageWidth'  => $source->get_width(),
+			'PackageDepth'  => $source->get_height(),
+		);
+
+		foreach ( $dims as $tag => $raw ) {
+			$value = self::dimension_to_ebay( (float) $raw, $d_unit, $system );
+			if ( '' !== $value ) {
+				$xml .= "\t<" . $tag . " unit=\"" . ( $is_metric ? 'cm' : 'in' ) . "\">" . $value . "</" . $tag . ">\n";
+			}
+		}
+
+		$xml .= '</ShippingPackageDetails>' . "\n";
+
+		return $xml;
+	}
+
+	/**
+	 * The product whose weight and size describe the parcel.
+	 *
+	 * @param WC_Product $product
+	 * @return WC_Product
+	 */
+	private function package_source_product( WC_Product $product ) {
+		if ( ! $product->is_type( 'variable' ) ) {
+			return $product;
+		}
+
+		$heaviest = $product;
+		$max      = (float) $product->get_weight();
+
+		foreach ( $product->get_children() as $child_id ) {
+			$child = wc_get_product( $child_id );
+			if ( ! $child || 'publish' !== $child->get_status() ) {
+				continue;
+			}
+			$w = (float) $child->get_weight();
+			if ( $w > $max ) {
+				$max      = $w;
+				$heaviest = $child;
+			}
+		}
+
+		return $heaviest;
+	}
+
+	/**
+	 * Which system the listing site expects. Mirrors the importer's reading of
+	 * a listing: the United States is English, everything else is Metric.
+	 *
+	 * @return string 'English' or 'Metric'.
+	 */
+	private function export_measurement_system() {
+		$site = TCGiant_Sync_API::instance()->get_marketplace_config()['site'];
+		return in_array( $site, array( 'US', 'eBayMotors' ), true ) ? 'English' : 'Metric';
+	}
+
+	/**
+	 * A WooCommerce weight as eBay wants it: whole major units and whole minor.
+	 *
+	 * Everything goes through grams with exact constants, then to nearest whole
+	 * minor unit, then split. A weight that is set but rounds to nothing is sent
+	 * as one minor unit rather than as nothing at all.
+	 *
+	 * @param float  $weight Value in the store unit.
+	 * @param string $unit   Store unit: kg, g, lbs or oz.
+	 * @param string $system 'English' (lbs + oz) or 'Metric' (kg + g).
+	 * @return int[] Major and minor.
+	 */
+	public static function weight_to_ebay( $weight, $unit, $system ) {
+		$grams_per = array( 'kg' => 1000.0, 'g' => 1.0, 'lbs' => 453.59237, 'oz' => 28.349523125 );
+		$grams     = (float) $weight * ( $grams_per[ $unit ] ?? 1000.0 );
+
+		if ( 'Metric' === $system ) {
+			$n         = (int) round( $grams );
+			$per_major = 1000;
+		} else {
+			$n         = (int) round( $grams / 28.349523125 );
+			$per_major = 16;
+		}
+
+		if ( $grams > 0 && $n < 1 ) {
+			$n = 1;
+		}
+
+		return array( intdiv( $n, $per_major ), $n % $per_major );
+	}
+
+	/**
+	 * A WooCommerce dimension in the unit the listing site expects.
+	 *
+	 * @param float  $value  Value in the store unit.
+	 * @param string $unit   Store unit: mm, cm, m, in or yd.
+	 * @param string $system 'English' (inches) or 'Metric' (centimetres).
+	 * @return string Up to two decimals, or '' when there is nothing to send.
+	 */
+	public static function dimension_to_ebay( $value, $unit, $system ) {
+		if ( $value <= 0 ) {
+			return '';
+		}
+
+		$cm_per = array( 'mm' => 0.1, 'cm' => 1.0, 'm' => 100.0, 'in' => 2.54, 'yd' => 91.44 );
+		$cm     = (float) $value * ( $cm_per[ $unit ] ?? 1.0 );
+		$out    = round( ( 'Metric' === $system ) ? $cm : $cm / 2.54, 2 );
+
+		if ( $out <= 0 ) {
+			$out = 0.01;
+		}
+
+		return rtrim( rtrim( number_format( $out, 2, '.', '' ), '0' ), '.' );
+	}
 
 	/**
 	 * Sanitize a product title to eBay's 80-character limit.

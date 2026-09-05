@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.13.2
+Stable tag: 3.14.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,17 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.14.0 - 2026-09-05 =
+**Package weight and size now go to eBay**
+* NEW: Pushing a product can send its WooCommerce weight and dimensions with the listing. Off by default - turn it on under Push to eBay Settings if your eBay shipping policy calculates postage by weight.
+* Sent in your eBay site's system (lbs/oz or kg/g), converted from your store unit with nearest rounding, which is stable across repeated syncs where rounding up was not.
+* Variable products use the heaviest published variation.
+* A weight cannot be removed from a live listing by blanking the field; set the correct one instead.
+
+**Verify names missing item specifics**
+* FIX: Verify now runs the same required-item-specifics check as Push, naming what is missing before eBay is contacted.
+* FIX: A failed lookup of a category's required specifics is now logged instead of silently reading as "none".
 
 = 3.13.2 - 2026-09-05 =
 **Weights and sizes outside the United States**

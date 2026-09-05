@@ -1287,7 +1287,10 @@ class TCGiant_Sync_API {
 			'GET',
 			array(),
 			array( 'category_id' => $category_id ),
-			false
+			// Logged. This passed false, so a failed lookup left no trace and was
+			// indistinguishable from 'nothing required' - which is how a merchant
+			// came to hear about a missing aspect from eBay instead of from us.
+			true
 		);
 
 		if ( is_wp_error( $response ) ) {
