@@ -123,6 +123,8 @@ final class TCGiant_Sync {
 
 		// Initialize Exporter.
 		TCGiant_Sync_Exporter::instance();
+		// Initialize listing-identity protection (every edition; the importer relies on it).
+		TCGiant_Sync_Listing_Link::instance();
 
 		// Initialize Cron.
 		TCGiant_Sync_Cron::instance();

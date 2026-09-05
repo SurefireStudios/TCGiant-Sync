@@ -844,7 +844,7 @@ class TCGiant_Sync_Admin {
 		}
 
 		$was = get_post_meta( $product_id, '_ebay_item_id', true );
-		TCGiant_Sync_Exporter::unlink_product_from_ebay( $product_id, 'unlinked by admin' );
+		TCGiant_Sync_Listing_Link::unlink_product_from_ebay( $product_id, 'unlinked by admin' );
 
 		wp_send_json_success( array(
 			'message' => $was
@@ -1573,7 +1573,7 @@ class TCGiant_Sync_Admin {
 
 		// Do not end a listing that another product also claims — ending it
 		// from a duplicate would close the original's live listing.
-		$shared_with = TCGiant_Sync_Exporter::find_products_sharing_item_id( $product_id, $ebay_item_id );
+		$shared_with = TCGiant_Sync_Listing_Link::find_products_sharing_item_id( $product_id, $ebay_item_id );
 		if ( ! empty( $shared_with ) ) {
 			wp_send_json_error( array(
 				'message' => sprintf(
@@ -2875,7 +2875,7 @@ class TCGiant_Sync_Admin {
 		// Unlink — for products that inherited another product's eBay Item ID
 		// through duplication. Local only; the eBay listing is not touched.
 		if ( ! empty( $ebay_item_id ) ) {
-			$shared = TCGiant_Sync_Exporter::find_products_sharing_item_id( $post_id, $ebay_item_id );
+			$shared = TCGiant_Sync_Listing_Link::find_products_sharing_item_id( $post_id, $ebay_item_id );
 			if ( ! empty( $shared ) ) {
 				echo '<button type="button" class="tc-ebay-btn tc-ebay-btn-unlink" data-product-id="' . esc_attr( $post_id ) . '" '
 					. 'title="' . esc_attr__( 'This product shares an eBay listing with another product. Unlink it so it can be listed separately. The eBay listing is not changed.', 'tcgiant-sync' ) . '">'
