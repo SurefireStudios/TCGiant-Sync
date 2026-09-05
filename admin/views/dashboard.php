@@ -19,7 +19,7 @@ $sync_state       = TCGiant_Sync_Importer::get_sync_state();
 $is_authenticated = TCGiant_Sync_OAuth::instance()->is_authenticated();
 $settings         = TCGiant_Sync_OAuth::instance()->get_settings();
 $log_entries      = TCGiant_Sync_Logger::get_recent_entries( 10 );
-$license          = TCGiant_Sync_License::instance();
+$license          = TCGiant_Sync_Entitlements::instance();
 $license_ui       = $license->get_status_for_ui();
 $export_state     = TCGiant_Sync_Exporter::get_export_state();
 
@@ -204,8 +204,8 @@ if ( empty( $settings['redirect_uri'] ) ) {
 									printf(
 										/* translators: 1: products held, 2: free limit */
 										esc_html__( '%1$d of %2$d free products used. Products already imported keep syncing; new listings are not imported.', 'tcgiant-sync' ),
-										absint( TCGiant_Sync_License::instance()->get_active_product_count() ),
-										absint( TCGiant_Sync_License::FREE_LIMIT )
+										absint( $license->get_active_product_count() ),
+										absint( $license->get_free_limit() )
 									);
 								} elseif ( 'stopped' === $sync_state['status'] ) {
 									echo esc_html__( 'Stopped by hand. Use Resume Import to carry on.', 'tcgiant-sync' );

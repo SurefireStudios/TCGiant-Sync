@@ -435,7 +435,7 @@ class TCGiant_Sync_Importer {
 	 */
 	public function start_full_sync( $force = false ) {
 		// License check: can the user import more products?
-		$license = TCGiant_Sync_License::instance();
+		$license = TCGiant_Sync_Entitlements::instance();
 		// The limit caps how many products a store may hold, not whether the
 		// ones it already has stay in step with eBay.
 		//
@@ -453,7 +453,7 @@ class TCGiant_Sync_Importer {
 				sprintf(
 					'Free tier limit reached (%d/%d active products). Products already imported carry on syncing; only new listings are held back. Upgrade to TCGiant Sync Pro for unlimited imports.',
 					$license->get_active_product_count(),
-					TCGiant_Sync_License::FREE_LIMIT
+					$license->get_free_limit()
 				),
 				'warning'
 			);
@@ -936,7 +936,7 @@ class TCGiant_Sync_Importer {
 		$valid_custom_ids = $is_custom_filtering ? $this->get_allowed_category_ids() : array();
 
 		$mapper = TCGiant_Sync_Mapper::instance();
-		$license = TCGiant_Sync_License::instance();
+		$license = TCGiant_Sync_Entitlements::instance();
 		$processed = 0;
 		$errors = 0;
 		$skipped = 0;
@@ -979,7 +979,7 @@ class TCGiant_Sync_Importer {
 						TCGiant_Sync_Logger::log( sprintf(
 							'Import limit reached (%d/%d products). New listings will not be imported; products already imported carry on syncing normally.',
 							$license->get_active_product_count(),
-							TCGiant_Sync_License::FREE_LIMIT
+							$license->get_free_limit()
 						), 'warning' );
 					}
 					$skipped++;
@@ -1583,7 +1583,7 @@ class TCGiant_Sync_Importer {
 
 		$active_ids_batch = array();
 		$mapper = TCGiant_Sync_Mapper::instance();
-		$license = TCGiant_Sync_License::instance();
+		$license = TCGiant_Sync_Entitlements::instance();
 		$inline_processed = 0;
 		$inline_errors = 0;
 
@@ -1636,7 +1636,7 @@ class TCGiant_Sync_Importer {
 					TCGiant_Sync_Logger::log( sprintf(
 						'Import limit reached (%d/%d products). New listings will not be imported; products already imported carry on syncing normally.',
 						$license->get_active_product_count(),
-						TCGiant_Sync_License::FREE_LIMIT
+						$license->get_free_limit()
 					), 'warning' );
 				}
 				continue;
@@ -1903,7 +1903,7 @@ class TCGiant_Sync_Importer {
 			// whatever it last held. The queue is no longer cleared for the same
 			// reason: it holds updates to existing products as well as new ones,
 			// and this returns before spending an API call anyway.
-			$license = TCGiant_Sync_License::instance();
+			$license = TCGiant_Sync_Entitlements::instance();
 			if ( ! self::product_exists_for_item( $item_id )
 				&& ( self::$limit_reported || ! $license->can_import() ) ) {
 				if ( ! self::$limit_reported ) {
@@ -1913,7 +1913,7 @@ class TCGiant_Sync_Importer {
 						sprintf(
 							'Import limit reached (%d/%d products). New listings will not be imported; products already imported carry on syncing normally. Upgrade to Pro for unlimited.',
 							$license->get_active_product_count(),
-							TCGiant_Sync_License::FREE_LIMIT
+							$license->get_free_limit()
 						),
 						'warning'
 					);

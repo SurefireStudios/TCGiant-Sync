@@ -14,7 +14,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 $is_authenticated = TCGiant_Sync_OAuth::instance()->is_authenticated();
 $settings         = TCGiant_Sync_OAuth::instance()->get_settings();
-$license          = TCGiant_Sync_License::instance();
+$license          = TCGiant_Sync_Entitlements::instance();
 $license_ui       = $license->get_status_for_ui();
 $auth_url         = TCGiant_Sync_OAuth::instance()->get_authorization_url();
 $log_entries      = TCGiant_Sync_Logger::get_recent_entries( 20 );

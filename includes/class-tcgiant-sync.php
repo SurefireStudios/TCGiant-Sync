@@ -109,8 +109,8 @@ final class TCGiant_Sync {
 			TCGiant_Sync_Admin::instance();
 		}
 
-		// Initialize License Manager (must be before Importer).
-		TCGiant_Sync_License::instance();
+		// Initialize entitlements - the licence where this build has one (must be before Importer).
+		TCGiant_Sync_Entitlements::instance();
 
 		// Initialize Inventory Sync.
 		TCGiant_Sync_Inventory::instance();

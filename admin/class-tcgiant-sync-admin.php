@@ -145,7 +145,7 @@ class TCGiant_Sync_Admin {
 		wp_enqueue_style( 'tcgiant-sync-admin', TCGIANT_SYNC_URL . 'admin/assets/css/admin.css', array(), $css_ver );
 		wp_enqueue_script( 'tcgiant-sync-admin', TCGIANT_SYNC_URL . 'admin/assets/js/admin.js', array( 'jquery' ), $js_ver, true );
 
-		$license = TCGiant_Sync_License::instance();
+		$license = TCGiant_Sync_Entitlements::instance();
 
 		// Only enable AJAX polling on pages that display live status/logs.
 		$polling_pages = array(
@@ -1147,7 +1147,7 @@ class TCGiant_Sync_Admin {
 		}
 
 		$stats = $this->get_sync_stats();
-		$license = TCGiant_Sync_License::instance();
+		$license = TCGiant_Sync_Entitlements::instance();
 		
 		wp_send_json_success( array(
 			'state'   => $state,

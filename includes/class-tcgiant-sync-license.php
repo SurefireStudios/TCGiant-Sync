@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
 /**
  * TCGiant_Sync_License class
  */
-class TCGiant_Sync_License
+class TCGiant_Sync_License extends TCGiant_Sync_Entitlements
 {
 
 	/**
@@ -136,61 +136,13 @@ class TCGiant_Sync_License
 	}
 
 	/**
-	 * Count active synced products (products with _ebay_item_id meta).
+	 * The free-tier cap, through the name every edition shares.
 	 *
-	 * @return int Number of active synced products.
+	 * @return int
 	 */
-	public function get_active_product_count()
+	public function get_free_limit()
 	{
-		global $wpdb;
-
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-		return (int) $wpdb->get_var(
-			"SELECT COUNT(DISTINCT p.ID) FROM {$wpdb->posts} p
-			 INNER JOIN {$wpdb->postmeta} pm ON pm.post_id = p.ID
-			 WHERE p.post_type = 'product'
-			 AND p.post_status IN ('publish','draft')
-			 AND pm.meta_key = '_ebay_item_id'
-			 AND pm.meta_value != ''"
-		);
-	}
-
-	/**
-	 * Count products pushed from Woo to eBay.
-	 *
-	 * @return int Number of pushed products.
-	 */
-	public function get_pushed_product_count()
-	{
-		global $wpdb;
-		return (int) $wpdb->get_var(
-			"SELECT COUNT(DISTINCT p.ID) FROM {$wpdb->posts} p
-			 INNER JOIN {$wpdb->postmeta} pm1 ON pm1.post_id = p.ID
-			 INNER JOIN {$wpdb->postmeta} pm2 ON pm2.post_id = p.ID
-			 WHERE p.post_type = 'product'
-			 AND p.post_status IN ('publish','draft')
-			 AND pm1.meta_key = '_ebay_item_id' AND pm1.meta_value != ''
-			 AND pm2.meta_key = '_ebay_export_status' AND pm2.meta_value = 'pushed'"
-		);
-	}
-
-	/**
-	 * Count products pulled from eBay to Woo.
-	 *
-	 * @return int Number of pulled products.
-	 */
-	public function get_pulled_product_count()
-	{
-		global $wpdb;
-		return (int) $wpdb->get_var(
-			"SELECT COUNT(DISTINCT p.ID) FROM {$wpdb->posts} p
-			 INNER JOIN {$wpdb->postmeta} pm1 ON pm1.post_id = p.ID
-			 LEFT JOIN {$wpdb->postmeta} pm2 ON pm2.post_id = p.ID AND pm2.meta_key = '_ebay_export_status'
-			 WHERE p.post_type = 'product'
-			 AND p.post_status IN ('publish','draft')
-			 AND pm1.meta_key = '_ebay_item_id' AND pm1.meta_value != ''
-			 AND (pm2.meta_value IS NULL OR pm2.meta_value != 'pushed')"
-		);
+		return self::FREE_LIMIT;
 	}
 
 	/**

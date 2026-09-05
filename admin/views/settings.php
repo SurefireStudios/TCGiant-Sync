@@ -16,7 +16,7 @@ $admin            = TCGiant_Sync_Admin::instance();
 $is_authenticated = TCGiant_Sync_OAuth::instance()->is_authenticated();
 $settings         = TCGiant_Sync_OAuth::instance()->get_settings();
 $auth_url         = TCGiant_Sync_OAuth::instance()->get_authorization_url();
-$license          = TCGiant_Sync_License::instance();
+$license          = TCGiant_Sync_Entitlements::instance();
 $license_ui       = $license->get_status_for_ui();
 
 $preserve_keys = array( 'access_token', 'refresh_token', 'token_expiry', 'relay_secret', 'redirect_uri', 'app_id', 'cert_id', 'store_name', 'import_status', 'marketplace' );

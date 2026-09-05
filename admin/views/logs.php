@@ -12,7 +12,7 @@ if (!defined('ABSPATH')) {
 
 // Fetch up to 1000 logs for the dedicated logs page.
 $log_entries = TCGiant_Sync_Logger::get_recent_entries(1000);
-$license_ui = TCGiant_Sync_License::instance()->get_status_for_ui();
+$license_ui = TCGiant_Sync_Entitlements::instance()->get_status_for_ui();
 ?>
 
 <div class="wrap tc-dashboard-wrap">
