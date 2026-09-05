@@ -268,8 +268,10 @@ class TCGiant_Sync_Jobs {
 		$queued      = $job['queued'] ?? 0;
 		$errors      = $job['errors'];
 
-		$exporter = TCGiant_Sync_Exporter::instance();
-		$api      = TCGiant_Sync_API::instance();
+		// The exporter is resolved inside the arms that use it, not here. Fetched
+		// unconditionally, this fatalled on the Stock Review and Image Cleanup
+		// screens in any build that ships no exporter.
+		$api = TCGiant_Sync_API::instance();
 
 		foreach ( $batch as $product_id ) {
 			$product = wc_get_product( $product_id );
@@ -286,6 +288,7 @@ class TCGiant_Sync_Jobs {
 					// this counter records "queued", not "listed". Reporting it
 					// as success made the progress bar hit 100% before a single
 					// listing had been created, and hid every real failure.
+					$exporter = TCGiant_Sync_Exporter::instance();
 					$result = $exporter->push_product( $product_id );
 					if ( $result ) {
 						$queued++;
@@ -313,6 +316,7 @@ class TCGiant_Sync_Jobs {
 					break;
 
 				case 'bulk_verify':
+					$exporter = TCGiant_Sync_Exporter::instance();
 					$settings = $exporter->get_export_settings( $product_id );
 					$valid    = $exporter->validate_export_settings( $settings );
 					if ( is_wp_error( $valid ) ) {

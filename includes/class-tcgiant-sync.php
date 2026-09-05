@@ -128,6 +128,10 @@ final class TCGiant_Sync {
 
 		// Initialize Cron.
 		TCGiant_Sync_Cron::instance();
+		// Initialize telemetry (Pro only; the file is absent from other editions).
+		if ( class_exists( 'TCGiant_Sync_Telemetry' ) ) {
+			TCGiant_Sync_Telemetry::instance();
+		}
 
 		// Initialize Webhooks.
 		TCGiant_Sync_Webhooks::instance();
