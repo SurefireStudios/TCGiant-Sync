@@ -34,6 +34,75 @@ class TCGiant_Sync_Exporter {
 	 */
 	const PUSH_ACTION = 'tcgiant_export_push_product';
 
+	/*
+	 * Kept for anyone outside the plugin who reached for these here.
+	 *
+	 * The eBay vocabulary and the listing-identity helpers moved to
+	 * TCGiant_Sync_Catalog and TCGiant_Sync_Listing_Link in 3.14.1, because
+	 * editions that ship no exporter need them. Nothing in the plugin uses
+	 * these names any more. A theme snippet or a site's own mu-plugin might,
+	 * and an update must not fatal a site that was working. They forward.
+	 */
+	/** @deprecated 3.14.1 Use TCGiant_Sync_Catalog::CONDITIONS. */
+	const CONDITIONS            = TCGiant_Sync_Catalog::CONDITIONS;
+	/** @deprecated 3.14.1 Use TCGiant_Sync_Catalog::CONDITIONS_MEDIA_ONLY. */
+	const CONDITIONS_MEDIA_ONLY = TCGiant_Sync_Catalog::CONDITIONS_MEDIA_ONLY;
+	/** @deprecated 3.14.1 Use TCGiant_Sync_Catalog::GRADERS_TCG. */
+	const GRADERS_TCG           = TCGiant_Sync_Catalog::GRADERS_TCG;
+	/** @deprecated 3.14.1 Use TCGiant_Sync_Catalog::GRADERS_COINS. */
+	const GRADERS_COINS         = TCGiant_Sync_Catalog::GRADERS_COINS;
+	/** @deprecated 3.14.1 Use TCGiant_Sync_Catalog::GRADES_TCG. */
+	const GRADES_TCG            = TCGiant_Sync_Catalog::GRADES_TCG;
+	/** @deprecated 3.14.1 Use TCGiant_Sync_Catalog::GRADES_COINS. */
+	const GRADES_COINS          = TCGiant_Sync_Catalog::GRADES_COINS;
+	/** @deprecated 3.14.1 Use TCGiant_Sync_Catalog::UNGRADED_TCG. */
+	const UNGRADED_TCG          = TCGiant_Sync_Catalog::UNGRADED_TCG;
+	/** @deprecated 3.14.1 Use TCGiant_Sync_Catalog::UNGRADED_COINS. */
+	const UNGRADED_COINS        = TCGiant_Sync_Catalog::UNGRADED_COINS;
+	/** @deprecated 3.14.1 Use TCGiant_Sync_Catalog::CATEGORIES. */
+	const CATEGORIES            = TCGiant_Sync_Catalog::CATEGORIES;
+	/** @deprecated 3.14.1 Use TCGiant_Sync_Catalog::LISTING_TYPES. */
+	const LISTING_TYPES         = TCGiant_Sync_Catalog::LISTING_TYPES;
+	/** @deprecated 3.14.1 Use TCGiant_Sync_Catalog::LISTING_DURATIONS. */
+	const LISTING_DURATIONS     = TCGiant_Sync_Catalog::LISTING_DURATIONS;
+	/** @deprecated 3.14.1 Use TCGiant_Sync_Catalog::DURATIONS_BY_TYPE. */
+	const DURATIONS_BY_TYPE     = TCGiant_Sync_Catalog::DURATIONS_BY_TYPE;
+
+	/** @deprecated 3.14.1 Use TCGiant_Sync_Catalog::get_categories(). */
+	public static function get_categories() {
+		return TCGiant_Sync_Catalog::get_categories();
+	}
+
+	/** @deprecated 3.14.1 Use TCGiant_Sync_Listing_Link::listing_identity_meta_keys(). */
+	public static function listing_identity_meta_keys() {
+		return TCGiant_Sync_Listing_Link::listing_identity_meta_keys();
+	}
+
+	/** @deprecated 3.14.1 Use TCGiant_Sync_Listing_Link::duplicate_exclude_meta(). */
+	public static function duplicate_exclude_meta( $exclude ) {
+		return TCGiant_Sync_Listing_Link::duplicate_exclude_meta( $exclude );
+	}
+
+	/** @deprecated 3.14.1 Use TCGiant_Sync_Listing_Link::on_product_duplicated(). */
+	public static function on_product_duplicated( $duplicate, $original = null ) {
+		return TCGiant_Sync_Listing_Link::on_product_duplicated( $duplicate, $original );
+	}
+
+	/** @deprecated 3.14.1 Use TCGiant_Sync_Listing_Link::on_third_party_duplicate(). */
+	public static function on_third_party_duplicate( $new_post_id, $post = null ) {
+		return TCGiant_Sync_Listing_Link::on_third_party_duplicate( $new_post_id, $post );
+	}
+
+	/** @deprecated 3.14.1 Use TCGiant_Sync_Listing_Link::unlink_product_from_ebay(). */
+	public static function unlink_product_from_ebay( $product_id, $reason = 'unlinked' ) {
+		return TCGiant_Sync_Listing_Link::unlink_product_from_ebay( $product_id, $reason );
+	}
+
+	/** @deprecated 3.14.1 Use TCGiant_Sync_Listing_Link::find_products_sharing_item_id(). */
+	public static function find_products_sharing_item_id( $product_id, $ebay_item_id ) {
+		return TCGiant_Sync_Listing_Link::find_products_sharing_item_id( $product_id, $ebay_item_id );
+	}
+
 	/**
 	 * eBay categories that require ConditionDescriptors — Trading Cards.
 	 */
