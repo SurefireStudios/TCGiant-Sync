@@ -206,6 +206,11 @@ class TCGiant_Sync_Mapper {
 		if ( isset( $ebay_item['ShippingPackageDetails'] ) ) {
 			$pkg = $ebay_item['ShippingPackageDetails'];
 
+			// Which system the figures below are in, decided from the listing
+			// itself. See item_measurement_system() for why this cannot be left
+			// to a setting.
+			$system = $this->item_measurement_system( $ebay_item );
+
 			// Weight: eBay returns WeightMajor (lbs/kg) + WeightMinor (oz/g).
 			// WooCommerce uses a single weight field in the store's configured unit.
 			$weight_major = $this->parse_measurement_value( $pkg['WeightMajor'] ?? null );
@@ -215,9 +220,14 @@ class TCGiant_Sync_Mapper {
 				$major = (float) $weight_major;
 				$minor = (float) $weight_minor;
 
-				// Determine unit system from eBay data.
-				$major_unit = $this->parse_measurement_unit( $pkg['WeightMajor'] ?? null, 'weight' );
-				$is_metric  = ( 'kg' === strtolower( $major_unit ) );
+				// A unit attribute on the value wins when eBay sends one. It usually
+				// does not survive the XML-to-array conversion, which is when the
+				// listing's own site decides. A shop in the United Kingdom had a
+				// 0.6 kg oil filter arrive as 17.01 kg because this fell through to
+				// a marketplace setting nobody had told it about: 600 grams read as
+				// 600 ounces.
+				$major_unit = $this->parse_measurement_unit( $pkg['WeightMajor'] ?? null, 'weight', $system );
+				$is_metric  = in_array( strtolower( $major_unit ), array( 'kg', 'g' ), true );
 
 				if ( $is_metric ) {
 					// kg + g → kg
@@ -235,7 +245,7 @@ class TCGiant_Sync_Mapper {
 			$width_val  = $this->parse_measurement_value( $pkg['PackageWidth'] ?? null );
 			$depth_val  = $this->parse_measurement_value( $pkg['PackageDepth'] ?? null );
 
-			$dim_unit = $this->parse_measurement_unit( $pkg['PackageLength'] ?? $pkg['PackageWidth'] ?? null, 'dimension' );
+			$dim_unit = $this->parse_measurement_unit( $pkg['PackageLength'] ?? $pkg['PackageWidth'] ?? null, 'dimension', $system );
 
 			if ( '' !== $length_val ) {
 				$product_data['length'] = $this->convert_dimension_to_store_unit( (float) $length_val, $dim_unit );
@@ -1453,20 +1463,122 @@ class TCGiant_Sync_Mapper {
 	 * When eBay's XML→JSON conversion strips @attributes (common with UK/metric sites),
 	 * falls back to the configured marketplace to determine the unit system.
 	 *
-	 * @param mixed  $raw  Raw measurement value (may contain @attributes with unit).
-	 * @param string $type Context: 'weight' or 'dimension'.
+	 * @param mixed  $raw         Raw measurement value (may contain @attributes with unit).
+	 * @param string $type        Context: 'weight' or 'dimension'.
+	 * @param string $item_system 'metric' or 'imperial' from the listing's own site, or ''.
 	 * @return string Unit string (e.g., 'lbs', 'kg', 'in', 'cm').
 	 */
-	private function parse_measurement_unit( $raw, $type = 'weight' ) {
+	private function parse_measurement_unit( $raw, $type = 'weight', $item_system = '' ) {
 		if ( is_array( $raw ) && isset( $raw['@attributes']['unit'] ) ) {
 			return (string) $raw['@attributes']['unit'];
 		}
+
+		$imperial_unit = ( 'weight' === $type ) ? 'lbs' : 'in';
+		$metric_unit   = ( 'weight' === $type ) ? 'kg' : 'cm';
+
+		// This used to answer lbs or kg for dimensions too, which the dimension
+		// converter does not recognise, so the value went through unconverted.
 		if ( is_array( $raw ) && isset( $raw['@attributes']['measurementSystem'] ) ) {
-			return 'English' === $raw['@attributes']['measurementSystem'] ? 'lbs' : 'kg';
+			return 'English' === $raw['@attributes']['measurementSystem'] ? $imperial_unit : $metric_unit;
 		}
-		// Fallback: use configured marketplace to determine unit system.
-		// US uses imperial (lbs/in), all other supported marketplaces use metric (kg/cm).
+
+		// The listing says which site it is on, and the site fixes the system.
+		// This is what was missing: without it the answer came from the
+		// marketplace setting, which defaults to the United States and which a
+		// new shop has usually never been shown.
+		if ( 'metric' === $item_system ) {
+			return $metric_unit;
+		}
+		if ( 'imperial' === $item_system ) {
+			return $imperial_unit;
+		}
+
 		return $this->get_marketplace_default_unit( $type );
+	}
+
+	/**
+	 * Which measurement system a listing's figures are in.
+	 *
+	 * Every item eBay returns carries the site it is listed on, and the site
+	 * decides the system: the United States is imperial, everything else the
+	 * plugin supports is metric. So the answer is on the listing, and asking
+	 * the listing needs no configuration and is right per item - a shop that
+	 * lists on two sites gets each one right.
+	 *
+	 * The unit attributes eBay puts on the values themselves would be better
+	 * still, but they rarely survive the trip through the XML-to-array
+	 * conversion, which is why the code fell back to the marketplace setting
+	 * and why that fallback was the whole problem.
+	 *
+	 * @param array $ebay_item Decoded item from any Trading API listing call.
+	 * @return string 'metric', 'imperial', or '' when the site is not known.
+	 */
+	private function item_measurement_system( $ebay_item ) {
+		$site = isset( $ebay_item['Site'] ) ? TCGiant_Sync_API::scalar_value( $ebay_item['Site'] ) : '';
+
+		if ( '' === $site ) {
+			return '';
+		}
+
+		$this->maybe_adopt_marketplace( $site );
+
+		if ( 'US' === $site || 'eBayMotors' === $site ) {
+			return 'imperial';
+		}
+
+		foreach ( TCGiant_Sync_API::MARKETPLACES as $m ) {
+			if ( $m['site'] === $site ) {
+				return 'metric';
+			}
+		}
+
+		// A site the plugin does not know. Say nothing rather than guess.
+		return '';
+	}
+
+	/**
+	 * Take the marketplace from the first listing seen, if none was ever set.
+	 *
+	 * The marketplace setting drives more than units: the exporter takes the
+	 * listing site, the currency and the API site header from it. Left at its
+	 * default, a shop in the United Kingdom would push products onto eBay US
+	 * priced in dollars. The only place a new shop is asked for it was a wizard
+	 * step nobody could reach, so most never set it.
+	 *
+	 * Only fills a blank. A marketplace someone chose, even wrongly, is theirs
+	 * to change. Runs at most once per request.
+	 *
+	 * @param string $site Site code from a listing, e.g. UK.
+	 * @return void
+	 */
+	private function maybe_adopt_marketplace( $site ) {
+		static $done = false;
+
+		if ( $done ) {
+			return;
+		}
+		$done = true;
+
+		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
+
+		if ( ! empty( $settings['marketplace'] ) ) {
+			return;
+		}
+
+		foreach ( TCGiant_Sync_API::MARKETPLACES as $id => $m ) {
+			if ( $m['site'] !== $site ) {
+				continue;
+			}
+
+			$settings['marketplace'] = $id;
+			update_option( 'tcgiant_sync_ebay_settings', $settings );
+
+			TCGiant_Sync_Logger::log( sprintf(
+				'Marketplace was not set. Taking %s from your eBay listings; change it in Settings if that is wrong.',
+				$m['label']
+			) );
+			return;
+		}
 	}
 
 	/**
@@ -1506,15 +1618,15 @@ class TCGiant_Sync_Mapper {
 
 		// Convert to store unit if different.
 		if ( 'lbs' === $from_unit && 'kg' === $store_unit ) {
-			$value = $value * 0.453592;
+			$value = $value * 0.45359237;
 		} elseif ( 'lbs' === $from_unit && 'oz' === $store_unit ) {
 			$value = $value * 16;
 		} elseif ( 'lbs' === $from_unit && 'g' === $store_unit ) {
-			$value = $value * 453.592;
+			$value = $value * 453.59237;
 		} elseif ( 'kg' === $from_unit && 'lbs' === $store_unit ) {
-			$value = $value * 2.20462;
+			$value = $value * 2.20462262;
 		} elseif ( 'kg' === $from_unit && 'oz' === $store_unit ) {
-			$value = $value * 35.274;
+			$value = $value * 35.2739619;
 		} elseif ( 'kg' === $from_unit && 'g' === $store_unit ) {
 			$value = $value * 1000;
 		}

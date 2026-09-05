@@ -26,7 +26,7 @@ $marketplace    = $settings['marketplace'] ?? 'EBAY_US';
 $current_step   = isset( $_GET['step'] ) ? max( 1, min( 4, (int) $_GET['step'] ) ) : 1;
 
 // Auto-advance: if connected but on step 1, go to step 2.
-if ( $is_connected && 1 === $current_step && 'active' === $license_status ) {
+if ( $is_connected && 1 === $current_step ) {
 	$current_step = 2;
 }
 ?>
@@ -76,17 +76,18 @@ if ( $is_connected && 1 === $current_step && 'active' === $license_status ) {
 		<?php if ( 1 === $current_step ) : ?>
 			<!-- Step 1: Connect -->
 			<h2><?php esc_html_e( 'Connect Your eBay Account', 'tcgiant-sync' ); ?></h2>
-			<p><?php esc_html_e( 'First, activate your license key. Then connect your eBay seller account to start syncing.', 'tcgiant-sync' ); ?></p>
+			<p><?php esc_html_e( 'Connect your eBay seller account to start syncing. A licence key is optional - the free tier works without one.', 'tcgiant-sync' ); ?></p>
 
-			<?php if ( $is_connected && 'active' === $license_status ) : ?>
+			<?php if ( $is_connected ) : ?>
 				<div class="tc-connected">
 					<span class="dashicons dashicons-yes-alt"></span>
 					<div>
 						<strong><?php esc_html_e( 'Connected!', 'tcgiant-sync' ); ?></strong>
-						<p style="margin:0;font-size:12px;color:#555;"><?php esc_html_e( 'Your eBay account and license are active.', 'tcgiant-sync' ); ?></p>
+						<p style="margin:0;font-size:12px;color:#555;"><?php esc_html_e( 'Your eBay account is connected.', 'tcgiant-sync' ); ?></p>
 					</div>
 				</div>
-			<?php else : ?>
+			<?php endif; ?>
+
 				<?php if ( 'active' !== $license_status ) : ?>
 				<div class="tc-field">
 					<label class="tc-label" for="wizard_license_key"><?php esc_html_e( 'License Key', 'tcgiant-sync' ); ?></label>
@@ -106,7 +107,6 @@ if ( $is_connected && 1 === $current_step && 'active' === $license_status ) {
 					</a>
 				</div>
 				<?php endif; ?>
-			<?php endif; ?>
 
 		<?php elseif ( 2 === $current_step ) : ?>
 			<!-- Step 2: Import Settings -->
@@ -178,7 +178,7 @@ if ( $is_connected && 1 === $current_step && 'active' === $license_status ) {
 				<span></span>
 			<?php endif; ?>
 
-			<?php if ( 1 === $current_step && $is_connected && 'active' === $license_status ) : ?>
+			<?php if ( 1 === $current_step && $is_connected ) : ?>
 				<a href="<?php echo esc_url( add_query_arg( 'step', 2 ) ); ?>" class="tc-button primary"><?php esc_html_e( 'Continue →', 'tcgiant-sync' ); ?></a>
 			<?php elseif ( 3 === $current_step ) : ?>
 				<a href="<?php echo esc_url( add_query_arg( 'step', 4 ) ); ?>" class="tc-button primary"><?php esc_html_e( 'Skip & Finish →', 'tcgiant-sync' ); ?></a>

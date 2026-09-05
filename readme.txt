@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.13.1
+Stable tag: 3.13.2
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,15 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.13.2 - 2026-09-05 =
+**Weights and sizes outside the United States**
+* FIX: Listings on metric eBay sites (UK, Germany, Australia and others) imported as pounds, ounces and inches - 0.6 kg became 17.01 kg, 10 cm became 25.4 cm. The system is now read from the listing itself, which needs no setting.
+* A marketplace that was never set is now filled in from your listings. It also decides which eBay site and currency you push to.
+* Run a sync after updating to put corrected figures back over any that were wrong.
+
+**Setup wizard**
+* FIX: Step 1 waited for a licence that could never register as active, so setup could not continue past it. It now continues once eBay is connected; a licence is optional.
 
 = 3.13.1 - 2026-09-02 =
 **Selling an item no longer ends its eBay listing**

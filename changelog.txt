@@ -1,5 +1,15 @@
 *** TCGiant Sync Changelog ***
 
+2026-09-05 - version 3.13.2
+== Weights and sizes for shops outside the United States ==
+- FIX: Listings on eBay UK, Germany, Australia and the other metric sites were imported as though they were in pounds, ounces and inches. A 0.6 kg oil filter arrived as 17.01 kg; a 350 g part as 9.92 kg; a 10 cm box as 25.4 cm. The plugin was reading the system from a marketplace setting that defaults to the United States - and which, because of the next fix, most new shops had never been shown.
+- The system now comes from the listing itself. Every listing eBay sends carries the site it is on, and the site decides whether it is metric or imperial. That needs no setting, and a shop listing on more than one site gets each one right.
+- If the marketplace was never set, it is now filled in from your listings the first time they are imported, and the log says so. That setting also decides which eBay site and currency products are pushed to, so a UK shop that had never set it would have pushed to eBay US in dollars.
+- Because these products are re-read from eBay on every scheduled sync, the wrong figures were also re-written over any correction made by hand. Running a sync after updating puts the right figures back.
+
+== The setup wizard ==
+- FIX: Step 1 could not be completed. The Continue button waited for a licence to be active, but nothing ever recorded one as active, so the button never appeared and the step where the marketplace is chosen could not be reached. A licence is optional and the free tier is a legitimate way to use the plugin; setup now continues once eBay is connected.
+
 2026-09-02 - version 3.13.1
 == Selling an item no longer ends its eBay listing ==
 - FIX: If a product had WooCommerce stock management turned OFF, selling one on your website could end that product's eBay listing outright. For those products there is no quantity to read, and the plugin treated the missing figure as zero, which is its signal to end a listing. Nothing reported it — the listing was simply gone.
