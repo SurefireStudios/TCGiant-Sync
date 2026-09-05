@@ -36,6 +36,34 @@ class TCGiant_Sync_Catalog {
 	 */
 	const CONDITIONS_MEDIA_ONLY = array( '2750', '4000', '5000', '6000' );
 
+	/**
+	 * eBay condition IDs, for categories that do not use ConditionDescriptors.
+	 *
+	 * Three of these were labelled one rung off eBay's own ladder: 3000 was
+	 * shown as "Very Good" when eBay calls it Used, 4000 as "Good" when eBay
+	 * calls it Very Good, and 5000 as "Acceptable" when eBay calls it Good.
+	 * A seller picking "Good" was therefore sending the code eBay publishes as
+	 * "Very Good" - overstating the item on a live listing, which is where
+	 * returns and disputes come from. Verified against two independent
+	 * tables before correcting.
+	 *
+	 * eBay's exact display name for an ID varies by category - 1000 reads
+	 * "Brand New" in one and "New with tags" in another - and the VALID set
+	 * varies too. The four media grades below are rejected outright in
+	 * categories like Computers/Networking, which is why they are marked.
+	 *
+	 * DO NOT let the "media only" labels lead you to "correct" build_item_xml()
+	 * around the ConditionDescriptor branch. In Trading Card categories eBay
+	 * gives two of these IDs entirely different meanings - 2750 is Graded and
+	 * 4000 is Ungraded, not Like New and Very Good - which is exactly what that
+	 * branch sends, and it is right. The labels here describe what these IDs
+	 * mean in the categories this list is OFFERED for, which are the ones that
+	 * do not use descriptors. Same numbers, different vocabulary.
+	 *
+	 * This list is the fallback. get_condition_policies() in the API class
+	 * returns what eBay actually permits for a chosen category, and that is
+	 * what should populate the field.
+	 */
 	const CONDITIONS = array(
 		'1000' => 'New',
 		'1500' => 'New — other (see description)',
