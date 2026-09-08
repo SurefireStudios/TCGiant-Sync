@@ -1823,7 +1823,7 @@ class TCGiant_Sync_Admin {
 				esc_html( $label )
 			);
 			echo ' ';
-			esc_html_e( 'Nothing has been sent to eBay yet — select the same products again and choose "Push to eBay" to apply it. eBay cannot change the format of a live listing, so each one is replaced with a new listing.', 'tcgiant-sync' );
+			esc_html_e( 'Nothing has been sent to eBay yet. eBay cannot change the format of a listing that is live, so any of these already listed must be ended first: TCGiant Sync → Listings, tick them and choose End Listing. Then select the products again here and choose "Push to eBay" — each ended listing is replaced by a new one in the format you have just set.', 'tcgiant-sync' );
 			echo '</p></div>';
 		}
 

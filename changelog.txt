@@ -1,5 +1,18 @@
 *** TCGiant Sync Changelog ***
 
+2026-09-08 - version 3.15.0
+== Changing a listing between Auction and Fixed Price ==
+- FIX: A listing could not be moved from Fixed Price to Auction, or back, however it was attempted. Pushing the change failed. Ending the listing first and pushing again failed. Setting the format in bulk and then pushing failed. The only way out was to republish in the format it already had.
+- The cause: when a push found the old listing gone and went on to create a new one, it still used the calls belonging to the format that had just ended. A replacement for a fixed-price listing was sent to eBay as fixed price no matter what had been asked for, and eBay refused it. The new listing is now created in the format you chose.
+- Which format that is, when a listing is being replaced: the one set on the product, if you have set one there or through the bulk action, and otherwise the shop-wide default in Settings. Automatic relisting is not affected - it uses eBay's own relist, which keeps the format by definition.
+
+== A clearer answer when the listing is still live ==
+- FIX: eBay does not allow a live listing's format to be changed, and its refusal says nothing about what to do instead. Where the format set on a product disagrees with the live listing, the push now stops before eBay is contacted and says which listing to end and where to end it. Only an explicit choice on the product counts, so a shop whose default is Fixed Price can go on pushing price changes to auctions imported from eBay.
+- The notice after the bulk format action said each listing would be replaced. It now says what actually has to happen: end the live ones first, then push.
+
+== And what the product remembers ==
+- FIX: After a listing was replaced, the product still recorded the format of the listing it replaced, until an import sync corrected it. The next update was therefore sent through the wrong eBay call. The format created is now recorded at the time it is created.
+
 2026-09-05 - version 3.14.1
 == Internal restructuring - nothing changes for you ==
 - Four pieces of the plugin have moved into files of their own: the eBay reference data the settings screens show (categories, conditions, graders, grades, listing types and durations), the protection that stops a duplicated product inheriting its original's eBay link, the answer to "may another product be imported", and the usage report. Each was cut out and placed whole; none was rewritten.

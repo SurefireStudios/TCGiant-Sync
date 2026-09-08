@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.14.1
+Stable tag: 3.15.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,12 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.15.0 - 2026-09-08 =
+**Changing a listing between Auction and Fixed Price**
+* FIX: A listing could not be moved from Fixed Price to Auction or back, by any route - pushing, ending first, or the bulk format action. A push that replaced an ended listing still used the calls belonging to the format that had just ended, so eBay refused it. The replacement is now created in the format you chose.
+* FIX: Where the format set on a product disagrees with a listing that is still live, the push now stops and says which listing to end and where, instead of passing on eBay's own refusal. Only a choice made on the product counts, so pushing price changes to imported auctions is unaffected.
+* FIX: The format created is now recorded on the product straight away, so the next update is sent through the matching eBay call.
 
 = 3.14.1 - 2026-09-05 =
 **Internal restructuring - nothing changes for you**

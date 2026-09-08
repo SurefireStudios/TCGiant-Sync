@@ -400,6 +400,13 @@ class TCGiant_Sync_Exporter {
 				if ( 'updated' !== $action ) {
 					$product->update_meta_data( '_ebay_listing_status', 'Active' );
 					$product->delete_meta_data( '_ebay_end_time' );
+
+					// Record what was created. The revise path picks its eBay call from
+					// this, so a product relisted as an auction that still read as
+					// fixed-price would have been revised through the wrong one.
+					if ( ! empty( $result['listing_type'] ) ) {
+						$product->update_meta_data( '_ebay_listing_type', $result['listing_type'] );
+					}
 				}
 
 				if ( ! empty( $result['previous_item_id'] ) ) {
@@ -518,6 +525,44 @@ class TCGiant_Sync_Exporter {
 			}
 		}
 
+		// eBay cannot change the format of a live listing, and says so in its own
+		// words with nothing to suggest what to do instead. A seller moving ten
+		// GTC listings to ten-day auctions pushed and got errors, ended the
+		// listings by hand and pushed again, tried the bulk format action, and
+		// finally republished them exactly as they had been.
+		//
+		// Refuse only where all three are known: a recorded format, a different
+		// one asked for, and a listing recorded as Active. Anything ended, or
+		// unrecorded, goes the ordinary way - the relist path below settles an
+		// ended listing from eBay's own answer rather than from local state.
+		// Variable products are exempt: they are always fixed-price whatever the
+		// setting says, so a mismatch there means nothing.
+		if ( ! empty( $ebay_item_id ) && ! $product->is_type( 'variable' ) ) {
+			$live_format   = (string) $product->get_meta( '_ebay_listing_type' );
+			// The format chosen FOR THIS PRODUCT, not the shop-wide default. A shop
+			// whose default is Fixed Price may hold auctions imported from eBay and
+			// push price changes to them all day; that must go on working. Only a
+			// choice made against this product - in its eBay Listing tab, or by the
+			// bulk format action - says the seller means to change the format.
+			$wanted_format = (string) $product->get_meta( '_ebay_export_listing_type' );
+			$is_active     = 'Active' === (string) $product->get_meta( '_ebay_listing_status' );
+
+			if ( $is_active && '' !== $live_format && '' !== $wanted_format && $live_format !== $wanted_format ) {
+				$labels = TCGiant_Sync_Catalog::LISTING_TYPES;
+
+				return new WP_Error(
+					'format_change_needs_new_listing',
+					sprintf(
+						/* translators: 1: current listing format, 2: requested format, 3: eBay Item ID */
+						__( 'eBay cannot change a live listing from %1$s to %2$s - it needs a new listing. End listing %3$s first (TCGiant Sync, Listings, tick the products and choose End Listing), then push again: the new %2$s listing is created for you.', 'tcgiant-sync' ),
+						$labels[ $live_format ] ?? $live_format,
+						$labels[ $wanted_format ] ?? $wanted_format,
+						$ebay_item_id
+					)
+				);
+			}
+		}
+
 		$previous_item_id = '';
 		$fixed_price      = $this->uses_fixed_price_calls( $product, $settings, $ebay_item_id );
 
@@ -555,6 +600,15 @@ class TCGiant_Sync_Exporter {
 
 			$previous_item_id = $ebay_item_id;
 			$ebay_item_id     = '';
+
+			// Decide the call family again, now that there is no listing to read a
+			// format from. It was chosen above from the listing that has just
+			// ended - whose format is precisely what the seller is changing - so a
+			// fixed-price GTC listing relisted as a ten-day auction was sent
+			// through AddFixedPriceItem, and eBay refused it. Ending the listing by
+			// hand first changed nothing: the product keeps its Item ID until a new
+			// listing replaces it, and the Item ID is what the format was read from.
+			$fixed_price = $this->uses_fixed_price_calls( $product, $settings, '' );
 		}
 
 		{
@@ -577,6 +631,10 @@ class TCGiant_Sync_Exporter {
 				'item_id'          => $response['ItemID'],
 				'action'           => $previous_item_id ? 'relisted' : 'created',
 				'previous_item_id' => $previous_item_id,
+				// What was actually created, so the next revise reaches for the
+				// matching eBay call. Without it a product relisted as an auction
+				// still read as fixed-price until an import sync corrected it.
+				'listing_type'     => $fixed_price ? 'FixedPriceItem' : 'Chinese',
 			);
 		}
 	}
