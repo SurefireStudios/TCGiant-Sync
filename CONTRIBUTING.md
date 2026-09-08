@@ -68,7 +68,7 @@ This repository is the **Pro** edition, and it is also the single source for the
 
 ## What must never be committed
 
-This is a public repository. In April 2026 a copy of the OAuth relay — with the eBay application secret in it — was committed and removed the same day. Removal does not take a file out of history. The affected credentials have since been rotated, but the lesson stands:
+This is a public repository. In April 2026 a copy of the OAuth relay was committed and removed the same day. Removal does not take a file out of history. The eBay application keys in that copy were placeholders rather than the production ones, so the worst did not happen — but the relay's own signing secret and verification token were real, and the lesson stands:
 
 - The relay (`relay.php`, `telemetry.php`, `dashboard.php`, `connect.php`) and anything under `syncconnect/`. It is deliberately not in this repository.
 - `.env` files, `sync.db`, `log.txt`, any file containing an eBay App ID, Cert ID, RuName, verification token or relay secret.
