@@ -72,3 +72,10 @@ jobs:
 
       - name: PHPStan
         run: php vendor/phpstan/phpstan/phpstan.phar analyse --memory-limit=3G --no-progress --error-format=github
+
+      # Plain-PHP harnesses with WordPress stubbed out. Each reproduces one piece
+      # of the plugin's logic and asserts what it must do - several start by
+      # reproducing a bug a merchant reported, so the fix is measured against
+      # the fault. See tests/README.md.
+      - name: Behavioural harnesses
+        run: php tests/run.php

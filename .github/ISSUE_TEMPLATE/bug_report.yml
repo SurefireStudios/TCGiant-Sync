@@ -1,0 +1,77 @@
+name: Bug report
+description: Something the plugin did, or failed to do, on your site
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. The activity log usually says what happened and why, so please include it — **with any customer names, order numbers or private details removed.**
+
+        If this concerns a security problem, please **do not** file it here. See [SECURITY.md](../blob/main/SECURITY.md).
+
+  - type: input
+    id: version
+    attributes:
+      label: Plugin version
+      description: Shown on the Plugins screen and at the top of TCGiant Sync → Dashboard.
+      placeholder: "3.14.1"
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: WordPress / WooCommerce / PHP versions
+      placeholder: "WP 6.8, WC 10.0, PHP 8.2"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: marketplace
+    attributes:
+      label: eBay marketplace
+      options:
+        - United States
+        - United Kingdom
+        - Canada
+        - Australia
+        - Germany
+        - France
+        - Italy
+        - Spain
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what actually happened.
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Activity log
+      description: The relevant lines from TCGiant Sync → Logs. Remove anything private.
+      render: text
+
+  - type: textarea
+    id: connection
+    attributes:
+      label: Connection test result
+      description: If the problem is about connecting or syncing, paste the result of Settings → Test Connection.
+      render: text
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I am on the latest release
+          required: true
+        - label: I have removed customer names, order numbers and anything private from what I pasted
+          required: true

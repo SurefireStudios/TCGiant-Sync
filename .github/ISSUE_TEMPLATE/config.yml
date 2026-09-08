@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security problem
+    url: https://github.com/SurefireStudios/TCGiant-Sync/blob/main/SECURITY.md
+    about: Please report anything that could expose a token or act on an eBay account privately, not as an issue.
+  - name: Pro support
+    url: https://tcgiant.com/pro/
+    about: Pro customers can reach priority support through their account.

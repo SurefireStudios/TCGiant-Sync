@@ -21,6 +21,16 @@
 /zips               export-ignore
 /.agents            export-ignore
 
+# Repository documentation and the behavioural harnesses. README.md used to reach
+# auto-updating sites - harmless, and the proof that the two exclusion lists
+# drift - so it goes with the rest now.
+/README.md          export-ignore
+/CONTRIBUTING.md    export-ignore
+/SECURITY.md        export-ignore
+/CODE_OF_CONDUCT.md export-ignore
+/CHANGELOG.md       export-ignore
+/tests              export-ignore
+
 # Note: the reference copy of the competitor plugin needs no rule here — it is
 # in .gitignore, so it was never tracked and cannot reach an archive. Paths
 # containing spaces or parentheses are not valid .gitattributes patterns.

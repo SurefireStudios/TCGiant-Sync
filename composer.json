@@ -30,6 +30,7 @@
             "@check-tabs",
             "@check-limit-gates",
             "@check-hooks",
+            "@test",
             "@analyse"
         ],
         "build": "@php tools/build-zip.php",
@@ -40,6 +41,7 @@
         "check-version": "@php tools/check-version.php",
         "check-hooks": "@php tools/check-hooks.php",
         "check-archive-parity": "@php tools/check-archive-parity.php",
+        "test": "@php tests/run.php",
         "check-release": [
             "@check",
             "@check-archive-parity"

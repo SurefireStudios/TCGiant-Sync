@@ -1,0 +1,57 @@
+name: Release
+
+# Runs when a release is PUBLISHED, not when a tag is pushed. The release is
+# created by hand with notes written for merchants; this job then builds the
+# upload-ready zip and attaches it, so the Releases page offers both routes.
+#
+# The update checker in the plugin reads the source archive, not this asset
+# (it never calls enableReleaseAssets), so attaching a zip changes nothing for
+# auto-updating sites. If that ever changes, this workflow needs revisiting
+# first - see the note beside the updater in tcgiant-sync.php.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  attach-zip:
+    name: Build and attach the upload zip
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+          tools: none
+
+      # The same gates as CI, so a release cannot be built from a tree that
+      # would not pass them.
+      - name: Checks
+        run: |
+          php tools/check-version.php
+          php tools/lint.php
+          php tools/check-hooks.php
+          php tools/check-archive-parity.php
+
+      - name: Build
+        run: php tools/build-zip.php
+
+      - name: The zip is named for the tag
+        run: |
+          tag="${{ github.event.release.tag_name }}"
+          test -f "zips/tcgiant-sync-${tag#v}.zip"
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ github.event.release.tag_name }}"
+          gh release upload "$tag" "zips/tcgiant-sync-${tag#v}.zip" --clobber

@@ -1,0 +1,41 @@
+name: Feature request
+description: Something the plugin should do that it doesn't
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The most useful requests describe the situation in your shop rather than a solution — what you sell, what you're trying to do, and where the plugin gets in the way. There is often a shorter route than the one that first comes to mind.
+
+  - type: textarea
+    id: situation
+    attributes:
+      label: What are you trying to do?
+      description: What you sell, on which marketplace, and what you're doing by hand today that you'd rather not.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like the plugin to do?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: side
+    attributes:
+      label: Which direction does this concern?
+      options:
+        - Import (eBay → WooCommerce)
+        - Push (WooCommerce → eBay)
+        - Stock and orders
+        - Settings or the admin screens
+        - Something else
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Is there a workaround today?
+      description: If you've found one, it helps others while the feature is considered.

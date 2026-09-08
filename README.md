@@ -1,229 +1,203 @@
+<p align="center">
+  <img src="assets/src/img/banner-1544x500px.png" alt="TCGiant Sync" width="100%">
+</p>
+
 # TCGiant Sync
 
-[![Version](https://img.shields.io/badge/version-1.7.2-blue.svg)](https://wordpress.org/plugins/tcgiant-sync/)
-[![License](https://img.shields.io/badge/License-GPL_v2-blue.svg)](https://www.gnu.org/licenses/gpl-2.0.html)
-[![Requires PHP](https://img.shields.io/badge/PHP-7.4%2B-green.svg)](#)
-[![Tested up to](https://img.shields.io/badge/WordPress-7.0-blue.svg)](#)
-[![WooCommerce](https://img.shields.io/badge/WooCommerce-5.0%2B-purple.svg)](#)
+**Two-way eBay ↔ WooCommerce sync that keeps one catalogue honest across both — built for card and coin sellers, and works for anyone.**
 
-**TCGiant Sync** is a bidirectional eBay <-> WooCommerce sync plugin built for trading card game sellers. Import your eBay listings into WooCommerce *and* push WooCommerce products back to eBay as live listings -- all from one dashboard.
+[![Latest release](https://img.shields.io/github/v/release/SurefireStudios/TCGiant-Sync?label=release&color=2563eb)](https://github.com/SurefireStudios/TCGiant-Sync/releases/latest)
+[![Checks](https://img.shields.io/github/actions/workflow/status/SurefireStudios/TCGiant-Sync/static-analysis.yml?branch=main&label=checks)](https://github.com/SurefireStudios/TCGiant-Sync/actions/workflows/static-analysis.yml)
+[![PHP 7.4+](https://img.shields.io/badge/PHP-7.4%2B-777bb4)](#requirements)
+[![WordPress 5.8+](https://img.shields.io/badge/WordPress-5.8%2B%20%C2%B7%20tested%207.0-21759b)](#requirements)
+[![WooCommerce 5.0+](https://img.shields.io/badge/WooCommerce-5.0%2B%20%C2%B7%20tested%2010.0-96588a)](#requirements)
+[![License GPL-2.0-or-later](https://img.shields.io/badge/license-GPL--2.0--or--later-blue)](LICENSE)
 
----
-
-## How It Works
-
-```
-eBay Store  -->  Import from eBay  -->  WooCommerce
-WooCommerce -->  Push to eBay     -->  eBay Store
-```
-
-No matter which platform you start from, TCGiant Sync keeps both sides in sync. Sell on eBay and stock drops in WooCommerce. Sell on your site and stock drops on eBay. Create new WooCommerce products and push them live to eBay in one click.
+<p align="center">
+  <img src="assets/src/img/screenshot.jpg" alt="TCGiant Sync dashboard" width="90%">
+</p>
 
 ---
+
+## What is TCGiant Sync?
+
+A WordPress plugin that connects a WooCommerce shop to an eBay seller account and keeps the two in step, in both directions:
+
+- **Import** your eBay listings into WooCommerce — titles, descriptions, images, item specifics, weight and size, categories — and keep them current on a schedule.
+- **Push** WooCommerce products to eBay as live listings, with eBay's own category tree, business policies, and condition vocabulary — including the graded/ungraded descriptors that trading-card and coin categories require.
+- **Reconcile stock** whichever side sells: a sale on eBay reduces WooCommerce; a sale on your site updates eBay; a listing that ends without selling settles the quantity rather than zeroing it.
+
+It grew up serving trading-card and coin shops, and that shows in what it knows: PSA, BGS, CGC and SGC grading, eBay's Graded/Ungraded condition IDs, coin condition ladders. But the machinery underneath is general — an **"All Other"** item type lists electronics, parts, clothing or anything else with plain conditions and no grading.
+
+## Why TCGiant Sync?
+
+Selling the same stock in two places means keeping two catalogues in agreement, and by hand that never lasts. The specific ways it fails are the ones this plugin is built around:
+
+- **Overselling.** An item sells on eBay at 2 a.m. and is still for sale on your site at 9. Or a listing *ends without selling* and a naive sync zeroes the stock you still hold. Both directions are handled, and ended-unsold is treated differently from sold-out.
+- **Drift you don't see.** A scheduled delta sync only asks eBay what changed in the last 48 hours; a site that was unreachable for a day never hears about a listing that ended in that window. A weekly full scan walks the whole account so nothing stays stale for long.
+- **eBay's vocabulary.** Category IDs, condition IDs that mean different things in different categories, required item specifics, business policies. The plugin speaks it so you don't have to — and tells you *before* contacting eBay when a required field is empty.
+- **Units and marketplaces.** A listing on eBay UK is metric and a listing on eBay US is not. The plugin reads the measurement system from each listing itself, so a 0.6 kg part stays 0.6 kg.
+- **Nothing to run.** No cron server, no middleware, no bring-your-own eBay developer keys. Connect once with eBay's OAuth and the plugin does the rest on WordPress's own scheduler.
 
 ## Features
 
-### Import: eBay -> WooCommerce
-| Feature | Free | Pro |
-|---|---|---|
-| Import active eBay listings to WooCommerce | Up to 50 | Unlimited |
-| Automatic product mapping & category organization | Yes | Yes |
-| eBay store category filter (import only what you want) | Yes | Yes |
-| WooCommerce category sync mapping | Yes | Yes |
-| Auto-sync on a schedule (15min / hourly / daily) | Yes | Yes |
-| Real-time stock reduction when sold on eBay | Yes | Yes |
-| Data mapping rules (overwrite title, price, images, etc.) | Yes | Yes |
-| Import weight & package dimensions from eBay | Yes | Yes |
-| Auto-convert metric/imperial units per marketplace | Yes | Yes |
-| Bake eBay shipping cost into product price | Yes | Yes |
-| Map eBay SKU to Bin Location custom field | Yes | Yes |
-| Prune sold/ended listings from WooCommerce | Yes | Yes |
+### Import — eBay → WooCommerce
 
-### Push: WooCommerce -> eBay
-| Feature | Free | Pro |
-|---|---|---|
-| **Unified "eBay Listing" tab** with guided step-by-step flow | Yes | Yes |
-| Push single WooCommerce product to eBay | Yes | Yes |
-| Bulk push via Products list bulk action | Yes | Yes |
-| Smart update detection (AddItem vs ReviseItem) | Yes | Yes |
-| **Category auto-suggestion** from product title via eBay API | Yes | Yes |
-| Interactive eBay category browser (drill-down) | Yes | Yes |
-| Curated TCG/Coins category dropdown + custom ID override | Yes | Yes |
-| Per-product Category & Condition overrides | Yes | Yes |
-| **Visual card selectors** for Item Type and Condition | Yes | Yes |
-| eBay ConditionDescriptor support (Graded/Ungraded for TCG & Coins) | Yes | Yes |
-| **Pre-push readiness checklist** (category, condition, policies, images, title) | Yes | Yes |
-| eBay Business Policy integration (Shipping/Returns/Payment) | Yes | Yes |
-| Async background processing via Action Scheduler | Yes | Yes |
-| "Push to eBay" column on WooCommerce Products list | Yes | Yes |
-
-### General
-- **Secure OAuth 2.0** connection via centralized relay -- credentials never stored
-- **Live dashboard** with health checks, sync status, and activity log
-- **Multi-page admin** -- Dashboard, Import, Push to eBay, Settings
-- **Detailed activity logs** for troubleshooting
-
----
-
-## Requirements
-
-| Requirement | Minimum |
+| | |
 |---|---|
-| WordPress | 5.8+ |
-| PHP | 7.4+ |
-| WooCommerce | 5.0+ |
-| eBay Seller Account | Required |
-| eBay Business Policies | Required for Push to eBay |
+| Import active listings, with images localised to your media library | ✅ |
+| Automatic product mapping: attributes from item specifics, categories, variations | ✅ |
+| eBay store-category and standard-category filters — import only what you want | ✅ |
+| Scheduled delta sync (15 min / hourly / twice daily / daily) plus a weekly full scan | ✅ |
+| Ended-listing detection every hour, with **ended-unsold ≠ sold-out** stock handling | ✅ |
+| Weight and dimensions, in the right units for the listing's marketplace | ✅ |
+| Data-mapping rules on re-import (which side wins for title, price, images, …) | ✅ |
+| Bake eBay shipping cost into the product price | ✅ |
+| Map eBay SKU to a Bin Location field | ✅ |
+| Prune sold-out and ended listings from WooCommerce, with a preserve-list | ✅ |
+| Stock Review and Image Cleanup screens for bulk settlement | ✅ |
 
----
+### Push — WooCommerce → eBay
 
-## Installation
+| | |
+|---|---|
+| Unified **eBay Listing** tab on every product: Item Type → Category → Condition → Push | ✅ |
+| Single push, bulk push from the Products list, and background processing via Action Scheduler | ✅ |
+| Smart update detection — revises an existing listing rather than creating a duplicate | ✅ |
+| Category auto-suggestion from the product title, plus an interactive category browser | ✅ |
+| Item specifics from WooCommerce attributes, canonicalised against eBay's aspect names | ✅ |
+| **Pre-push check** that names any required item specific that is empty | ✅ |
+| Condition descriptors for Trading Cards and Coins (Graded with grader/grade/cert, or Ungraded) | ✅ |
+| **"All Other"** item type for non-collectibles, with eBay's plain condition list | ✅ |
+| Package weight and dimensions, converted to the listing site's system (optional) | ✅ |
+| Per-product listing type (Fixed Price / Auction), duration, shipping policy, category, condition | ✅ |
+| Business Policies (shipping, returns, payment) fetched in one click | ✅ |
+| Order import and tracking push back to eBay | ✅ |
 
-1. Download the latest `tcgiant-sync.zip` from [Releases](../../releases).
-2. In WordPress, go to **Plugins -> Add New -> Upload Plugin**.
-3. Upload the zip and click **Activate**.
+### Everywhere
 
----
+- **OAuth 2.0** through a hosted relay — you never handle eBay developer credentials, and the plugin never stores them.
+- **Live dashboard** with connection health, sync status, and an activity log that says what happened and why.
+- **Connection test** that distinguishes "our host is refusing you" from "your network intercepts everything" — the difference between a rule your host can lift and one they can't.
+- **Marketplaces:** US, UK, Canada, Australia, Germany, France, Italy, Spain.
 
-## Getting Started
+### Free and Pro
 
-### Connecting to eBay
-1. Go to **TCGiant Sync -> Settings** in your WordPress admin.
-2. Click **Connect to eBay** and authorize via eBay's OAuth flow.
+The free tier imports up to 50 active products; **Pro** removes the cap and adds priority support. Push to eBay is not limited in either. → [tcgiant.com/pro](https://tcgiant.com/pro/)
 
-### Importing from eBay
-1. Go to **TCGiant Sync -> Import from eBay**.
-2. Click **Fetch Inventory** to scan your eBay store and import listings into WooCommerce.
-3. *(Optional)* Set a schedule in Settings for automatic imports.
+## Demo
 
-### Pushing to eBay
+**Website and Pro:** https://tcgiant.com/pro/
 
-The Push to eBay workflow is built around a unified **"eBay Listing"** tab on every product, with a guided step-by-step flow:
+A recorded walkthrough of a full import and a push is on the roadmap; the screenshots below are from a live shop.
 
-1. **Configure defaults** -- Go to **TCGiant Sync -> Settings** and set your default eBay Category, then click **Fetch Policies** to load your Business Policies (Shipping, Returns, Payment).
+## How It Works
 
-2. **Open any product** -- Click the **"eBay Listing"** tab in the WooCommerce product data panel.
+```mermaid
+flowchart LR
+    subgraph site["Your WordPress site"]
+        WC[(WooCommerce<br/>products & orders)]
+        P["TCGiant Sync<br/>plugin"]
+        WC <--> P
+    end
 
-3. **Step 1 - Item Type** -- Select **Trading Cards** or **Coins** using the visual card selector. This determines which grading companies and condition options are available.
+    subgraph relay["tcgiant.com"]
+        R["OAuth relay"]
+    end
 
-4. **Step 2 - eBay Category** -- Choose a category using one of three methods:
-   - **Auto-suggest** -- Click "Suggest Category from Title" and select from the suggested pills
-   - **Browse** -- Click "Browse eBay Categories" to drill down through eBay's category tree
-   - **Dropdown** -- Select from the curated list of common TCG/Coins categories, or enter a custom ID
+    EB["eBay<br/>Trading + Taxonomy APIs"]
 
-5. **Step 3 - Condition** -- Select **Graded** or **Ungraded**:
-   - *Graded*: Pick your Professional Grader (PSA, BGS, SGC, CGC, etc.) and Grade, plus optional Cert Number
-   - *Ungraded*: Pick the card/coin condition (Near Mint, Excellent, Fine, etc.)
-
-6. **Step 4 - Push** -- Review the readiness checklist. When all checks pass (green), click **Push to eBay**.
-
-7. **Bulk push** -- Go to **WooCommerce -> Products**, select products, and use **Bulk Actions -> Push to eBay**.
-
-> **Note:** Push to eBay requires eBay Business Policies to be enabled on your seller account (Shipping, Returns, and Payment policies). Most seller accounts have this enabled automatically.
-
----
-
-## eBay Listing Tab
-
-The unified eBay Listing tab replaces the previous "Grading & Condition" and "TCGiant Sync" tabs with a single, streamlined panel:
-
-```
-+-----------------------------------+
-| eBay Listing                      |
-|                                   |
-| 1. Item Type                      |
-|    [Trading Cards]  [Coins]       |
-|                                   |
-| 2. eBay Category                  |
-|    [Dropdown / Browse / Suggest]  |
-|                                   |
-| 3. Condition                      |
-|    [Graded]  [Ungraded]           |
-|    Grader: [PSA]  Grade: [10]     |
-|                                   |
-| 4. Push to eBay                   |
-|    Readiness Checklist:           |
-|    + Category: US Coins (253)     |
-|    + Condition: Graded - PSA 10   |
-|    + Business Policies: OK        |
-|    + Images: 3 photo(s)           |
-|    + Title: 52/80 characters      |
-|    [Push to eBay]                 |
-|                                   |
-| Import Sync Log (collapsed)       |
-+-----------------------------------+
+    P -- "connect · token refresh" --> R
+    R -- "authorisation code exchange" --> EB
+    P <-- "listings · orders · stock · new listings" --> EB
+    EB -- "account-deletion notices" --> R
+    R -- "fan-out, HMAC-signed per site" --> P
 ```
 
-**Key UX improvements:**
-- **Progressive disclosure** -- sections expand as you complete each step
-- **Visual card selectors** -- click to choose instead of scanning dropdowns
-- **Category auto-suggestion** -- eBay's API suggests leaf categories from your title
-- **Inline readiness checklist** -- see exactly what's missing before you push
-- **Clear Error button** -- dismiss export errors to retry cleanly
-- **Item-type-aware filtering** -- category browser starts at the right root (Coins or Toys & Hobbies)
+The relay exists for one reason: eBay's OAuth requires an application secret, and that secret must never sit inside a plugin distributed to thousands of sites. So the relay holds it, performs the code exchange and token refresh, and hands each site its own signing key. **Everything else — every listing fetched, every product pushed, every stock update — goes directly from your site to eBay** with your site's own token.
 
----
+**What runs when**
 
-## Frequently Asked Questions
+| Trigger | What happens |
+|---|---|
+| You press *Fetch Inventory* | Full scan of the eBay account, 200 listings per page, self-chaining through WP-Cron so a large store finishes across many requests |
+| Every sync interval | Delta: eBay is asked what changed in the last 48 h; changed listings are re-mapped, new ones imported (within the free cap), sold-out ones removed if you've asked |
+| Every hour | Ended-listing check: stock settled from the listing's *listed − sold*, so an unsold end keeps your goods in stock |
+| Weekly | Full scan, to catch anything a delta could not see |
+| An order on your site | Stock pushed to eBay for every line item that tracks stock; listing ended at zero if you've asked |
+| A push | Product validated locally (category, condition, policies, required item specifics) before eBay is contacted; then queued and listed in the background |
 
-**Does this work for eBay-first OR WooCommerce-first setups?**
-Both. Import from eBay to WooCommerce, push from WooCommerce to eBay, or do both simultaneously.
+## Quick Start
 
-**What is smart update detection?**
-When you push a product that already has an eBay Item ID (from a previous push or import), the plugin automatically uses `ReviseItem` to update the existing listing instead of creating a duplicate.
+**Requirements:** WordPress 5.8+, PHP 7.4+, WooCommerce 5.0+, an eBay seller account. Push to eBay needs [Business Policies](https://bizpolicy.ebay.com) enabled on the seller account (most are).
 
-**Does this plugin require WooCommerce?**
-Yes. WooCommerce must be installed and active.
+1. **Install** — download `tcgiant-sync-<version>.zip` from the [latest release](https://github.com/SurefireStudios/TCGiant-Sync/releases/latest), then *Plugins → Add New → Upload Plugin → Activate*.
+2. **Connect** — *TCGiant Sync → Settings → Connect to eBay*, and approve in eBay's window. The setup wizard asks for your marketplace; if you skip it, the plugin takes the marketplace from your first imported listing.
+3. **Import** — *TCGiant Sync → Import → Fetch Inventory*. Optionally narrow by store category first. Set a sync interval in Settings when you're happy.
+4. **Push** — in Settings, set a default category and *Fetch Policies*. Then open any product → *eBay Listing* tab → Item Type → Category → Condition → **Push**. The checklist tells you what's missing before eBay does.
 
-**How many products can I sync for free?**
-The free tier supports up to 50 active imported products. Push to eBay has no limit. Upgrade to Pro for unlimited imports.
+Updates arrive through WordPress's normal update screen.
 
-**Is my eBay data secure?**
-Yes. TCGiant Sync uses eBay's official OAuth 2.0. Your credentials are never stored in plain text and are handled through a secure server-side relay.
+## Architecture
 
-**What happens when an item sells?**
-Whether a sale happens on eBay or WooCommerce, stock is adjusted on both platforms automatically to prevent overselling.
+**Stack:** PHP 7.4+, WordPress, WooCommerce, Action Scheduler (background jobs), eBay Trading API (XML) for listings/orders/stock and eBay Taxonomy API (REST) for categories and aspects, WP-Cron for scheduling. The relay is a small PHP + SQLite service.
 
----
+**Key classes** — all under `includes/`, autoloaded by name:
 
-## Releases
+| Class | Role |
+|---|---|
+| `TCGiant_Sync_OAuth` | Connect, token refresh via the relay, the connection test |
+| `TCGiant_Sync_API` | Trading + Taxonomy calls, retry, rate limiting, the daily call budget |
+| `TCGiant_Sync_Importer` | Full and delta scans, page walking, pruning, the free-tier gate |
+| `TCGiant_Sync_Mapper` | eBay item → WooCommerce product: attributes, variations, units, images |
+| `TCGiant_Sync_Exporter` | WooCommerce product → eBay listing XML, condition descriptors, package details |
+| `TCGiant_Sync_Inventory` | Stock in both directions; the ended-listing settlement rule |
+| `TCGiant_Sync_Catalog` | The eBay vocabulary the screens show: categories, conditions, graders, grades |
+| `TCGiant_Sync_Listing_Link` | Keeps a product's eBay link honest when products are duplicated |
+| `TCGiant_Sync_Entitlements` | "May another product be imported?" — the licence extends it |
+| `TCGiant_Sync_Cron` | Scheduling and the background-dispatch plumbing |
+| `TCGiant_Sync_Image_Localizer` | Background image download, with a guard against re-importing a shop's own photos |
+| `TCGiant_Sync_Jobs` | The bulk-job runner behind bulk push, verify, settle and cleanup |
+| `TCGiant_Sync_Webhooks` | eBay account-deletion endpoint, verified against the per-site signing key |
 
-| Version | Date | Key Changes |
-|---------|------|-------------|
-| **1.7.0** | 2026-07-17 | Unified "eBay Listing" tab replaces separate Grading & TCGiant Sync tabs. Step-by-step guided flow (Item Type > Category > Condition > Push). Visual card selectors, category auto-suggestion from title, pre-push readiness checklist, performance optimizations |
-| **1.6.3** | 2026-07-15 | New "Push to eBay" column on WooCommerce Products list -- inline push/update buttons, eBay category display, item ID links, and error status per product |
-| **1.6.2** | 2026-07-15 | Fix all Coin + TCG ConditionDescriptor errors -- verified numeric IDs for graders, grades, ungraded conditions. Category browser now stores & shows selected name |
-| **1.6.1** | 2026-07-15 | Major performance fix for large stores (13,000+ items). Inline variation processing, async image downloads, reduced scheduling delays |
-| **1.6.0** | 2026-07-10 | Browse eBay Categories drill-down, Saved Custom Categories, Coin ConditionDescriptor fix |
-| **1.5.5** | 2026-07-10 | Fixed fatal error on settings and export pages caused by missing GRADERS constant |
-| **1.5.4** | 2026-07-10 | Added Standard eBay Categories filter, fixed deep subcategory condition API errors, and added UI error handling for category fetch |
-| **1.5.0** | 2026-07-08 | eBay ConditionDescriptor support for Trading Cards & Coins (Graded/Ungraded), Coins categories added to export dropdown |
-| **1.4.8** | 2026-07-08 | Fix Item.Location export error, add Location & Postal Code settings |
-| **1.4.7** | 2026-07-01 | Added native WooCommerce BIN field to Inventory tab for eBay SKU to Bin mapping |
-| **1.4.6** | 2026-06-29 | eBay SKU to Bin Location mapping, Free Shipping guidance for baked shipping |
-| **1.4.5** | 2026-06-29 | Fix UK/metric weight & dimensions, fix delta sync specs & photos |
-| **1.4.4** | 2026-06-22 | Bake eBay shipping cost into WooCommerce product price |
-| **1.4.3** | 2026-06-22 | Fix category filter matching, settings summary bar on Import page |
-| **1.4.0-1.4.2** | 2026-06-18 | Delta Sync for scheduled imports, inline processing, 94% API reduction |
-| **1.3.1** | 2026-06-16 | Security: per-installation unique webhook signing keys |
-| **1.3.0** | 2026-06-16 | Import product weight & dimensions from eBay, new Data Mapping toggle |
-| **1.2.3** | 2026-06-09 | Fixed Item Specifics/Attributes saving, rate limit auto-retry for large imports |
-| **1.1.6** | 2026-06-08 | Added an option to "Preserve Categories" in settings |
-| **1.1.5** | 2026-06-05 | Added Pushed vs Pulled metrics tracking, fixed telemetry data format bug |
-| **1.1.4** | 2026-06-05 | WooCommerce HPOS and 10.0 Compatibility, Security enhancements |
-| **1.1.3** | 2026-05-28 | Added Global Marketplace Support (eBay UK, CA, AU, etc.) |
-| **1.1.2** | 2026-05-26 | Complete UI/UX overhaul. Added global tab navigation, animated progress bars, premium empty states, dark-mode custom scrollbars for logs, input field polish, and "Clear Recent Sales" functionality. |
-| **1.1.1** | 2026-05-26 | Verified WP 7.0 compatibility. Fixed total sync counter in dashboard telemetry. License plan is now tracked securely. |
-| [v1.1.0](../../releases/tag/v1.1.0) | 2026-05-11 | Smart duplicate SKU resolution, Activity Log improvements, and sync feedback UI |
-| [v1.0.3](../../releases/tag/v1.0.3) | 2026-04-29 | Per-order sale sync dashboard panel, EndItem for qty=0 fix |
-| [v1.0.2](../../releases/tag/v1.0.2) | 2026-04-24 | Push to eBay, multi-page dashboard, Business Policy integration |
-| [v1.0.1](../../releases/tag/v1.0.1) | 2026-04-24 | WooCommerce category sync, silence 404s for local-only products |
-| [v1.0.0](../../releases/tag/v1.0.0) | 2026-04-09 | Initial release |
+**A design rule worth knowing:** the source tree *is* the Pro edition. Lite (WordPress.org) and Standard (WooCommerce.com) editions are being built from this same tree by leaving files out, never by forking it — so every fix lands once. The classes above are shaped by that: what every edition needs lives in files every edition ships.
 
----
+**Safety nets in the repo** — `tools/`:
+
+- `check-hooks.php` records every hook registration and fails if one goes missing. A lost stock-sync hook produces no error; stock just stops flowing. This is the only thing that would notice.
+- `check-formats.php` runs every translatable format string through `sprintf`, because a stray backslash in one once took a site down.
+- `check-archive-parity.php` confirms that what auto-updating sites receive and what the uploaded zip contains are the same files.
+- `check-version.php`, `check-views.php`, `check-tabs.php`, `check-limit-gates.php` — see [`tools/README.md`](tools/README.md).
+
+## Screenshots
+
+| | |
+|---|---|
+| ![Dashboard](assets/src/img/screenshot.jpg) | ![Import](assets/src/img/screenshot-2.jpg) |
+| Dashboard: connection health, sync status, activity | Import: category filters, usage, live progress |
+
+## Use Cases
+
+- **A card shop that lives on eBay** and wants its website to mirror the eBay inventory without retyping anything — imports, then scheduled syncs keep it honest.
+- **A shop that lives on WooCommerce** and wants its catalogue on eBay too — push, with eBay's categories suggested from titles and required specifics named before you submit.
+- **Graded stock.** PSA 10s, CGC 9.8s, slabbed coins — the condition descriptors eBay requires for those categories, from a dropdown rather than a spec sheet.
+- **Not cards at all.** Networking gear, car parts, clothing: the *All Other* item type, plain conditions, package weight for calculated postage.
+- **Outside the US.** UK, EU and Australian sellers get metric in and metric out, and push to the right eBay site in the right currency.
+
+## Roadmap
+
+Tracked as [issues labelled `roadmap`](https://github.com/SurefireStudios/TCGiant-Sync/issues?q=is%3Aissue+is%3Aopen+label%3Aroadmap). Headlines:
+
+- **Editions.** Lite on WordPress.org and Standard on WooCommerce.com, built from this tree. Stage 1 (the extractions) shipped in 3.14.1; Stage 2 (splitting the scheduler and stock-push halves out) is next.
+- **Per-product condition** with eBay's per-category condition list, including refurbished and for-parts.
+- **Brand, MPN, UPC and EAN** on pushed listings.
+- **Required item specifics shown in the product panel**, pre-filled from attributes, instead of being reported as a failure.
+- **Lossless weight round-trips** by storing kilograms and pounds to four decimals.
+
+## Contributing
+
+Bug reports and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the development setup, the checks every change must pass, and the release process. Please read [SECURITY.md](SECURITY.md) before reporting anything that could affect a merchant's account.
 
 ## License
 
-This project is licensed under the **GPL-2.0-or-later** license -- see the [`LICENSE`](LICENSE) file for details.
-
-*Upgrade to Pro at [tcgiant.com/pro](https://tcgiant.com/pro).*
+[GPL-2.0-or-later](LICENSE). eBay and WooCommerce are trademarks of their respective owners; this project is not affiliated with either.

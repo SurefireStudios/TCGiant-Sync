@@ -29,15 +29,14 @@ require_once __DIR__ . '/build-manifest.php';
 $root = dirname( __DIR__ );
 
 /*
- * Differences that are known and deliberate.
+ * Differences that are known and deliberate. Currently none.
  *
- * README.md is repository documentation. It reaches auto-updating sites and not
- * uploaded ones, which is untidy but harmless — and it is the proof that these
- * two lists drift, since nobody chose it.
+ * README.md used to be the one entry here - repository documentation that
+ * reached auto-updating sites and not uploaded ones, harmless, and the proof
+ * that the two lists drift since nobody chose it. It is export-ignored now,
+ * along with the rest of the repository documentation and the harnesses.
  */
-$allowed_in_archive = array(
-	'README.md',
-);
+$allowed_in_archive = array();
 
 if ( ! function_exists( 'exec' ) ) {
 	fwrite( STDERR, "check-archive-parity: exec() is unavailable, cannot ask git what it would ship.\n" );
