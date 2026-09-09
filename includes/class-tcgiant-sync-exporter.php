@@ -1096,6 +1096,18 @@ class TCGiant_Sync_Exporter {
 			if ( ! empty( $override_fulfillment ) ) {
 				$settings['fulfillment_policy_id'] = $override_fulfillment;
 			}
+
+			// Item specifics filled in on the product's eBay Listing tab.
+			//
+			// Held apart from WooCommerce's own attributes deliberately. An
+			// attribute is shop-front furniture - it shows on the product page and
+			// can be an axis of a variation - and neither is what someone filling in
+			// "Type" because eBay asked for it is requesting. Attributes are still
+			// read; what is typed here simply beats them.
+			$override_specifics = $product->get_meta( '_ebay_export_specifics' );
+			if ( is_array( $override_specifics ) && ! empty( $override_specifics ) ) {
+				$settings['specifics'] = $override_specifics;
+			}
 		}
 
 		// Flag category-item_type mismatch so validation can catch it.
@@ -1217,6 +1229,13 @@ class TCGiant_Sync_Exporter {
 	const MAX_SPECIFIC_VALUE = 65;
 
 	/**
+	 * How many of eBay's suggested values for one aspect to offer as choices.
+	 * Some categories publish hundreds; a dropdown that long is no help, and the
+	 * whole list would travel to the browser on every check.
+	 */
+	const MAX_ASPECT_CHOICES = 60;
+
+	/**
 	 * Collect item specifics from a product's WooCommerce attributes.
 	 *
 	 * The importer maps eBay item specifics into product attributes, but until
@@ -1321,12 +1340,189 @@ class TCGiant_Sync_Exporter {
 	private function build_specifics_map( WC_Product $product, array $settings ) {
 		$specifics = array_merge(
 			$this->collect_attribute_specifics( $product ),
-			$this->collect_configured_specifics( $settings )
+			$this->collect_configured_specifics( $settings ),
+			$this->collect_entered_specifics( $settings )
 		);
 
 		$specifics = $this->add_derived_specifics( $specifics, $settings );
 
 		return $this->canonicalize_specific_names( $specifics, $settings );
+	}
+
+	/**
+	 * Item specifics typed into the product's eBay Listing tab.
+	 *
+	 * Last in the merge, so a value entered against this listing beats both a
+	 * product attribute of the same name and anything derived from the grading
+	 * fields. Someone typing into the box eBay's own rejection pointed them at
+	 * means it.
+	 *
+	 * @param array $settings Merged export settings.
+	 * @return array<string,string>
+	 */
+	private function collect_entered_specifics( array $settings ) {
+		$entered = $settings['specifics'] ?? array();
+		if ( ! is_array( $entered ) ) {
+			return array();
+		}
+
+		$out = array();
+		foreach ( $entered as $name => $value ) {
+			if ( is_array( $value ) ) {
+				continue;
+			}
+			$name  = trim( (string) $name );
+			$value = trim( (string) $value );
+			if ( '' === $name || '' === $value ) {
+				continue;
+			}
+			$out[ mb_substr( $name, 0, self::MAX_SPECIFIC_NAME ) ] = mb_substr( $value, 0, self::MAX_SPECIFIC_VALUE );
+		}
+
+		return $out;
+	}
+
+	/**
+	 * What eBay wants for this category, and what we would send it.
+	 *
+	 * The plugin has always known this and never shown it. A merchant selling
+	 * networking gear was told by eBay that the item specific Type was missing,
+	 * and wrote back: not sure where I would find what type is missing, do not
+	 * see that in the settings or product when editing the product. There was
+	 * nowhere to look. The answer was one cached API call away and no screen
+	 * ever asked for it. This is that screen's data.
+	 *
+	 * A failed lookup is its own status rather than "nothing required". The
+	 * push deliberately treats those two the same, so that an eBay outage
+	 * cannot stop anyone listing - but a panel doing the same would be telling
+	 * merchants everything was fine at the one moment it cannot know.
+	 *
+	 * @param WC_Product $product  Product being described.
+	 * @param array      $settings Merged export settings.
+	 * @return array
+	 */
+	public function describe_aspects( WC_Product $product, array $settings ) {
+		$category_id = (string) ( $settings['category_id'] ?? '' );
+
+		if ( '' === trim( $category_id ) ) {
+			return array(
+				'status'      => 'no_category',
+				'message'     => __( 'Choose an eBay category first - which item specifics are required depends on it.', 'tcgiant-sync' ),
+				'category_id' => '',
+				'aspects'     => array(),
+				'extra'       => array(),
+			);
+		}
+
+		$aspects = TCGiant_Sync_API::instance()->get_category_aspects( $category_id );
+
+		if ( is_wp_error( $aspects ) ) {
+			return array(
+				'status'      => 'lookup_failed',
+				'message'     => $aspects->get_error_message(),
+				'category_id' => $category_id,
+				'aspects'     => array(),
+				'extra'       => array(),
+			);
+		}
+
+		// Where each value would come from, so the panel can say so rather than
+		// leaving someone to wonder why a box they never filled in is satisfied.
+		$buckets = array(
+			'attribute' => $this->collect_attribute_specifics( $product ),
+			'listing'   => $this->collect_configured_specifics( $settings ),
+			'entered'   => $this->collect_entered_specifics( $settings ),
+		);
+
+		$sources = array();
+		foreach ( $buckets as $source => $bucket ) {
+			foreach ( $bucket as $name => $value ) {
+				if ( '' === trim( (string) $value ) ) {
+					continue;
+				}
+				// Later buckets win, matching the merge order in build_specifics_map().
+				$sources[ self::normalize_aspect_name( $name ) ] = array( $source, $name );
+			}
+		}
+
+		$provided = array();
+		$display  = array();
+		foreach ( $this->build_specifics_map( $product, $settings ) as $name => $value ) {
+			$key              = self::normalize_aspect_name( $name );
+			$provided[ $key ] = (string) $value;
+			// The name as it would be sent. Without this, anything no bucket owns
+			// - a derived value, say - was reported under its comparison key,
+			// so the panel offered the merchant "circulateduncirculated".
+			$display[ $key ]  = (string) $name;
+		}
+
+		$required = array();
+		$optional = array();
+		$listed   = array();
+
+		foreach ( $aspects as $aspect ) {
+			if ( empty( $aspect['name'] ) ) {
+				continue;
+			}
+
+			$key            = self::normalize_aspect_name( $aspect['name'] );
+			$listed[ $key ] = true;
+			$value          = isset( $provided[ $key ] ) ? $provided[ $key ] : '';
+			$origin         = ( '' !== trim( $value ) && isset( $sources[ $key ] ) ) ? $sources[ $key ] : array( '', '' );
+			$offered        = array_values( (array) ( $aspect['values'] ?? array() ) );
+
+			$row = array(
+				'name'      => (string) $aspect['name'],
+				'required'  => ! empty( $aspect['required'] ),
+				'mode'      => (string) ( $aspect['mode'] ?? 'FREE_TEXT' ),
+				'multi'     => ! empty( $aspect['multi'] ),
+				'choices'   => array_slice( $offered, 0, self::MAX_ASPECT_CHOICES ),
+				// A closed list we had to cut is not a closed list any more. The
+				// panel offers free text in that case rather than a dropdown that
+				// cannot reach the value the seller needs.
+				'truncated' => count( $offered ) > self::MAX_ASPECT_CHOICES,
+				'value'     => $value,
+				'source'    => $origin[0],
+				'from'      => $origin[1],
+			);
+
+			if ( $row['required'] ) {
+				$required[] = $row;
+			} else {
+				$optional[] = $row;
+			}
+		}
+
+		// Specifics we would send that eBay does not list for this category. Not
+		// an error, eBay accepts them - but worth showing, because a misspelled
+		// attribute name turns up here instead of against the aspect it was meant
+		// for, which is the whole explanation for a listing eBay keeps refusing.
+		$extra   = array();
+		$entered = array();
+		foreach ( $provided as $key => $value ) {
+			if ( '' === trim( $value ) || isset( $listed[ $key ] ) ) {
+				continue;
+			}
+			$name           = isset( $display[ $key ] ) ? $display[ $key ] : $key;
+			$extra[ $name ] = $value;
+
+			// Reported separately when it was typed on this product, because those
+			// are the only ones the merchant can edit - and a value that can be
+			// stored but never shown in a box again is one that can never be
+			// corrected or removed.
+			if ( isset( $sources[ $key ] ) && 'entered' === $sources[ $key ][0] ) {
+				$entered[ $name ] = $value;
+			}
+		}
+
+		return array(
+			'status'        => 'ok',
+			'message'       => '',
+			'category_id'   => $category_id,
+			'aspects'       => array_merge( $required, $optional ),
+			'extra'         => $extra,
+			'entered_extra' => $entered,
+		);
 	}
 
 	/**

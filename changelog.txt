@@ -1,5 +1,17 @@
 *** TCGiant Sync Changelog ***
 
+2026-09-08 - version 3.16.0
+== You can now see what eBay requires before it refuses the listing ==
+- NEW: The product's eBay Listing tab has a new section, Item Specifics. It asks eBay which item specifics your category requires, and shows every one of them with the value that would be sent, where that value came from, and which are still empty.
+- Anything missing can be filled in there and then. Where eBay publishes a list of accepted values - and for many categories it does - the field offers them rather than leaving you to guess the wording.
+- This was the answer to a question we had no good reply to. A merchant selling network switches was told by eBay that the item specific Type was missing and wrote back: not sure where I would find what type is missing, do not see that in the settings or product when editing the product. They were right. The plugin had been asking eBay that exact question for months and using the answer only to refuse the push.
+- Nothing is asked of eBay while the product page loads. The section checks when you open it, and the answer is cached for a week.
+- Values typed here are stored with the listing settings, not added to your WooCommerce attributes, so nothing new appears on your shop front. Attributes are still read and still used: a value typed here simply takes precedence over an attribute of the same name.
+- Where a value already comes from an attribute or from the grading fields, the section says so rather than leaving you wondering why a box you never filled in is satisfied.
+- The readiness list above the Push button gained a line for item specifics. It says "not checked" until you look, because the honest answer before asking eBay is that we do not know - and reading "Ready to push" above a listing eBay is about to refuse is the complaint this release answers.
+- Values you type are kept if you change the category later. The new category will list different specifics, and the ones it does not list are shown underneath in their own boxes, still being sent, and still yours to change or clear.
+- If eBay cannot be reached, the section says so. It does not report all clear. The push still lets listings through in that case, exactly as before, so an eBay outage cannot stop anyone listing.
+
 2026-09-08 - version 3.15.0
 == Changing a listing between Auction and Fixed Price ==
 - FIX: A listing could not be moved from Fixed Price to Auction, or back, however it was attempted. Pushing the change failed. Ending the listing first and pushing again failed. Setting the format in bulk and then pushing failed. The only way out was to republish in the format it already had.

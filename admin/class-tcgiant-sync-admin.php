@@ -73,6 +73,7 @@ class TCGiant_Sync_Admin {
 		add_action( 'wp_ajax_tcgiant_clear_export_error', array( $this, 'ajax_clear_export_error' ) );
 		add_action( 'wp_ajax_tcgiant_suggest_category', array( $this, 'ajax_suggest_category' ) );
 		add_action( 'wp_ajax_tcgiant_unlink_ebay', array( $this, 'ajax_unlink_ebay' ) );
+		add_action( 'wp_ajax_tcgiant_category_aspects', array( $this, 'ajax_category_aspects' ) );
 
 		// Warn when several products claim one eBay listing (duplicated products).
 		add_action( 'admin_notices', array( $this, 'shared_listing_admin_notice' ) );
@@ -1491,6 +1492,12 @@ class TCGiant_Sync_Admin {
 			}
 		}
 
+		// Item specifics travel with the button, because the product itself may
+		// not have been saved since they were typed.
+		if ( ! empty( $_POST['specifics_present'] ) ) {
+			self::save_entered_specifics( $product_id, $_POST['specifics'] ?? array() );
+		}
+
 		// Pre-push validation: check all requirements BEFORE queuing.
 		// This gives the user instant feedback instead of async error discovery.
 		$settings = $exporter->get_export_settings( $product_id );
@@ -2092,6 +2099,13 @@ class TCGiant_Sync_Admin {
 			}
 		}
 
+		// Item specifics from the eBay Listing tab. Written only when that panel
+		// was on screen with its fields rendered - saving a product whose panel
+		// was never opened must leave what is stored alone, not clear it.
+		if ( ! empty( $_POST['_ebay_export_specifics_present'] ) ) {
+			self::save_entered_specifics( $post_id, $_POST['_ebay_export_specifics'] ?? array() );
+		}
+
 		// Handle grader ID and grade value saving based on item type.
 		if ( isset( $_POST['_ebay_export_item_type'] ) ) {
 			$item_type = sanitize_text_field( wp_unslash( $_POST['_ebay_export_item_type'] ) );
@@ -2132,6 +2146,147 @@ class TCGiant_Sync_Admin {
 			update_post_meta( $post_id, '_ebay_export_ungraded_condition', sanitize_text_field( wp_unslash( $_POST['_ebay_export_ungraded_condition'] ) ) );
 		}
 		// phpcs:enable WordPress.Security.NonceVerification.Missing
+	}
+
+	/**
+	 * Clean a posted map of item specifics.
+	 *
+	 * Every other save path in this file hands its value straight to
+	 * sanitize_text_field(), which returns an empty string when given an array -
+	 * so an array-valued field saved that way stores nothing at all, silently.
+	 * The keys are sanitized as well as the values, because aspect names come
+	 * from eBay's taxonomy rather than from anything in this plugin.
+	 *
+	 * An empty value is KEPT, as an empty string. The panel renders a box for
+	 * every aspect eBay lists, so an empty one means the merchant cleared it -
+	 * which has to be told apart from an aspect that was never on screen.
+	 *
+	 * @param mixed $raw Raw $_POST value, still slashed.
+	 * @return array<string,string> Name => value, blank NAMES dropped.
+	 */
+	private static function sanitize_specifics_input( $raw ) {
+		if ( ! is_array( $raw ) ) {
+			return array();
+		}
+
+		$clean = array();
+
+		foreach ( wp_unslash( $raw ) as $name => $value ) {
+			if ( is_array( $value ) ) {
+				continue;
+			}
+			$name  = trim( sanitize_text_field( (string) $name ) );
+			$value = trim( sanitize_text_field( (string) $value ) );
+			if ( '' === $name ) {
+				continue;
+			}
+			$clean[ $name ] = $value;
+		}
+
+		return $clean;
+	}
+
+	/**
+	 * Store the item specifics typed into a product's eBay Listing tab.
+	 *
+	 * Called from all three paths that save per-product export settings - the
+	 * product save, the Push button and the Verify button - because a value can
+	 * be typed and then committed by any of them, and one of the three missing
+	 * it would look exactly like the panel losing what was entered.
+	 *
+	 * Merged into what is stored, never substituted for it. The panel only ever
+	 * shows the aspects eBay lists for the CURRENT category, so a product moved
+	 * from one category to another posts a map that does not mention the values
+	 * typed for the old one. Replacing wholesale deleted them - immediately
+	 * below a line in the panel saying they were still being sent.
+	 *
+	 * @param int   $post_id Product id.
+	 * @param mixed $raw     Raw $_POST value, still slashed.
+	 * @return void
+	 */
+	private static function save_entered_specifics( $post_id, $raw ) {
+		$posted = self::sanitize_specifics_input( $raw );
+		$stored = get_post_meta( $post_id, '_ebay_export_specifics', true );
+		$stored = is_array( $stored ) ? $stored : array();
+
+		foreach ( $posted as $name => $value ) {
+			if ( '' === $value ) {
+				// On screen and emptied: that is a removal.
+				unset( $stored[ $name ] );
+				continue;
+			}
+			$stored[ $name ] = $value;
+		}
+
+		if ( empty( $stored ) ) {
+			delete_post_meta( $post_id, '_ebay_export_specifics' );
+			return;
+		}
+
+		update_post_meta( $post_id, '_ebay_export_specifics', $stored );
+	}
+
+	/**
+	 * Which item specifics eBay requires for this product, and which we have.
+	 *
+	 * Asked for on demand rather than while the product screen renders. The
+	 * answer is cached for a week per category, but the first call for a category
+	 * is a live request to eBay, and a failed one is never cached at all - so a
+	 * shop with an expired token would pay for it on the load of every single
+	 * product page, whether anyone cared about item specifics or not.
+	 *
+	 * Nothing is saved here. What is typed is committed by Update, Push or
+	 * Verify; this endpoint only answers questions.
+	 *
+	 * @return void
+	 */
+	public function ajax_category_aspects() {
+		check_ajax_referer( 'tcgiant_sync_ajax' );
+
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'Insufficient permissions.' ) );
+		}
+
+		$product_id = absint( $_POST['product_id'] ?? 0 );
+		$product    = $product_id ? wc_get_product( $product_id ) : null;
+
+		if ( ! $product ) {
+			wp_send_json_error( array( 'message' => __( 'Product not found.', 'tcgiant-sync' ) ) );
+		}
+
+		$exporter = TCGiant_Sync_Exporter::instance();
+		$settings = $exporter->get_export_settings( $product_id );
+
+		// Answer for what is on the screen, not only for what has been saved. The
+		// category is usually chosen and checked in the same breath, well before
+		// anyone thinks to press Update.
+		$live = array(
+			'override_category_id'    => 'category_id',
+			'override_item_type'      => 'item_type',
+			'override_condition_type' => 'condition_type',
+		);
+
+		foreach ( $live as $post_key => $setting_key ) {
+			if ( isset( $_POST[ $post_key ] ) && '' !== $_POST[ $post_key ] ) {
+				$settings[ $setting_key ] = sanitize_text_field( wp_unslash( $_POST[ $post_key ] ) );
+			}
+		}
+
+		if ( ! empty( $_POST['specifics_present'] ) ) {
+			$settings['specifics'] = self::sanitize_specifics_input( $_POST['specifics'] ?? array() );
+		}
+
+		$described = $exporter->describe_aspects( $product, $settings );
+
+		if ( 'lookup_failed' === $described['status'] ) {
+			TCGiant_Sync_Logger::error( sprintf(
+				'Could not read the item specifics eBay requires for category %s: %s',
+				$described['category_id'],
+				$described['message']
+			) );
+		}
+
+		wp_send_json_success( $described );
 	}
 
 	/**
@@ -2509,7 +2664,33 @@ class TCGiant_Sync_Admin {
 			</div>
 		</div>
 
-		<?php // == STEP 5: READINESS + PUSH ==
+		<?php // == STEP 5: ITEM SPECIFICS ==
+			  $entered_specifics = get_post_meta( $product_id, '_ebay_export_specifics', true );
+			  $entered_count     = is_array( $entered_specifics ) ? count( $entered_specifics ) : 0;
+		?>
+		<div class="tc-ebay-section" id="tc-section-aspects">
+			<div class="tc-ebay-section-head" data-target="tc-body-aspects">
+				<span class="dashicons dashicons-arrow-right-alt2"></span>
+				<span><?php esc_html_e( '5. Item Specifics', 'tcgiant-sync' ); ?></span>
+				<span id="tc-step5-summary" style="font-weight:400;color:#888;font-size:12px;margin-left:auto;"><?php
+					echo esc_html(
+						$entered_count > 0
+							? sprintf( __( '%d filled in here', 'tcgiant-sync' ), $entered_count )
+							: __( 'Not checked', 'tcgiant-sync' )
+					);
+				?></span>
+			</div>
+			<div class="tc-ebay-section-body" id="tc-body-aspects">
+				<p style="margin:0 0 8px;font-size:12px;color:#666;">
+					<?php esc_html_e( 'eBay requires particular item specifics for each category and refuses a listing that is missing one. This asks eBay which your category needs, and shows what would be sent for each.', 'tcgiant-sync' ); ?>
+				</p>
+				<button type="button" class="button" id="tc-check-aspects-btn" data-product-id="<?php echo esc_attr( $product_id ); ?>" style="font-size:12px;padding:3px 12px;"><?php esc_html_e( 'Check required item specifics', 'tcgiant-sync' ); ?></button>
+				<span id="tc-aspects-status" style="margin-left:8px;font-size:12px;color:#555;"></span>
+				<div id="tc-aspect-rows" style="margin-top:10px;"></div>
+			</div>
+		</div>
+
+		<?php // == STEP 6: READINESS + PUSH ==
 			  $checks = array();
 			  // Category
 			  if ( ! empty( $eff_cat ) ) {
@@ -2558,7 +2739,7 @@ class TCGiant_Sync_Admin {
 		<div class="tc-ebay-section" id="tc-section-push">
 			<div class="tc-ebay-section-head open" data-target="tc-body-push">
 				<span class="dashicons dashicons-arrow-right-alt2"></span>
-				<span><?php esc_html_e( '5. Push to eBay', 'tcgiant-sync' ); ?></span>
+				<span><?php esc_html_e( '6. Push to eBay', 'tcgiant-sync' ); ?></span>
 			</div>
 			<div class="tc-ebay-section-body open" id="tc-body-push">
 				<div class="tc-readiness <?php echo $all_ok ? '' : 'has-issues'; ?>">
@@ -2566,6 +2747,7 @@ class TCGiant_Sync_Admin {
 					<?php foreach ( $checks as $c ) : ?>
 						<div class="tc-readiness-check" style="color:<?php echo $c['ok'] ? '#333' : '#721c24'; ?>;"><?php echo $c['ok'] ? '<span style="color:#1e7e34;">&#10004;</span>' : '<span style="color:#dc3545;">&#10008;</span>'; ?> <?php echo esc_html( $c['label'] ); ?></div>
 					<?php endforeach; ?>
+					<div class="tc-readiness-check" id="tc-readiness-aspects" style="color:#8a6d3b;"><span style="color:#c8a44a;">&#9679;</span> <?php esc_html_e( 'Item specifics: not checked - open Item Specifics above', 'tcgiant-sync' ); ?></div>
 				</div>
 				<?php $bl = ! empty( $ebay_item_id ) ? __( 'Update eBay Listing', 'tcgiant-sync' ) : __( 'Push to eBay', 'tcgiant-sync' ); ?>
 				<div style="display:flex;gap:8px;align-items:center;margin-top:4px;">
@@ -2626,19 +2808,111 @@ class TCGiant_Sync_Admin {
 			$('#tc-browse-categories-btn-product').on('click',function(){var $b=$('#tc-category-browser-product');$b.toggle();if($b.is(':visible')&&$('#tc-category-drilldown-product').children().length===0){var it=$('#_ebay_export_item_type').val(),sid='';if(it==='coins'){sid='11116';trail=[{id:'11116',name:'Coins & Paper Money'}];}else if(it==='tcg'){sid='2536';trail=[{id:'2536',name:'Toys & Hobbies'}];}renderBread();loadCats(sid);}});
 			function loadCats(pid){var $d=$('#tc-category-drilldown-product'),$s=$('#tc-category-browser-status-product');$d.html('<div style="text-align:center;padding:12px;color:#888;">Loading...</div>');$s.text('');$.post(ajaxUrl,{action:'tcgiant_browse_categories',_ajax_nonce:nonce,parent_id:pid},function(r){if(!r.success){$d.html('<div style="color:#c00;padding:6px;">'+r.data.message+'</div>');return;}renderCats(r.data.categories);}).fail(function(){$d.html('<div style="color:#c00;padding:6px;">Request failed.</div>');});}
 			function renderCats(cats){var $d=$('#tc-category-drilldown-product');$d.empty();if(!cats||!cats.length){$d.html('<div style="padding:6px;color:#888;">No subcategories.</div>');return;}$.each(cats,function(i,c){var $r=$('<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 6px;border-bottom:1px solid #eee;cursor:pointer;font-size:12px;"></div>');$r.append($('<span style="flex:1;"></span>').text(c.name));$r.append(c.leaf?'<span style="color:#16a34a;font-size:10px;font-weight:600;">leaf</span>':'<span class="dashicons dashicons-arrow-right-alt2" style="color:#888;font-size:13px;width:13px;height:13px;"></span>');$r.on('mouseenter',function(){$(this).css('background','#f0f6fc');}).on('mouseleave',function(){$(this).css('background','');});$r.on('click',function(){if(c.leaf){selectCat(c.id,c.name);$('#tc-category-browser-product').slideUp(200);trail=[];}else{trail.push({id:c.id,name:c.name});renderBread();loadCats(c.id);}});$d.append($r);});}
-			function selectCat(id,name){$('#_ebay_export_category_id_select').val('custom');$('#_ebay_export_category_id_custom').val(id).show();$('#_ebay_export_category_name').val(name);$('#tc-selected-category-label-product').html('&#10004; '+name+' ('+id+')').show();$('#tc-step2-summary').text(name+' ('+id+')');}
+			function selectCat(id,name){tcAspectsReset();$('#_ebay_export_category_id_select').val('custom');$('#_ebay_export_category_id_custom').val(id).show();$('#_ebay_export_category_name').val(name);$('#tc-selected-category-label-product').html('&#10004; '+name+' ('+id+')').show();$('#tc-step2-summary').text(name+' ('+id+')');}
 			function renderBread(){var $bc=$('#tc-category-breadcrumb-product');$bc.empty();var $root=$('<a href="#" style="color:#2271b1;text-decoration:none;font-size:11px;">All</a>');$root.on('click',function(e){e.preventDefault();trail=[];renderBread();loadCats('');});$bc.append($root);$.each(trail,function(i,c){$bc.append('<span style="margin:0 3px;color:#aaa;"> &rsaquo; </span>');if(i<trail.length-1){var $l=$('<a href="#" style="color:#2271b1;text-decoration:none;font-size:11px;"></a>').text(c.name);(function(idx){$l.on('click',function(e){e.preventDefault();trail=trail.slice(0,idx+1);renderBread();loadCats(c.id);});})(i);$bc.append($l);}else{$bc.append($('<b style="font-size:11px;"></b>').text(c.name));}});}
 			// Category suggestion
 			$('#tc-suggest-category-btn').on('click',function(){var btn=$(this),$p=$('#tc-suggest-pills'),title='<?php echo esc_js( $product ? $product->get_name() : '' ); ?>';if(!title)return;btn.prop('disabled',true).text('Searching...');$.post(ajaxUrl,{action:'tcgiant_suggest_category',_ajax_nonce:nonce,title:title},function(r){btn.prop('disabled',false).html('<span class="dashicons dashicons-lightbulb" style="font-size:13px;vertical-align:middle;margin-right:2px;"></span> Suggest Category from Title');if(r.success&&r.data.suggestions&&r.data.suggestions.length){$p.empty().show();$.each(r.data.suggestions,function(i,s){var $pill=$('<span class="tc-suggest-pill"></span>').text(s.name+' ('+s.id+')');$pill.on('click',function(){selectCat(s.id,s.name);$p.slideUp(200);});$p.append($pill);});}else{$p.html('<span style="font-size:11px;color:#888;">No suggestions found.</span>').show();}}).fail(function(){btn.prop('disabled',false).html('<span class="dashicons dashicons-lightbulb" style="font-size:13px;vertical-align:middle;margin-right:2px;"></span> Suggest Category from Title');});});
 			// Dismiss error
 			$('#tcgiant-dismiss-export-error').on('click',function(e){e.preventDefault();$.post(ajaxUrl,{action:'tcgiant_clear_export_error',product_id:$(this).data('product-id'),_ajax_nonce:nonce});$('#tcgiant-export-error-notice').slideUp(200);});
 			// Push
-			$('#tcgiant-push-btn').on('click',function(){var btn=$(this),st=$('#tcgiant-push-status');btn.prop('disabled',true);st.css('color','#555').text('Saving & validating...');var cs=$('#_ebay_export_category_id_select').val()||'',cc=$('#_ebay_export_category_id_custom').val()||'',catId=(cs==='custom')?cc:cs,it=$('#_ebay_export_item_type').val()||'',sf=(it&&it!=='other')?'_'+it:'',gid=$('#_ebay_export_grader_id'+sf).val()||'',gv=$('#_ebay_export_grade_value'+sf).val()||'',uc=$('#_ebay_export_ungraded_condition'+sf).val()||'';$.post(ajaxUrl,{action:'tcgiant_push_product',product_id:btn.data('product-id'),override_category_id:catId,override_condition_id:$('#_ebay_export_condition_id').val()||'',override_item_type:it,override_condition_type:$('#_ebay_export_condition_type').val()||'',override_grader_id:gid,override_grade_value:gv,override_cert_number:$('[name="_ebay_export_cert_number"]').val()||'',override_coin_year:$('[name="_ebay_export_coin_year"]').val()||'',override_ungraded_condition:uc,override_listing_type:$('#_ebay_export_listing_type').val()||'',override_listing_duration:$('#_ebay_export_listing_duration').val()||'',override_fulfillment_policy:$('#_ebay_export_fulfillment_policy').val()||'',_ajax_nonce:nonce},function(r){if(r.success){st.css('color','#2a8a2a').text('OK - '+r.data.message);}else{st.css('color','#cc1818').text('Error: '+(r.data?r.data.message:'Unknown error'));btn.prop('disabled',false);}});});
+			$('#tcgiant-push-btn').on('click',function(){var btn=$(this),st=$('#tcgiant-push-status');btn.prop('disabled',true);st.css('color','#555').text('Saving & validating...');var cs=$('#_ebay_export_category_id_select').val()||'',cc=$('#_ebay_export_category_id_custom').val()||'',catId=(cs==='custom')?cc:cs,it=$('#_ebay_export_item_type').val()||'',sf=(it&&it!=='other')?'_'+it:'',gid=$('#_ebay_export_grader_id'+sf).val()||'',gv=$('#_ebay_export_grade_value'+sf).val()||'',uc=$('#_ebay_export_ungraded_condition'+sf).val()||'';$.post(ajaxUrl,{action:'tcgiant_push_product',product_id:btn.data('product-id'),override_category_id:catId,override_condition_id:$('#_ebay_export_condition_id').val()||'',override_item_type:it,override_condition_type:$('#_ebay_export_condition_type').val()||'',override_grader_id:gid,override_grade_value:gv,override_cert_number:$('[name="_ebay_export_cert_number"]').val()||'',override_coin_year:$('[name="_ebay_export_coin_year"]').val()||'',override_ungraded_condition:uc,override_listing_type:$('#_ebay_export_listing_type').val()||'',override_listing_duration:$('#_ebay_export_listing_duration').val()||'',override_fulfillment_policy:$('#_ebay_export_fulfillment_policy').val()||'',specifics_present:tcAspectsPresent(),specifics:tcAspectValues(),_ajax_nonce:nonce},function(r){if(r.success){st.css('color','#2a8a2a').text('OK - '+r.data.message);}else{st.css('color','#cc1818').text('Error: '+(r.data?r.data.message:'Unknown error'));btn.prop('disabled',false);}});});
+			// Item specifics: ask eBay what this category requires, and show it.
+			function tcAspectValues(){var o={};$('#tc-aspect-rows [data-aspect]').each(function(){var n=$(this).data('aspect');if(n){o[n]=$.trim($(this).val()||'');}});return o;}
+			function tcAspectsPresent(){return $('#tc-aspect-rows [data-aspect]').length?1:'';}
+			// The readiness box belongs to the push section and was server-rendered from
+			// checks that know nothing about aspects. Whatever we do to it has to be
+			// undoable, or fixing the specifics leaves a red banner with nothing under it.
+			function tcAspectBox(){var $r=$('#tc-readiness-aspects');if(!$r.length){return null;}var $box=$r.closest('.tc-readiness');if(!$box.data('tc-orig')){var $t=$box.find('.tc-readiness-title');$box.data('tc-orig',{html:$t.html(),style:$t.attr('style')||'',issues:$box.hasClass('has-issues')});}return $box;}
+			function tcAspectRestore($box){var o=$box.data('tc-orig');if(!o){return;}if(!o.issues){$box.removeClass('has-issues');}$box.find('.tc-readiness-title').attr('style',o.style).html(o.html);}
+			function tcAspectReadiness(missing){
+				var $box=tcAspectBox();if(!$box){return;}var $r=$('#tc-readiness-aspects');
+				if(missing===null){tcAspectRestore($box);$r.css('color','#8a6d3b').html('<span style="color:#c8a44a;">&#9679;</span> ').append(document.createTextNode('Item specifics: not checked'));return;}
+				if(missing>0){$box.addClass('has-issues');$box.find('.tc-readiness-title').attr('style','color:#721c24;').html('&#9888; ').append(document.createTextNode('Not ready - fix issues above'));$r.css('color','#721c24').html('<span style="color:#dc3545;">&#10008;</span> ').append(document.createTextNode('Item specifics: '+missing+' required and empty'));return;}
+				tcAspectRestore($box);$r.css('color','#333').html('<span style="color:#1e7e34;">&#10004;</span> ').append(document.createTextNode('Item specifics: every required one has a value'));
+			}
+			// One row. Everything eBay sent us goes in through .text() or .val(), never
+			// as markup: aspect names and values are eBay's text, not ours.
+			function tcAspectRow(a){
+				var has=!!a.value,bad=a.required&&!has;
+				var $row=$('<div>').css({display:'flex',alignItems:'center',gap:'6px',padding:'3px 0'});
+				$row.append($('<span>').css({color:has?'#1e7e34':(bad?'#dc3545':'#999'),width:'14px'}).html(has?'&#10004;':(bad?'&#10008;':'&#9679;')));
+				$row.append($('<span>').css({minWidth:'150px',fontSize:'12px',fontWeight:a.required?'600':'400'}).text(a.name+(a.required?' *':'')));
+				var $in;
+				// A closed list is only closed if we could show all of it. Cut short, the
+				// dropdown becomes a dead end for anyone needing value 61 onwards.
+				if(a.choices&&a.choices.length&&a.mode==='SELECTION_ONLY'&&!a.truncated){
+					$in=$('<select>');$in.append($('<option>').val('').text('-- choose --'));
+					var seen=false;$.each(a.choices,function(i,c){$in.append($('<option>').val(c).text(c));if(c===a.value){seen=true;}});
+					if(has&&!seen){$in.append($('<option>').val(a.value).text(a.value));}
+				}else{
+					$in=$('<input type="text">');
+					if(a.choices&&a.choices.length){var lid='tc-aspect-list-'+encodeURIComponent(a.name).replace(/[^A-Za-z0-9]/g,'');var $dl=$('<datalist>').attr('id',lid);$.each(a.choices,function(i,c){$dl.append($('<option>').val(c));});$row.append($dl);$in.attr('list',lid);}
+				}
+				$in.attr('data-aspect',a.name).attr('name','_ebay_export_specifics['+a.name+']').css({flex:'1',fontSize:'12px',maxWidth:'260px'});
+				if(a.source==='entered'){$in.val(a.value);}else if(has){$in.attr('placeholder',a.value);}else if(a.required){$in.attr('placeholder','Required by eBay');}
+				$row.append($in);
+				var note='';
+				if(a.source==='attribute'){note='from attribute: '+a.from;}else if(a.source==='listing'){note='from the listing settings';}
+				if(note){$row.append($('<span>').css({fontSize:'11px',color:'#888'}).text(note));}
+				return $row;
+			}
+			function tcRenderAspects(d){
+				var $st=$('#tc-aspects-status'),$rows=$('#tc-aspect-rows'),$sum=$('#tc-step5-summary');
+				$rows.empty().data('loaded',1);
+				if(d.status!=='ok'){$st.css('color',d.status==='no_category'?'#8a6d3b':'#cc1818').text(d.message);$sum.text(d.status==='no_category'?'No category':'Could not check');tcAspectReadiness(null);return;}
+				var missing=0,required=0;
+				$rows.append($('<input type="hidden" name="_ebay_export_specifics_present" value="1">'));
+				$.each(d.aspects,function(i,a){if(a.required){required++;if(!a.value){missing++;}}$rows.append(tcAspectRow(a));});
+				if(!d.aspects.length){$rows.append($('<div>').css({fontSize:'12px',color:'#666'}).text('eBay lists no item specifics for this category.'));}
+				// Values typed here for a category this product no longer uses. Shown as
+				// real boxes, because a stored value that never gets a box again is one
+				// nobody can correct or remove.
+				var kept=[];
+				$.each(d.entered_extra||{},function(name,value){kept.push({name:name,required:false,mode:'FREE_TEXT',choices:[],value:value,source:'entered',from:''});});
+				if(kept.length){
+					$rows.append($('<div>').css({marginTop:'10px',fontSize:'11px',color:'#666',fontWeight:'600'}).text('Also sent, though eBay does not list these for this category:'));
+					$.each(kept,function(i,a){$rows.append(tcAspectRow(a));});
+				}
+				// The rest of the extras come from attributes or the grading fields and
+				// cannot be edited here, so they are named rather than offered.
+				var other=[];$.each(d.extra||{},function(k,v){if(!d.entered_extra||!(k in d.entered_extra)){other.push(k+': '+v);}});
+				if(other.length){$rows.append($('<div>').css({marginTop:'8px',fontSize:'11px',color:'#888'}).text('Also sent from attributes or listing settings: '+other.join(', ')));}
+				$st.css('color',missing?'#cc1818':'#1e7e34').text(missing?(missing+' of '+required+' required specifics have no value'):(required+' required, all filled'));
+				$sum.text(missing?(missing+' missing'):'Complete');
+				tcAspectReadiness(missing);
+			}
+			function tcCheckAspects(){
+				var $btn=$('#tc-check-aspects-btn'),$st=$('#tc-aspects-status');
+				if(!$btn.length||$btn.prop('disabled')){return;}
+				var cs=$('#_ebay_export_category_id_select').val()||'',cc=$('#_ebay_export_category_id_custom').val()||'',catId=(cs==='custom')?cc:cs;
+				$btn.prop('disabled',true);$st.css('color','#555').text('Asking eBay...');
+				$.post(ajaxUrl,{action:'tcgiant_category_aspects',product_id:$btn.data('product-id'),override_category_id:catId,override_item_type:$('#_ebay_export_item_type').val()||'',override_condition_type:$('#_ebay_export_condition_type').val()||'',specifics_present:tcAspectsPresent(),specifics:tcAspectValues(),_ajax_nonce:nonce},function(r){
+					$btn.prop('disabled',false);
+					if(!r.success){$st.css('color','#cc1818').text(r.data&&r.data.message?r.data.message:'Could not check.');tcAspectReadiness(null);return;}
+					tcRenderAspects(r.data);
+				}).fail(function(){$btn.prop('disabled',false);$st.css('color','#cc1818').text('Request failed.');tcAspectReadiness(null);});
+			}
+			// A different category means different requirements, and the answer on screen
+			// is not one of them. Called from the category controls AND from selectCat(),
+			// which sets those controls with .val() - a programmatic set fires no change
+			// event, so Browse and Suggest would otherwise leave the old answer standing
+			// and post the old category's values against the new one.
+			function tcAspectsReset(){
+				var $rows=$('#tc-aspect-rows');if(!$rows.data('loaded')){return;}
+				$rows.empty().data('loaded',0);
+				$('#tc-aspects-status').css('color','#8a6d3b').text('Category changed - check again.');
+				$('#tc-step5-summary').text('Not checked');
+				tcAspectReadiness(null);
+			}
+			$('#tc-check-aspects-btn').on('click',tcCheckAspects);
+			// Checked once when the section is first opened, so nobody has to know to ask.
+			$('#tc-section-aspects .tc-ebay-section-head').on('click',function(){if(!$('#tc-aspect-rows').data('loaded')){tcCheckAspects();}});
+			$('#_ebay_export_category_id_select,#_ebay_export_category_id_custom').on('change',tcAspectsReset);
 			// Duration filtering based on listing type.
 			var fpDurations={'FixedPriceItem':['GTC','Days_30'],'Chinese':['Days_1','Days_3','Days_5','Days_7','Days_10']};
 			$('#_ebay_export_listing_type').on('change',function(){var lt=$(this).val(),$dur=$('#_ebay_export_listing_duration');if(!lt){$dur.find('option').show();return;}var valid=fpDurations[lt]||[];$dur.find('option').each(function(){var v=$(this).val();if(!v){$(this).show();}else{$(this).toggle(valid.indexOf(v)>=0);}});if(valid.indexOf($dur.val())<0){$dur.val('');}});
 			// Verify (dry run)
-			$('#tcgiant-verify-btn').on('click',function(){var btn=$(this),st=$('#tcgiant-push-status');btn.prop('disabled',true);st.css('color','#555').text('Verifying listing...');var cs=$('#_ebay_export_category_id_select').val()||'',cc=$('#_ebay_export_category_id_custom').val()||'',catId=(cs==='custom')?cc:cs,it=$('#_ebay_export_item_type').val()||'',sf=(it&&it!=='other')?'_'+it:'',gid=$('#_ebay_export_grader_id'+sf).val()||'',gv=$('#_ebay_export_grade_value'+sf).val()||'',uc=$('#_ebay_export_ungraded_condition'+sf).val()||'';$.post(ajaxUrl,{action:'tcgiant_verify_product',product_id:btn.data('product-id'),override_category_id:catId,override_condition_id:$('#_ebay_export_condition_id').val()||'',override_item_type:it,override_condition_type:$('#_ebay_export_condition_type').val()||'',override_grader_id:gid,override_grade_value:gv,override_cert_number:$('[name="_ebay_export_cert_number"]').val()||'',override_coin_year:$('[name="_ebay_export_coin_year"]').val()||'',override_ungraded_condition:uc,override_listing_type:$('#_ebay_export_listing_type').val()||'',override_listing_duration:$('#_ebay_export_listing_duration').val()||'',override_fulfillment_policy:$('#_ebay_export_fulfillment_policy').val()||'',_ajax_nonce:nonce},function(r){btn.prop('disabled',false);if(r.success){st.css('color','#2a8a2a').html(r.data.message.replace(/\n/g,'<br>'));}else{st.css('color','#cc1818').text('Verify failed: '+(r.data?r.data.message:'Unknown error'));}}).fail(function(){btn.prop('disabled',false);st.css('color','#cc1818').text('Verify request failed.');});});
+			$('#tcgiant-verify-btn').on('click',function(){var btn=$(this),st=$('#tcgiant-push-status');btn.prop('disabled',true);st.css('color','#555').text('Verifying listing...');var cs=$('#_ebay_export_category_id_select').val()||'',cc=$('#_ebay_export_category_id_custom').val()||'',catId=(cs==='custom')?cc:cs,it=$('#_ebay_export_item_type').val()||'',sf=(it&&it!=='other')?'_'+it:'',gid=$('#_ebay_export_grader_id'+sf).val()||'',gv=$('#_ebay_export_grade_value'+sf).val()||'',uc=$('#_ebay_export_ungraded_condition'+sf).val()||'';$.post(ajaxUrl,{action:'tcgiant_verify_product',product_id:btn.data('product-id'),override_category_id:catId,override_condition_id:$('#_ebay_export_condition_id').val()||'',override_item_type:it,override_condition_type:$('#_ebay_export_condition_type').val()||'',override_grader_id:gid,override_grade_value:gv,override_cert_number:$('[name="_ebay_export_cert_number"]').val()||'',override_coin_year:$('[name="_ebay_export_coin_year"]').val()||'',override_ungraded_condition:uc,override_listing_type:$('#_ebay_export_listing_type').val()||'',override_listing_duration:$('#_ebay_export_listing_duration').val()||'',override_fulfillment_policy:$('#_ebay_export_fulfillment_policy').val()||'',specifics_present:tcAspectsPresent(),specifics:tcAspectValues(),_ajax_nonce:nonce},function(r){btn.prop('disabled',false);if(r.success){st.css('color','#2a8a2a').html(r.data.message.replace(/\n/g,'<br>'));}else{st.css('color','#cc1818').text('Verify failed: '+(r.data?r.data.message:'Unknown error'));}}).fail(function(){btn.prop('disabled',false);st.css('color','#cc1818').text('Verify request failed.');});});
 		})(jQuery);
 		</script>
 		<?php
@@ -3283,6 +3557,12 @@ class TCGiant_Sync_Admin {
 				$value = sanitize_text_field( wp_unslash( $_POST[ $post_key ] ) );
 				update_post_meta( $product_id, $meta_key, $value );
 			}
+		}
+
+		// Item specifics travel with the button, because the product itself may
+		// not have been saved since they were typed.
+		if ( ! empty( $_POST['specifics_present'] ) ) {
+			self::save_entered_specifics( $product_id, $_POST['specifics'] ?? array() );
 		}
 
 		$settings = $exporter->get_export_settings( $product_id );

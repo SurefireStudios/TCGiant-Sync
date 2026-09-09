@@ -79,6 +79,7 @@ add_action   woocommerce_variation_options_pricing => add_variation_bin_location
 add_action   woocommerce_variation_set_stock => on_variation_stock_change
 add_action   wp_ajax_tcgiant_activate_license => ajax_activate_license
 add_action   wp_ajax_tcgiant_browse_categories => ajax_browse_categories
+add_action   wp_ajax_tcgiant_category_aspects => ajax_category_aspects
 add_action   wp_ajax_tcgiant_clear_export_error => ajax_clear_export_error
 add_action   wp_ajax_tcgiant_deactivate_license => ajax_deactivate_license
 add_action   wp_ajax_tcgiant_end_listing => ajax_end_listing

@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.15.0
+Stable tag: 3.16.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,13 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.16.0 - 2026-09-08 =
+**See what eBay requires before it refuses the listing**
+* NEW: An Item Specifics section on the product's eBay Listing tab. It asks eBay which item specifics your category requires and shows each one with the value that would be sent, where it came from, and whether it is missing - and lets you fill in the gaps, choosing from eBay's own list of accepted values where it publishes one.
+* Nothing is asked of eBay during page load; the section checks when opened and the answer is cached for a week. If eBay cannot be reached it says so rather than reporting all clear.
+* Values entered there are stored with the listing settings rather than added to your WooCommerce attributes, so nothing new appears on your shop front. Attributes are still read; a value entered here takes precedence over an attribute of the same name.
+* The readiness list gained a line for item specifics, which reads "not checked" until you look.
 
 = 3.15.0 - 2026-09-08 =
 **Changing a listing between Auction and Fixed Price**
