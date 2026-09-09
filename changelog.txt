@@ -1,5 +1,23 @@
 *** TCGiant Sync Changelog ***
 
+2026-09-09 - version 3.17.0
+== The Listings screen works ==
+- FIX: TCGiant Sync, Listings has been empty on every site since the screen was added. It reads a database table that was never created: the plugin asked WordPress to create it at a moment WordPress had already gone past, so the request was quietly dropped and nothing ever said so. Every symptom looked like "you have not imported yet".
+- The table is created on update, and the products already linked to eBay are filled in behind you. On a large catalogue that happens a few hundred at a time over several admin page loads rather than all at once, so nothing stalls waiting for it.
+- FIX: Pushing a product now puts it on that screen. Only importing ever did, so a shop that lists by pushing from WooCommerce saw nothing there however much it had listed - and End Listing, Relist and bulk Push are on that screen, which put them out of reach for exactly the products the plugin had created.
+- FIX: The message on the empty screen told you to run a "Full Sync from the Import page". There is no button by that name. It now names Fetch Inventory, which is the one that exists.
+- FIX: Ending a listing anywhere - the button, the bulk action, the hourly check, a sale that empties stock - now shows on that screen too. The row used to keep saying Active.
+
+== Listing something eBay already has ==
+- NEW: A product can be linked to a listing that already exists on eBay. Open the product, eBay Listing tab, Push to eBay: if the product has never been listed there is a box for the eBay item number. Give it the number and pushing updates that listing from then on, instead of creating a second one.
+- This is the answer to "I pushed an item that was already in eBay and it created a duplicate. What is being compared?" One thing was, and still is: the eBay item number stored on the product. Nothing about the product is compared with anything on eBay - not the title, not the SKU - so a product built in WooCommerce for something already listed by hand had no way of knowing. Now you can tell it.
+- We check with eBay that the number is a real listing on your account before linking, so a mistyped number is refused rather than quietly attached to a stranger's item.
+- Unlink now sits in the same place, so a link made in error can be undone. Unlinking only forgets the connection here; your eBay listing is not touched.
+
+== Two things that would have gone wrong once the table existed ==
+- FIX: Automatic relisting would have relisted trashed and draft products - live, on eBay, where their owner cannot see them in WooCommerce. It reads the new table, and that path never checked whether the product was still published, which did not matter while the table was never there.
+- FIX: Relisting an auction recorded it as Fixed Price, which then blocked the next push with an instruction to end and re-create an auction that already was one. Any update that named one field was writing every other column as well, including a listing format nobody had asked for. An update now writes only the fields it was actually given.
+
 2026-09-08 - version 3.16.0
 == You can now see what eBay requires before it refuses the listing ==
 - NEW: The product's eBay Listing tab has a new section, Item Specifics. It asks eBay which item specifics your category requires, and shows every one of them with the value that would be sent, where that value came from, and which are still empty.

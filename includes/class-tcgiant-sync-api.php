@@ -580,6 +580,37 @@ class TCGiant_Sync_API {
 	}
 
 	/**
+	 * The eBay account these credentials belong to.
+	 *
+	 * Cached for a day. Used to prove that a listing somebody is linking a
+	 * product to is actually theirs: GetItem answers for any public listing on
+	 * eBay, so without this the plugin would cheerfully attach a product to a
+	 * stranger's item and then try to revise it on every push.
+	 *
+	 * Returns '' when it cannot be determined, which callers should treat as
+	 * "unknown", not as "no match".
+	 *
+	 * @return string
+	 */
+	public function get_seller_user_id() {
+		$cached = get_transient( 'tcgiant_ebay_user_id' );
+		if ( is_string( $cached ) && '' !== $cached ) {
+			return $cached;
+		}
+
+		$response = $this->trading_api_request( 'GetUser', '<DetailLevel>ReturnSummary</DetailLevel>' );
+
+		if ( is_wp_error( $response ) || empty( $response['User']['UserID'] ) ) {
+			return '';
+		}
+
+		$user_id = (string) $response['User']['UserID'];
+		set_transient( 'tcgiant_ebay_user_id', $user_id, DAY_IN_SECONDS );
+
+		return $user_id;
+	}
+
+	/**
 	 * Get user's eBay Store Details and Categories via Trading API.
 	 */
 	public function get_store() {

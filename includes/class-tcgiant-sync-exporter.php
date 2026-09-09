@@ -422,6 +422,52 @@ class TCGiant_Sync_Exporter {
 
 				$product->save();
 
+				// Put it on the Listings screen.
+				//
+				// Nothing here ever wrote to that table. Only the importer did, so a
+				// shop that lists by pushing from WooCommerce - never importing -
+				// had an empty Listings screen no matter how much it had listed,
+				// which put End Listing, Relist and bulk Push out of reach for
+				// exactly the products the plugin had created.
+				//
+				// A no-op when the table is missing, so it cannot fail a push.
+				$row = array(
+					'product_id'     => $product_id,
+					'ebay_item_id'   => $item_id,
+					'listing_type'   => $product->get_meta( '_ebay_listing_type' ) ?: 'FixedPriceItem',
+					'listing_status' => 'Active',
+					'ebay_url'       => 'https://www.ebay.com/itm/' . $item_id,
+					'ebay_title'     => $title,
+					'last_synced'    => current_time( 'mysql' ),
+					'last_pushed'    => current_time( 'mysql' ),
+				);
+
+				// Price and quantity only where this product carries the real
+				// figures. A variable product's live on its variations, so reading
+				// them here would record 0.00 and 0 and the Listings screen would
+				// show every variable listing as free and sold out. A column left
+				// out keeps whatever the last import knew, which is the honest
+				// answer rather than a confident wrong one.
+				if ( ! $product->is_type( 'variable' ) ) {
+					$price = $product->get_regular_price();
+					if ( is_numeric( $price ) ) {
+						$row['ebay_price'] = (float) $price;
+					}
+
+					$stock = $product->get_stock_quantity();
+					if ( null !== $stock && '' !== $stock ) {
+						$row['ebay_quantity'] = max( 0, (int) $stock );
+					}
+				}
+
+				// An auction is one item however many are in stock, and that is what
+				// was sent.
+				if ( 'Chinese' === $row['listing_type'] ) {
+					$row['ebay_quantity'] = 1;
+				}
+
+				TCGiant_Sync_DB::upsert( $row );
+
 				$state = self::get_export_state();
 				self::update_export_state( array(
 					'total_pushed'    => $state['total_pushed'] + 1,

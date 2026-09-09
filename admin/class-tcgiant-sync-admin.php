@@ -74,6 +74,7 @@ class TCGiant_Sync_Admin {
 		add_action( 'wp_ajax_tcgiant_suggest_category', array( $this, 'ajax_suggest_category' ) );
 		add_action( 'wp_ajax_tcgiant_unlink_ebay', array( $this, 'ajax_unlink_ebay' ) );
 		add_action( 'wp_ajax_tcgiant_category_aspects', array( $this, 'ajax_category_aspects' ) );
+		add_action( 'wp_ajax_tcgiant_link_ebay', array( $this, 'ajax_link_ebay' ) );
 
 		// Warn when several products claim one eBay listing (duplicated products).
 		add_action( 'admin_notices', array( $this, 'shared_listing_admin_notice' ) );
@@ -2226,6 +2227,155 @@ class TCGiant_Sync_Admin {
 		update_post_meta( $post_id, '_ebay_export_specifics', $stored );
 	}
 
+
+	/**
+	 * Attach a product to a listing that already exists on eBay.
+	 *
+	 * A push compares exactly one thing before deciding to create rather than
+	 * update: the eBay item number stored on the product. Nothing is checked
+	 * against eBay itself - not the SKU, not the title - so a product built in
+	 * WooCommerce for something the seller had already listed by hand got a
+	 * second listing, every time. A retailer asked what was being compared to
+	 * stop that, and the honest answer was: that number, which they had no way
+	 * to supply. Unlink existed; nothing put a link back.
+	 *
+	 * eBay is asked to confirm the listing before anything is written. That
+	 * proves the number is real and belongs to this account, and returns the
+	 * format - guessing that would send the next push through the wrong call.
+	 *
+	 * @return void
+	 */
+	public function ajax_link_ebay() {
+		check_ajax_referer( 'tcgiant_sync_ajax' );
+
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'Insufficient permissions.' ) );
+		}
+
+		$product_id = absint( $_POST['product_id'] ?? 0 );
+		$item_id    = preg_replace( '/[^0-9]/', '', (string) wp_unslash( $_POST['ebay_item_id'] ?? '' ) );
+		$product    = $product_id ? wc_get_product( $product_id ) : null;
+
+		if ( ! $product ) {
+			wp_send_json_error( array( 'message' => __( 'Product not found.', 'tcgiant-sync' ) ) );
+		}
+
+		if ( '' === $item_id ) {
+			wp_send_json_error( array( 'message' => __( 'Enter the eBay item number - the long number at the end of the listing web address.', 'tcgiant-sync' ) ) );
+		}
+
+		// Two products pointing at one listing is the exact fault the duplicate
+		// guard exists to catch. Do not hand-build one here.
+		$shared = TCGiant_Sync_Listing_Link::find_products_sharing_item_id( $product_id, $item_id );
+		if ( ! empty( $shared ) ) {
+			wp_send_json_error( array(
+				'message' => sprintf(
+					/* translators: 1: comma-separated product IDs, 2: eBay Item ID */
+					__( 'Product #%1$s is already linked to eBay listing %2$s. Unlink it there first, or link this product to a different listing.', 'tcgiant-sync' ),
+					implode( ', #', $shared ),
+					$item_id
+				),
+			) );
+		}
+
+		$response = TCGiant_Sync_API::instance()->get_item( $item_id );
+
+		if ( is_wp_error( $response ) || empty( $response['Item'] ) ) {
+			$why = is_wp_error( $response )
+				? $response->get_error_message()
+				: __( 'eBay has no listing with that number on your account.', 'tcgiant-sync' );
+
+			wp_send_json_error( array(
+				'message' => sprintf(
+					/* translators: 1: eBay Item ID, 2: reason */
+					__( 'Could not link to %1$s: %2$s', 'tcgiant-sync' ),
+					$item_id,
+					$why
+				),
+			) );
+		}
+
+		$item   = $response['Item'];
+		$title  = (string) ( $item['Title'] ?? '' );
+		$type   = (string) ( $item['ListingType'] ?? 'FixedPriceItem' );
+		$status = (string) ( $item['SellingStatus']['ListingStatus'] ?? 'Active' );
+
+
+		// GetItem answers for any public listing on eBay, so a number typed
+		// wrongly - or copied off somebody else's page - would link without
+		// complaint and then fail on every push afterwards. Prove it is ours
+		// before writing anything.
+		//
+		// When our own account name cannot be read the link is allowed rather
+		// than blocked: an eBay hiccup should not stop somebody linking, and
+		// Unlink sits next to this in the panel if it turns out wrong.
+		$seller = (string) ( $item['Seller']['UserID'] ?? '' );
+		$ours   = TCGiant_Sync_API::instance()->get_seller_user_id();
+
+		if ( '' !== $ours && '' !== $seller && 0 !== strcasecmp( $seller, $ours ) ) {
+			wp_send_json_error( array(
+				'message' => sprintf(
+					/* translators: 1: eBay Item ID, 2: the seller who owns it */
+					__( 'eBay listing %1$s belongs to %2$s, not to your account. Check the item number - it is the long number at the end of your own listing web address.', 'tcgiant-sync' ),
+					$item_id,
+					$seller
+				),
+			) );
+		}
+
+		if ( '' === $ours ) {
+			TCGiant_Sync_Logger::warning( sprintf(
+				'Linked WC #%1$d to eBay listing %2$s without confirming the account it belongs to - eBay did not answer GetUser.',
+				$product_id,
+				$item_id
+			) );
+		}
+
+		// eBay says Active, Completed, Ended or Custom. Everything that is not
+		// Active is over as far as this plugin is concerned, and the push path
+		// reads the value back to decide whether to revise or to relist.
+		$local_status = ( 'Active' === $status ) ? 'Active' : 'Ended';
+
+		$price = $item['SellingStatus']['CurrentPrice'] ?? null;
+		if ( is_array( $price ) ) {
+			$price = $price['value'] ?? ( $price['#text'] ?? null );
+		}
+		$price = is_numeric( $price ) ? (float) $price : (float) $product->get_regular_price();
+
+		$product->update_meta_data( '_ebay_item_id', $item_id );
+		$product->update_meta_data( '_ebay_listing_type', $type );
+		$product->update_meta_data( '_ebay_listing_status', $local_status );
+		$product->save();
+
+		TCGiant_Sync_DB::upsert( array(
+			'product_id'     => $product_id,
+			'ebay_item_id'   => $item_id,
+			'listing_type'   => $type,
+			'listing_status' => $local_status,
+			'ebay_price'     => $price,
+			'ebay_quantity'  => (int) ( $item['Quantity'] ?? 0 ),
+			'ebay_url'       => 'https://www.ebay.com/itm/' . $item_id,
+			'ebay_title'     => $title,
+			'last_synced'    => current_time( 'mysql' ),
+		) );
+
+		TCGiant_Sync_Logger::log( sprintf(
+			'Linked WC #%1$d to the existing eBay listing %2$s ("%3$s").',
+			$product_id,
+			$item_id,
+			$title
+		), 'success' );
+
+		wp_send_json_success( array(
+			'message' => sprintf(
+				/* translators: 1: eBay listing title, 2: eBay Item ID */
+				__( 'Linked to "%1$s" (%2$s). Pushing this product now updates that listing instead of creating another one.', 'tcgiant-sync' ),
+				$title,
+				$item_id
+			),
+		) );
+	}
+
 	/**
 	 * Which item specifics eBay requires for this product, and which we have.
 	 *
@@ -2756,6 +2906,32 @@ class TCGiant_Sync_Admin {
 					<button type="button" id="tcgiant-verify-btn" class="button" data-product-id="<?php echo esc_attr( $product_id ); ?>" style="font-size:12px;padding:4px 12px;" title="<?php esc_attr_e( 'Test listing without creating it — shows fees and catches errors', 'tcgiant-sync' ); ?>"><span class="dashicons dashicons-visibility" style="font-size:14px;width:14px;height:14px;vertical-align:middle;margin-right:3px;"></span><?php esc_html_e( 'Verify', 'tcgiant-sync' ); ?></button>
 					<?php endif; ?>
 				</div>
+				<?php if ( empty( $ebay_item_id ) ) : ?>
+				<div style="margin-top:10px;padding-top:8px;border-top:1px solid #e5e5e5;">
+					<p style="margin:0 0 6px;font-size:11px;color:#666;">
+						<?php esc_html_e( 'Already listed this on eBay yourself? Pushing would create a second listing - the only thing compared is the eBay item number stored here, and this product has none. Give it that number instead and pushing will update your existing listing.', 'tcgiant-sync' ); ?>
+					</p>
+					<div style="display:flex;gap:6px;align-items:center;">
+						<input type="text" id="tc-link-item-id" autocomplete="off" placeholder="<?php esc_attr_e( 'eBay item number', 'tcgiant-sync' ); ?>" style="max-width:180px;font-size:12px;">
+						<button type="button" class="button" id="tc-link-ebay-btn" data-product-id="<?php echo esc_attr( $product_id ); ?>" style="font-size:12px;padding:3px 12px;"><?php esc_html_e( 'Link to this listing', 'tcgiant-sync' ); ?></button>
+					</div>
+					<span id="tc-link-status" style="display:block;margin-top:6px;font-size:12px;color:#555;"></span>
+				</div>
+				<?php else : ?>
+				<div style="margin-top:10px;padding-top:8px;border-top:1px solid #e5e5e5;">
+					<span style="font-size:11px;color:#666;">
+						<?php
+						/* translators: %s: eBay Item ID */
+						printf( esc_html__( 'Linked to eBay listing %s.', 'tcgiant-sync' ), '<code>' . esc_html( $ebay_item_id ) . '</code>' );
+						?>
+					</span>
+					<button type="button" class="button" id="tc-unlink-ebay-btn" data-product-id="<?php echo esc_attr( $product_id ); ?>" style="font-size:11px;padding:2px 10px;margin-left:6px;"><?php esc_html_e( 'Unlink', 'tcgiant-sync' ); ?></button>
+					<p style="margin:4px 0 0;font-size:11px;color:#888;">
+						<?php esc_html_e( 'Unlinking only forgets the connection here. Your eBay listing is not changed, and pushing afterwards would create a new one.', 'tcgiant-sync' ); ?>
+					</p>
+					<span id="tc-link-status" style="display:block;margin-top:6px;font-size:12px;color:#555;"></span>
+				</div>
+				<?php endif; ?>
 				<span id="tcgiant-push-status" style="display:block;margin-top:6px;font-size:12px;color:#555;"></span>
 			</div>
 		</div>
@@ -2908,6 +3084,27 @@ class TCGiant_Sync_Admin {
 			// Checked once when the section is first opened, so nobody has to know to ask.
 			$('#tc-section-aspects .tc-ebay-section-head').on('click',function(){if(!$('#tc-aspect-rows').data('loaded')){tcCheckAspects();}});
 			$('#_ebay_export_category_id_select,#_ebay_export_category_id_custom').on('change',tcAspectsReset);
+			// Link to a listing that already exists on eBay.
+			$('#tc-link-ebay-btn').on('click',function(){
+				var $b=$(this),$s=$('#tc-link-status'),id=$.trim($('#tc-link-item-id').val()||'');
+				if(!id){$s.css('color','#cc1818').text('Enter the eBay item number first.');return;}
+				$b.prop('disabled',true);$s.css('color','#555').text('Checking with eBay...');
+				$.post(ajaxUrl,{action:'tcgiant_link_ebay',product_id:$b.data('product-id'),ebay_item_id:id,_ajax_nonce:nonce},function(r){
+					$b.prop('disabled',false);
+					if(!r.success){$s.css('color','#cc1818').text(r.data&&r.data.message?r.data.message:'Could not link.');return;}
+					$s.css('color','#2a8a2a').text(r.data.message+' Reload this page to see the listing details.');
+				}).fail(function(){$b.prop('disabled',false);$s.css('color','#cc1818').text('Request failed.');});
+			});
+			$('#tc-unlink-ebay-btn').on('click',function(){
+				var $b=$(this),$s=$('#tc-link-status');
+				if(!window.confirm('Forget the link to this eBay listing? The listing itself is not changed.')){return;}
+				$b.prop('disabled',true);$s.css('color','#555').text('Unlinking...');
+				$.post(ajaxUrl,{action:'tcgiant_unlink_ebay',product_id:$b.data('product-id'),_ajax_nonce:nonce},function(r){
+					$b.prop('disabled',false);
+					if(!r.success){$s.css('color','#cc1818').text(r.data&&r.data.message?r.data.message:'Could not unlink.');return;}
+					$s.css('color','#2a8a2a').text(r.data.message+' Reload this page.');
+				}).fail(function(){$b.prop('disabled',false);$s.css('color','#cc1818').text('Request failed.');});
+			});
 			// Duration filtering based on listing type.
 			var fpDurations={'FixedPriceItem':['GTC','Days_30'],'Chinese':['Days_1','Days_3','Days_5','Days_7','Days_10']};
 			$('#_ebay_export_listing_type').on('change',function(){var lt=$(this).val(),$dur=$('#_ebay_export_listing_duration');if(!lt){$dur.find('option').show();return;}var valid=fpDurations[lt]||[];$dur.find('option').each(function(){var v=$(this).val();if(!v){$(this).show();}else{$(this).toggle(valid.indexOf(v)>=0);}});if(valid.indexOf($dur.val())<0){$dur.val('');}});

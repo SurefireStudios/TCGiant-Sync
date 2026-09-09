@@ -74,6 +74,20 @@ class TCGiant_Sync_DB {
 	private static $table_exists = null;
 
 	/**
+	 * Backfill state. The table version says the table exists; these say how far
+	 * the one-time copy from post meta has got. They are separate on purpose - a
+	 * backfill that runs out of time must not make the table look uncreated.
+	 */
+	const BACKFILL_OPTION  = 'tcgiant_listings_backfill';
+	const BACKFILL_VERSION = '1';
+	const BACKFILL_CURSOR  = 'tcgiant_listings_backfill_cursor';
+	const BACKFILL_BATCH   = 500;
+	const BACKFILL_SECONDS = 1.5;
+
+	/** Set while we are writing post meta ourselves, so the mirror does not echo. */
+	private static $mirroring = false;
+
+	/**
 	 * Whether the custom listings table exists.
 	 *
 	 * Cached per request: this is consulted once per imported product, so an
@@ -94,11 +108,80 @@ class TCGiant_Sync_DB {
 	}
 
 	/**
-	 * Constructor — check for table creation/migration.
+	 * Constructor — create or upgrade the table, and add the index.
+	 *
+	 * Called directly. These were two add_action( 'plugins_loaded', ..., 5 )
+	 * and ( ..., 6 ) registrations - added from inside a constructor that is
+	 * itself reached from plugins_loaded at priority 20. WordPress will not
+	 * run a callback registered at a priority the pass in progress has
+	 * already gone by, so neither ever ran, on any site, since the table was
+	 * introduced.
+	 *
+	 * Nothing said so. The table simply did not exist, table_exists() was
+	 * false everywhere, every upsert() returned false without writing, and
+	 * the Listings screen showed "No eBay-linked products found" to everyone
+	 * for ever. A coin dealer told us: "there are no products listed to tick".
+	 *
+	 * Only where the table is used, and where a one-off migration of every
+	 * linked product may take its time: admin screens, admin-ajax, cron and
+	 * WP-CLI. A shopper's page load pays nothing for this.
 	 */
 	public function __construct() {
-		add_action( 'plugins_loaded', array( $this, 'maybe_create_table' ), 5 );
-		add_action( 'plugins_loaded', array( $this, 'maybe_add_postmeta_index' ), 6 );
+		add_action( 'added_post_meta', array( $this, 'mirror_meta_to_row' ), 10, 4 );
+		add_action( 'updated_post_meta', array( $this, 'mirror_meta_to_row' ), 10, 4 );
+
+		if ( ! is_admin() && ! wp_doing_cron() && ! ( defined( 'WP_CLI' ) && WP_CLI ) ) {
+			return;
+		}
+
+		$this->maybe_create_table();
+		$this->maybe_backfill_listings();
+		$this->maybe_add_postmeta_index();
+	}
+
+	/**
+	 * Keep the table in step with the product it describes.
+	 *
+	 * The row is a mirror, and a mirror that only some writers know about goes
+	 * stale. The ended-listing check, the stock listener, the End Listing
+	 * button and the bulk job all mark a listing ended by writing post meta;
+	 * none of them knew about this table, so the Listings screen would have gone
+	 * on showing every one of them as Active, and the auto-relist scheduler -
+	 * which reads this table when it exists - would have found nothing to
+	 * relist. One listener beats seven call sites and the next one somebody
+	 * forgets.
+	 *
+	 * Existing rows only. This never creates one, so it cannot invent rows for
+	 * posts that are not linked listings.
+	 *
+	 * @param int    $meta_id    Unused.
+	 * @param int    $post_id    Product the meta belongs to.
+	 * @param string $meta_key   Meta key written.
+	 * @param mixed  $meta_value Value written.
+	 * @return void
+	 */
+	public function mirror_meta_to_row( $meta_id, $post_id, $meta_key, $meta_value ) {
+		$columns = array(
+			'_ebay_listing_status' => 'listing_status',
+			'_ebay_listing_type'   => 'listing_type',
+			'_ebay_item_id'        => 'ebay_item_id',
+		);
+
+		if ( self::$mirroring || ! isset( $columns[ $meta_key ] ) || is_array( $meta_value ) ) {
+			return;
+		}
+
+		if ( ! self::table_exists() ) {
+			return;
+		}
+
+		global $wpdb;
+
+		$wpdb->update(
+			self::table_name(),
+			array( $columns[ $meta_key ] => (string) $meta_value ),
+			array( 'product_id' => (int) $post_id )
+		);
 	}
 
 	/**
@@ -208,62 +291,114 @@ class TCGiant_Sync_DB {
 		// The table may have just been created, so drop any cached "missing".
 		self::$table_exists = null;
 
-		// Migrate existing data from post meta on first install.
-		if ( empty( $installed_version ) ) {
-			$this->migrate_from_postmeta();
-		}
-
+		// Recorded now, before any copying. This used to be written only after a
+		// per-row migration of every linked product had finished, inside the same
+		// request - so on a large catalogue the request died first, nothing was
+		// recorded, and the next admin page load started the whole thing again.
 		update_option( 'tcgiant_listings_table_version', self::TABLE_VERSION );
+
+		// Copying what is already linked is the backfill's job, in batches.
+		if ( empty( $installed_version ) ) {
+			update_option( self::BACKFILL_OPTION, 'pending', false );
+		}
 	}
 
 	/**
-	 * One-time migration: populate table from existing _ebay_item_id post meta.
+	 * Copy products that are already linked to eBay into the table.
+	 *
+	 * Runs once, in batches, and stops when it has had its share of the
+	 * request. What it replaced was a single unbounded pass: one query for the
+	 * whole catalogue, then per row a $wpdb->replace() AND a get_the_title() -
+	 * an uncached post read each, since the ids came from raw SQL and nothing
+	 * primed the cache. Around 80,000 queries and every product object held in
+	 * memory at once for a forty-thousand product shop, inside the admin request
+	 * that happened to arrive first, with the "done" flag written only at the
+	 * end - so a request that ran out of time recorded nothing and the next one
+	 * started again from the beginning, for ever.
+	 *
+	 * Now: two queries per five hundred products, the title taken in SQL, a
+	 * cursor saved after every batch, and a time budget. A small shop finishes
+	 * on the first admin page load; a large one gets there over several, and
+	 * neither ever pays more than about a second and a half at a time.
+	 *
+	 * INSERT IGNORE, so a row a push or an import has already written is never
+	 * replaced by older post meta.
+	 *
+	 * @return void
 	 */
-	private function migrate_from_postmeta() {
-		global $wpdb;
-		$table = self::table_name();
-
-		// Find all products with eBay Item IDs.
-		$results = $wpdb->get_results(
-			"SELECT p.ID AS product_id,
-				MAX(CASE WHEN pm.meta_key = '_ebay_item_id' THEN pm.meta_value END) AS ebay_item_id,
-				MAX(CASE WHEN pm.meta_key = '_ebay_listing_type' THEN pm.meta_value END) AS listing_type,
-				MAX(CASE WHEN pm.meta_key = '_ebay_listing_status' THEN pm.meta_value END) AS listing_status,
-				MAX(CASE WHEN pm.meta_key = '_price' THEN pm.meta_value END) AS price,
-				MAX(CASE WHEN pm.meta_key = '_stock' THEN pm.meta_value END) AS stock
-			FROM {$wpdb->posts} p
-			INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
-			WHERE p.post_type = 'product'
-			  AND pm.meta_key IN ('_ebay_item_id', '_ebay_listing_type', '_ebay_listing_status', '_price', '_stock')
-			GROUP BY p.ID
-			HAVING ebay_item_id IS NOT NULL AND ebay_item_id != ''",
-			ARRAY_A
-		);
-
-		if ( empty( $results ) ) {
+	public function maybe_backfill_listings() {
+		if ( self::BACKFILL_VERSION === get_option( self::BACKFILL_OPTION, '' ) ) {
 			return;
 		}
 
-		$migrated = 0;
-		foreach ( $results as $row ) {
-			$wpdb->replace( $table, array(
-				'product_id'     => (int) $row['product_id'],
-				'ebay_item_id'   => $row['ebay_item_id'],
-				'listing_type'   => ! empty( $row['listing_type'] ) ? $row['listing_type'] : 'FixedPriceItem',
-				'listing_status' => ! empty( $row['listing_status'] ) ? $row['listing_status'] : 'Active',
-				'ebay_price'     => (float) ( $row['price'] ?? 0 ),
-				'ebay_quantity'  => (int) ( $row['stock'] ?? 0 ),
-				'ebay_title'     => get_the_title( $row['product_id'] ),
-				'last_synced'    => current_time( 'mysql' ),
-				'created_at'     => current_time( 'mysql' ),
-			) );
-			$migrated++;
+		if ( ! self::table_exists() ) {
+			return;
 		}
 
-		TCGiant_Sync_Logger::log( sprintf(
-			'Database migration: Migrated %d products from post meta to custom listings table.',
-			$migrated
-		), 'success' );
+		global $wpdb;
+
+		$table   = self::table_name();
+		$cursor  = (int) get_option( self::BACKFILL_CURSOR, 0 );
+		$started = microtime( true );
+		$done    = 0;
+
+		do {
+			$ids = $wpdb->get_col( $wpdb->prepare(
+				"SELECT DISTINCT p.ID
+					FROM {$wpdb->posts} p
+					INNER JOIN {$wpdb->postmeta} pm ON pm.post_id = p.ID AND pm.meta_key = '_ebay_item_id'
+					WHERE p.post_type = 'product'
+						AND p.ID > %d
+						AND pm.meta_value <> ''
+					ORDER BY p.ID ASC
+					LIMIT %d",
+				$cursor,
+				self::BACKFILL_BATCH
+			) );
+
+			if ( empty( $ids ) ) {
+				update_option( self::BACKFILL_OPTION, self::BACKFILL_VERSION, false );
+				delete_option( self::BACKFILL_CURSOR );
+
+				if ( $done > 0 ) {
+					TCGiant_Sync_Logger::log( sprintf(
+						'Listings table: added %d product(s) that were already linked to eBay.',
+						$done
+					), 'success' );
+				}
+
+				return;
+			}
+
+			// Safe to interpolate: every id has been through intval().
+			$in = implode( ',', array_map( 'intval', $ids ) );
+
+			$wpdb->query( $wpdb->prepare(
+				"INSERT IGNORE INTO {$table}
+					(product_id, ebay_item_id, listing_type, listing_status, ebay_price, ebay_quantity, ebay_title, last_synced, created_at)
+				SELECT p.ID,
+					MAX(CASE WHEN pm.meta_key = '_ebay_item_id' THEN pm.meta_value END),
+					COALESCE(NULLIF(MAX(CASE WHEN pm.meta_key = '_ebay_listing_type' THEN pm.meta_value END), ''), 'FixedPriceItem'),
+					COALESCE(NULLIF(MAX(CASE WHEN pm.meta_key = '_ebay_listing_status' THEN pm.meta_value END), ''), 'Active'),
+					COALESCE(MAX(CASE WHEN pm.meta_key = '_price' THEN pm.meta_value END) + 0, 0),
+					COALESCE(MAX(CASE WHEN pm.meta_key = '_stock' THEN pm.meta_value END) + 0, 0),
+					LEFT(MAX(p.post_title), 255),
+					%s, %s
+				FROM {$wpdb->posts} p
+				INNER JOIN {$wpdb->postmeta} pm ON pm.post_id = p.ID
+				WHERE p.ID IN ({$in})
+					AND pm.meta_key IN ('_ebay_item_id', '_ebay_listing_type', '_ebay_listing_status', '_price', '_stock')
+				GROUP BY p.ID
+				HAVING MAX(CASE WHEN pm.meta_key = '_ebay_item_id' THEN pm.meta_value END) <> ''",
+				current_time( 'mysql' ),
+				current_time( 'mysql' )
+			) );
+
+			$cursor = (int) max( $ids );
+			$done  += count( $ids );
+
+			update_option( self::BACKFILL_CURSOR, $cursor, false );
+		} while ( ( microtime( true ) - $started ) < self::BACKFILL_SECONDS );
 	}
 
 	// ───────────────────────────────────────────────────────────────────────────
@@ -292,19 +427,40 @@ class TCGiant_Sync_DB {
 			return false;
 		}
 
-		$defaults = array(
-			'product_id'     => $product_id,
-			'ebay_item_id'   => '',
-			'listing_type'   => 'FixedPriceItem',
-			'listing_status' => 'Active',
-			'ebay_price'     => 0.00,
-			'ebay_quantity'  => 0,
-			'ebay_url'       => '',
-			'ebay_title'     => '',
-			'last_synced'    => current_time( 'mysql' ),
+		// Only the columns the caller actually supplied.
+		//
+		// This used to fill every column from a list of defaults and hand the lot
+		// to \$wpdb->update(), which writes whatever it is given. So a caller
+		// saying no more than "this listing is Active again" also wrote
+		// listing_type 'FixedPriceItem', price 0.00, quantity 0 and an empty
+		// title over whatever was there - and dual-wrote that invented type onto
+		// the product. The auto-relist scheduler does exactly that, so relisting
+		// an auction stamped it as fixed price and the next push refused to run,
+		// telling the seller to re-create an auction that already was one.
+		$columns = array(
+			'ebay_item_id',
+			'listing_type',
+			'listing_status',
+			'ebay_price',
+			'ebay_quantity',
+			'ebay_url',
+			'ebay_title',
+			'last_synced',
+			'last_pushed',
+			'variation_cache',
+			'sync_error',
 		);
 
-		$row = wp_parse_args( $data, $defaults );
+		$row = array();
+		foreach ( $columns as $column ) {
+			if ( array_key_exists( $column, $data ) ) {
+				$row[ $column ] = $data[ $column ];
+			}
+		}
+
+		if ( empty( $row ) ) {
+			return false;
+		}
 
 		$existing = $wpdb->get_var( $wpdb->prepare(
 			"SELECT id FROM {$table} WHERE product_id = %d",
@@ -314,11 +470,18 @@ class TCGiant_Sync_DB {
 		if ( $existing ) {
 			$wpdb->update( $table, $row, array( 'product_id' => $product_id ) );
 		} else {
+			$row['product_id'] = $product_id;
 			$row['created_at'] = current_time( 'mysql' );
+			if ( ! isset( $row['last_synced'] ) ) {
+				$row['last_synced'] = current_time( 'mysql' );
+			}
 			$wpdb->insert( $table, $row );
 		}
 
-		// Dual-write to post meta for backward compatibility.
+		// Dual-write to post meta for backward compatibility. Guarded so the
+		// mirror listener does not turn round and rewrite the row we just wrote.
+		self::$mirroring = true;
+
 		if ( ! empty( $row['ebay_item_id'] ) ) {
 			update_post_meta( $product_id, '_ebay_item_id', $row['ebay_item_id'] );
 		}
@@ -328,6 +491,8 @@ class TCGiant_Sync_DB {
 		if ( ! empty( $row['listing_status'] ) ) {
 			update_post_meta( $product_id, '_ebay_listing_status', $row['listing_status'] );
 		}
+
+		self::$mirroring = false;
 
 		return $wpdb->insert_id ?: $existing;
 	}

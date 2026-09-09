@@ -4,6 +4,7 @@
 # The class and file are deliberately absent: moving a registration between
 # classes must not fail the check, losing one must.
 
+add_action   added_post_meta => mirror_meta_to_row
 add_action   admin_enqueue_scripts => enqueue_admin_assets
 add_action   admin_footer-edit.php => render_product_list_inline_assets
 add_action   admin_init => handle_oauth_callback
@@ -42,8 +43,6 @@ add_action   manage_product_posts_custom_column => render_ebay_column
 add_action   manage_shop_order_posts_custom_column => render_order_ebay_column_legacy
 add_action   manage_woocommerce_page_wc-orders_custom_column => render_order_ebay_column
 add_action   plugins_loaded => init_subsystems
-add_action   plugins_loaded => maybe_add_postmeta_index
-add_action   plugins_loaded => maybe_create_table
 add_action   pre_get_posts => handle_ebay_status_filter
 add_action   rest_api_init => register_routes
 add_action   restrict_manage_posts => render_ebay_status_filter
@@ -66,6 +65,7 @@ add_action   tcgiant_sync_scan_all_pages => scan_all_pages
 add_action   tcgiant_sync_scan_resume => scan_all_pages
 add_action   tcgiant_sync_update_ebay_stock => process_ebay_stock_update
 add_action   tcgiant_sync_weekly_full => run_weekly_full_sync
+add_action   updated_post_meta => mirror_meta_to_row
 add_action   woocommerce_order_status_completed => push_tracking_to_ebay
 add_action   woocommerce_process_product_meta => save_bin_location_field
 add_action   woocommerce_process_product_meta => save_product_export_meta
@@ -91,6 +91,7 @@ add_action   wp_ajax_tcgiant_job_cancel => ajax_cancel_job
 add_action   wp_ajax_tcgiant_job_process => ajax_process_batch
 add_action   wp_ajax_tcgiant_job_start => ajax_start_job
 add_action   wp_ajax_tcgiant_job_status => ajax_job_status
+add_action   wp_ajax_tcgiant_link_ebay => ajax_link_ebay
 add_action   wp_ajax_tcgiant_push_product => ajax_push_product
 add_action   wp_ajax_tcgiant_suggest_category => ajax_suggest_category
 add_action   wp_ajax_tcgiant_sync_order_to_ebay => ajax_sync_order_to_ebay

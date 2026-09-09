@@ -53,7 +53,7 @@ $base_url = admin_url( 'admin.php?page=tcgiant-listings' );
 
 	<?php if ( empty( $stats['total'] ) && empty( $search ) ) : ?>
 		<div class="notice notice-info">
-			<p><?php esc_html_e( 'No eBay-linked products found. Run a Full Sync from the Import page to populate this table.', 'tcgiant-sync' ); ?></p>
+			<p><?php esc_html_e( 'No eBay-linked products yet. Products appear here once they have been pushed to eBay, or after importing your existing listings with Fetch Inventory on the Import from eBay page.', 'tcgiant-sync' ); ?></p>
 		</div>
 	<?php else : ?>
 

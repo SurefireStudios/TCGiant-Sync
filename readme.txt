@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.16.0
+Stable tag: 3.17.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,20 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.17.0 - 2026-09-09 =
+**The Listings screen works**
+* FIX: TCGiant Sync, Listings has been empty on every site since it was added - it reads a table that was never created, because the plugin asked WordPress to create it at a moment WordPress had already gone past. The table is created on update and existing linked products are filled in behind you, a few hundred at a time.
+* FIX: Pushing a product now puts it on that screen. Only importing ever did, which put End Listing, Relist and bulk Push out of reach for products the plugin had listed itself.
+* FIX: Ending a listing by any route now shows on that screen. The row used to keep saying Active.
+* FIX: The empty screen pointed at a "Full Sync" button that does not exist; it names Fetch Inventory now.
+
+**Listing something eBay already has**
+* NEW: Link a product to an existing eBay listing by item number, on the product's eBay Listing tab. Pushing then updates that listing instead of creating a second one. We confirm with eBay that the listing is on your account first, and Unlink sits beside it so a mistake can be undone.
+
+**Two faults the new table would have exposed**
+* FIX: Automatic relisting would have relisted trashed and draft products onto eBay.
+* FIX: Relisting an auction recorded it as Fixed Price and blocked the next push. An update now writes only the fields it was given.
 
 = 3.16.0 - 2026-09-08 =
 **See what eBay requires before it refuses the listing**

@@ -758,9 +758,17 @@ class TCGiant_Sync_Cron {
 				ARRAY_A
 			);
 		} else {
+			// Published products only, matching the post-meta branch above. This
+			// branch never filtered on post status, which did not matter while the
+			// table was never created and the fallback always ran. It matters now:
+			// without it, trashed and draft products whose listings had ended would
+			// be relisted on eBay, live, where their owner cannot see them.
 			$ended_products = $wpdb->get_results(
-				"SELECT product_id, ebay_item_id FROM {$table}
-				 WHERE listing_status = 'Ended'
+				"SELECT l.product_id, l.ebay_item_id
+				 FROM {$table} l
+				 INNER JOIN {$wpdb->posts} p ON p.ID = l.product_id
+				 WHERE l.listing_status = 'Ended'
+				   AND p.post_status = 'publish'
 				 LIMIT 50",
 				ARRAY_A
 			);
