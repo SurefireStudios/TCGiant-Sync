@@ -2514,6 +2514,7 @@ class TCGiant_Sync_Admin {
 		$coin_year      = get_post_meta( $product_id, '_ebay_export_coin_year', true );
 		$ungraded       = get_post_meta( $product_id, '_ebay_export_ungraded_condition', true );
 		$listing_type_override   = get_post_meta( $product_id, '_ebay_export_listing_type', true );
+		$cond_id_override        = get_post_meta( $product_id, '_ebay_export_condition_id', true );
 		$listing_dur_override    = get_post_meta( $product_id, '_ebay_export_listing_duration', true );
 		$fulfillment_override    = get_post_meta( $product_id, '_ebay_export_fulfillment_policy', true );
 
@@ -2745,6 +2746,41 @@ class TCGiant_Sync_Admin {
 						woocommerce_wp_select( array( 'id' => '_ebay_export_ungraded_condition_coins', 'label' => __( 'Condition', 'tcgiant-sync' ), 'options' => $uo2, 'value' => 'coins' === $item_type ? $ungraded : '' ) );
 					?></div>
 				</div>
+				<?php
+				// The per-product condition, for item types eBay describes with a plain
+				// ConditionID rather than with grading descriptors.
+				//
+				// This control existed until v1.5.1 and went out with the grading
+				// rewrite. Nothing replaced it, and v1.7.5 then added the "All Other"
+				// item type - whose condition is sent ONLY as a ConditionID - so a shop
+				// selling anything but cards and coins has had a single condition for
+				// its whole catalogue ever since. A networking retailer told us so:
+				// their used switches would have gone up described as New.
+				//
+				// The Push and Verify buttons never stopped posting this field, so with
+				// nothing rendering it they were posting an empty string and wiping
+				// whatever was stored. Rendering it fixes that by itself.
+				$legacy_conditions = array( '' => __( '-- use the store default --', 'tcgiant-sync' ) );
+				foreach ( TCGiant_Sync_Catalog::CONDITIONS as $tc_cid => $tc_clabel ) {
+					// eBay only accepts these four on books, film, music and games.
+					if ( in_array( (string) $tc_cid, TCGiant_Sync_Catalog::CONDITIONS_MEDIA_ONLY, true ) ) {
+						continue;
+					}
+					$legacy_conditions[ $tc_cid ] = $tc_clabel;
+				}
+				?>
+				<div id="tc-legacy-condition-wrapper" style="<?php echo 'other' === $item_type ? '' : 'display:none;'; ?>">
+					<?php
+					woocommerce_wp_select( array(
+						'id'          => '_ebay_export_condition_id',
+						'label'       => __( 'Condition', 'tcgiant-sync' ),
+						'options'     => $legacy_conditions,
+						'value'       => $cond_id_override,
+						'description' => __( 'This product only. Left on the store default, it follows Settings.', 'tcgiant-sync' ),
+						'desc_tip'    => true,
+					) );
+					?>
+				</div>
 			</div>
 		</div>
 
@@ -2855,7 +2891,16 @@ class TCGiant_Sync_Admin {
 				  $conditions = TCGiant_Sync_Catalog::CONDITIONS;
 				  $cond_id    = $merged_settings['condition_id'] ?? '1000';
 				  $cond_label = $conditions[ $cond_id ] ?? $cond_id;
-				  $checks[] = array( 'ok' => true, 'label' => 'Condition: ' . $cond_label );
+				  // Was true whatever the condition said, so an id no longer on eBay's
+				  // list - or one of the four it accepts only on books, film, music and
+				  // games - went through as a green tick.
+				  $cond_known = isset( $conditions[ $cond_id ] );
+				  if ( ! $cond_known ) {
+					  $cond_label .= ' - not a condition eBay publishes';
+				  } elseif ( in_array( (string) $cond_id, TCGiant_Sync_Catalog::CONDITIONS_MEDIA_ONLY, true ) ) {
+					  $cond_label .= ' - eBay accepts this one only on books, film, music and games';
+				  }
+				  $checks[] = array( 'ok' => $cond_known, 'label' => 'Condition: ' . $cond_label );
 			  } elseif ( ! empty( $cte ) ) {
 				  if ( 'graded' === $cte ) {
 					  $gi = $merged_settings['grader_id'] ?? ''; $gv = $merged_settings['grade_value'] ?? '';
@@ -2898,6 +2943,27 @@ class TCGiant_Sync_Admin {
 						<div class="tc-readiness-check" style="color:<?php echo $c['ok'] ? '#333' : '#721c24'; ?>;"><?php echo $c['ok'] ? '<span style="color:#1e7e34;">&#10004;</span>' : '<span style="color:#dc3545;">&#10008;</span>'; ?> <?php echo esc_html( $c['label'] ); ?></div>
 					<?php endforeach; ?>
 					<div class="tc-readiness-check" id="tc-readiness-aspects" style="color:#8a6d3b;"><span style="color:#c8a44a;">&#9679;</span> <?php esc_html_e( 'Item specifics: not checked - open Item Specifics above', 'tcgiant-sync' ); ?></div>
+					<?php
+					// Advisory, and deliberately not one of $checks: a missing weight only
+					// matters when this shop has asked for weights to be sent, and even
+					// then only if the eBay policy works postage out from one - which
+					// cannot be seen from here. So it says its piece without failing the box.
+					if ( ! empty( $merged_settings['send_package_details'] ) && $product && ! $product->is_type( 'variable' ) ) :
+						$pkg_weight = (float) $product->get_weight();
+						?>
+						<div class="tc-readiness-check" style="color:<?php echo $pkg_weight > 0 ? '#333' : '#8a6d3b'; ?>;">
+							<?php if ( $pkg_weight > 0 ) : ?>
+								<span style="color:#1e7e34;">&#10004;</span>
+								<?php
+								/* translators: 1: weight, 2: unit */
+								echo esc_html( sprintf( __( 'Package weight: %1$s %2$s', 'tcgiant-sync' ), $pkg_weight, get_option( 'woocommerce_weight_unit', 'kg' ) ) );
+								?>
+							<?php else : ?>
+								<span style="color:#c8a44a;">&#9679;</span>
+								<?php esc_html_e( 'Package weight: not set, and your settings send weights to eBay. A postage policy that calculates from weight needs one.', 'tcgiant-sync' ); ?>
+							<?php endif; ?>
+						</div>
+					<?php endif; ?>
 				</div>
 				<?php $bl = ! empty( $ebay_item_id ) ? __( 'Update eBay Listing', 'tcgiant-sync' ) : __( 'Push to eBay', 'tcgiant-sync' ); ?>
 				<div style="display:flex;gap:8px;align-items:center;margin-top:4px;">
@@ -2976,7 +3042,7 @@ class TCGiant_Sync_Admin {
 			// Condition Type cards
 			$('#tc-section-condition .tc-card-selector .tc-card-option').on('click',function(){var v=$(this).data('value');$('#tc-section-condition .tc-card-selector .tc-card-option').removeClass('selected');$(this).addClass('selected');$('#_ebay_export_condition_type').val(v);tcGradingToggle();});
 			// Grading toggle
-			function tcGradingToggle(){var it=$('#_ebay_export_item_type').val(),ct=$('#_ebay_export_condition_type').val();if(it==='other'){$('#tcgiant-graded-tcg-fields,#tcgiant-graded-coins-fields,#tcgiant-graded-shared-fields,#tcgiant-ungraded-tcg-fields,#tcgiant-ungraded-coins-fields,#tcgiant-coins-year-field').hide();$('#tc-condition-type-wrapper').hide();return;}$('#tcgiant-graded-tcg-fields').toggle(it==='tcg'&&ct==='graded');$('#tcgiant-graded-coins-fields').toggle(it==='coins'&&ct==='graded');$('#tcgiant-graded-shared-fields').toggle(it!==''&&ct==='graded');$('#tcgiant-ungraded-tcg-fields').toggle(it==='tcg'&&ct==='ungraded');$('#tcgiant-ungraded-coins-fields').toggle(it==='coins'&&ct==='ungraded');$('#tcgiant-coins-year-field').toggle(it==='coins');}
+			function tcGradingToggle(){var it=$('#_ebay_export_item_type').val(),ct=$('#_ebay_export_condition_type').val();if(it==='other'){$('#tcgiant-graded-tcg-fields,#tcgiant-graded-coins-fields,#tcgiant-graded-shared-fields,#tcgiant-ungraded-tcg-fields,#tcgiant-ungraded-coins-fields,#tcgiant-coins-year-field').hide();$('#tc-condition-type-wrapper').hide();$('#tc-legacy-condition-wrapper').show();return;}$('#tc-legacy-condition-wrapper').hide();$('#tcgiant-graded-tcg-fields').toggle(it==='tcg'&&ct==='graded');$('#tcgiant-graded-coins-fields').toggle(it==='coins'&&ct==='graded');$('#tcgiant-graded-shared-fields').toggle(it!==''&&ct==='graded');$('#tcgiant-ungraded-tcg-fields').toggle(it==='tcg'&&ct==='ungraded');$('#tcgiant-ungraded-coins-fields').toggle(it==='coins'&&ct==='ungraded');$('#tcgiant-coins-year-field').toggle(it==='coins');}
 			// Category dropdown
 			$('#_ebay_export_category_id_select').on('change',function(){$('#_ebay_export_category_id_custom').toggle($(this).val()==='custom');});
 			// Category browser

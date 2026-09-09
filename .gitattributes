@@ -16,6 +16,11 @@
 /phpstan.neon       export-ignore
 /phpstan-bootstrap.php export-ignore
 
+# The WordPress.org listing banners and the README screenshots. Presentation,
+# not runtime: no PHP, CSS or JS in the plugin reads anything under /assets,
+# and they were about seven tenths of every download a merchant made.
+/assets             export-ignore
+
 # Internal notes and build output.
 /AUDIT-3.1.2.md     export-ignore
 /zips               export-ignore

@@ -370,7 +370,7 @@ class TCGiant_Sync_Exporter {
 			$result = $this->do_push( $product );
 
 			if ( is_wp_error( $result ) ) {
-				$error_msg = $result->get_error_message();
+				$error_msg = self::explain_ebay_error( $result->get_error_message() );
 				$product->update_meta_data( '_ebay_export_status', 'error' );
 				$product->update_meta_data( '_ebay_export_error', $error_msg );
 				$product->save();
@@ -683,6 +683,30 @@ class TCGiant_Sync_Exporter {
 				'listing_type'     => $fixed_price ? 'FixedPriceItem' : 'Chinese',
 			);
 		}
+	}
+
+	/**
+	 * Add plain words to an eBay error that does not carry any.
+	 *
+	 * eBay names the XML tag it did not like and stops there. For a category
+	 * that is not a bottom-level one that reads as "Input data for tag
+	 * &lt;Item.PrimaryCategory.CategoryID&gt; is invalid or missing", which tells a
+	 * shop owner nothing at all - and it was the first thing one of them hit.
+	 *
+	 * The original text is kept: it is what they would quote to us, and what
+	 * we would search the logs for.
+	 *
+	 * @param string $message eBay error message.
+	 * @return string
+	 */
+	public static function explain_ebay_error( $message ) {
+		$message = (string) $message;
+
+		if ( false !== stripos( $message, 'PrimaryCategory.CategoryID' ) ) {
+			return $message . ' ' . __( 'eBay accepts only a bottom-level category - one with nothing inside it. Open Browse eBay Categories and keep going down until there is nothing left to choose.', 'tcgiant-sync' );
+		}
+
+		return $message;
 	}
 
 	/**

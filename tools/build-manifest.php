@@ -30,7 +30,7 @@
  * @return string[]
  */
 function tcgiant_build_include_dirs() {
-	return array( 'admin', 'includes', 'languages', 'assets' );
+	return array( 'admin', 'includes', 'languages' );
 }
 
 /**

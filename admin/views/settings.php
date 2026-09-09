@@ -1023,7 +1023,12 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						trail.push({id: cat.id, name: cat.name});
 						renderBreadcrumb();
 						loadCategories(cat.id);
-						$status.html('Click a category to drill deeper, or <a href="#" class="tc-cat-use-this" data-id="' + cat.id + '">use <strong>' + cat.name + ' (' + cat.id + ')</strong></a>');
+						// No "use this one" here: eBay accepts only bottom-level categories,
+						// and offering the parent someone has just opened is how a merchant
+						// ends up with "Input data for tag <Item.PrimaryCategory.CategoryID>
+						// is invalid or missing" from eBay and nothing to explain it. The
+						// product panel's browser has always refused non-leaf categories.
+						$status.text('Keep opening categories until there are none left inside - eBay only accepts the bottom level.');
 					}
 				});
 				$list.append($item);
@@ -1069,16 +1074,6 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 			trail = [];
 		}
 
-		// Delegate click on "use this" link in status area.
-		$status.on('click', '.tc-cat-use-this', function(e) {
-			e.preventDefault();
-			var id = $(this).data('id');
-			var lastCrumb = trail[trail.length - 1];
-			onSelect(id, lastCrumb ? lastCrumb.name : id);
-			$status.html('✔ Selected: <strong>' + (lastCrumb ? lastCrumb.name : id) + '</strong> (' + id + ')');
-			$browser.slideUp(200);
-			trail = [];
-		});
 	}
 
 	// Init for Settings page

@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.17.0
+Stable tag: 3.18.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,21 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.18.0 - 2026-09-09 =
+**Condition, per product**
+* FIX: The per-product condition box has been missing since v1.5.1, which left anyone not selling cards or coins with one condition for their whole catalogue. It is back on the product's eBay Listing tab.
+* FIX: With no box rendered, Push and Verify were still posting that field empty and overwriting anything stored.
+
+**The readiness list stops guessing**
+* FIX: The condition line was a green tick whatever the condition was, including codes eBay no longer publishes.
+* NEW: If your settings send package weights and a product has none, the list says so - as a note, not a failure.
+
+**A category eBay will not accept**
+* FIX: The Settings category browser offered the parent category you had just opened. eBay takes only bottom-level ones, so that produced an error with nothing to explain it. The link is gone, and eBay's refusal is now explained if it happens.
+
+**A smaller download**
+* The .org listing banners and documentation screenshots no longer ship inside the plugin. Nothing read them, and they were about seven tenths of the file.
 
 = 3.17.0 - 2026-09-09 =
 **The Listings screen works**

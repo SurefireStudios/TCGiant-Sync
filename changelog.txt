@@ -1,5 +1,22 @@
 *** TCGiant Sync Changelog ***
 
+2026-09-09 - version 3.18.0
+== Condition, per product ==
+- FIX: The condition box on a product's eBay Listing tab has been missing since v1.5.1. It went out with the grading rewrite and nothing replaced it, and when the "All Other" item type arrived in v1.7.5 - which sends condition to eBay as a plain code and nothing else - that left anyone not selling cards or coins with a single condition for their whole catalogue, set once in Settings. A merchant selling used networking equipment would have listed all of it as New.
+- It is back, on the product, showing for the item types that need it. Left on the store default it follows Settings, exactly as now.
+- FIX: While no box was rendered, pressing Push or Verify was still sending that field - empty - and writing the empty value over anything stored. That stops by itself now the box exists.
+
+== The readiness list stops guessing ==
+- FIX: For the "All Other" item type the condition line was a green tick whatever the condition was, including codes eBay no longer publishes and the four it accepts only on books, film, music and games. It now says which of those it is.
+- NEW: If your settings send package weights to eBay and a product has none, the readiness list says so. It is a note rather than a failure, because whether a weight is needed depends on the postage policy on eBay's side, which we cannot see from here.
+
+== A category eBay will not accept ==
+- FIX: The category browser in Settings offered a "use this one" link for the category you had just opened, even when it had more categories inside it. eBay accepts only bottom-level categories, so choosing one produced "Input data for tag <Item.PrimaryCategory.CategoryID> is invalid or missing" and nothing to explain it. The link is gone; the browser in the product panel never had it.
+- If eBay refuses a category anyway, the message now says what it means: keep going down until there is nothing left to choose.
+
+== A smaller download ==
+- The WordPress.org listing banners and the screenshots used by our documentation are no longer inside the plugin you download. Nothing in the plugin ever read them, and they were about seven tenths of the file.
+
 2026-09-09 - version 3.17.0
 == The Listings screen works ==
 - FIX: TCGiant Sync, Listings has been empty on every site since the screen was added. It reads a database table that was never created: the plugin asked WordPress to create it at a moment WordPress had already gone past, so the request was quietly dropped and nothing ever said so. Every symptom looked like "you have not imported yet".
