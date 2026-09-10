@@ -199,5 +199,68 @@ if ( ! $pair ) {
 	check( 'a signature from somebody else does not', $state, 'invalid' );
 }
 
+echo "\nTHE KEY, IN THE SHAPES EBAY ACTUALLY SENDS IT\n" . str_repeat( '=', 110 ) . "\n";
+
+/**
+ * What the relay did: trust the word BEGIN to mean the whole thing is PEM.
+ */
+function old_pem( $key ) {
+	return ( false !== strpos( $key, 'BEGIN PUBLIC KEY' ) )
+		? $key
+		: "-----BEGIN PUBLIC KEY-----\n" . chunk_split( $key, 64, "\n" ) . "-----END PUBLIC KEY-----\n";
+}
+
+/**
+ * What it does now: reduce to the base64 body and rebuild, whatever arrived.
+ */
+function new_pem( $key ) {
+	$body = preg_replace( '/-----[A-Z ]+-----/', '', $key );
+	$body = preg_replace( '/[^A-Za-z0-9+\/=]/', '', (string) $body );
+
+	if ( '' === $body ) {
+		return '';
+	}
+
+	return "-----BEGIN PUBLIC KEY-----\n" . chunk_split( $body, 64, "\n" ) . "-----END PUBLIC KEY-----\n";
+}
+
+function loads( $pem ) {
+	while ( openssl_error_string() ) { /* drain, so a stale error cannot answer for this one */ }
+	return $pem && openssl_pkey_get_public( $pem ) ? true : false;
+}
+
+$pair = @openssl_pkey_new( array( 'private_key_bits' => 2048, 'private_key_type' => OPENSSL_KEYTYPE_RSA ) );
+
+if ( ! $pair ) {
+	echo "  SKIPPED - this host cannot generate a key (no openssl config). CI can, and does.\n";
+} else {
+	$details   = openssl_pkey_get_details( $pair );
+	$canonical = $details['key'];
+	$body      = preg_replace( '/[^A-Za-z0-9+\/=]/', '', preg_replace( '/-----[A-Z ]+-----/', '', $canonical ) );
+
+	// The middle one is the shape that broke it. eBay's notification API returns
+	// the key with its header and footer and no line breaks between them, which
+	// is not PEM: openssl answers openssl_verify() with -1, an error rather than
+	// a verdict, the gate falls open, and every notice is acted on unverified.
+	// The relay log recorded exactly that, on every notification, for a day.
+	$shapes = array(
+		'canonical PEM'                     => $canonical,
+		'header and footer, no line breaks' => '-----BEGIN PUBLIC KEY-----' . $body . '-----END PUBLIC KEY-----',
+		'bare base64 body'                  => $body,
+		'PEM with carriage returns'         => str_replace( "\n", "\r\n", $canonical ),
+	);
+
+	foreach ( $shapes as $label => $key ) {
+		check( 'now loads: ' . $label, loads( new_pem( $key ) ), true );
+	}
+
+	check( 'and the shape that used to fail, did fail', loads( old_pem( $shapes['header and footer, no line breaks'] ) ), false );
+	check( '  while the others always worked', loads( old_pem( $canonical ) ), true );
+
+	check( 'something that is not a key is still refused', loads( new_pem( 'not a key at all' ) ), false );
+	check( 'an empty answer from eBay yields no key', new_pem( '' ), '' );
+}
+
+
 printf( "\n  %d passed, %d failed\n\n", $pass, $fail );
 exit( $fail > 0 ? 1 : 0 );
