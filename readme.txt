@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.18.0
+Stable tag: 3.19.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,12 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.19.0 - 2026-09-10 =
+**Shops that could not connect at all**
+* FIX: Some shops could not connect to eBay however many times they tried. Their server's requests were reaching us, but a security filter at our hosting answered them with a page asking the caller to run JavaScript - which a browser can do and a server cannot. The filter chooses by internet address, and reputation systems classify shared hosting and home broadband ranges through no fault of the shop on one, so nothing you could change would have helped.
+* Connecting now uses an address set aside for it and exempt from that filter, falling back to the previous routes if it cannot be reached, so nothing that works today is put at risk.
+* The connection test now reports on both addresses and checks the name and certificate of the one actually used.
 
 = 3.18.0 - 2026-09-09 =
 **Condition, per product**

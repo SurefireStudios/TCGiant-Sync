@@ -250,7 +250,25 @@ class TCGiant_Sync_OAuth {
 	 * @return array|WP_Error Token payload, or an error describing the refusal.
 	 */
 	/**
-	 * The connection service.
+	 * The connection service, on the hostname set aside for it.
+	 *
+	 * Shops reach us from whatever address their host gives them, and those
+	 * addresses get classified by reputation systems through nobody's fault -
+	 * one merchant runs from a residential line, another shares a machine with
+	 * strangers. Our host's filter then answers their server with a page asking
+	 * it to run JavaScript, which a server cannot do, and that shop simply
+	 * cannot connect. This hostname is exempt from that filter.
+	 *
+	 * Tried first, with everything below it left in place: a shop that works
+	 * today must not be broken by a problem with a hostname it never needed.
+	 */
+	const API_RELAY_URL = 'https://api.tcgiant.com/relay.php';
+
+	/**
+	 * The connection service on the main site. Still answers, still used when
+	 * the hostname above cannot be reached, and still where the browser half of
+	 * connecting goes - eBay returns people to an address registered with them,
+	 * and a browser can satisfy a challenge where a server cannot.
 	 */
 	const RELAY_URL = 'https://tcgiant.com/syncconnect/relay.php';
 
@@ -384,6 +402,26 @@ class TCGiant_Sync_OAuth {
 	 * @return array|WP_Error
 	 */
 	private static function post_to_relay( array $body ) {
+		// The hostname set aside for this, which our host exempts from the
+		// filter that has been answering some shops' servers with a challenge
+		// page. For a shop that was blocked this is the only route that works;
+		// for everyone else it answers first and the rest never runs.
+		$api = wp_remote_post( self::API_RELAY_URL, array(
+			'body'       => $body,
+			'timeout'    => 30,
+			'user-agent' => self::user_agent(),
+		) );
+
+		if ( ! is_wp_error( $api ) && ! self::looks_intercepted( $api ) ) {
+			return $api;
+		}
+
+		// Everything from here is the route as it was before that hostname
+		// existed, and it still works. Pace before using it: two requests a few
+		// milliseconds apart is exactly the burst the filter watches for, and
+		// this code has provoked that fault before.
+		sleep( self::PACING_SECONDS );
+
 		$response = wp_remote_post( self::RELAY_URL, array(
 			'body'       => $body,
 			'timeout'    => 30,
@@ -602,6 +640,12 @@ class TCGiant_Sync_OAuth {
 		$endpoints = array(
 			array(
 				'label' => __( 'Usual route', 'tcgiant-sync' ),
+				'url'   => self::API_RELAY_URL,
+				'probe' => 'health',
+				'role'  => 'connect',
+			),
+			array(
+				'label' => __( 'Main site route', 'tcgiant-sync' ),
 				'url'   => self::RELAY_URL,
 				'probe' => 'health',
 				'role'  => 'connect',
@@ -708,7 +752,10 @@ class TCGiant_Sync_OAuth {
 	 */
 	private static function probe_name() {
 		$label = __( 'Name lookup', 'tcgiant-sync' );
-		$host  = wp_parse_url( self::RELAY_URL, PHP_URL_HOST );
+		// The hostname actually used for connecting. It is newer than the site
+		// itself, so a server whose DNS has not caught up is a real thing to
+		// find, and pointing this at the old name would miss it entirely.
+		$host  = wp_parse_url( self::API_RELAY_URL, PHP_URL_HOST );
 
 		if ( ! $host ) {
 			return array(
@@ -790,7 +837,10 @@ class TCGiant_Sync_OAuth {
 	 */
 	private static function probe_certificate() {
 		$label = __( 'Certificate', 'tcgiant-sync' );
-		$host  = wp_parse_url( self::RELAY_URL, PHP_URL_HOST );
+		// The hostname actually used for connecting. It is newer than the site
+		// itself, so a server whose DNS has not caught up is a real thing to
+		// find, and pointing this at the old name would miss it entirely.
+		$host  = wp_parse_url( self::API_RELAY_URL, PHP_URL_HOST );
 
 		if ( ! $host || ! function_exists( 'stream_socket_client' ) || ! function_exists( 'openssl_x509_parse' ) ) {
 			return array(
