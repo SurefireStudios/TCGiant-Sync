@@ -64,7 +64,7 @@ $body = (string) file_get_contents( $boot );
 // mistake that would split the data in two.
 check( 'it requires the database, not just the code', false !== strpos( $body, "is_file( \$candidate . '/sync.db' )" ), true );
 check( '  and the code as well', false !== strpos( $body, "is_file( \$candidate . '/relay.php' )" ), true );
-check( 'it sets the data directory before including anything', strpos( $body, "define( 'TCG_DATA_DIR', \$dir );" ) < strpos( $body, 'require $file;' ), true );
+check( 'it sets the data directory before handing the path back', strpos( $body, "define( 'TCG_DATA_DIR', \$dir );" ) < strpos( $body, 'return $file;' ), true );
 check( 'a directory it cannot find is a refusal, not a fallback', false !== strpos( $body, 'http_response_code( 503 )' ), true );
 check( '  and the detail goes to the log, not to the caller', false !== strpos( $body, 'error_log(' ), true );
 check( '  the public answer says nothing about paths', false !== strpos( $body, "'error' => 'relay unavailable'" ), true );
@@ -102,6 +102,101 @@ check( 'the notification URL is a named constant', false !== strpos( $relay, "de
 check( '  still pointing at the registered address', false !== strpos( $relay, "'https://tcgiant.com/syncconnect/relay.php' );" ), true );
 check( '  and the challenge uses it rather than a literal', false !== strpos( $relay, '$endpoint = EBAY_NOTIFY_ENDPOINT;' ), true );
 check( 'the URL appears once, so moving it is one edit', substr_count( $relay, "https://tcgiant.com/syncconnect/relay.php" ), 1 );
+
+echo "\nTHE RELAY IS INCLUDED WHERE IT THINKS IT IS\n" . str_repeat( '=', 112 ) . "\n";
+
+// This is the one that cost six days of broken connections.
+//
+// relay.php opens its database at its own top level and four handlers reach it
+// with `global $db;`. PHP runs an included file's top level in the scope of
+// whatever included it, so requiring relay.php from INSIDE a function made that
+// handle a local variable of the function and all four handlers found null.
+//
+// Nothing crashed, which is why nobody noticed. handle_token_claim() answered
+// every seller HTTP 400 {"error":"invalid_request"} - its reply to a malformed
+// request - so no eBay account could finish connecting on this hostname and the
+// reason given pointed at the seller's own server. handle_token_refresh()
+// guards its writes with `if ( $db ... )`, so existing shops kept working while
+// last_connected and the API call counts silently stopped being recorded.
+
+$boot_body = (string) file_get_contents( $site . '/api.tcgiant.com/bootstrap.php' );
+
+check( 'the loader resolves a path and does not include it', false === strpos( $boot_body, 'require $file;' ), true );
+check( '  it hands the path back instead', false !== strpos( $boot_body, 'return $file;' ), true );
+
+foreach ( array( 'relay.php', 'telemetry.php' ) as $file ) {
+	$loader = (string) file_get_contents( $site . '/api.tcgiant.com/' . $file );
+
+	// Strip comments first: the explanation of this very fault names the thing
+	// it warns about, and must not be able to answer for the code.
+	$code = php_strip_whitespace( $site . '/api.tcgiant.com/' . $file );
+
+	check( $file . ': it requires the endpoint', false !== strpos( $code, "tcg_api_target( '" ), true );
+	check( '  at file scope, never from inside a function', false === strpos( $code, 'function ' ), true );
+	check( '  and says why, so nobody moves it back', false !== strpos( $loader, 'file scope' ), true );
+}
+
+// The stake, stated in the test rather than left to a comment: these are the
+// handlers that go wrong when the handle is invisible.
+$relay_body = (string) file_get_contents( $site . '/syncconnect/relay.php' );
+
+check( 'the relay still reaches its handle through global', substr_count( $relay_body, 'global $db;' ), 4 );
+check( '  and still opens it at its own top level', false !== strpos( $relay_body, "\$db = new SQLite3( TCG_DATA_DIR . '/sync.db' );" ), true );
+
+// The behaviour itself, run rather than described. A stand-in for relay.php,
+// included both ways, with the real question asked of each.
+$tmp = sys_get_temp_dir() . '/tcg-scope-' . getmypid();
+@mkdir( $tmp, 0777, true );
+
+file_put_contents( $tmp . '/inner.php', "<?php\n\$db = 'live handle';\nfunction reaches_it() { global \$db; return null === \$db ? 'invisible' : 'live handle'; }\n" );
+file_put_contents( $tmp . '/from_function.php', "<?php\nfunction loader( \$f ) { require \$f; }\nloader( __DIR__ . '/inner.php' );\necho reaches_it();\n" );
+file_put_contents( $tmp . '/from_file_scope.php', "<?php\nrequire __DIR__ . '/inner.php';\necho reaches_it();\n" );
+
+$php = defined( 'PHP_BINARY' ) && PHP_BINARY ? PHP_BINARY : 'php';
+
+check( 'required from inside a function, the handle is lost', trim( (string) shell_exec( escapeshellarg( $php ) . ' ' . escapeshellarg( $tmp . '/from_function.php' ) . ' 2>&1' ) ), 'invisible' );
+check( '  required at file scope, it is there', trim( (string) shell_exec( escapeshellarg( $php ) . ' ' . escapeshellarg( $tmp . '/from_file_scope.php' ) . ' 2>&1' ) ), 'live handle' );
+
+foreach ( array( 'inner.php', 'from_function.php', 'from_file_scope.php' ) as $leftover ) {
+	@unlink( $tmp . '/' . $leftover );
+}
+@rmdir( $tmp );
+
+
+echo "\nTHE SERVICE SAYS WHOSE FAULT IT IS\n" . str_repeat( '=', 112 ) . "\n";
+
+// The six days were not lost to the bug. They were lost to the bug wearing a
+// caller's-fault label: every seller was told HTTP 400 invalid_request, which
+// is this handler's answer to a malformed request, so every investigation
+// started at the seller's own server. A 5xx would have pointed here on day one
+// - and, because the plugin only falls back off a hostname that fails, it would
+// also have kept sellers connecting on the route that worked the whole time.
+
+check( 'a lost database handle is answered as ours', false !== strpos( $relay_body, "relay_json_out( array( 'error' => 'service_unavailable' ), 503 );" ), true );
+check( '  and is no longer folded in with a bad request', false === strpos( $relay_body, '|| ! $db ) {' ), true );
+check( '  and says so in the log', false !== strpos( $relay_body, "mad_log( 'Token claim refused: no database handle." ), true );
+
+// Reachable is not working. This probe answered perfectly all six days, from
+// constants alone, on a hostname where no seller could connect.
+check( 'the reachability probe reports the storage too', false !== strpos( $relay_body, "'. Storage: ' . ( \$db ? 'ready' : 'unavailable' )" ), true );
+
+$oauth_body = (string) file_get_contents( dirname( __DIR__ ) . '/includes/class-tcgiant-sync-oauth.php' );
+
+check( '  and the connection test acts on what it says', false !== strpos( $oauth_body, "false === stripos( \$raw, 'Storage: ready' )" ), true );
+
+echo "\nA STRANGER CANNOT WRITE OUR LOG\n" . str_repeat( '=', 112 ) . "\n";
+
+// The deletion challenge answers anyone - it has to, since eBay proves nothing
+// before it challenges us - and it now does so on the hostname our host exempts
+// from its bot protection. It used to append the caller's raw input, newlines
+// and all, to the file we read to work out what happened.
+check( 'the challenge log is reduced to safe characters', false !== strpos( $relay_body, "\$logged = preg_replace(" ), true );
+check( '  and capped in length', false !== strpos( $relay_body, "\$logged = substr( (string) \$logged, 0, 64 );" ), true );
+check( '  so the raw code no longer reaches the file', false === strpos( $relay_body, 'Challenge received. Code: $code' ), true );
+
+// The hash is a different matter: eBay compares it against its own, so the code
+// must reach it exactly as it arrived.
+check( 'the hash still uses the code untouched', false !== strpos( $relay_body, "\$hash = hash( 'sha256', \$code . EBAY_VERIF_TOKEN . \$endpoint );" ), true );
 
 printf( "\n  %d passed, %d failed\n\n", $pass, $fail );
 exit( $fail > 0 ? 1 : 0 );

@@ -1,5 +1,12 @@
 *** TCGiant Sync Changelog ***
 
+2026-09-16 - version 3.20.0
+== Connecting an eBay account failed for anyone starting fresh ==
+- FIX: From 10 September, a shop connecting an eBay account for the first time - or reconnecting one - was told the tokens could not be collected because the request was invalid. The request was fine. Our connection service had been moved to a second address the week before, and at that address it could no longer see its own records. Asked for the tokens it was holding, it answered with the message it uses for a malformed request, so the fault looked like it was on the shop's own server. It was not, and nothing done at your end would have changed it. That is repaired on our side; no update is needed to benefit from it.
+- The shops affected were the ones connecting for the first time. An account already connected kept working throughout, because renewing an existing connection does not need the records that had gone missing.
+- FIX: The plugin now treats a failure from that address as a reason to try the older one, which is what was supposed to happen and did not. It fell back only when a request never arrived or was answered by a security filter, so a service that answered clearly but with a failure was taken at its word and the working route was never tried. A problem at one address now costs a wasted request rather than stopping a shop connecting.
+- FIX: The connection test on the Settings page no longer passes a route that answers but cannot do its job. It used to report every route healthy for a shop that could not connect, which sent people looking for firewalls and certificates that were never the problem. The service now reports whether it can reach its own records, and the test says so.
+
 2026-09-10 - version 3.19.0
 == Shops that could not connect at all ==
 - FIX: Some shops could not connect to eBay, and nothing they did made any difference. Their server's requests were reaching us, but a security filter at our hosting was answering them with a page asking the caller to run JavaScript. A browser can do that; a server cannot. So the connection never completed, and the message you got said nothing about why.

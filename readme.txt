@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.19.0
+Stable tag: 3.20.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,13 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.20.0 - 2026-09-16 =
+**Connecting an eBay account failed for anyone starting fresh**
+* FIX: From 10 September, a shop connecting an eBay account for the first time was told the tokens could not be collected because the request was invalid. The request was fine - our connection service had moved to a second address the week before and could no longer see its own records there, so when asked for the tokens it was holding it gave the answer it uses for a malformed request. Nothing done at your end would have changed it. Repaired on our side; no update is needed to benefit from it.
+* Accounts already connected were unaffected throughout, because renewing an existing connection does not need the records that had gone missing.
+* FIX: The plugin now falls back to the older address when the new one answers with a failure, not only when the request never arrives or is answered by a security filter. A problem at one address costs a wasted request rather than stopping a shop connecting.
+* FIX: The connection test no longer reports a route as healthy when it answers but cannot reach its own records - which is what it did for every shop that could not connect.
 
 = 3.19.0 - 2026-09-10 =
 **Shops that could not connect at all**

@@ -412,7 +412,19 @@ class TCGiant_Sync_OAuth {
 			'user-agent' => self::user_agent(),
 		) );
 
-		if ( ! is_wp_error( $api ) && ! self::looks_intercepted( $api ) ) {
+		// An error is not an answer, and this is the line that was missing.
+		//
+		// Both hostnames run the same code over the same database, so anything
+		// the service genuinely has to say is identical from either one. It
+		// follows that a failure reply from this one is always worth one
+		// question to the other: at worst it costs a request on a path that has
+		// already failed, and at best it is the difference between a shop
+		// connecting and a shop being told, wrongly, that its request was bad.
+		// That is not hypothetical - a loader fault on the new hostname made it
+		// answer every token collection with HTTP 400, this check was not here,
+		// and no seller could connect for six days while the old route was
+		// healthy the entire time and never asked.
+		if ( ! is_wp_error( $api ) && ! self::looks_intercepted( $api ) && self::answered_cleanly( $api ) ) {
 			return $api;
 		}
 
@@ -1017,6 +1029,22 @@ class TCGiant_Sync_OAuth {
 			);
 		}
 
+		// Reachable is not the same as working, and the difference is the whole
+		// reason this check exists. When the connection service lost its
+		// database handle it still answered this probe perfectly: right
+		// hostname, right certificate, 'Relay is active'. A merchant who could
+		// not connect was told every route was fine, and support went looking
+		// for a firewall. So the service now says whether it can open its own
+		// storage, and a service too old to say anything is read as before.
+		if ( false !== stripos( $raw, 'Storage:' ) && false === stripos( $raw, 'Storage: ready' ) ) {
+			return array(
+				'label'  => $label,
+				'state'  => 'unexpected',
+				'raw'    => self::capture_response( $response ),
+				'detail' => __( 'The connection service answered on this route but cannot reach its own storage, so connecting an eBay account through it would fail. This is a fault at our end, not on this server, and the plugin will use another route meanwhile.', 'tcgiant-sync' ),
+			);
+		}
+
 		if ( false !== stripos( $raw, 'Relay is active' ) ) {
 			return array(
 				'label'  => $label,
@@ -1068,6 +1096,24 @@ class TCGiant_Sync_OAuth {
 		}
 
 		return (bool) preg_match( '/^[\s]*<(?:!doctype|html)/i', $raw );
+	}
+
+	/**
+	 * Whether a reply is the service answering, rather than reporting failure.
+	 *
+	 * Deliberately only the status. Reading the body to decide would mean
+	 * guessing which errors are worth a second try, and the error that caused
+	 * this to be written - a relay that had lost its database handle and
+	 * called it 'invalid_request' - is exactly the one such a guess gets
+	 * wrong.
+	 *
+	 * @param array $response A wp_remote_* reply that is not a WP_Error.
+	 * @return bool
+	 */
+	private static function answered_cleanly( $response ) {
+		$code = (int) wp_remote_retrieve_response_code( $response );
+
+		return $code >= 200 && $code < 300;
 	}
 
 	public function claim_tokens_from_relay( $code ) {
