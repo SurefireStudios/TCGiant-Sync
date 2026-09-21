@@ -22,7 +22,7 @@ class TCGiant_Sync_DB {
 	/**
 	 * Table version for schema migrations.
 	 */
-	const TABLE_VERSION = '1.0.0';
+	const TABLE_VERSION = '1.1.0';
 
 	/**
 	 * Version marker for the postmeta index migration.
@@ -78,8 +78,16 @@ class TCGiant_Sync_DB {
 	 * the one-time copy from post meta has got. They are separate on purpose - a
 	 * backfill that runs out of time must not make the table look uncreated.
 	 */
+	/**
+	 * Cached name of WooCommerce's lookup table, '' when absent, null when
+	 * it has not been looked for yet.
+	 *
+	 * @var string|null
+	 */
+	private static $lookup_table = null;
+
 	const BACKFILL_OPTION  = 'tcgiant_listings_backfill';
-	const BACKFILL_VERSION = '1';
+	const BACKFILL_VERSION = '2';
 	const BACKFILL_CURSOR  = 'tcgiant_listings_backfill_cursor';
 	const BACKFILL_BATCH   = 500;
 	const BACKFILL_SECONDS = 1.5;
@@ -105,6 +113,29 @@ class TCGiant_Sync_DB {
 		self::$table_exists = ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $table ) ) === $table );
 
 		return self::$table_exists;
+	}
+
+	/**
+	 * WooCommerce's own product lookup table, if this store has one.
+	 *
+	 * WooCommerce has maintained this since 3.6 and keys it on product_id,
+	 * which is what makes reading live stock on a listings screen cheap. It is
+	 * still checked for rather than assumed: a store that has never run the
+	 * lookup-table regeneration, or one restored from a partial dump, would
+	 * otherwise turn every Listings page into a database error.
+	 *
+	 * @return string Table name, or '' when there is none to join.
+	 */
+	public static function lookup_table() {
+		if ( null !== self::$lookup_table ) {
+			return self::$lookup_table;
+		}
+
+		global $wpdb;
+		$table = $wpdb->prefix . 'wc_product_meta_lookup';
+		self::$lookup_table = ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $table ) ) === $table ) ? $table : '';
+
+		return self::$lookup_table;
 	}
 
 	/**
@@ -165,6 +196,7 @@ class TCGiant_Sync_DB {
 			'_ebay_listing_status' => 'listing_status',
 			'_ebay_listing_type'   => 'listing_type',
 			'_ebay_item_id'        => 'ebay_item_id',
+			'_ebay_end_time'       => 'ebay_end_time',
 		);
 
 		if ( self::$mirroring || ! isset( $columns[ $meta_key ] ) || is_array( $meta_value ) ) {
@@ -272,6 +304,16 @@ class TCGiant_Sync_DB {
 			ebay_quantity INT NOT NULL DEFAULT 0,
 			ebay_url VARCHAR(512) NOT NULL DEFAULT '',
 			ebay_title VARCHAR(255) NOT NULL DEFAULT '',
+			-- When the listing ends, or ended, as eBay states it.
+			--
+			-- Text rather than DATETIME on purpose. eBay sends an ISO 8601 UTC
+			-- string and every other part of the plugin stores and reads that
+			-- string; it is fixed width, so it sorts correctly as text, and
+			-- copying it verbatim means no conversion can go wrong on the way in
+			-- or out. The four dates already here are all about our own row -
+			-- when we last looked, when we last pushed - and none of them could
+			-- answer a seller asking when a listing finished.
+			ebay_end_time VARCHAR(32) NOT NULL DEFAULT '',
 			last_synced DATETIME NULL,
 			last_pushed DATETIME NULL,
 			variation_cache LONGTEXT,
@@ -282,7 +324,11 @@ class TCGiant_Sync_DB {
 			UNIQUE KEY product_id (product_id),
 			KEY ebay_item_id (ebay_item_id),
 			KEY listing_status (listing_status),
-			KEY listing_type (listing_type)
+			KEY listing_type (listing_type),
+			-- The two columns a seller sorts a long list by. Without these each
+			-- sort is a filesort of the whole table.
+			KEY ebay_end_time (ebay_end_time),
+			KEY last_synced (last_synced)
 		) {$charset};";
 
 		require_once ABSPATH . 'wp-admin/includes/upgrade.php';
@@ -374,8 +420,8 @@ class TCGiant_Sync_DB {
 			$in = implode( ',', array_map( 'intval', $ids ) );
 
 			$wpdb->query( $wpdb->prepare(
-				"INSERT IGNORE INTO {$table}
-					(product_id, ebay_item_id, listing_type, listing_status, ebay_price, ebay_quantity, ebay_title, last_synced, created_at)
+				"INSERT INTO {$table}
+					(product_id, ebay_item_id, listing_type, listing_status, ebay_price, ebay_quantity, ebay_title, ebay_end_time, last_synced, created_at)
 				SELECT p.ID,
 					MAX(CASE WHEN pm.meta_key = '_ebay_item_id' THEN pm.meta_value END),
 					COALESCE(NULLIF(MAX(CASE WHEN pm.meta_key = '_ebay_listing_type' THEN pm.meta_value END), ''), 'FixedPriceItem'),
@@ -383,13 +429,15 @@ class TCGiant_Sync_DB {
 					COALESCE(MAX(CASE WHEN pm.meta_key = '_price' THEN pm.meta_value END) + 0, 0),
 					COALESCE(MAX(CASE WHEN pm.meta_key = '_stock' THEN pm.meta_value END) + 0, 0),
 					LEFT(MAX(p.post_title), 255),
+					COALESCE(LEFT(MAX(CASE WHEN pm.meta_key = '_ebay_end_time' THEN pm.meta_value END), 32), ''),
 					%s, %s
 				FROM {$wpdb->posts} p
 				INNER JOIN {$wpdb->postmeta} pm ON pm.post_id = p.ID
 				WHERE p.ID IN ({$in})
-					AND pm.meta_key IN ('_ebay_item_id', '_ebay_listing_type', '_ebay_listing_status', '_price', '_stock')
+					AND pm.meta_key IN ('_ebay_item_id', '_ebay_listing_type', '_ebay_listing_status', '_price', '_stock', '_ebay_end_time')
 				GROUP BY p.ID
-				HAVING MAX(CASE WHEN pm.meta_key = '_ebay_item_id' THEN pm.meta_value END) <> ''",
+				HAVING MAX(CASE WHEN pm.meta_key = '_ebay_item_id' THEN pm.meta_value END) <> ''
+				ON DUPLICATE KEY UPDATE ebay_end_time = VALUES(ebay_end_time)",
 				current_time( 'mysql' ),
 				current_time( 'mysql' )
 			) );
@@ -445,6 +493,7 @@ class TCGiant_Sync_DB {
 			'ebay_quantity',
 			'ebay_url',
 			'ebay_title',
+			'ebay_end_time',
 			'last_synced',
 			'last_pushed',
 			'variation_cache',
@@ -545,6 +594,79 @@ class TCGiant_Sync_DB {
 	 * @param array $args Query args.
 	 * @return array { items: array, total: int }
 	 */
+	/**
+	 * The filter half of a listings query, shared so that a bulk action acting
+	 * on "everything matching" cannot drift from what the screen displayed.
+	 *
+	 * Columns are qualified because the row query joins WooCommerce's lookup
+	 * table, and product_id exists on both sides of that join.
+	 *
+	 * @param array $args status, type and search.
+	 * @return array [ where clause, parameters ]
+	 */
+	private static function build_where( array $args ) {
+		global $wpdb;
+
+		$where  = array( '1=1' );
+		$params = array();
+
+		if ( ! empty( $args['status'] ) ) {
+			$where[]  = 'l.listing_status = %s';
+			$params[] = $args['status'];
+		}
+
+		if ( ! empty( $args['type'] ) ) {
+			$where[]  = 'l.listing_type = %s';
+			$params[] = $args['type'];
+		}
+
+		if ( ! empty( $args['search'] ) ) {
+			$like     = '%' . $wpdb->esc_like( $args['search'] ) . '%';
+			$where[]  = '(l.ebay_title LIKE %s OR l.ebay_item_id LIKE %s OR l.product_id = %d)';
+			$params[] = $like;
+			$params[] = $like;
+			$params[] = (int) $args['search'];
+		}
+
+		return array( implode( ' AND ', $where ), $params );
+	}
+
+	/**
+	 * Every product matching a set of filters, ignoring pagination.
+	 *
+	 * What "select all" resolves to. The page cannot post thousands of ids
+	 * through a form without meeting max_input_vars, and posting only the
+	 * twenty it has drawn is how a bulk action silently does a twentieth of
+	 * what was asked. So the screen names the filters and the server runs the
+	 * same query again without a LIMIT.
+	 *
+	 * @param array $args status, type and search - as passed to query().
+	 * @return int[] Product ids.
+	 */
+	public static function find_product_ids( array $args ) {
+		global $wpdb;
+
+		if ( ! self::table_exists() ) {
+			return array();
+		}
+
+		$table = self::table_name();
+
+		list( $where_clause, $params ) = self::build_where( wp_parse_args( $args, array(
+			'status' => '',
+			'type'   => '',
+			'search' => '',
+		) ) );
+
+		$sql = "SELECT l.product_id FROM {$table} l WHERE {$where_clause} ORDER BY l.product_id ASC";
+
+		$ids = $params
+			? $wpdb->get_col( $wpdb->prepare( $sql, $params ) )
+			: $wpdb->get_col( $sql );
+
+		return array_values( array_filter( array_map( 'absint', (array) $ids ) ) );
+	}
+
 	public static function query( $args = array() ) {
 		global $wpdb;
 		$table = self::table_name();
@@ -565,39 +687,50 @@ class TCGiant_Sync_DB {
 
 		$args = wp_parse_args( $args, $defaults );
 
-		$where = array( '1=1' );
-		$params = array();
+		list( $where_clause, $params ) = self::build_where( $args );
 
-		if ( ! empty( $args['status'] ) ) {
-			$where[] = 'listing_status = %s';
-			$params[] = $args['status'];
-		}
+		$lookup = self::lookup_table();
 
-		if ( ! empty( $args['type'] ) ) {
-			$where[] = 'listing_type = %s';
-			$params[] = $args['type'];
-		}
+		// Stock and price as WooCommerce holds them right now, not as we recorded
+		// them when we last pushed. The stored columns are written by a push, an
+		// import or a manual link and by nothing else - so a sale left them
+		// showing goods that had already gone, which is exactly what a seller
+		// looking at the Ended tab notices first. A derived number cannot drift.
+		$live_qty   = $lookup ? 'COALESCE(lk.stock_quantity, l.ebay_quantity)' : 'l.ebay_quantity';
+		$live_price = $lookup ? 'COALESCE(lk.min_price, l.ebay_price)' : 'l.ebay_price';
+		$join       = $lookup ? " LEFT JOIN {$lookup} lk ON lk.product_id = l.product_id" : '';
 
-		if ( ! empty( $args['search'] ) ) {
-			$like = '%' . $wpdb->esc_like( $args['search'] ) . '%';
-			$where[] = '(ebay_title LIKE %s OR ebay_item_id LIKE %s OR product_id = %d)';
-			$params[] = $like;
-			$params[] = $like;
-			$params[] = (int) $args['search'];
-		}
+		// Whitelist orderby to prevent SQL injection. The value never reaches SQL;
+		// it only chooses one of these expressions.
+		$allowed_orderby = array(
+			'product_id'     => 'l.product_id',
+			'ebay_item_id'   => 'l.ebay_item_id',
+			'listing_status' => 'l.listing_status',
+			'listing_type'   => 'l.listing_type',
+			'ebay_title'     => 'l.ebay_title',
+			'last_synced'    => 'l.last_synced',
+			'updated_at'     => 'l.updated_at',
 
-		$where_clause = implode( ' AND ', $where );
+			// Sorted on the same figure the column shows. Sorting by a stored
+			// number while displaying a live one puts the rows in an order the
+			// screen appears to contradict.
+			'ebay_price'     => $live_price,
+			'ebay_quantity'  => $live_qty,
 
-		// Whitelist orderby to prevent SQL injection.
-		$allowed_orderby = array( 'product_id', 'ebay_item_id', 'listing_status', 'listing_type', 'ebay_price', 'ebay_quantity', 'last_synced', 'updated_at', 'ebay_title' );
-		$orderby = in_array( $args['orderby'], $allowed_orderby, true ) ? $args['orderby'] : 'updated_at';
+			// When the listing ends, or ended - the one date a seller actually
+			// asks about, and until now the one the table could not answer.
+			'ebay_end_time'  => 'l.ebay_end_time',
+		);
+
+		$orderby = isset( $allowed_orderby[ $args['orderby'] ] ) ? $allowed_orderby[ $args['orderby'] ] : 'l.updated_at';
 		$order = strtoupper( $args['order'] ) === 'ASC' ? 'ASC' : 'DESC';
 
 		$offset = ( max( 1, (int) $args['page'] ) - 1 ) * (int) $args['per_page'];
 		$limit = (int) $args['per_page'];
 
 		// Count total.
-		$count_sql = "SELECT COUNT(*) FROM {$table} WHERE {$where_clause}";
+		// No join here: the count does not depend on stock or price.
+		$count_sql = "SELECT COUNT(*) FROM {$table} l WHERE {$where_clause}";
 		if ( ! empty( $params ) ) {
 			$total = (int) $wpdb->get_var( $wpdb->prepare( $count_sql, $params ) );
 		} else {
@@ -605,7 +738,11 @@ class TCGiant_Sync_DB {
 		}
 
 		// Fetch rows.
-		$query_sql = "SELECT * FROM {$table} WHERE {$where_clause} ORDER BY {$orderby} {$order} LIMIT {$limit} OFFSET {$offset}";
+		$query_sql = "SELECT l.*, {$live_qty} AS live_quantity, {$live_price} AS live_price
+			FROM {$table} l{$join}
+			WHERE {$where_clause}
+			ORDER BY {$orderby} {$order}
+			LIMIT {$limit} OFFSET {$offset}";
 		if ( ! empty( $params ) ) {
 			$items = $wpdb->get_results( $wpdb->prepare( $query_sql, $params ), ARRAY_A );
 		} else {

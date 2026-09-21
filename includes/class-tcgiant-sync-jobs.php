@@ -98,11 +98,23 @@ class TCGiant_Sync_Jobs {
 	 * @param array  $items   Array of product IDs to process.
 	 * @return string Job ID.
 	 */
-	public static function create_job( $type, array $items ) {
+	/**
+	 * Job types the Listings screen starts, and which may therefore be asked
+	 * for as "everything matching the current filters".
+	 */
+	const LISTING_JOB_TYPES = array( 'bulk_push', 'bulk_end', 'bulk_relist', 'bulk_verify', 'bulk_set_format' );
+
+	public static function create_job( $type, array $items, array $args = array() ) {
 		$job_id = wp_generate_uuid4();
 		$job = array(
 			'id'         => $job_id,
 			'type'       => $type,
+
+			// Whatever the job needs beyond a list of products - the format to
+			// change to, for instance. Kept on the job rather than re-posted per
+			// batch so that every batch acts on what was actually asked for, and
+			// stays small, since progress is written back here after each one.
+			'args'       => $args,
 			'status'     => 'pending',
 			'total'      => count( $items ),
 			'processed'  => 0,
@@ -215,16 +227,68 @@ class TCGiant_Sync_Jobs {
 			$product_ids = TCGiant_Sync_Image_Localizer::find_products_with_duplicate_images();
 		}
 
+		// The Listings screen asking for everything it is currently showing.
+		//
+		// Its checkboxes only exist for the twenty rows it has drawn, so a
+		// seller who filtered to 900 ended auctions and pressed Relist got
+		// twenty of them and nothing to say the rest had been passed over. The
+		// filters come back here and the set is resolved from the same query.
+		if ( ! empty( $_POST['select_all'] ) && in_array( $type, self::LISTING_JOB_TYPES, true ) ) {
+			$product_ids = TCGiant_Sync_DB::find_product_ids( array(
+				'status' => sanitize_text_field( wp_unslash( $_POST['listing_status'] ?? '' ) ),
+				'type'   => sanitize_text_field( wp_unslash( $_POST['listing_type'] ?? '' ) ),
+				'search' => sanitize_text_field( wp_unslash( $_POST['s'] ?? '' ) ),
+			) );
+		}
+
 		if ( empty( $type ) || empty( $product_ids ) ) {
 			wp_send_json_error( array( 'message' => 'Missing type or product_ids.' ) );
 		}
 
-		$valid_types = array( 'bulk_push', 'bulk_end', 'bulk_verify', 'bulk_relist', 'bulk_settle', 'bulk_restore_images' );
+		$valid_types = array( 'bulk_push', 'bulk_end', 'bulk_verify', 'bulk_relist', 'bulk_settle', 'bulk_restore_images', 'bulk_set_format' );
 		if ( ! in_array( $type, $valid_types, true ) ) {
 			wp_send_json_error( array( 'message' => 'Invalid job type.' ) );
 		}
 
-		$job_id = self::create_job( $type, $product_ids );
+		$args = array();
+
+		if ( 'bulk_set_format' === $type ) {
+			// Read as a closed set. These are written straight onto products as
+			// the override the next push reads, so anything not recognised must
+			// not be stored - an unknown duration would be refused by eBay long
+			// afterwards, on a product nobody was looking at any more.
+			$want_type     = sanitize_text_field( wp_unslash( $_POST['format_type'] ?? '' ) );
+			$want_duration = sanitize_text_field( wp_unslash( $_POST['format_duration'] ?? '' ) );
+
+			if ( '' !== $want_type && ! isset( TCGiant_Sync_Catalog::LISTING_TYPES[ $want_type ] ) ) {
+				wp_send_json_error( array( 'message' => 'Unknown listing format.' ) );
+			}
+
+			if ( '' !== $want_duration && ! isset( TCGiant_Sync_Catalog::LISTING_DURATIONS[ $want_duration ] ) ) {
+				wp_send_json_error( array( 'message' => 'Unknown listing duration.' ) );
+			}
+
+			// A duration eBay will not honour for the chosen format is the
+			// mistake this action exists to make easy, so it is caught here
+			// rather than on each of nine hundred products at push time.
+			if ( '' !== $want_type && '' !== $want_duration ) {
+				$allowed = TCGiant_Sync_Catalog::DURATIONS_BY_TYPE[ $want_type ] ?? array();
+				if ( ! in_array( $want_duration, $allowed, true ) ) {
+					wp_send_json_error( array( 'message' => 'That duration is not one eBay allows for that listing format.' ) );
+				}
+			}
+
+			if ( '' === $want_type && '' === $want_duration ) {
+				wp_send_json_error( array( 'message' => 'Choose a listing format, a duration, or both.' ) );
+			}
+
+			$args = array(
+				'format_type'     => $want_type,
+				'format_duration' => $want_duration,
+			);
+		}
+
+		$job_id = self::create_job( $type, $product_ids, $args );
 		self::update_job( $job_id, array( 'status' => 'running' ) );
 
 		wp_send_json_success( array(
@@ -313,6 +377,24 @@ class TCGiant_Sync_Jobs {
 						update_post_meta( $product_id, '_ebay_listing_status', 'Ended' );
 						$succeeded++;
 					}
+					break;
+
+				case 'bulk_set_format':
+					// The same two overrides the product panel writes, so a listing
+					// changed here behaves exactly as one changed by hand. Neither is
+					// sent to eBay now; the next push reads them.
+					$want_type     = (string) ( $job['args']['format_type'] ?? '' );
+					$want_duration = (string) ( $job['args']['format_duration'] ?? '' );
+
+					if ( '' !== $want_type ) {
+						update_post_meta( $product_id, '_ebay_export_listing_type', $want_type );
+					}
+
+					if ( '' !== $want_duration ) {
+						update_post_meta( $product_id, '_ebay_export_listing_duration', $want_duration );
+					}
+
+					$succeeded++;
 					break;
 
 				case 'bulk_verify':

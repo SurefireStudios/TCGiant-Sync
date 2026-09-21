@@ -1261,6 +1261,18 @@ class TCGiant_Sync_Exporter {
 		$listing_type     = $settings['listing_type'] ?? 'FixedPriceItem';
 		$listing_duration = $settings['listing_duration'] ?? 'GTC';
 		$valid_durations  = TCGiant_Sync_Catalog::DURATIONS_BY_TYPE[ $listing_type ] ?? array( 'GTC' );
+
+		// Fixed price has exactly one duration eBay honours, so there is nothing
+		// a seller could have chosen that is worth refusing a push over. Sites
+		// that saved 30 Days while the plugin still offered it are already
+		// running Good 'Til Cancelled listings on eBay, whatever we recorded, so
+		// the builder corrects the value on the way out and this says nothing.
+		// Refusing here instead would stop every push on those sites the moment
+		// they updated, over a setting that never had any effect.
+		if ( 'FixedPriceItem' === $listing_type ) {
+			return true;
+		}
+
 		if ( ! in_array( $listing_duration, $valid_durations, true ) ) {
 			$type_label = TCGiant_Sync_Catalog::LISTING_TYPES[ $listing_type ] ?? $listing_type;
 			$valid_labels = array_map( function( $d ) { return TCGiant_Sync_Catalog::LISTING_DURATIONS[ $d ] ?? $d; }, $valid_durations );

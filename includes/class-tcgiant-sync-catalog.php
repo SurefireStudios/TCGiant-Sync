@@ -240,15 +240,31 @@ class TCGiant_Sync_Catalog {
 		'Days_7'  => '7 Days',
 		'Days_10' => '10 Days',
 		'Days_30' => '30 Days',
-		'Days_60' => '60 Days',
-		'Days_90' => '90 Days',
 	);
+
+	/*
+	 * 60 and 90 Days used to be listed here and were offered on the Settings
+	 * page. eBay accepts neither for anything this plugin creates - they are
+	 * classified-ad and vehicle values - so every push that used one was
+	 * refused, and the seller was told their own choice was invalid after
+	 * being offered it. A value nobody can use is not worth a label.
+	 */
 
 	/**
 	 * Valid durations per listing type (eBay rules).
 	 */
 	const DURATIONS_BY_TYPE = array(
-		'FixedPriceItem' => array( 'GTC', 'Days_30' ),
+		/*
+		 * One value, because eBay honours one.
+		 *
+		 * Fixed-duration fixed-price listings ended in March 2019; eBay's
+		 * Trading API guide now says Good 'Til Cancelled is the only supported
+		 * duration for fixed price on every marketplace, vehicles aside. We went
+		 * on offering 30 Days and sending it, and eBay quietly made it GTC -
+		 * so sellers were choosing between two options that did the same thing,
+		 * and the one they picked was not the one they got.
+		 */
+		'FixedPriceItem' => array( 'GTC' ),
 		'Chinese'        => array( 'Days_1', 'Days_3', 'Days_5', 'Days_7', 'Days_10' ),
 	);
 

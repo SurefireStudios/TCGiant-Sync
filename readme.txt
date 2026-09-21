@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.20.0
+Stable tag: 3.21.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,23 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.21.0 - 2026-09-21 =
+**The Ended tab showed stock that had already sold**
+* FIX: Items that had sold showed a quantity beside them while the product itself correctly showed none. The column was only written when a listing was pushed, imported or linked, so nothing updated it when something sold. Qty and Price now read your WooCommerce stock and price as the page is drawn.
+* FIX: Linking a product to a listing already on eBay recorded the quantity the listing was created with instead of what was left of it, so linking to something already sold recorded one permanently. It now subtracts what sold.
+
+**Knowing when a listing ended**
+* NEW: An "Ends / Ended" column you can sort by. Every column is now sortable and says so, sorting returns you to the first page, and the search box and type filter no longer undo each other.
+
+**Fixed price listings run until cancelled**
+* eBay stopped offering fixed-length fixed-price listings in March 2019, so Good 'Til Cancelled is the only option offered. A saved 30 Days keeps working exactly as before - eBay was already treating those listings that way.
+* FIX: 60 and 90 Days were offered for fixed price and then refused at push time. eBay accepts neither, and they are gone.
+
+**Doing things to listings in bulk**
+* NEW: Change listing format and Check before pushing, both from the Listings page.
+* NEW: Bulk actions can apply to every listing matching your filters, not only the twenty on screen.
+* FIX: The Listings, Stock Review and Image Cleanup screens now load their stylesheet.
 
 = 3.20.0 - 2026-09-16 =
 **Connecting an eBay account failed for anyone starting fresh**

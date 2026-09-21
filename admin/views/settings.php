@@ -864,14 +864,37 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 							<label style="font-size:12px;color:#555;display:block;margin-bottom:3px;"><?php esc_html_e( 'Listing Duration', 'tcgiant-sync' ); ?></label>
 							<select class="tc-select" name="tcgiant_sync_ebay_settings[export_listing_duration]" id="export_listing_duration">
 								<?php foreach ( TCGiant_Sync_Catalog::LISTING_DURATIONS as $ld_val => $ld_label ) : ?>
-									<option value="<?php echo esc_attr( $ld_val ); ?>" <?php selected( $settings['export_listing_duration'] ?? 'GTC', $ld_val ); ?>>
+									<?php // Which formats this duration is legal for, so the script below can hide the rest. ?>
+									<option value="<?php echo esc_attr( $ld_val ); ?>" data-types="<?php echo esc_attr( implode( ' ', array_keys( array_filter( TCGiant_Sync_Catalog::DURATIONS_BY_TYPE, function ( $ds ) use ( $ld_val ) { return in_array( $ld_val, $ds, true ); } ) ) ) ); ?>" <?php selected( $settings['export_listing_duration'] ?? 'GTC', $ld_val ); ?>>
 										<?php echo esc_html( $ld_label ); ?>
 									</option>
 								<?php endforeach; ?>
 							</select>
 						</div>
 					</div>
-					<p class="tc-hint"><?php esc_html_e( 'Default for all listings. Can be overridden per-product. Fixed Price supports GTC & 30 Days. Auctions support 1-10 Days.', 'tcgiant-sync' ); ?></p>
+					<p class="tc-hint"><?php esc_html_e( 'Default for all listings. Can be overridden per-product. Fixed Price listings on eBay always run until cancelled; auctions run 1 to 10 days.', 'tcgiant-sync' ); ?></p>
+					<script>
+						// Only the durations eBay will accept for the chosen format. Every one
+						// was offered before this, so a seller could pick 90 Days for a fixed
+						// price listing and have every push refused afterwards.
+						( function () {
+							var type = document.getElementById( 'export_listing_type' );
+							var dur  = document.getElementById( 'export_listing_duration' );
+							if ( ! type || ! dur ) { return; }
+							function sync() {
+								var chosen = type.value, fallback = null, ok = false;
+								Array.prototype.forEach.call( dur.options, function ( o ) {
+									var types = ( o.getAttribute( 'data-types' ) || '' ).split( ' ' );
+									var legal = types.indexOf( chosen ) >= 0;
+									o.hidden = o.disabled = ! legal;
+									if ( legal ) { if ( fallback === null ) { fallback = o.value; } if ( o.value === dur.value ) { ok = true; } }
+								} );
+								if ( ! ok && fallback !== null ) { dur.value = fallback; }
+							}
+							type.addEventListener( 'change', sync );
+							sync();
+						}() );
+					</script>
 				</div>
 
 				<!-- Quantity when stock is not tracked -->

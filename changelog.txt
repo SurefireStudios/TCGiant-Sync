@@ -1,5 +1,25 @@
 *** TCGiant Sync Changelog ***
 
+2026-09-21 - version 3.21.0
+== The Ended tab showed stock that had already sold ==
+- FIX: On Listings, items that had sold showed a quantity beside them while the product itself correctly showed none left. Two separate things were wrong, and both are fixed.
+- The figure in that column was only ever written when a listing was pushed, imported or linked. Nothing updated it when something sold, so a listing moved to the Ended tab carrying whatever had been true the last time it was pushed. Qty and Price now read your WooCommerce stock and price as the page is drawn, so they cannot fall behind again.
+- Separately, linking a product to a listing that already existed on eBay recorded the quantity the listing was created with rather than what was left of it - so linking to something that had already sold recorded one, for good. It now subtracts what sold, which is what the bulk import has always done.
+
+== Knowing when a listing ended ==
+- NEW: An "Ends / Ended" column on the Listings page, and you can sort by it. The page had four dates in it and every one was about our own record-keeping; none could answer the obvious question.
+- Every column on that page can now be sorted and shows an arrow saying so. Sorting takes you back to the first page instead of leaving you halfway down the old one, and the search box and the type filter no longer undo each other.
+
+== Fixed price listings run until cancelled ==
+- eBay stopped offering fixed-length fixed-price listings in March 2019. Good 'Til Cancelled is the only duration it accepts for them now, so that is the only one offered. If you had 30 Days saved, nothing changes: eBay was already treating those listings as Good 'Til Cancelled, and your pushes carry on exactly as before.
+- FIX: 60 Days and 90 Days were offered on the Settings page for fixed price and then refused at push time, so a choice made once could go wrong weeks later. eBay accepts neither, and they are gone.
+
+== Doing things to listings in bulk ==
+- NEW: Change listing format, from the Listings page - the same setting the product panel offers, applied to as many listings as you like.
+- NEW: Check before pushing, which reports what eBay would refuse without sending anything.
+- NEW: Bulk actions can be applied to every listing matching your filters, not only the twenty shown on the page. Previously a filter matching nine hundred listings acted on twenty of them and said nothing about the rest.
+- FIX: The Listings, Stock Review and Image Cleanup screens now load their stylesheet, which they had never been given.
+
 2026-09-16 - version 3.20.0
 == Connecting an eBay account failed for anyone starting fresh ==
 - FIX: From 10 September, a shop connecting an eBay account for the first time - or reconnecting one - was told the tokens could not be collected because the request was invalid. The request was fine. Our connection service had been moved to a second address the week before, and at that address it could no longer see its own records. Asked for the tokens it was holding, it answered with the message it uses for a malformed request, so the fault looked like it was on the shop's own server. It was not, and nothing done at your end would have changed it. That is repaired on our side; no update is needed to benefit from it.

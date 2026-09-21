@@ -137,6 +137,13 @@ class TCGiant_Sync_Admin {
 			'tcgiant-sync_page_tcgiant-export',
 			'tcgiant-sync_page_tcgiant-settings',
 			'tcgiant-sync_page_tcgiant-logs',
+
+			// These three draw the same dashboard chrome - the tab bar, the cards,
+			// the buttons - out of admin.css, and were never on this list, so they
+			// rendered unstyled while claiming the classes that style them.
+			'tcgiant-sync_page_tcgiant-listings',
+			'tcgiant-sync_page_tcgiant-stock-review',
+			'tcgiant-sync_page_tcgiant-image-cleanup',
 		);
 		if ( ! in_array( $hook, $tc_pages, true ) ) {
 			return;
@@ -2342,9 +2349,31 @@ class TCGiant_Sync_Admin {
 		}
 		$price = is_numeric( $price ) ? (float) $price : (float) $product->get_regular_price();
 
+		// What is left, not what was listed.
+		//
+		// eBay's Quantity is the figure the listing was created with, and it
+		// keeps reporting that after the goods have sold; availability is
+		// Quantity minus QuantitySold, as eBay's own guidance says. Recording
+		// the raw number meant linking a product to a sold single-item listing
+		// stored a quantity of one against it for good - which the Listings
+		// screen then showed beside a product holding none. The bulk importer
+		// has always subtracted; this did not.
+		$listed    = isset( $item['Quantity'] ) ? (int) $item['Quantity'] : 0;
+		$sold      = isset( $item['SellingStatus']['QuantitySold'] ) ? (int) $item['SellingStatus']['QuantitySold'] : 0;
+		$available = max( 0, $listed - $sold );
+
+		// eBay states this in UTC as an ISO 8601 string, which is how every
+		// other part of the plugin stores and reads it.
+		$end_time = (string) ( $item['ListingDetails']['EndTime'] ?? '' );
+
 		$product->update_meta_data( '_ebay_item_id', $item_id );
 		$product->update_meta_data( '_ebay_listing_type', $type );
 		$product->update_meta_data( '_ebay_listing_status', $local_status );
+
+		if ( '' !== $end_time ) {
+			$product->update_meta_data( '_ebay_end_time', $end_time );
+		}
+
 		$product->save();
 
 		TCGiant_Sync_DB::upsert( array(
@@ -2353,9 +2382,10 @@ class TCGiant_Sync_Admin {
 			'listing_type'   => $type,
 			'listing_status' => $local_status,
 			'ebay_price'     => $price,
-			'ebay_quantity'  => (int) ( $item['Quantity'] ?? 0 ),
+			'ebay_quantity'  => $available,
 			'ebay_url'       => 'https://www.ebay.com/itm/' . $item_id,
 			'ebay_title'     => $title,
+			'ebay_end_time'  => $end_time,
 			'last_synced'    => current_time( 'mysql' ),
 		) );
 
@@ -2845,7 +2875,7 @@ class TCGiant_Sync_Admin {
 				) );
 				?>
 				<p style="margin:4px 0 0;font-size:11px;color:#888;padding-left:12px;">
-					<?php esc_html_e( 'eBay rules: Fixed Price supports GTC & 30 Days. Auctions support 1, 3, 5, 7, or 10 Days.', 'tcgiant-sync' ); ?>
+					<?php esc_html_e( 'eBay rules: Fixed Price listings always run until cancelled. Auctions support 1, 3, 5, 7, or 10 Days.', 'tcgiant-sync' ); ?>
 				</p>
 			</div>
 		</div>
@@ -3172,8 +3202,8 @@ class TCGiant_Sync_Admin {
 				}).fail(function(){$b.prop('disabled',false);$s.css('color','#cc1818').text('Request failed.');});
 			});
 			// Duration filtering based on listing type.
-			var fpDurations={'FixedPriceItem':['GTC','Days_30'],'Chinese':['Days_1','Days_3','Days_5','Days_7','Days_10']};
-			$('#_ebay_export_listing_type').on('change',function(){var lt=$(this).val(),$dur=$('#_ebay_export_listing_duration');if(!lt){$dur.find('option').show();return;}var valid=fpDurations[lt]||[];$dur.find('option').each(function(){var v=$(this).val();if(!v){$(this).show();}else{$(this).toggle(valid.indexOf(v)>=0);}});if(valid.indexOf($dur.val())<0){$dur.val('');}});
+			var fpDurations={'FixedPriceItem':['GTC'],'Chinese':['Days_1','Days_3','Days_5','Days_7','Days_10']};
+			$('#_ebay_export_listing_type').on('change',function(){var lt=$(this).val(),$dur=$('#_ebay_export_listing_duration');if(!lt){$dur.find('option').show();return;}var valid=fpDurations[lt]||[];$dur.find('option').each(function(){var v=$(this).val();if(!v){$(this).show();}else{$(this).toggle(valid.indexOf(v)>=0);}});if(valid.indexOf($dur.val())<0){$dur.val('');}}).trigger('change');
 			// Verify (dry run)
 			$('#tcgiant-verify-btn').on('click',function(){var btn=$(this),st=$('#tcgiant-push-status');btn.prop('disabled',true);st.css('color','#555').text('Verifying listing...');var cs=$('#_ebay_export_category_id_select').val()||'',cc=$('#_ebay_export_category_id_custom').val()||'',catId=(cs==='custom')?cc:cs,it=$('#_ebay_export_item_type').val()||'',sf=(it&&it!=='other')?'_'+it:'',gid=$('#_ebay_export_grader_id'+sf).val()||'',gv=$('#_ebay_export_grade_value'+sf).val()||'',uc=$('#_ebay_export_ungraded_condition'+sf).val()||'';$.post(ajaxUrl,{action:'tcgiant_verify_product',product_id:btn.data('product-id'),override_category_id:catId,override_condition_id:$('#_ebay_export_condition_id').val()||'',override_item_type:it,override_condition_type:$('#_ebay_export_condition_type').val()||'',override_grader_id:gid,override_grade_value:gv,override_cert_number:$('[name="_ebay_export_cert_number"]').val()||'',override_coin_year:$('[name="_ebay_export_coin_year"]').val()||'',override_ungraded_condition:uc,override_listing_type:$('#_ebay_export_listing_type').val()||'',override_listing_duration:$('#_ebay_export_listing_duration').val()||'',override_fulfillment_policy:$('#_ebay_export_fulfillment_policy').val()||'',specifics_present:tcAspectsPresent(),specifics:tcAspectValues(),_ajax_nonce:nonce},function(r){btn.prop('disabled',false);if(r.success){st.css('color','#2a8a2a').html(r.data.message.replace(/\n/g,'<br>'));}else{st.css('color','#cc1818').text('Verify failed: '+(r.data?r.data.message:'Unknown error'));}}).fail(function(){btn.prop('disabled',false);st.css('color','#cc1818').text('Verify request failed.');});});
 		})(jQuery);
