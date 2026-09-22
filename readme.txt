@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.21.0
+Stable tag: 3.22.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,16 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.22.0 - 2026-09-22 =
+**Sorting by "Ends / Ended" emptied the list**
+* FIX: The previous release added that column but never actually created it in the database, so sorting by it showed no listings at all. Updating repairs it, with nothing to do by hand.
+* An upgrade that adds a column now checks the column is really there before recording itself as done, and a missing column costs that one sort rather than the whole list.
+
+**Seeing how long a listing has been running**
+* NEW: A sortable "Listed" column showing the date eBay started the listing and how many days ago that was. This is eBay's date, not the WordPress publication date - a product can sit in WooCommerce for years before it is ever listed.
+* Useful for rotating stock: sort by Listed and the listings nearing the end of their run come to the top.
+* Listings already on eBay pick up their start date the next time the plugin reads them from eBay - the scheduled sync does this on its own, or run an import to fill them in now. Anything unknown shows a dash rather than a guess.
 
 = 3.21.0 - 2026-09-21 =
 **The Ended tab showed stock that had already sold**

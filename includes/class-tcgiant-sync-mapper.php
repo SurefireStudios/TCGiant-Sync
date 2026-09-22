@@ -265,6 +265,7 @@ class TCGiant_Sync_Mapper {
 			'_sync_last_updated'     => current_time( 'mysql' ),
 			'_ebay_listing_type'     => $ebay_item['ListingType'] ?? '',
 			'_ebay_listing_duration' => $ebay_item['ListingDuration'] ?? '',
+			'_ebay_start_time'       => $ebay_item['ListingDetails']['StartTime'] ?? '',
 			'_ebay_end_time'         => $ebay_item['ListingDetails']['EndTime'] ?? '',
 			'_ebay_listing_status'   => $ebay_item['SellingStatus']['ListingStatus'] ?? 'Active',
 		);
@@ -933,6 +934,8 @@ class TCGiant_Sync_Mapper {
 				'ebay_quantity'  => (int) $product_data['stock_quantity'],
 				'ebay_url'       => $item_id ? 'https://www.ebay.com/itm/' . $item_id : '',
 				'ebay_title'     => $product_data['title'],
+				'ebay_start_time' => $product_data['meta']['_ebay_start_time'] ?? '',
+				'ebay_end_time'  => $product_data['meta']['_ebay_end_time'] ?? '',
 				'last_synced'    => current_time( 'mysql' ),
 			) );
 		}

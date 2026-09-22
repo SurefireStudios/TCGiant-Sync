@@ -438,6 +438,10 @@ class TCGiant_Sync_Exporter {
 					'listing_status' => 'Active',
 					'ebay_url'       => 'https://www.ebay.com/itm/' . $item_id,
 					'ebay_title'     => $title,
+					// A push creates the listing, so it started now. Without this a
+					// freshly listed item would sort as though it had no start date
+					// until the hourly refresh next looked at it.
+					'ebay_start_time' => gmdate( 'Y-m-d\TH:i:s.000\Z' ),
 					'last_synced'    => current_time( 'mysql' ),
 					'last_pushed'    => current_time( 'mysql' ),
 				);

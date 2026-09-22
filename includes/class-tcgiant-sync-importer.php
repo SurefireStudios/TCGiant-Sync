@@ -1091,6 +1091,12 @@ class TCGiant_Sync_Importer {
 						update_post_meta( (int) $existing_id, '_ebay_end_time', $ebay_item['ListingDetails']['EndTime'] );
 					}
 
+					// Recorded on the way past even though the listing is over: a seller
+					// rotating unsold stock wants to know how long the last attempt ran.
+					if ( ! empty( $ebay_item['ListingDetails']['StartTime'] ) ) {
+						update_post_meta( (int) $existing_id, '_ebay_start_time', $ebay_item['ListingDetails']['StartTime'] );
+					}
+
 					// And bring its stock into line, which used to be missed entirely.
 					//
 					// A listing with one of something ends the moment it sells, so

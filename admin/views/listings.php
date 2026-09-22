@@ -243,6 +243,12 @@ $base_url = admin_url( 'admin.php?page=tcgiant-listings' );
 						<span class="sorting-indicators"><span class="sorting-indicator asc" aria-hidden="true"></span><span class="sorting-indicator desc" aria-hidden="true"></span></span>
 					</a>
 				</th>
+				<th scope="col" class="<?php echo esc_attr( $sort_class( 'ebay_start_time', 'DESC' ) ); ?>" style="width: 150px;">
+					<a href="<?php echo $sort_url( 'ebay_start_time', 'DESC' ); ?>">
+						<span><?php esc_html_e( 'Listed', 'tcgiant-sync' ); ?></span>
+						<span class="sorting-indicators"><span class="sorting-indicator asc" aria-hidden="true"></span><span class="sorting-indicator desc" aria-hidden="true"></span></span>
+					</a>
+				</th>
 				<th scope="col" class="<?php echo esc_attr( $sort_class( 'ebay_end_time', 'DESC' ) ); ?>" style="width: 140px;">
 					<a href="<?php echo $sort_url( 'ebay_end_time', 'DESC' ); ?>">
 						<span><?php esc_html_e( 'Ends / Ended', 'tcgiant-sync' ); ?></span>
@@ -260,7 +266,7 @@ $base_url = admin_url( 'admin.php?page=tcgiant-listings' );
 		<tbody>
 			<?php if ( empty( $items ) ) : ?>
 				<tr>
-					<td colspan="9"><?php esc_html_e( 'No listings found.', 'tcgiant-sync' ); ?></td>
+					<td colspan="10"><?php esc_html_e( 'No listings found.', 'tcgiant-sync' ); ?></td>
 				</tr>
 			<?php else : ?>
 				<?php foreach ( $items as $listing ) :
@@ -277,6 +283,23 @@ $base_url = admin_url( 'admin.php?page=tcgiant-listings' );
 					// Ended tab, where everything has just sold.
 					$price        = wc_price( isset( $listing['live_price'] ) ? $listing['live_price'] : $listing['ebay_price'] );
 					$qty          = (int) ( isset( $listing['live_quantity'] ) ? $listing['live_quantity'] : $listing['ebay_quantity'] );
+					// eBay's own start date, not WordPress's. A product may have existed in
+					// WooCommerce for years before it was ever listed, so the post date
+					// cannot answer how long this listing has been running.
+					$start_raw    = isset( $listing['ebay_start_time'] ) ? (string) $listing['ebay_start_time'] : '';
+					$start_stamp  = '' !== $start_raw ? strtotime( $start_raw ) : false;
+					$listed       = '—';
+
+					if ( $start_stamp ) {
+						// The age is the figure being acted on - at a glance, which listings
+						// are approaching the point where they get pulled and re-run.
+						$age_days = (int) floor( ( time() - $start_stamp ) / DAY_IN_SECONDS );
+						$listed   = esc_html( date_i18n( get_option( 'date_format' ), $start_stamp + ( (int) get_option( 'gmt_offset' ) * HOUR_IN_SECONDS ) ) )
+							. '<br><span style="color:#666;font-size:11px;">'
+							. esc_html( sprintf( _n( '%d day', '%d days', max( 0, $age_days ), 'tcgiant-sync' ), max( 0, $age_days ) ) )
+							. '</span>';
+					}
+
 					$end_raw      = isset( $listing['ebay_end_time'] ) ? (string) $listing['ebay_end_time'] : '';
 					$end_stamp    = '' !== $end_raw ? strtotime( $end_raw ) : false;
 					$ended        = $end_stamp ? esc_html( date_i18n( get_option( 'date_format' ) . ' H:i', $end_stamp + ( (int) get_option( 'gmt_offset' ) * HOUR_IN_SECONDS ) ) ) : '—';
@@ -307,6 +330,7 @@ $base_url = admin_url( 'admin.php?page=tcgiant-listings' );
 					<td><strong style="<?php echo $status_class; ?>"><?php echo $status; ?></strong></td>
 					<td><?php echo $price; ?></td>
 					<td><?php echo esc_html( $qty ); ?></td>
+					<td><?php echo $listed; ?></td>
 					<td><?php echo $ended; ?></td>
 					<td><?php echo $synced; ?></td>
 				</tr>

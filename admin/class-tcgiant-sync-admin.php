@@ -2364,7 +2364,8 @@ class TCGiant_Sync_Admin {
 
 		// eBay states this in UTC as an ISO 8601 string, which is how every
 		// other part of the plugin stores and reads it.
-		$end_time = (string) ( $item['ListingDetails']['EndTime'] ?? '' );
+		$end_time   = (string) ( $item['ListingDetails']['EndTime'] ?? '' );
+		$start_time = (string) ( $item['ListingDetails']['StartTime'] ?? '' );
 
 		$product->update_meta_data( '_ebay_item_id', $item_id );
 		$product->update_meta_data( '_ebay_listing_type', $type );
@@ -2372,6 +2373,10 @@ class TCGiant_Sync_Admin {
 
 		if ( '' !== $end_time ) {
 			$product->update_meta_data( '_ebay_end_time', $end_time );
+		}
+
+		if ( '' !== $start_time ) {
+			$product->update_meta_data( '_ebay_start_time', $start_time );
 		}
 
 		$product->save();
@@ -2385,6 +2390,7 @@ class TCGiant_Sync_Admin {
 			'ebay_quantity'  => $available,
 			'ebay_url'       => 'https://www.ebay.com/itm/' . $item_id,
 			'ebay_title'     => $title,
+			'ebay_start_time' => $start_time,
 			'ebay_end_time'  => $end_time,
 			'last_synced'    => current_time( 'mysql' ),
 		) );

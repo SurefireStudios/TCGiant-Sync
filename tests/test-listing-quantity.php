@@ -114,8 +114,8 @@ check( '  and it is offered as a sort', false !== strpos( $db, "'ebay_end_time' 
 
 // Rows copied before the column existed have to be filled, which INSERT IGNORE
 // would skip entirely.
-check( 'the backfill updates rows that already exist', false !== strpos( $db, 'ON DUPLICATE KEY UPDATE ebay_end_time = VALUES(ebay_end_time)' ), true );
-check( '  and it runs again to do it', false !== strpos( $db, "const BACKFILL_VERSION = '2';" ), true );
+check( 'the backfill updates rows that already exist', false !== strpos( $db, 'ON DUPLICATE KEY UPDATE ebay_start_time = VALUES(ebay_start_time), ebay_end_time = VALUES(ebay_end_time)' ), true );
+check( '  and it runs again to do it', false !== strpos( $db, "const BACKFILL_VERSION = '3';" ), true );
 check( '  naming that one column and no other', 1, substr_count( $db, 'ON DUPLICATE KEY UPDATE' ) );
 
 check( 'linking records the end time as well', false !== strpos( $admin, "'ebay_end_time'  => \$end_time," ), true );
@@ -130,8 +130,8 @@ check( '  through one helper, not six copies', 1, substr_count( $view, '$sort_ur
 // Only the Product column carried the classes WordPress needs before it draws
 // an arrow, so the other five read as plain text and nothing said the list
 // could be sorted at all. Seven columns, seven sets of indicators.
-check( 'every sortable header says it is sortable', substr_count( $view, 'sorting-indicators' ), 7 );
-check( '  and each is classed for it', substr_count( $view, 'class="<?php echo esc_attr( $sort_class' ), 7 );
+check( 'every sortable header says it is sortable', substr_count( $view, 'sorting-indicators' ), 8 );
+check( '  and each is classed for it', substr_count( $view, 'class="<?php echo esc_attr( $sort_class' ), 8 );
 
 // Both filters were their own form and each dropped whatever the other had set.
 check( 'the forms carry each other\'s state', 2, substr_count( $view, 'foreach ( $carry as $carry_key => $carry_value )' ) );
@@ -193,6 +193,100 @@ check( 'a bulk action can reach past the current page', false !== strpos( $jobs,
 check( '  resolved from the filters the screen used', false !== strpos( $jobs, "'status' => sanitize_text_field( wp_unslash( \$_POST['listing_status'] ?? '' ) )," ), true );
 check( '  sharing one filter builder with the screen', false !== strpos( $db, 'private static function build_where( array $args )' ), true );
 check( '  and the page offers it only when there is more to reach', false !== strpos( $view, '$total > count( $items )' ), true );
+
+echo "\nWHAT DBDELTA ACTUALLY READS\n" . str_repeat( '=', 118 ) . "\n";
+
+// 3.21.0 shipped a migration that never ran, and nothing said so.
+//
+// dbDelta does not parse SQL. It splits the field block on newlines and takes
+// the first word of each line as a column name, so the nine explanatory comments
+// added inside the CREATE TABLE became a column called "--", every ALTER built
+// from them was invalid, and ebay_end_time was never created. The version option
+// is written straight afterwards regardless, so it was recorded as done.
+//
+// Nothing was visibly wrong until a seller sorted by the new column - which put
+// a column that did not exist into ORDER BY, failed the query and emptied the
+// screen. Every assertion in this file passed throughout, because they all read
+// the source rather than the statement.
+//
+// So: read the statement the way dbDelta does.
+$create = '';
+if ( preg_match( '/\$sql = "CREATE TABLE.*?\) \{\$charset\};";/s', $db, $m ) ) {
+	$create = $m[0];
+}
+
+check( 'the CREATE TABLE statement was found', '' !== $create, true );
+
+$names = array();
+
+if ( preg_match( '|\((.*)\)|ms', $create, $inner ) ) {
+	foreach ( explode( "\n", trim( $inner[1] ) ) as $line ) {
+		$line = trim( $line, " \t\n\r\0\x0B," );
+
+		if ( '' === $line ) {
+			continue;
+		}
+
+		preg_match( '|^([^ ]*)|', $line, $first );
+		$names[] = trim( $first[1], '`' );
+	}
+}
+
+$unreadable = array_values( array_filter( $names, function ( $name ) {
+	return ! preg_match( '/^[A-Za-z_]/', $name );
+} ) );
+
+check( 'every line reads as a definition', $unreadable, array() );
+check( '  no SQL comment inside the statement', false === strpos( $create, '--' ), true );
+check( '  and no blank line either', false === strpos( $create, "\n\n" ), true );
+check( 'the columns a sort depends on are among them', in_array( 'ebay_start_time', $names, true ) && in_array( 'ebay_end_time', $names, true ), true );
+
+// The explanation still exists - it just lives where dbDelta will not read it.
+check( 'the reason is recorded above the statement', false !== strpos( $db, 'dbDelta does not parse SQL' ), true );
+
+echo "\nA MIGRATION THAT DID NOT HAPPEN IS NOT RECORDED AS DONE\n" . str_repeat( '=', 118 ) . "\n";
+
+check( 'the columns are checked for after the upgrade', false !== strpos( $db, 'SHOW COLUMNS FROM' ), true );
+check( '  and the version is only then recorded', strpos( $db, '$missing = array_diff( self::REQUIRED_COLUMNS, $present );' ) < strpos( $db, "update_option( 'tcgiant_listings_table_version'" ), true );
+check( '  a missing column is said out loud', false !== strpos( $db, 'Listings table is missing column(s) after the upgrade' ), true );
+check( '  and it will be tried again', false !== strpos( $db, 'It will be attempted again on the next admin page.' ), true );
+check( 'the schema version moved, so repaired sites re-run it', false !== strpos( $db, "const TABLE_VERSION = '1.2.0';" ), true );
+
+echo "\nAND A MISSING COLUMN COSTS A SORT, NOT THE LIST\n" . str_repeat( '=', 118 ) . "\n";
+
+// The defence that would have turned this from "my listings vanished" into
+// "that column will not sort yet".
+check( 'a column that is not there is not offered as a sort', false !== strpos( $db, 'unset( $allowed_orderby[ $late_column ] );' ), true );
+check( '  established once per request, not per row', false !== strpos( $db, 'private static $columns = null;' ), true );
+check( '  over the columns a migration adds', false !== strpos( $db, "const REQUIRED_COLUMNS = array( 'ebay_start_time', 'ebay_end_time' );" ), true );
+
+echo "\nWHEN EBAY STARTED THE LISTING\n" . str_repeat( '=', 118 ) . "\n";
+
+// The seller's rotation - ten-day auction, GTC watched for ninety days, then
+// ended and re-run - needs the eBay start date. WordPress's own publish date is
+// no use: the products have been in WooCommerce for years.
+$mapper   = (string) file_get_contents( $root . '/includes/class-tcgiant-sync-mapper.php' );
+$importer = (string) file_get_contents( $root . '/includes/class-tcgiant-sync-importer.php' );
+$cron     = (string) file_get_contents( $root . '/includes/class-tcgiant-sync-cron.php' );
+
+check( 'the importer records it', false !== strpos( $mapper, "'_ebay_start_time'       => \$ebay_item['ListingDetails']['StartTime'] ?? ''," ), true );
+check( 'the delta importer records it', false !== strpos( $importer, "'_ebay_start_time', \$ebay_item['ListingDetails']['StartTime']" ), true );
+check( 'the hourly refresh records it', false !== strpos( $cron, "'_ebay_start_time', \$item['ListingDetails']['StartTime']" ), true );
+check( 'linking records it', false !== strpos( $admin, "\$start_time = (string) ( \$item['ListingDetails']['StartTime'] ?? '' );" ), true );
+check( 'a push records it', false !== strpos( $exp, "'ebay_start_time' => gmdate(" ), true );
+
+// Every one of those is beside an existing EndTime read, so no extra eBay call
+// is made to get it.
+check( 'it comes from the answer we already had', substr_count( $cron, "\$item['ListingDetails']" ) >= 2, true );
+
+check( 'the table holds it', false !== strpos( $db, 'ebay_start_time VARCHAR(32)' ), true );
+check( '  indexed for sorting', false !== strpos( $db, 'KEY ebay_start_time (ebay_start_time)' ), true );
+check( '  mirrored like the rest', false !== strpos( $db, "'_ebay_start_time'     => 'ebay_start_time'," ), true );
+check( '  and sortable', false !== strpos( $db, "'ebay_start_time' => 'l.ebay_start_time'," ), true );
+
+check( 'the screen shows the date and how long ago', false !== strpos( $view, '$age_days = (int) floor( ( time() - $start_stamp ) / DAY_IN_SECONDS );' ), true );
+check( '  under a Listed column', false !== strpos( $view, "esc_html_e( 'Listed', 'tcgiant-sync' )" ), true );
+check( '  and says nothing rather than guessing when eBay has not told us', false !== strpos( $view, "\$listed       = '—';" ), true );
 
 printf( "\n  %d passed, %d failed\n\n", $pass, $fail );
 exit( $fail > 0 ? 1 : 0 );

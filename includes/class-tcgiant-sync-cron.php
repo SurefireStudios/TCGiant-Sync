@@ -278,6 +278,12 @@ class TCGiant_Sync_Cron {
 			if ( ! empty( $item['ListingDetails']['EndTime'] ) ) {
 				update_post_meta( $pid, '_ebay_end_time', $item['ListingDetails']['EndTime'] );
 			}
+
+			// The same answer already contains it, so this is where listings that
+			// pre-date the column get one without anybody re-importing anything.
+			if ( ! empty( $item['ListingDetails']['StartTime'] ) ) {
+				update_post_meta( $pid, '_ebay_start_time', $item['ListingDetails']['StartTime'] );
+			}
 			if ( ! empty( $item['ListingDuration'] ) ) {
 				update_post_meta( $pid, '_ebay_listing_duration', $item['ListingDuration'] );
 			}

@@ -22,7 +22,15 @@ class TCGiant_Sync_DB {
 	/**
 	 * Table version for schema migrations.
 	 */
-	const TABLE_VERSION = '1.1.0';
+	const TABLE_VERSION = '1.2.0';
+
+	/**
+	 * Columns that must exist before the schema counts as installed.
+	 *
+	 * Not the whole table - the ones added by a migration, which are the ones
+	 * that can quietly fail to arrive and then be read by an ORDER BY.
+	 */
+	const REQUIRED_COLUMNS = array( 'ebay_start_time', 'ebay_end_time' );
 
 	/**
 	 * Version marker for the postmeta index migration.
@@ -86,8 +94,15 @@ class TCGiant_Sync_DB {
 	 */
 	private static $lookup_table = null;
 
+	/**
+	 * Cached column list for the listings table, null until looked up.
+	 *
+	 * @var array|null
+	 */
+	private static $columns = null;
+
 	const BACKFILL_OPTION  = 'tcgiant_listings_backfill';
-	const BACKFILL_VERSION = '2';
+	const BACKFILL_VERSION = '3';
 	const BACKFILL_CURSOR  = 'tcgiant_listings_backfill_cursor';
 	const BACKFILL_BATCH   = 500;
 	const BACKFILL_SECONDS = 1.5;
@@ -126,6 +141,27 @@ class TCGiant_Sync_DB {
 	 *
 	 * @return string Table name, or '' when there is none to join.
 	 */
+	/**
+	 * Whether a column this code knows about is actually in the table.
+	 *
+	 * Cheap insurance against the fault that made this necessary. A migration
+	 * can fail silently, and a sort on a column that is not there does not
+	 * degrade - the query errors and the seller is shown an empty list with
+	 * nothing to explain it. One query per request, then cached.
+	 *
+	 * @param string $column Column name.
+	 * @return bool
+	 */
+	public static function has_column( $column ) {
+		if ( null === self::$columns ) {
+			global $wpdb;
+			$found = self::table_exists() ? $wpdb->get_col( 'SHOW COLUMNS FROM ' . self::table_name() ) : array();
+			self::$columns = is_array( $found ) ? $found : array();
+		}
+
+		return in_array( $column, self::$columns, true );
+	}
+
 	public static function lookup_table() {
 		if ( null !== self::$lookup_table ) {
 			return self::$lookup_table;
@@ -196,6 +232,7 @@ class TCGiant_Sync_DB {
 			'_ebay_listing_status' => 'listing_status',
 			'_ebay_listing_type'   => 'listing_type',
 			'_ebay_item_id'        => 'ebay_item_id',
+			'_ebay_start_time'     => 'ebay_start_time',
 			'_ebay_end_time'       => 'ebay_end_time',
 		);
 
@@ -294,6 +331,25 @@ class TCGiant_Sync_DB {
 		$table = self::table_name();
 		$charset = $wpdb->get_charset_collate();
 
+		/*
+		 * Nothing but definitions below this line. No comments, blank lines or
+		 * prose of any kind inside the statement.
+		 *
+		 * dbDelta does not parse SQL. It splits the field block on newlines and
+		 * takes the first word of each line as a column name, so an ordinary
+		 * SQL comment becomes a column called "--", every ALTER built from it is
+		 * invalid, and the real columns beside it are not added either. That
+		 * happened in 3.21.0: nine comment lines went in here, ebay_end_time was
+		 * never created, and the first seller to sort by the new column put a
+		 * column that did not exist into ORDER BY and got an empty screen.
+		 *
+		 * The two text dates are text on purpose. eBay sends ISO 8601 in UTC and
+		 * the rest of the plugin stores and reads that string; it is fixed
+		 * width, so it sorts correctly as text, and copying it verbatim means no
+		 * conversion can go wrong in either direction. Every other date here is
+		 * about our own record-keeping and none of them could tell a seller when
+		 * a listing started or finished.
+		 */
 		$sql = "CREATE TABLE {$table} (
 			id BIGINT(20) UNSIGNED NOT NULL AUTO_INCREMENT,
 			product_id BIGINT(20) UNSIGNED NOT NULL,
@@ -304,15 +360,7 @@ class TCGiant_Sync_DB {
 			ebay_quantity INT NOT NULL DEFAULT 0,
 			ebay_url VARCHAR(512) NOT NULL DEFAULT '',
 			ebay_title VARCHAR(255) NOT NULL DEFAULT '',
-			-- When the listing ends, or ended, as eBay states it.
-			--
-			-- Text rather than DATETIME on purpose. eBay sends an ISO 8601 UTC
-			-- string and every other part of the plugin stores and reads that
-			-- string; it is fixed width, so it sorts correctly as text, and
-			-- copying it verbatim means no conversion can go wrong on the way in
-			-- or out. The four dates already here are all about our own row -
-			-- when we last looked, when we last pushed - and none of them could
-			-- answer a seller asking when a listing finished.
+			ebay_start_time VARCHAR(32) NOT NULL DEFAULT '',
 			ebay_end_time VARCHAR(32) NOT NULL DEFAULT '',
 			last_synced DATETIME NULL,
 			last_pushed DATETIME NULL,
@@ -325,8 +373,7 @@ class TCGiant_Sync_DB {
 			KEY ebay_item_id (ebay_item_id),
 			KEY listing_status (listing_status),
 			KEY listing_type (listing_type),
-			-- The two columns a seller sorts a long list by. Without these each
-			-- sort is a filesort of the whole table.
+			KEY ebay_start_time (ebay_start_time),
 			KEY ebay_end_time (ebay_end_time),
 			KEY last_synced (last_synced)
 		) {$charset};";
@@ -341,6 +388,26 @@ class TCGiant_Sync_DB {
 		// per-row migration of every linked product had finished, inside the same
 		// request - so on a large catalogue the request died first, nothing was
 		// recorded, and the next admin page load started the whole thing again.
+		// Only once the columns are actually there.
+		//
+		// This used to be written straight after dbDelta, which reports nothing
+		// and whose ALTERs can fail silently. A migration that did not happen
+		// was therefore recorded as finished and never attempted again - which
+		// is why 3.21.0's missing column stayed missing. Checking costs one
+		// query, once, and turns a silent failure into one that retries.
+		$present = $wpdb->get_col( "SHOW COLUMNS FROM {$table}" );
+		$present = is_array( $present ) ? $present : array();
+		$missing = array_diff( self::REQUIRED_COLUMNS, $present );
+
+		if ( ! empty( $missing ) ) {
+			TCGiant_Sync_Logger::error( sprintf(
+				'Listings table is missing column(s) after the upgrade: %s. It will be attempted again on the next admin page.',
+				implode( ', ', $missing )
+			) );
+
+			return;
+		}
+
 		update_option( 'tcgiant_listings_table_version', self::TABLE_VERSION );
 
 		// Copying what is already linked is the backfill's job, in batches.
@@ -421,7 +488,7 @@ class TCGiant_Sync_DB {
 
 			$wpdb->query( $wpdb->prepare(
 				"INSERT INTO {$table}
-					(product_id, ebay_item_id, listing_type, listing_status, ebay_price, ebay_quantity, ebay_title, ebay_end_time, last_synced, created_at)
+					(product_id, ebay_item_id, listing_type, listing_status, ebay_price, ebay_quantity, ebay_title, ebay_start_time, ebay_end_time, last_synced, created_at)
 				SELECT p.ID,
 					MAX(CASE WHEN pm.meta_key = '_ebay_item_id' THEN pm.meta_value END),
 					COALESCE(NULLIF(MAX(CASE WHEN pm.meta_key = '_ebay_listing_type' THEN pm.meta_value END), ''), 'FixedPriceItem'),
@@ -429,15 +496,16 @@ class TCGiant_Sync_DB {
 					COALESCE(MAX(CASE WHEN pm.meta_key = '_price' THEN pm.meta_value END) + 0, 0),
 					COALESCE(MAX(CASE WHEN pm.meta_key = '_stock' THEN pm.meta_value END) + 0, 0),
 					LEFT(MAX(p.post_title), 255),
-					COALESCE(LEFT(MAX(CASE WHEN pm.meta_key = '_ebay_end_time' THEN pm.meta_value END), 32), ''),
+					COALESCE(LEFT(MAX(CASE WHEN pm.meta_key = '_ebay_start_time' THEN pm.meta_value END), 32), ''),
+				COALESCE(LEFT(MAX(CASE WHEN pm.meta_key = '_ebay_end_time' THEN pm.meta_value END), 32), ''),
 					%s, %s
 				FROM {$wpdb->posts} p
 				INNER JOIN {$wpdb->postmeta} pm ON pm.post_id = p.ID
 				WHERE p.ID IN ({$in})
-					AND pm.meta_key IN ('_ebay_item_id', '_ebay_listing_type', '_ebay_listing_status', '_price', '_stock', '_ebay_end_time')
+					AND pm.meta_key IN ('_ebay_item_id', '_ebay_listing_type', '_ebay_listing_status', '_price', '_stock', '_ebay_start_time', '_ebay_end_time')
 				GROUP BY p.ID
 				HAVING MAX(CASE WHEN pm.meta_key = '_ebay_item_id' THEN pm.meta_value END) <> ''
-				ON DUPLICATE KEY UPDATE ebay_end_time = VALUES(ebay_end_time)",
+				ON DUPLICATE KEY UPDATE ebay_start_time = VALUES(ebay_start_time), ebay_end_time = VALUES(ebay_end_time)",
 				current_time( 'mysql' ),
 				current_time( 'mysql' )
 			) );
@@ -493,6 +561,7 @@ class TCGiant_Sync_DB {
 			'ebay_quantity',
 			'ebay_url',
 			'ebay_title',
+			'ebay_start_time',
 			'ebay_end_time',
 			'last_synced',
 			'last_pushed',
@@ -717,10 +786,22 @@ class TCGiant_Sync_DB {
 			'ebay_price'     => $live_price,
 			'ebay_quantity'  => $live_qty,
 
-			// When the listing ends, or ended - the one date a seller actually
-			// asks about, and until now the one the table could not answer.
+			// The two dates about the listing rather than about our record of it:
+			// when eBay started it, and when it ends or ended. Every other date
+			// here is bookkeeping and could answer neither question.
+			'ebay_start_time' => 'l.ebay_start_time',
 			'ebay_end_time'  => 'l.ebay_end_time',
 		);
+
+		// A migration that did not arrive must cost a sort, not the whole list.
+		// Sorting on a column the table does not have fails the query outright
+		// and shows the seller nothing at all, which is how 3.21.0's missing
+		// column was found - by a merchant, on the day.
+		foreach ( self::REQUIRED_COLUMNS as $late_column ) {
+			if ( ! self::has_column( $late_column ) ) {
+				unset( $allowed_orderby[ $late_column ] );
+			}
+		}
 
 		$orderby = isset( $allowed_orderby[ $args['orderby'] ] ) ? $allowed_orderby[ $args['orderby'] ] : 'l.updated_at';
 		$order = strtoupper( $args['order'] ) === 'ASC' ? 'ASC' : 'DESC';

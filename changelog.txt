@@ -1,5 +1,15 @@
 *** TCGiant Sync Changelog ***
 
+2026-09-22 - version 3.22.0
+== Sorting by "Ends / Ended" emptied the list ==
+- FIX: Yesterday's release added that column but never actually created it in the database, so sorting by it showed no listings at all. The column was fine everywhere else, which is why nothing looked wrong until somebody sorted. Updating repairs it - there is nothing to do by hand.
+- The upgrade that adds a column now checks the column is really there before recording itself as done, so one that fails is tried again rather than remembered as finished. And a column that is missing for any reason now costs you that one sort, not the whole list.
+
+== Seeing how long a listing has been running ==
+- NEW: A "Listed" column showing the date eBay started the listing and how many days ago that was, and you can sort by it. This is eBay's own date, not the WordPress publication date - a product can sit in WooCommerce for years before it is ever listed, so the WordPress date cannot answer the question.
+- Useful if you rotate stock: run an auction, move what does not sell to a Good 'Til Cancelled listing, then pull and reprice it after so many days. Sort by Listed and the ones nearing the end of their run come to the top.
+- Listings already on eBay pick up their start date the next time the plugin reads them from eBay - the scheduled sync does this on its own, or run an import to fill them in straight away. Anything not yet known shows a dash rather than a guess.
+
 2026-09-21 - version 3.21.0
 == The Ended tab showed stock that had already sold ==
 - FIX: On Listings, items that had sold showed a quantity beside them while the product itself correctly showed none left. Two separate things were wrong, and both are fixed.
