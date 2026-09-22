@@ -200,9 +200,18 @@ echo "\nWHAT DBDELTA ACTUALLY READS\n" . str_repeat( '=', 118 ) . "\n";
 //
 // dbDelta does not parse SQL. It splits the field block on newlines and takes
 // the first word of each line as a column name, so the nine explanatory comments
-// added inside the CREATE TABLE became a column called "--", every ALTER built
-// from them was invalid, and ebay_end_time was never created. The version option
-// is written straight afterwards regardless, so it was recorded as done.
+// added inside the CREATE TABLE became a column called "--".
+//
+// Run against WordPress's real dbDelta, 3.21.0's statement produced exactly one
+// query and a corrupt one:
+//
+//   Changed type of wp_tcgiant_listings.ebay_title from varchar(255) to VARCHAR(255
+//
+// - a truncated type with no closing bracket, which is a syntax error against a
+// live table. ebay_end_time was not added at all, and no other column or index
+// was touched. The same statement with the comments removed yields both columns
+// and all three indexes. The version option is written straight afterwards
+// regardless, so the upgrade was recorded as done.
 //
 // Nothing was visibly wrong until a seller sorted by the new column - which put
 // a column that did not exist into ORDER BY, failed the query and emptied the
