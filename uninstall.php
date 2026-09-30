@@ -115,6 +115,58 @@ if ( empty( $tcgiant_settings['delete_data_on_uninstall'] ) ) {
 }
 
 /*
+ * Take this shop off the connection service's list.
+ *
+ * The service sends every eBay account-deletion notice to every site it
+ * knows about, and until recently nothing could take one off. A shop that
+ * removed the plugin went on receiving a signed request every forty seconds
+ * indefinitely; one of them had to write in and ask us to stop.
+ *
+ * Signed with the key this site was issued when it connected, because the
+ * service cannot otherwise tell this apart from a stranger naming somebody
+ * else's address - and stopping another shop's deletion notices would be a
+ * compliance failure for them.
+ *
+ * Best effort by design. It runs where the key is still readable, moments
+ * before the option holding it is deleted, and nothing about uninstalling
+ * may fail or hang because a remote service is unreachable. If it does not
+ * get through, the service notices the site has gone quiet and sets it
+ * aside on its own.
+ */
+if ( ! empty( $tcgiant_settings['relay_secret'] ) && function_exists( 'wp_remote_post' ) ) {
+	$tcgiant_site_url  = rtrim( get_site_url(), '/' );
+	$tcgiant_timestamp = time();
+
+	$tcgiant_body = array(
+		'action'    => 'deregister',
+		'site_url'  => $tcgiant_site_url,
+		'timestamp' => $tcgiant_timestamp,
+		'signature' => hash_hmac(
+			'sha256',
+			$tcgiant_site_url . '|' . $tcgiant_timestamp,
+			$tcgiant_settings['relay_secret']
+		),
+	);
+
+	// The hostname set aside for machine traffic first, then the main site,
+	// which is the same pair the plugin uses everywhere else. Short timeouts:
+	// an uninstall must not sit waiting on us.
+	foreach ( array( 'https://api.tcgiant.com/relay.php', 'https://tcgiant.com/syncconnect/relay.php' ) as $tcgiant_relay ) {
+		$tcgiant_reply = wp_remote_post( $tcgiant_relay, array(
+			'body'     => $tcgiant_body,
+			'timeout'  => 5,
+			'blocking' => true,
+		) );
+
+		if ( ! is_wp_error( $tcgiant_reply ) && 200 === (int) wp_remote_retrieve_response_code( $tcgiant_reply ) ) {
+			break;
+		}
+	}
+
+	unset( $tcgiant_site_url, $tcgiant_timestamp, $tcgiant_body, $tcgiant_relay, $tcgiant_reply );
+}
+
+/*
  * Delete plugin options.
  *
  * Several names here were previously wrong (tcgiant_sync_settings,

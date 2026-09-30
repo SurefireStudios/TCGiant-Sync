@@ -89,7 +89,7 @@ class TCGiant_Sync_License extends TCGiant_Sync_Entitlements
 			'instance_id' => '',
 			'customer_name' => '',
 			'customer_email' => '',
-			'variant' => '', // annual, lifetime
+			'variant' => '', // monthly, annual, lifetime
 			'expires_at' => '',
 			'activated_at' => '',
 		));
@@ -240,12 +240,7 @@ class TCGiant_Sync_License extends TCGiant_Sync_Entitlements
 		$meta = $body['meta'] ?? array();
 		$instance = $body['instance'] ?? array();
 
-		// Determine variant type.
-		$variant = 'annual';
-		$variant_name = strtolower($meta['variant_name'] ?? '');
-		if (strpos($variant_name, 'lifetime') !== false || strpos($variant_name, 'founder') !== false) {
-			$variant = 'lifetime';
-		}
+		$variant = $this->detect_variant($meta, $body);
 
 		// Save license data.
 		$this->update_license_data(array(
@@ -262,13 +257,92 @@ class TCGiant_Sync_License extends TCGiant_Sync_Entitlements
 		// Cache validation.
 		set_transient(self::VALIDATION_TRANSIENT, 'valid', DAY_IN_SECONDS);
 
-		TCGiant_Sync_Logger::log('License activated successfully! Plan: ' . ucfirst($variant), 'success');
+		if ('' === $variant) {
+			TCGiant_Sync_Logger::warning(sprintf(
+				'Could not tell which plan this licence is on from what LemonSqueezy returned (variant name: %s). It will be reported as unknown until the next check.',
+				$meta['variant_name'] ?? '(none given)'
+			));
+		}
+
+		TCGiant_Sync_Logger::log('License activated successfully! Plan: ' . ucfirst($variant ?: 'unknown'), 'success');
 
 		return array(
 			'success' => true,
 			'message' => __('License activated! You now have unlimited imports.', 'tcgiant-sync'),
 			'variant' => $variant,
 		);
+	}
+
+	/**
+	 * Work out which plan a licence is on.
+	 *
+	 * This used to be two lines with two outcomes: lifetime when the variant
+	 * name said so, and annual for everything else. Pro Monthly is a real plan
+	 * and fell into 'everything else', so every monthly subscriber was recorded
+	 * and reported as annual - which is why the dashboard showed none of them,
+	 * and counted each at a year's revenue instead of a month's.
+	 *
+	 * The name is the primary signal and the renewal date is the fallback, so
+	 * this keeps working if the plans are ever renamed in LemonSqueezy. When
+	 * neither settles it, the answer is an empty string rather than a guess:
+	 * quietly picking the middle tier is the mistake being fixed here, and the
+	 * callers treat 'do not know' as 'leave what is already stored'.
+	 *
+	 * @param array $meta LemonSqueezy meta block.
+	 * @param array $body Full response, for fields that live outside meta.
+	 * @return string 'monthly', 'annual', 'lifetime', or '' when undecidable.
+	 */
+	private function detect_variant($meta, $body = array())
+	{
+		$meta = is_array($meta) ? $meta : array();
+		$body = is_array($body) ? $body : array();
+
+		$name = strtolower((string) ($meta['variant_name'] ?? ''));
+
+		if ('' !== $name) {
+			// Founder is checked first and separately: a founder plan is a
+			// lifetime one whatever else its name happens to contain.
+			if (false !== strpos($name, 'lifetime') || false !== strpos($name, 'founder')) {
+				return 'lifetime';
+			}
+
+			if (false !== strpos($name, 'month')) {
+				return 'monthly';
+			}
+
+			if (false !== strpos($name, 'annual') || false !== strpos($name, 'year')) {
+				return 'annual';
+			}
+		}
+
+		// Nothing useful in the name. The renewal date still says which plan
+		// this is: a monthly subscription renews about a month out, a yearly
+		// one about a year, and a lifetime licence never expires at all.
+		$expires = '';
+
+		foreach (array($meta['expires_at'] ?? '', $body['license_key']['expires_at'] ?? '', $body['expires_at'] ?? '') as $candidate) {
+			if (!empty($candidate)) {
+				$expires = (string) $candidate;
+				break;
+			}
+		}
+
+		if ('' === $expires) {
+			// No expiry at all. Only said of a lifetime licence when the name
+			// agreed; on its own it is just as likely to be a field we were not
+			// given, so this declines to answer.
+			return '';
+		}
+
+		$days = (strtotime($expires) - time()) / DAY_IN_SECONDS;
+
+		if ($days <= 0) {
+			return '';
+		}
+
+		// Generous either side of a month, because a renewal can be prorated,
+		// paused or extended by a trial.
+		return ($days <= 62) ? 'monthly' : 'annual';
 	}
 
 	/**
@@ -373,7 +447,31 @@ class TCGiant_Sync_License extends TCGiant_Sync_Entitlements
 		$body = json_decode(wp_remote_retrieve_body($response), true);
 
 		if (!empty($body['valid'])) {
-			$this->update_license_data(array('status' => 'active'));
+			$fresh = array('status' => 'active');
+
+			// The plan, re-read every time.
+			//
+			// This used to keep nothing but the word valid, so a licence recorded
+			// under the wrong plan stayed wrong for as long as it existed - and
+			// every monthly subscriber was recorded under the wrong plan, because
+			// until now there was no such thing as monthly. Re-reading it here is
+			// what lets those correct themselves, with nothing asked of anybody.
+			// It also follows an upgrade from monthly to annual without needing
+			// the key entered again.
+			$variant = $this->detect_variant($body['meta'] ?? array(), $body);
+
+			if ('' !== $variant) {
+				$fresh['variant'] = $variant;
+			}
+
+			// Only when offered. An absent field must not erase a good value.
+			$expires = $body['license_key']['expires_at'] ?? ($body['meta']['expires_at'] ?? '');
+
+			if (!empty($expires)) {
+				$fresh['expires_at'] = (string) $expires;
+			}
+
+			$this->update_license_data($fresh);
 			set_transient(self::VALIDATION_TRANSIENT, 'valid', DAY_IN_SECONDS);
 			return true;
 		}

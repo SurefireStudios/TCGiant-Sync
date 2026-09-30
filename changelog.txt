@@ -1,5 +1,16 @@
 *** TCGiant Sync Changelog ***
 
+2026-09-30 - version 3.23.0
+== Monthly subscribers were being recorded as annual ==
+- FIX: The plugin only ever recognised two paid plans, Lifetime and Annual, and treated anything else as Annual. Pro Monthly has been a real plan all along, so every monthly subscriber was reported to us under the wrong one. It now recognises the plan properly, and falls back to the renewal date if a plan is ever renamed.
+- The correction reaches existing subscriptions on their own. The plugin re-reads the plan every time it checks a licence is still valid, which it did not do before - so a licence recorded under the wrong plan stayed wrong for as long as it existed. Nobody needs to re-enter a key.
+- FIX: When a plan genuinely cannot be identified, that is now said plainly in the activity log instead of quietly assuming the middle tier.
+
+== Leaving properly ==
+- A shop that removes the plugin is now taken out of the eBay deletion notices we forward, instead of being sent them forever. Until now nothing could take a site off that list, and a former customer had to write in and ask us to stop - their server had been receiving a request from us roughly every forty seconds since the day they uninstalled.
+- If you tick "delete my data on uninstall" before removing the plugin, the site tells us on its way out. If you simply deactivate or delete it, we notice on our own: a site whose eBay deletion route has answered "not found" for a full day is set aside, and stops being called.
+- Nothing is ever given up on. A site that has been set aside is still tried once an hour, and starts receiving again the moment it answers - or the moment it reconnects or refreshes its eBay token, either of which proves it is live. Only "not found" counts towards being set aside: a security filter, a server error or a site that is simply down never does, because none of those mean the plugin has gone.
+
 2026-09-22 - version 3.22.0
 == Sorting by "Ends / Ended" emptied the list ==
 - FIX: Yesterday's release added that column but never actually created it in the database, so sorting by it showed no listings at all. The column was fine everywhere else, which is why nothing looked wrong until somebody sorted. Updating repairs it - there is nothing to do by hand.

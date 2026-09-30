@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.22.0
+Stable tag: 3.23.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,17 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.23.0 - 2026-09-30 =
+**Monthly subscribers were being recorded as annual**
+* FIX: The plugin only ever recognised Lifetime and Annual and treated everything else as Annual, so every Pro Monthly subscriber was reported under the wrong plan. It now recognises the plan properly, with the renewal date as a fallback if plans are ever renamed.
+* Existing subscriptions correct themselves: the plugin re-reads the plan whenever it checks a licence is still valid, which it never used to do. Nobody needs to re-enter a key.
+* FIX: A plan that genuinely cannot be identified is now reported in the activity log rather than quietly assumed to be the middle tier.
+
+**Leaving properly**
+* A shop that removes the plugin is now taken out of the eBay deletion notices we forward, instead of being sent them indefinitely. Nothing could take a site off that list before, and a former customer had to write in and ask.
+* Tick "delete my data on uninstall" before removing the plugin and the site tells us on its way out. Deactivate or delete it without that and we notice anyway: a site whose deletion route has answered "not found" for a full day is set aside.
+* Nothing is given up on. A site that has been set aside is still tried hourly and starts receiving again the moment it answers, reconnects, or refreshes its eBay token. Only "not found" counts towards being set aside - a security filter, a server error or an outage never does.
 
 = 3.22.0 - 2026-09-22 =
 **Sorting by "Ends / Ended" emptied the list**

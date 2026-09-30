@@ -140,7 +140,11 @@ foreach ( array( 'relay.php', 'telemetry.php' ) as $file ) {
 // handlers that go wrong when the handle is invisible.
 $relay_body = (string) file_get_contents( $site . '/syncconnect/relay.php' );
 
-check( 'the relay still reaches its handle through global', substr_count( $relay_body, 'global $db;' ), 4 );
+// Five now: the eBay callback, the token refresh, the token claim, the
+// deletion fan-out, and the deregister endpoint a shop uses to take itself
+// off the list. Every one of them is invisible if the relay is included
+// from inside a function.
+check( 'the relay still reaches its handle through global', substr_count( $relay_body, 'global $db;' ), 5 );
 check( '  and still opens it at its own top level', false !== strpos( $relay_body, "\$db = new SQLite3( TCG_DATA_DIR . '/sync.db' );" ), true );
 
 // The behaviour itself, run rather than described. A stand-in for relay.php,
