@@ -539,6 +539,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 				<div class="tc-section">
 					<h3 class="tc-section-title"><?php esc_html_e( 'Data Mapping (Re-imports)', 'tcgiant-sync' ); ?></h3>
 					<p class="tc-hint" style="margin-bottom:12px;"><?php esc_html_e( 'When an existing product is re-synced, which platform wins? Stock is always updated from eBay.', 'tcgiant-sync' ); ?></p>
+					<p class="tc-hint" style="margin-bottom:12px;"><?php esc_html_e( 'Global attributes you have set in WooCommerce are never overwritten, whatever these are set to. Overwrite Attributes only governs the plain text ones eBay sends as item specifics.', 'tcgiant-sync' ); ?></p>
 					<?php
 					$mapping_fields = array(
 						'overwrite_title'       => array( 'label' => __( 'Overwrite Title', 'tcgiant-sync' ), 'default' => '0' ),
@@ -546,6 +547,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						'overwrite_price'       => array( 'label' => __( 'Overwrite Price', 'tcgiant-sync' ), 'default' => '1' ),
 						'overwrite_images'      => array( 'label' => __( 'Overwrite Images', 'tcgiant-sync' ), 'default' => '0' ),
 						'overwrite_taxonomy'    => array( 'label' => __( 'Overwrite Categories &amp; Tags', 'tcgiant-sync' ), 'default' => '0' ),
+						'overwrite_attributes'  => array( 'label' => __( 'Overwrite Attributes', 'tcgiant-sync' ), 'default' => '0' ),
 						'overwrite_weight_dims' => array( 'label' => __( 'Overwrite Weight &amp; Dimensions', 'tcgiant-sync' ), 'default' => '1' ),
 					);
 					foreach ( $mapping_fields as $field_key => $field ) :
@@ -618,7 +620,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 				<?php settings_fields( 'tcgiant_sync_ebay_group' ); ?>
 				<?php
 				// Preserve all non-export fields.
-				$all_preserve = array_merge( $preserve_keys, array( 'custom_saved_categories', 'category_ids', 'woo_category_ids', 'preserve_woo_category_ids', 'import_specs_as_tags', 'bake_shipping_into_price', 'sku_maps_to', 'sku_prefix', 'sync_interval', 'enable_order_sync', 'enable_order_import', 'enable_reconciliation', 'remove_sold_products', 'auto_end_zero_stock', 'disable_image_localization', 'auto_relist_enabled', 'overwrite_title', 'overwrite_desc', 'overwrite_price', 'overwrite_images', 'overwrite_taxonomy', 'overwrite_weight_dims', 'delete_data_on_uninstall' ) );
+				$all_preserve = array_merge( $preserve_keys, array( 'custom_saved_categories', 'category_ids', 'woo_category_ids', 'preserve_woo_category_ids', 'import_specs_as_tags', 'bake_shipping_into_price', 'sku_maps_to', 'sku_prefix', 'sync_interval', 'enable_order_sync', 'enable_order_import', 'enable_reconciliation', 'remove_sold_products', 'auto_end_zero_stock', 'disable_image_localization', 'auto_relist_enabled', 'overwrite_title', 'overwrite_desc', 'overwrite_price', 'overwrite_images', 'overwrite_taxonomy', 'overwrite_attributes', 'overwrite_weight_dims', 'delete_data_on_uninstall' ) );
 				// Note: export condition descriptor fields are handled by the export form itself.
 				foreach ( $all_preserve as $key ) {
 					$val = $settings[ $key ] ?? null;

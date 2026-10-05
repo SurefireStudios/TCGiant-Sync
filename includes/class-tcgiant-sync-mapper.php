@@ -821,7 +821,18 @@ class TCGiant_Sync_Mapper {
 		
 		// Set Attributes as visible product data.
 		$woo_attributes = array();
-		$attr_position = 0;
+
+		// What this product already has, read before anything is built.
+		//
+		// New attributes are positioned after the existing ones rather than
+		// from zero, so importing does not silently reshuffle a list the shop
+		// arranged itself.
+		$existing_attributes = $product->get_attributes();
+		$attr_position       = 0;
+
+		foreach ( $existing_attributes as $existing_attribute ) {
+			$attr_position = max( $attr_position, (int) $existing_attribute->get_position() + 1 );
+		}
 		
 		// Gather all possible values for variation attributes to set at parent level
 		$parent_attr_values = array();
@@ -859,7 +870,65 @@ class TCGiant_Sync_Mapper {
 			$woo_attributes[ sanitize_title( $name ) ] = $attribute;
 		}
 		
-		$product->set_attributes( array_values( $woo_attributes ) );
+		// Merged, never replaced.
+		//
+		// set_attributes() takes the whole set, and this used to hand it a list
+		// built only from eBay's item specifics - so every attribute the shop
+		// had set itself was destroyed on each import of an existing product.
+		// A sale triggers a delta import, so a merchant watched their global
+		// attributes disappear every time something sold.
+		//
+		// A global attribute is never touched, even when overwriting is on.
+		// eBay's specifics are free text and cannot safely populate a taxonomy
+		// term; writing a custom attribute over one would both lose the term
+		// relationship and leave two rows meaning the same thing. A custom
+		// attribute is replaced only where eBay actually supplies one of the
+		// same name, and anything eBay says nothing about is left alone.
+		$merged = $existing_attributes;
+		$claimed = array();
+
+		foreach ( $existing_attributes as $existing_key => $existing_attribute ) {
+			$label = $existing_attribute->is_taxonomy()
+				? wc_attribute_label( $existing_attribute->get_name() )
+				: $existing_attribute->get_name();
+
+			$claimed[ strtolower( trim( (string) $label ) ) ] = $existing_key;
+		}
+
+		foreach ( $woo_attributes as $new_key => $new_attribute ) {
+			$label = strtolower( trim( (string) $new_attribute->get_name() ) );
+
+			if ( isset( $claimed[ $label ] ) ) {
+				$already = $existing_attributes[ $claimed[ $label ] ];
+
+				// The shop's own global attribute wins and the eBay one is
+				// dropped rather than added beside it.
+				if ( $already->is_taxonomy() ) {
+					continue;
+				}
+
+				// Same attribute under the key it already has, so it keeps its
+				// place in the list.
+				$new_attribute->set_position( (int) $already->get_position() );
+				$new_key = $claimed[ $label ];
+			}
+
+			$merged[ $new_key ] = $new_attribute;
+		}
+
+		// And gated like every other field on that screen.
+		//
+		// Title, description, images, categories and dimensions all ask before
+		// eBay overwrites WooCommerce. Attributes never did, so a shop that had
+		// turned every switch it could find to No was still losing them.
+		$overwrite_attributes = ! empty( $settings['overwrite_attributes'] );
+
+		if ( $is_new || $overwrite_attributes ) {
+			$product->set_attributes( array_values( $merged ) );
+			if ( ! $is_new ) { $sync_decisions[] = 'Attributes updated (eBay won, existing kept)'; }
+		} elseif ( ! $is_new ) {
+			$sync_decisions[] = 'Attributes skipped (WooCommerce won)';
+		}
 
 		// Set Custom Meta (including _ebay_item_id for tracking).
 		foreach ( $product_data['meta'] as $key => $val ) {

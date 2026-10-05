@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.23.0
+Stable tag: 3.24.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,13 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.24.0 - 2026-10-05 =
+**Your attributes are no longer overwritten**
+* FIX: Attributes set in WooCommerce were wiped whenever an existing product was re-imported from eBay - which includes every sale, because a sale triggers a sync. Global attributes went too. This was not a setting anyone had wrong: attributes were the one field with no "who wins" switch.
+* Global attributes are now never overwritten, whatever your settings say. eBay sends item specifics as plain text, which cannot safely fill in a global attribute, so yours is always the better record.
+* Plain custom attributes are replaced only where eBay sends one of the same name. Anything else stays exactly as it is, in the position you put it.
+* NEW: An "Overwrite Attributes" switch on the Settings page, alongside Title, Description and the rest. It starts off.
 
 = 3.23.0 - 2026-09-30 =
 **Monthly subscribers were being recorded as annual**
