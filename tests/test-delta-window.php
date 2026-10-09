@@ -130,6 +130,12 @@ function mysql2date( $format, $date, $translate = true ) {
 function as_enqueue_async_action( $hook ) { $GLOBALS['QUEUE'][] = $hook; return 1; }
 function as_schedule_single_action( $when, $hook ) { $GLOBALS['QUEUE'][] = $hook; return 1; }
 function as_next_scheduled_action( $hook ) { return in_array( $hook, $GLOBALS['QUEUE'], true ) ? true : false; }
+function as_get_scheduled_actions( $args ) {
+	return in_array( $args['hook'], $GLOBALS['QUEUE'], true ) ? array( 1 ) : array();
+}
+class ActionScheduler_Store {
+	const STATUS_PENDING = 'pending';
+}
 function as_unschedule_all_actions( $hook ) {
 	$GLOBALS['QUEUE'] = array_values( array_filter( $GLOBALS['QUEUE'], function ( $h ) use ( $hook ) { return $h !== $hook; } ) );
 }
@@ -161,6 +167,8 @@ class TCGiant_Sync_Mapper {
 	public function save_as_product( $data ) {
 		$id = $data['id'];
 		$GLOBALS['IMPORTED'][ $id ] = ( $GLOBALS['IMPORTED'][ $id ] ?? 0 ) + 1;
+		// What the dashboard would see if it polled right now.
+		$GLOBALS['STATUS_DURING'][] = TCGiant_Sync_Importer::get_sync_state()['status'];
 		return 1000 + count( $GLOBALS['IMPORTED'] );
 	}
 }
@@ -269,7 +277,8 @@ function fresh_site( $tz = 'UTC', array $state = array() ) {
 	$GLOBALS['EBAY']     = array( 'events' => array(), 'calls' => array(), 'killed' => 0, 'death_bytes' => 0 );
 	@unlink( lock_file() );
 	if ( $state ) {
-		update_option( TCGiant_Sync_Importer::STATE_OPTION, array_merge( array( 'status' => 'complete' ), $state ) );
+		// On top of the plugin's own defaults, as a real state always is.
+		update_option( TCGiant_Sync_Importer::STATE_OPTION, array_merge( TCGiant_Sync_Importer::get_sync_state(), array( 'status' => 'complete' ), $state ) );
 	}
 }
 
@@ -738,6 +747,80 @@ $IMP->start_delta_sync();
 check( 'a sync whose next run has queued for 45 minutes is left alone', logged( 'presumed to have failed' ), false );
 check( '  its place kept', state()['delta_offset'], 40 );
 check( '  and its next run still queued, once', $QUEUE, array( 'tcgiant_sync_fetch_delta_events' ) );
+
+echo "\nTHE DASHBOARD, AND ITEMS SYNCED BY HAND\n" . str_repeat( '=', 122 ) . "\n";
+
+// The 15,000-product shop's log: a delta batch of 40 began, three items were
+// imported, the run died - and 35 minutes later the dashboard wrote "Sync
+// complete! 120 imported, 0 errors out of 0 total". The dashboard finishes any
+// sync showing "importing" whose queue of item imports is empty, and a delta
+// batch showed exactly that for as long as it ran, alive or dead.
+$admin = (string) file_get_contents( dirname( __DIR__ ) . '/admin/class-tcgiant-sync-admin.php' );
+check( 'the dashboard still finishes only what says "importing"', false !== strpos( $admin, "if ( 'importing' === \$state['status'] && function_exists( 'as_get_scheduled_actions' ) ) {" ), true );
+
+fresh_site( 'UTC', array( 'last_successful_sync_at' => iso( $NOW - HOUR_IN_SECONDS ) ) );
+add_changes( changes( 100, $NOW - 50 * MINUTE_IN_SECONDS, $NOW - 60, 5000, 1300000 ) );
+$STATUS_DURING = array();
+hourly_tick();
+check( 'which a delta batch never says now, from the first item to the last', array_unique( $STATUS_DURING ), array( 'scanning' ) );
+
+// A batch that died leaves "scanning" behind, which the dashboard leaves
+// alone, and the stall check picks up after thirty minutes as it should.
+fresh_site( 'UTC', array(
+	'status'                  => 'scanning',
+	'sync_mode'               => 'delta',
+	'last_successful_sync_at' => iso( $NOW - HOUR_IN_SECONDS ),
+	'delta_mod_from'          => iso( $NOW - HOUR_IN_SECONDS - 300 ),
+	'total_found'             => 100,
+) );
+$died = changes( 100, $NOW - 50 * MINUTE_IN_SECONDS, $NOW - 60, 5000, 1310000 );
+add_changes( $died );
+hourly_tick();
+check( 'a batch that died is restarted by the next scheduled run', logged( 'presumed to have failed' ), true );
+check( '  and every change imported', imported_ids( $died ), 100 );
+
+$complete = new ReflectionMethod( 'TCGiant_Sync_Importer', 'check_sync_completion' );
+$complete->setAccessible( true );
+
+// Items synced by hand while a delta sync is part way through a window join
+// it rather than take it over.
+fresh_site( 'UTC', array(
+	'status'                  => 'scanning',
+	'sync_mode'               => 'delta',
+	'last_successful_sync_at' => iso( $NOW - HOUR_IN_SECONDS ),
+) );
+$IMP->start_specific_sync( array( '110000000001' ) );
+check( 'items synced by hand mid-delta leave it scanning', state()['status'], 'scanning' );
+check( '  and still a delta sync', state()['sync_mode'], 'delta' );
+$QUEUE = array();
+$complete->invoke( $IMP );
+check( '  so finishing them cannot finish the delta sync', state()['status'], 'scanning' );
+
+// On their own they are their own kind of sync, and finishing them does not
+// move the position the delta sync reads from - which skipped every change
+// on eBay since its last window.
+fresh_site( 'UTC', array(
+	'status'                  => 'complete',
+	'sync_mode'               => 'delta',
+	'last_successful_sync_at' => iso( $NOW - HOUR_IN_SECONDS ),
+) );
+$IMP->start_specific_sync( array( '110000000001' ) );
+check( 'items synced by hand on their own say so', state()['sync_mode'], 'specific' );
+$QUEUE = array();
+$complete->invoke( $IMP );
+check( '  and are finished', state()['status'], 'complete' );
+check( '  without moving the delta sync\'s position', state()['last_successful_sync_at'], iso( $NOW - HOUR_IN_SECONDS ) );
+
+// A full sync, which has read everything, still does.
+fresh_site( 'UTC', array(
+	'status'                  => 'importing',
+	'sync_mode'               => 'full',
+	'total_queued'            => 10,
+	'total_processed'         => 10,
+	'last_successful_sync_at' => iso( $NOW - DAY_IN_SECONDS ),
+) );
+$complete->invoke( $IMP );
+check( 'a full sync finishing still moves it to now', strtotime( state()['last_successful_sync_at'] ) >= $NOW - 5, true );
 
 echo "\nTIMEZONES\n" . str_repeat( '=', 122 ) . "\n";
 

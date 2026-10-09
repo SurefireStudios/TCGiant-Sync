@@ -667,13 +667,24 @@ class TCGiant_Sync_Importer {
 		$state = self::get_sync_state();
 		$new_queued = $state['total_queued'] + count( $item_ids );
 
-		self::update_sync_state( array(
-			'status'       => 'importing',
+		$update = array(
 			'total_queued' => $new_queued,
 			// Syncing a hand-picked set of items says nothing about which
 			// listings are still active, so it must not authorise pruning.
 			'scan_complete_clean' => false,
-		) );
+		);
+
+		// Marked as its own kind of sync, unless one is already running - in
+		// which case these items simply join it. Taking over a running delta
+		// sync's status let check_sync_completion() finish it early, part way
+		// through a window, and a scheduled run then started that window again
+		// from the top.
+		if ( ! in_array( $state['status'], array( 'scanning', 'importing' ), true ) ) {
+			$update['status']    = 'importing';
+			$update['sync_mode'] = 'specific';
+		}
+
+		self::update_sync_state( $update );
 
 		foreach ( $item_ids as $item_id ) {
 			as_enqueue_async_action( 'tcgiant_sync_process_item_import', array( 'item_id' => $item_id ), 'tcgiant_sync_imports' );
@@ -1216,12 +1227,23 @@ class TCGiant_Sync_Importer {
 		// The whole window, not this run's slice of it: "40 found" on every run
 		// of a 2,000 item window made it impossible to see how far along it was.
 		//
-		// And not marked importing over an Emergency Stop pressed while eBay
-		// was being read. This write is what erased it, so the run went on to
-		// queue the next one as though nobody had pressed anything.
+		// Scanning, not importing. "Importing" belongs to the full sync's queue
+		// of item imports, and two things finish a sync by watching that queue
+		// run dry - the dashboard, whenever it is open, and the end of every
+		// item import. A delta sync works through its batch itself and queues
+		// none, so to both of them it looked finished the moment it started.
+		// The dashboard marked it complete mid-batch, logging "Sync complete!
+		// ... out of 0 total", and the next scheduled run began the window
+		// again from the top; a shop with fifteen thousand products, watching
+		// its dashboard, saw its sales never reached. A batch that died left
+		// the same status behind, and was "completed" the same way.
+		//
+		// And not over an Emergency Stop pressed while eBay was being read.
+		// This write is what erased it, so the run went on to queue the next
+		// one as though nobody had pressed anything.
 		$update = array( 'total_found' => $total_items );
 		if ( 'stopped' !== ( self::get_sync_state()['status'] ?? '' ) ) {
-			$update['status'] = 'importing';
+			$update['status'] = 'scanning';
 		}
 		self::update_sync_state( $update );
 
@@ -2508,13 +2530,24 @@ class TCGiant_Sync_Importer {
 		}
 
 		if ( $is_done ) {
-			$mode_label = ( 'delta' === ( $state['sync_mode'] ?? 'full' ) ) ? 'Delta sync' : 'Sync';
-			self::update_sync_state( array(
-				'status'                  => 'complete',
-				'last_completed'          => current_time( 'mysql' ),
-				'last_successful_sync_at' => gmdate( 'Y-m-d\TH:i:s.000\Z' ),
-				'rate_limit_retries'      => 0,
-			) );
+			$mode       = $state['sync_mode'] ?? 'full';
+			$mode_label = ( 'delta' === $mode ) ? 'Delta sync' : 'Sync';
+			$done_state = array(
+				'status'             => 'complete',
+				'last_completed'     => current_time( 'mysql' ),
+				'rate_limit_retries' => 0,
+			);
+
+			// Only a full sync has read everything up to now, so only a full
+			// sync may say so. Finishing a few hand-picked items moved the
+			// position the delta sync reads from to the present as well, and
+			// every change on eBay since its last window - an hour's worth on
+			// a shop in step, far more on one catching up - was never read.
+			if ( 'full' === $mode ) {
+				$done_state['last_successful_sync_at'] = gmdate( 'Y-m-d\TH:i:s.000\Z' );
+			}
+
+			self::update_sync_state( $done_state );
 			TCGiant_Sync_Logger::log( sprintf(
 				'%s complete! %d imported, %d errors out of %d total.',
 				$mode_label, $state['total_processed'], $state['total_errors'], $state['total_queued']

@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.26.0
+Stable tag: 3.26.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,11 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.26.1 - 2026-10-09 =
+**Having the dashboard open could restart the sync**
+* FIX: The dashboard took a sync working through a batch for finished, marked it complete ("Sync complete! ... out of 0 total") and the next scheduled sync started the batch again. On a large shop that could keep it from ever reaching the newest sales.
+* FIX: Syncing items by hand moved the regular sync's starting point to the present, so changes since its last run were never read. It no longer does.
 
 = 3.26.0 - 2026-10-09 =
 **New listings stopped arriving on some hosts**

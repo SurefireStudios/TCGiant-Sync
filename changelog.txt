@@ -1,5 +1,10 @@
 *** TCGiant Sync Changelog ***
 
+2026-10-09 - version 3.26.1
+== Having the dashboard open could restart the sync ==
+- FIX: While the sync worked through a batch of changes, the dashboard took it for finished and marked it complete - logging "Sync complete! ... out of 0 total" - so the next scheduled sync started that batch of changes again from the beginning. On a large shop that could keep it from ever reaching the newest sales. A batch that had stopped part way was "completed" the same way, instead of being restarted.
+- FIX: Syncing particular items by hand moved the point the regular sync reads eBay from up to the present, so any changes on eBay since its last run were never read. It now leaves that alone, and items synced by hand while a sync is running simply join it.
+
 2026-10-09 - version 3.26.0
 == New listings stopped arriving on some hosts ==
 - FIX: On a shop with large listings - HTML description templates, or many variations - the scheduled sync could run out of memory reading what had changed on eBay, and then do exactly the same on every run after, so new and changed listings stopped arriving. eBay sends every change for the period asked for in a single answer. The sync now checks how large that answer is before reading it and asks for a shorter period when it is too much for your site's memory, and it reads each answer using about half the memory it did.
