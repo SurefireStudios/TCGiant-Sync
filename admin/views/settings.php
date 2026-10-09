@@ -441,13 +441,17 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 				<div class="tc-section">
 					<h3 class="tc-section-title"><?php esc_html_e( 'Scheduling', 'tcgiant-sync' ); ?></h3>
 					<div class="tc-field">
+						<?php // Hourly when unset, because that is what the scheduler actually does
+						// (class-tcgiant-sync-cron.php: $settings['sync_interval'] ?? 'tcgiant_hourly').
+						// This showed "Disabled" instead, so a shop that had never touched
+						// the field and pressed Save switched off a sync that was running. ?>
 						<label class="tc-label" for="ebay_sync_interval"><?php esc_html_e( 'Auto-Sync Interval', 'tcgiant-sync' ); ?></label>
 						<select name="tcgiant_sync_ebay_settings[sync_interval]" id="ebay_sync_interval" class="tc-select">
-							<option value="disabled" <?php selected( $settings['sync_interval'] ?? 'disabled', 'disabled' ); ?>><?php esc_html_e( 'Disabled (Manual Only)', 'tcgiant-sync' ); ?></option>
-							<option value="tcgiant_15mins" <?php selected( $settings['sync_interval'] ?? 'disabled', 'tcgiant_15mins' ); ?>><?php esc_html_e( 'Every 15 Minutes', 'tcgiant-sync' ); ?></option>
-							<option value="tcgiant_hourly" <?php selected( $settings['sync_interval'] ?? 'disabled', 'tcgiant_hourly' ); ?>><?php esc_html_e( 'Hourly', 'tcgiant-sync' ); ?></option>
-							<option value="twicedaily" <?php selected( $settings['sync_interval'] ?? 'disabled', 'twicedaily' ); ?>><?php esc_html_e( 'Twice Daily', 'tcgiant-sync' ); ?></option>
-							<option value="daily" <?php selected( $settings['sync_interval'] ?? 'disabled', 'daily' ); ?>><?php esc_html_e( 'Daily', 'tcgiant-sync' ); ?></option>
+							<option value="disabled" <?php selected( $settings['sync_interval'] ?? 'tcgiant_hourly', 'disabled' ); ?>><?php esc_html_e( 'Disabled (Manual Only)', 'tcgiant-sync' ); ?></option>
+							<option value="tcgiant_15mins" <?php selected( $settings['sync_interval'] ?? 'tcgiant_hourly', 'tcgiant_15mins' ); ?>><?php esc_html_e( 'Every 15 Minutes', 'tcgiant-sync' ); ?></option>
+							<option value="tcgiant_hourly" <?php selected( $settings['sync_interval'] ?? 'tcgiant_hourly', 'tcgiant_hourly' ); ?>><?php esc_html_e( 'Hourly', 'tcgiant-sync' ); ?></option>
+							<option value="twicedaily" <?php selected( $settings['sync_interval'] ?? 'tcgiant_hourly', 'twicedaily' ); ?>><?php esc_html_e( 'Twice Daily', 'tcgiant-sync' ); ?></option>
+							<option value="daily" <?php selected( $settings['sync_interval'] ?? 'tcgiant_hourly', 'daily' ); ?>><?php esc_html_e( 'Daily', 'tcgiant-sync' ); ?></option>
 						</select>
 					</div>
 					<div class="tc-field">

@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.24.0
+Stable tag: 3.25.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,16 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.25.0 - 2026-10-08 =
+**Sold items not being removed**
+* FIX: A product whose eBay listing sold out was often left in your catalogue with its stock set to zero. Three parts of the plugin notice a listing has ended and only one could remove the product, so whichever noticed first decided whether it happened. All three can now remove.
+* NEW: Stock Review lists any products this missed and offers to move them to the trash - shown and counted first, nothing removed until you press the button.
+* When a sold-out product is deliberately kept, the log now says why. All six reasons used to be silent.
+* Note: products you push to eBay from WooCommerce are still kept when they sell out, because they are your own catalogue entries. Unchanged, but no longer silent.
+
+**The Auto-Sync Interval said Disabled when it was not**
+* FIX: If you had never set it, Settings showed "Disabled (Manual Only)" while the plugin was syncing hourly - and pressing Save switched it off for real. The screen now shows what is actually running.
 
 = 3.24.0 - 2026-10-05 =
 **Your attributes are no longer overwritten**

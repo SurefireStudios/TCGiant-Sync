@@ -226,6 +226,25 @@ class TCGiant_Sync_Cron {
 									$pid, $settled
 								) );
 							}
+
+							// And decide whether the product should still be here.
+							//
+							// This path used to settle the stock and stop, while the delta sync
+							// made the removal decision for the very same event - so whichever
+							// noticed the ending first decided whether a sold-out product was
+							// ever removed. The query above excludes anything already marked
+							// Ended, so a product gets one pass and never another: if this one
+							// won the race, the removal never happened at all.
+							if ( TCGiant_Sync_Inventory::maybe_remove_sold_out(
+								$pid,
+								isset( $expired['Item']['Quantity'] ) ? $expired['Item']['Quantity'] : null,
+								isset( $expired['Item']['SellingStatus']['QuantitySold'] ) ? $expired['Item']['SellingStatus']['QuantitySold'] : null
+							) ) {
+								TCGiant_Sync_Logger::log( sprintf(
+									'Ended listing check: WC #%d sold out on eBay and has been moved to the trash.',
+									$pid
+								) );
+							}
 						} else {
 							// eBay drops old listings, so this can fail for good.
 							// Mark it ended regardless rather than retry forever,
@@ -317,6 +336,25 @@ class TCGiant_Sync_Cron {
 					TCGiant_Sync_Logger::log( sprintf(
 						'Ended listing check: WC #%d stock set to %d now its listing has finished.',
 						$pid, $settled
+					) );
+				}
+
+				// And decide whether the product should still be here.
+				//
+				// This path used to settle the stock and stop, while the delta sync
+				// made the removal decision for the very same event - so whichever
+				// noticed the ending first decided whether a sold-out product was
+				// ever removed. The query above excludes anything already marked
+				// Ended, so a product gets one pass and never another: if this one
+				// won the race, the removal never happened at all.
+				if ( TCGiant_Sync_Inventory::maybe_remove_sold_out(
+					$pid,
+					isset( $item['Quantity'] ) ? $item['Quantity'] : null,
+					isset( $item['SellingStatus']['QuantitySold'] ) ? $item['SellingStatus']['QuantitySold'] : null
+				) ) {
+					TCGiant_Sync_Logger::log( sprintf(
+						'Ended listing check: WC #%d sold out on eBay and has been moved to the trash.',
+						$pid
 					) );
 				}
 			}

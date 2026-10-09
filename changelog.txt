@@ -1,5 +1,15 @@
 *** TCGiant Sync Changelog ***
 
+2026-10-08 - version 3.25.0
+== Sold items not being removed ==
+- FIX: A product whose eBay listing sold out was often left in your catalogue with its stock set to zero. Three different parts of the plugin notice that a listing has ended, and only one of them could remove the product - so whichever noticed first decided whether it happened. On a large catalogue that was usually the wrong one, because the sync that could remove works through forty changed items at a time. All three can now remove, so it no longer depends on which gets there first.
+- NEW: Stock Review lists any products this missed and offers to move them to the trash. They are shown and counted first rather than removed for you, and they go to the trash rather than away for good. Nothing happens until you press the button.
+- When a sold-out product is deliberately kept, the activity log now says why. Previously all six reasons were silent, and the line that did appear read like a normal ending - so there was no way to tell a product the plugin had decided to keep from one it had simply missed.
+- Note: products you push to eBay from WooCommerce are still kept when they sell out, because they are your own catalogue entries rather than listings imported from eBay. That has not changed, but it is now said in the log instead of happening quietly.
+
+== The Auto-Sync Interval said Disabled when it was not ==
+- FIX: If you had never set the sync interval, the Settings page showed "Disabled (Manual Only)" while the plugin was in fact syncing hourly. Pressing Save on that page then genuinely switched it off - and stock updates, ended listings and sold-item removal all stop when it is off. The screen now shows what is actually running.
+
 2026-10-05 - version 3.24.0
 == Your attributes are no longer overwritten ==
 - FIX: Attributes you had set in WooCommerce were being wiped whenever an existing product was re-imported from eBay - which includes every time something sells, because a sale triggers a sync. Global attributes went too. This was not a setting anyone had wrong: attributes were the one field with no "who wins" switch, so turning everything else off did not help.

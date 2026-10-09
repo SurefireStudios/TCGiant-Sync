@@ -345,5 +345,73 @@ check( 'the dashboard migration is wrapped, not suppressed', false === strpos( $
 check( '  in a real try', false !== strpos( $dashboard, 'Dashboard migration skipped for ' ), true );
 check( 'a crafted site name cannot forge log lines', false !== strpos( $dashboard, "preg_replace( '/[\\x00-\\x1F\\x7F]/'" ), true );
 
+echo "\nA REFUSED REDIRECT SAYS WHERE IT WENT\n" . str_repeat( '=', 118 ) . "\n";
+
+/**
+ * Verbatim replica of how a refused entry is built.
+ *
+ * The relay is the only vantage point that can see this. One shop answers a
+ * probe from anywhere else with 401 and no redirect, and answers the relay with
+ * a 302 - so whatever is in front of it is reacting to our address, and nobody
+ * outside can find out where it points. A 302 can also never be set aside, so
+ * the entry sits in the refused list until a person looks at it, and until now
+ * there was nothing for them to look at.
+ */
+function refused_entry( $site_url, $code, $redirect ) {
+	$went_to = '';
+
+	if ( $code >= 300 && $code < 400 && ! empty( $redirect ) ) {
+		$parts   = parse_url( (string) $redirect );
+		$went_to = isset( $parts['host'] )
+			? $parts['host'] . ( isset( $parts['path'] ) ? $parts['path'] : '' )
+			: (string) $redirect;
+
+		$went_to = substr( $went_to, 0, 60 );
+	}
+
+	return $site_url . ' (' . ( $code ? $code : 'no reply' )
+		. ( '' !== $went_to ? ' -> ' . $went_to : '' ) . ')';
+}
+
+// The real one, found by hand with two probes before this existed.
+$cloudflare = 'https://djwhiting.cloudflareaccess.com/cdn-cgi/access/login/dev.circulartrade.co.uk?kid=5ef5cb21&meta=eyJ0eXAi';
+
+check(
+	'a redirect to an auth gate names the gate',
+	refused_entry( 'https://dev.circulartrade.co.uk', 302, $cloudflare ),
+	'https://dev.circulartrade.co.uk (302 -> djwhiting.cloudflareaccess.com/cdn-cgi/access/login/dev.circ)'
+);
+
+// Same domain, so the host would only repeat the start of the line - here the
+// path is the diagnosis.
+check(
+	'a bounce around the shop\'s own domain names the path',
+	refused_entry( 'https://netgear4less.com', 302, 'https://netgear4less.com/bot-check?id=9' ),
+	'https://netgear4less.com (302 -> netgear4less.com/bot-check)'
+);
+
+// Everything that is not a redirect reads exactly as it did before.
+check( 'a 404 is unchanged', refused_entry( 'https://slades.biz', 404, '' ), 'https://slades.biz (404)' );
+check( 'a 401 is unchanged', refused_entry( 'https://ogxstore.com', 401, '' ), 'https://ogxstore.com (401)' );
+check( 'no answer at all is unchanged', refused_entry( 'https://hblack4x4.com.au', 0, '' ), 'https://hblack4x4.com.au (no reply)' );
+
+// A redirect we were told about but cannot parse, and a very long one.
+check( 'an unparseable target is still shown', refused_entry( 'https://odd.example', 302, 'nonsense-target' ), 'https://odd.example (302 -> nonsense-target)' );
+check( '  and a long one is trimmed', strlen( refused_entry( 'https://odd.example', 302, str_repeat( 'a', 500 ) ) ) < 100, true );
+
+// A 3xx with nothing reported must not produce a dangling arrow.
+check( 'a redirect with no target reads cleanly', refused_entry( 'https://odd.example', 302, '' ), 'https://odd.example (302)' );
+
+check( 'the relay builds it this way', false !== strpos( $relay, "( '' !== \$went_to ? ' -> ' . \$went_to : '' )" ), true );
+check( '  only for a redirect', false !== strpos( $relay, 'if ( $code >= 300 && $code < 400 && ! empty( $GLOBALS[\'mad_last_redirect\'] ) ) {' ), true );
+
+echo "\nAND THE LOG TAIL CANNOT TAKE THE PAGE DOWN\n" . str_repeat( '=', 118 ) . "\n";
+
+// fopen returns false rather than throwing, and fseek(false, ...) is an
+// uncaught TypeError in PHP 8 - which would lose the whole dashboard over a log
+// file, including the buttons that are the only way to set a site aside by hand.
+check( 'the handle is checked before it is used', false !== strpos( $dashboard, 'if (false !== $fh) {' ), true );
+check( '  and the tail defaults to empty', false !== strpos( $dashboard, "\$raw = '';" ), true );
+
 printf( "\n  %d passed, %d failed\n\n", $pass, $fail );
 exit( $fail > 0 ? 1 : 0 );

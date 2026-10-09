@@ -25,6 +25,14 @@ $total     = count( $all_ids );
 $total_pgs = (int) ceil( $total / $per_page );
 $page_ids  = array_slice( $all_ids, ( $paged - 1 ) * $per_page, $per_page );
 $base_url  = admin_url( 'admin.php?page=tcgiant-stock-review' );
+
+// Products that sold out on eBay and are still in the catalogue.
+	//
+// Separate from the list below, which is about stock that was never
+// settled. These were settled - correctly, from eBay's own figures - and
+// came out at nothing, but removal used to live on a single code path and
+// whichever path noticed the ending first decided whether it ever ran.
+$sold_out_ids = TCGiant_Sync_Inventory::find_sold_out_not_removed();
 ?>
 
 <div class="wrap tc-dashboard-wrap">
@@ -32,6 +40,76 @@ $base_url  = admin_url( 'admin.php?page=tcgiant-stock-review' );
 	<hr class="wp-header-end" />
 
 	<?php TCGiant_Sync_Admin::instance()->render_tabs( 'stock_review' ); ?>
+
+	<?php if ( ! empty( $sold_out_ids ) ) : ?>
+		<div class="notice notice-warning" style="margin-top:16px;padding:12px 14px;">
+			<p style="margin:0 0 6px;">
+				<strong>
+					<?php printf( esc_html( _n( '%s product sold out on eBay and is still here.', '%s products sold out on eBay and are still here.', count( $sold_out_ids ), 'tcgiant-sync' ) ), number_format_i18n( count( $sold_out_ids ) ) ); ?>
+				</strong>
+			</p>
+			<p style="margin:0 0 10px;">
+				<?php esc_html_e( 'Their stock was set correctly, but they were never removed. Until now the plugin could only remove a sold-out product if one particular sync noticed the sale first, and on a large catalogue it often did not. That is fixed for future sales; these are the ones it missed.', 'tcgiant-sync' ); ?>
+			</p>
+			<p style="margin:0 0 10px;">
+				<?php esc_html_e( 'They go to the trash, not away for good, and anything your settings protect is left alone with the reason written to the log.', 'tcgiant-sync' ); ?>
+			</p>
+			<p style="margin:0;">
+				<button type="button" id="tc-remove-sold" class="button button-primary"><?php esc_html_e( 'Move them to the trash', 'tcgiant-sync' ); ?></button>
+				<span id="tc-remove-sold-status" style="margin-left:10px;color:#555;"></span>
+			</p>
+		</div>
+
+		<script>
+			// Self-contained: this panel shows whether or not the list below has
+			// anything in it, so it cannot rely on that section's modal.
+			( function ( $ ) {
+				var ajaxUrl = '<?php echo esc_url( admin_url( 'admin-ajax.php' ) ); ?>';
+				var nonce   = '<?php echo esc_js( wp_create_nonce( 'tcgiant_sync_ajax' ) ); ?>';
+				var $btn    = $( '#tc-remove-sold' );
+				var $say    = $( '#tc-remove-sold-status' );
+
+				$btn.on( 'click', function () {
+					if ( ! confirm( '<?php echo esc_js( __( 'Move every sold-out product on this list to the trash?', 'tcgiant-sync' ) ); ?>' ) ) { return; }
+
+					$btn.prop( 'disabled', true );
+					$say.text( '<?php echo esc_js( __( 'Starting...', 'tcgiant-sync' ) ); ?>' );
+
+					$.post( ajaxUrl, { action: 'tcgiant_job_start', type: 'bulk_remove_sold', select_all: 1, _ajax_nonce: nonce }, function ( r ) {
+						if ( ! r.success ) {
+							$btn.prop( 'disabled', false );
+							$say.text( r.data && r.data.message ? r.data.message : 'Could not start.' );
+							return;
+						}
+
+						next( r.data.job_id, r.data.total );
+					} );
+				} );
+
+				function next( jobId, total ) {
+					$.post( ajaxUrl, { action: 'tcgiant_job_process', job_id: jobId, _ajax_nonce: nonce }, function ( r ) {
+						if ( ! r.success ) {
+							$say.text( r.data && r.data.message ? r.data.message : 'Stopped.' );
+							$btn.prop( 'disabled', false );
+							return;
+						}
+
+						var done = r.data.processed || 0;
+						var kept = r.data.kept || 0;
+						$say.text( done + ' / ' + total + ( kept ? ' (' + kept + ' kept — see the log)' : '' ) );
+
+						if ( 'completed' === r.data.status || done >= total ) {
+							$say.text( '<?php echo esc_js( __( 'Done. Reloading...', 'tcgiant-sync' ) ); ?>' );
+							location.reload();
+							return;
+						}
+
+						next( jobId, total );
+					} );
+				}
+			}( jQuery ) );
+		</script>
+	<?php endif; ?>
 
 	<?php if ( 0 === $total ) : ?>
 

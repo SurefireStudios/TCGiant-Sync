@@ -120,6 +120,7 @@ class TCGiant_Sync_Jobs {
 			'processed'  => 0,
 			'succeeded'  => 0,
 			'queued'     => 0,
+			'kept'       => 0,
 			'failed'     => 0,
 			'errors'     => array(),
 			'created_at' => current_time( 'mysql' ),
@@ -223,6 +224,10 @@ class TCGiant_Sync_Jobs {
 			$product_ids = TCGiant_Sync_Inventory::find_unsettled_ended_products();
 		}
 
+		if ( 'bulk_remove_sold' === $type && ! empty( $_POST['select_all'] ) ) {
+			$product_ids = TCGiant_Sync_Inventory::find_sold_out_not_removed();
+		}
+
 		if ( 'bulk_restore_images' === $type && ! empty( $_POST['select_all'] ) ) {
 			$product_ids = TCGiant_Sync_Image_Localizer::find_products_with_duplicate_images();
 		}
@@ -245,7 +250,7 @@ class TCGiant_Sync_Jobs {
 			wp_send_json_error( array( 'message' => 'Missing type or product_ids.' ) );
 		}
 
-		$valid_types = array( 'bulk_push', 'bulk_end', 'bulk_verify', 'bulk_relist', 'bulk_settle', 'bulk_restore_images', 'bulk_set_format' );
+		$valid_types = array( 'bulk_push', 'bulk_end', 'bulk_verify', 'bulk_relist', 'bulk_settle', 'bulk_restore_images', 'bulk_set_format', 'bulk_remove_sold' );
 		if ( ! in_array( $type, $valid_types, true ) ) {
 			wp_send_json_error( array( 'message' => 'Invalid job type.' ) );
 		}
@@ -330,6 +335,10 @@ class TCGiant_Sync_Jobs {
 		$succeeded   = $job['succeeded'];
 		$failed      = $job['failed'];
 		$queued      = $job['queued'] ?? 0;
+
+		// Products a job deliberately left alone. Distinct from failed, which
+		// means something went wrong, and from succeeded, which means acted on.
+		$kept        = $job['kept'] ?? 0;
 		$errors      = $job['errors'];
 
 		// The exporter is resolved inside the arms that use it, not here. Fetched
@@ -395,6 +404,23 @@ class TCGiant_Sync_Jobs {
 					}
 
 					$succeeded++;
+					break;
+
+				case 'bulk_remove_sold':
+					// The sell-out was established when the stock was settled, from
+					// eBay's own figures, and recorded. Asking eBay again would only
+					// fail for the older ones - it drops old listings - and a backlog
+					// is by definition old.
+					if ( TCGiant_Sync_Inventory::remove_if_allowed( $product_id ) ) {
+						$succeeded++;
+						TCGiant_Sync_Logger::log( sprintf( 'Sold-out cleanup: WC #%d moved to the trash.', $product_id ) );
+					} else {
+						// Not a failure and not a success: the guards are the
+						// point, and each has already said in the log why this
+						// product is being kept. Counted as neither rather than
+						// inflating either figure.
+						$kept++;
+					}
 					break;
 
 				case 'bulk_verify':
@@ -463,6 +489,19 @@ class TCGiant_Sync_Jobs {
 							'Stock review: WC #%d settled to %d from ended eBay listing %s.',
 							$product_id, $settled, $ebay_id
 						) );
+
+						// Settling and removing are the same decision about the same
+						// event, and this screen only ever did the first half.
+						if ( TCGiant_Sync_Inventory::maybe_remove_sold_out(
+							$product_id,
+							isset( $detail['Item']['Quantity'] ) ? $detail['Item']['Quantity'] : null,
+							isset( $detail['Item']['SellingStatus']['QuantitySold'] ) ? $detail['Item']['SellingStatus']['QuantitySold'] : null
+						) ) {
+							TCGiant_Sync_Logger::log( sprintf(
+								'Stock review: WC #%d sold out on eBay and has been moved to the trash.',
+								$product_id
+							) );
+						}
 						// The notice reads a 15-minute cache; without this it
 						// would keep naming products that have just been put
 						// right.
@@ -499,6 +538,7 @@ class TCGiant_Sync_Jobs {
 			'processed' => $new_processed,
 			'succeeded' => $succeeded,
 			'queued'    => $queued,
+			'kept'      => $kept,
 			'failed'    => $failed,
 			'errors'    => array_slice( $errors, -50 ), // Keep last 50 errors.
 			'status'    => $is_done ? 'completed' : 'running',
@@ -510,6 +550,7 @@ class TCGiant_Sync_Jobs {
 			'total'     => $job['total'],
 			'succeeded' => $succeeded,
 			'queued'    => $queued,
+			'kept'      => $kept,
 			'failed'    => $failed,
 			// bulk_push is asynchronous: 'queued' items have been handed to the
 			// background pusher, not confirmed as listed on eBay. Watch the

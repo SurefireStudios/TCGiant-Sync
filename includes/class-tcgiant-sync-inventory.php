@@ -622,6 +622,172 @@ class TCGiant_Sync_Inventory {
 	}
 
 	/**
+	 * Trash a product whose eBay listing has sold out, if the shop wants that.
+	 *
+	 * Lives here rather than in the importer because this is where a listing is
+	 * known to have ended. Removal used to hang off one branch of the delta
+	 * sync, while the hourly check and the Stock Review settle saw exactly the
+	 * same event and could only zero the stock - so whichever noticed first
+	 * decided whether the product was ever removed, and on a large catalogue
+	 * the delta sync is the slowest of the three. A shop with fifteen thousand
+	 * products watched its sold items stay put and had to write in.
+	 *
+	 * Every refusal says why. All six were a bare return, and the line that was
+	 * logged on the way past reads like success - so a merchant saw what looked
+	 * like a normal ending and no explanation, and neither could we.
+	 *
+	 * @param int      $product_id WooCommerce product.
+	 * @param int|null $listed     Quantity the listing held, from eBay.
+	 * @param int|null $sold       Quantity eBay reports as sold.
+	 * @return bool Whether the product was trashed.
+	 */
+	public static function maybe_remove_sold_out( $product_id, $listed, $sold ) {
+		$product_id = (int) $product_id;
+
+		// Ended is not the same as sold. A listing that ran out without selling,
+		// or that the seller ended by hand, leaves goods the shop still owns -
+		// which is why those keep their stock rather than being zeroed. Removing
+		// the product would contradict the quantity just written.
+		if ( null === $listed || null === $sold ) {
+			return false;
+		}
+
+		if ( (int) $listed < 1 || (int) $sold < (int) $listed ) {
+			return false;
+		}
+
+		return self::remove_if_allowed( $product_id );
+	}
+
+	/**
+	 * Trash a product already established to have sold out.
+	 *
+	 * Separate from the arithmetic above so the same rules can be applied to a
+	 * product whose sell-out was established earlier and recorded, without
+	 * asking eBay for figures it may no longer hold - eBay drops old listings,
+	 * and a backlog is by definition old.
+	 *
+	 * @param int $product_id
+	 * @return bool Whether the product was trashed.
+	 */
+	public static function remove_if_allowed( $product_id ) {
+		$product_id = (int) $product_id;
+		$settings   = get_option( 'tcgiant_sync_ebay_settings', array() );
+
+		// Absent means on. This is what the plugin is for, and a shop that would
+		// rather keep its products can say so.
+		if ( isset( $settings['remove_sold_products'] ) && empty( $settings['remove_sold_products'] ) ) {
+			self::log_removal_refused( $product_id, 'the "Remove sold products" setting is off' );
+
+			return false;
+		}
+
+		// A product the shop pushed to eBay is its own catalogue entry, not
+		// something eBay lent it. Selling out there says nothing about whether
+		// the shop still wants the product, and it may be restocked tomorrow.
+		//
+		// Worth saying out loud, because a shop that lists its own catalogue
+		// rather than importing one has this on every product, and would
+		// otherwise never learn why "Remove sold products" appears to do
+		// nothing at all.
+		if ( 'pushed' === get_post_meta( $product_id, '_ebay_export_status', true ) ) {
+			self::log_removal_refused( $product_id, 'this product was pushed to eBay from WooCommerce, so it is the shop\'s own catalogue entry and is kept' );
+
+			return false;
+		}
+
+		// The same categories the pruner is told to leave alone. Somebody who
+		// has said "do not trash these" meant it here too.
+		$preserve = isset( $settings['preserve_woo_category_ids'] ) && is_array( $settings['preserve_woo_category_ids'] )
+			? $settings['preserve_woo_category_ids']
+			: array();
+
+		if ( ! empty( $preserve ) && has_term( $preserve, 'product_cat', $product_id ) ) {
+			self::log_removal_refused( $product_id, 'it is in a category set to be preserved' );
+
+			return false;
+		}
+
+		wp_trash_post( $product_id );
+
+		return true;
+	}
+
+	/**
+	 * Say why a sold-out product was kept.
+	 *
+	 * Once per product rather than once per pass: the same product can be
+	 * considered by more than one path in a day, and a shop with a catalogue
+	 * that is entirely exempt would otherwise get a line per sale per path.
+	 *
+	 * @param int    $product_id
+	 * @param string $because
+	 * @return void
+	 */
+	private static function log_removal_refused( $product_id, $because ) {
+		$key = '_ebay_removal_refused';
+
+		if ( $because === get_post_meta( $product_id, $key, true ) ) {
+			return;
+		}
+
+		update_post_meta( $product_id, $key, $because );
+
+		TCGiant_Sync_Logger::log( sprintf(
+			'WC #%d sold out on eBay but was kept: %s.',
+			$product_id,
+			$because
+		) );
+	}
+
+	/**
+	 * Products that sold out on eBay and are still in the catalogue.
+	 *
+	 * The backlog left by removal having lived on one code path. Every one of
+	 * these was settled from eBay's own Quantity and QuantitySold and came out
+	 * at nothing, which is the sold-out test - so the judgement is already made
+	 * and recorded, and nothing here needs asking again.
+	 *
+	 * Deliberately not acted on automatically. A shop should be shown the list
+	 * and asked, not told afterwards that an upgrade trashed some products.
+	 *
+	 * @param int $limit 0 for all.
+	 * @return int[] Product ids.
+	 */
+	public static function find_sold_out_not_removed( $limit = 0 ) {
+		global $wpdb;
+
+		$sql = "SELECT p.ID
+			FROM {$wpdb->posts} p
+			INNER JOIN {$wpdb->postmeta} listing ON listing.post_id = p.ID AND listing.meta_key = '_ebay_listing_status'
+			INNER JOIN {$wpdb->postmeta} settled ON settled.post_id = p.ID AND settled.meta_key = '_ebay_stock_settled_at'
+			INNER JOIN {$wpdb->postmeta} stock   ON stock.post_id   = p.ID AND stock.meta_key   = '_stock_status'
+			WHERE p.post_type = 'product'
+			  AND p.post_status NOT IN ( 'trash', 'auto-draft' )
+			  AND listing.meta_value = 'Ended'
+			  AND stock.meta_value = 'outofstock'
+			  AND settled.meta_value <> ''
+			ORDER BY p.ID DESC";
+
+		if ( $limit > 0 ) {
+			// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+			$sql = $wpdb->prepare( $sql . ' LIMIT %d', (int) $limit );
+		}
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared
+		return array_map( 'intval', (array) $wpdb->get_col( $sql ) );
+	}
+
+	/**
+	 * How many are in the state above.
+	 *
+	 * @return int
+	 */
+	public static function count_sold_out_not_removed() {
+		return count( self::find_sold_out_not_removed() );
+	}
+
+	/**
 	 * Products whose eBay listing has ended but which still show as in stock.
 	 *
 	 * This is the shape every stock fault this plugin has had leaves behind: the
