@@ -25,5 +25,7 @@ They are **not** an integration suite. Nothing here talks to eBay, WooCommerce o
 | `test-edition.php` | The OAuth state is byte-identical for every plugin in the field, and an unrecognised edition never resolves to `pro` |
 | `test-mad-signature.php` | Account-deletion notices are signed with the key each site was issued, not the shared fallback |
 | `test-log-tail.php` | The dashboard's log reader never holds a whole file and never shows a fragment as a record |
+| `test-delta-fetch.php` | Loads the real API class. A GetSellerEvents answer over the site's ceiling is refused before it is read; every other answer comes back as exactly the array it always did; reading one peaks well below the old cost |
+| `test-delta-window.php` | Loads the real importer and runs whole syncs against a simulated eBay. The reported shop's 4,000 changes all import (3.25.0 imported none); a killed request is not repeated for ever; eBay's silent 3,000 cap loses nothing; a listing that changes again mid-window is not skipped; Emergency Stop holds; a stalled sync is judged the same in every timezone |
 
 When you fix a bug, add the case that would have caught it.

@@ -211,6 +211,59 @@ class TCGiant_Sync_Importer {
 	const DELTA_WINDOW_MIN_MINUTES = 15;
 
 	/**
+	 * The most listings eBay will put in one GetSellerEvents answer.
+	 *
+	 * It does not always refuse when there are more. Its documentation says
+	 * that an answer of this many means some may be missing and a shorter
+	 * period should be asked for - with no error, no warning and no flag. The
+	 * count is the only sign, and a full answer used to be trusted and the
+	 * whole period marked read, so whatever eBay left out was never seen.
+	 */
+	const DELTA_EBAY_MAX_ITEMS = 3000;
+
+	/**
+	 * How far each window reaches back over the end of the last one, to allow
+	 * for eBay recording a change a little after it happened.
+	 */
+	const DELTA_OVERLAP_SECONDS = 300;
+
+	/**
+	 * How many windows one sync may read back to back before leaving the rest
+	 * of a backlog to the next scheduled run.
+	 *
+	 * A finished window used to stop there and wait for the next run. Each one
+	 * reaches back five minutes, so once a window has to be narrow that could
+	 * mean reading forty minutes of changes an hour on an hourly schedule, and
+	 * falling further behind every hour. So a window that was cut short goes
+	 * straight on to the next, up to this many in a row.
+	 */
+	const DELTA_CHAIN_MAX = 24;
+
+	/**
+	 * Share of the day's eBay calls that must be left before a sync goes on to
+	 * the next window by itself. The allowance is shared by every shop using
+	 * the plugin, so one catching up on a long backlog must not spend it all.
+	 */
+	const DELTA_CHASE_BUDGET_SHARE = 0.25;
+
+	/**
+	 * How many times a request for the shortest window may be stopped before
+	 * that window is stepped over.
+	 *
+	 * Once is not enough to go on. Hosts recycle their workers and sites are
+	 * redeployed, and a request caught by either looks exactly like one that
+	 * ran out of memory - but only the second kind happens every time.
+	 */
+	const DELTA_FLOOR_KILLS = 3;
+
+	/**
+	 * After a request is stopped while reading, how far the size ceiling is
+	 * lowered (by half each time, to no less than this) and for how long.
+	 */
+	const DELTA_LEARNED_CEILING_MIN  = 1048576;
+	const DELTA_LEARNED_CEILING_DAYS = 7;
+
+	/**
 	 * How long a sync may show no progress before it is presumed dead.
 	 *
 	 * The file lock has always broken itself after ten minutes, but the "already
@@ -229,7 +282,45 @@ class TCGiant_Sync_Importer {
 		$state = self::get_sync_state();
 		$state = array_merge( $state, $updates );
 		$state['last_activity'] = current_time( 'mysql' );
+		// The same moment as a plain timestamp, for working out how long ago it
+		// was. The line above is local time, for showing to the shop owner.
+		$state['last_activity_ts'] = time();
 		update_option( self::STATE_OPTION, $state );
+	}
+
+	/**
+	 * How long the sync has gone without recording any progress, in seconds.
+	 *
+	 * This was worked out from last_activity, which is the site's local time,
+	 * read back with mysql2date( 'U' ) - and that adds the site's UTC offset a
+	 * second time. WordPress's own source says the format "should never be
+	 * used". So the age was wrong by exactly the site's offset: on any site in
+	 * the Americas a sync looked stale the moment it started, and every cron
+	 * tick tore down a healthy one and began its window again from the top,
+	 * while in Sydney a sync that had died was waited on for eleven and a half
+	 * hours instead of thirty minutes. Only a site set to UTC behaved as meant.
+	 * A plain timestamp has no timezone to get wrong.
+	 *
+	 * @param array $state Sync state.
+	 * @return int|null Null when the state has never recorded any activity.
+	 */
+	public static function sync_idle_seconds( $state ) {
+		if ( ! empty( $state['last_activity_ts'] ) ) {
+			return time() - (int) $state['last_activity_ts'];
+		}
+
+		// Written before the timestamp existed, so convert the local time
+		// properly. Anything at all written after the update adds the
+		// timestamp, so this only ever reads a state from the old version. A
+		// date it cannot read comes back as 1970, which reads as stalled - as
+		// it did before.
+		foreach ( array( 'last_activity', 'started_at' ) as $key ) {
+			if ( ! empty( $state[ $key ] ) ) {
+				return time() - (int) get_gmt_from_date( (string) $state[ $key ], 'U' );
+			}
+		}
+
+		return null;
 	}
 
 	// ───────────────────────────────────────────────────────────────────────────
@@ -307,23 +398,15 @@ class TCGiant_Sync_Importer {
 	}
 
 	private static function sync_has_stalled( $state ) {
-		$marker = '';
-		foreach ( array( 'last_activity', 'started_at' ) as $key ) {
-			if ( ! empty( $state[ $key ] ) ) {
-				$marker = (string) $state[ $key ];
-				break;
-			}
-		}
+		$idle = self::sync_idle_seconds( $state );
 
 		// No timestamp at all means the state predates this check. Treat it as
 		// stalled rather than letting it block every future run for ever.
-		if ( '' === $marker ) {
+		if ( null === $idle ) {
 			return true;
 		}
 
-		$age = time() - (int) mysql2date( 'U', $marker, false );
-
-		return $age > ( self::SYNC_STALL_MINUTES * MINUTE_IN_SECONDS );
+		return $idle > ( self::SYNC_STALL_MINUTES * MINUTE_IN_SECONDS );
 	}
 
 	private static function acquire_lock( $operation = 'sync' ) {
@@ -494,8 +577,14 @@ class TCGiant_Sync_Importer {
 		// reason to stop updating the products a store already has.
 
 		// Guard: don't restart if a sync is already in progress.
+		//
+		// Nor if its next run is waiting in the queue, however long that has
+		// taken. On a quiet site whose scheduled tasks only run when someone
+		// visits, or behind a long queue of image downloads, a live sync can
+		// go well past thirty minutes between runs - and tearing it down then
+		// begins its window again from the top, so a large one never finished.
 		if ( in_array( $state['status'], array( 'scanning', 'importing' ), true ) ) {
-			if ( ! self::sync_has_stalled( $state ) ) {
+			if ( ! self::sync_has_stalled( $state ) || self::delta_run_queued() ) {
 				TCGiant_Sync_Logger::log( 'Sync already in progress — skipping delta sync request.' );
 				return;
 			}
@@ -526,7 +615,7 @@ class TCGiant_Sync_Importer {
 		$filter_name = ! empty( $settings['category_ids'] ) ? $settings['category_ids'] : 'All Categories';
 
 		// Add a small overlap buffer (5 min) to avoid missing items due to clock skew.
-		$buffer_seconds = 300;
+		$buffer_seconds = self::DELTA_OVERLAP_SECONDS;
 		$mod_from_ts = strtotime( $last_sync ) - $buffer_seconds;
 		$mod_from_iso = gmdate( 'Y-m-d\TH:i:s.000\Z', $mod_from_ts );
 
@@ -548,6 +637,12 @@ class TCGiant_Sync_Importer {
 			'scan_complete_clean' => false,
 			// Start of a new window, so start of the item list.
 			'delta_offset'        => 0,
+			'delta_cursor'        => '',
+			'delta_window_from'   => '',
+			'delta_window_to'     => '',
+			'delta_chain'         => 0,
+			// delta_attempt is deliberately kept. It is how the first run of a
+			// restarted sync learns that the last one died reading this window.
 			'last_activity'       => current_time( 'mysql' ),
 		) );
 
@@ -700,6 +795,12 @@ class TCGiant_Sync_Importer {
 	 * Max time window is 48 hours per eBay API rules.
 	 */
 	private function run_delta_events() {
+		// Raised before the fetch, which is the slow part. It used to be raised
+		// a hundred lines further down, after the download and the parse had
+		// already run under whatever limit the host set.
+		@set_time_limit( 300 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+		ignore_user_abort( true );
+
 		$state = self::get_sync_state();
 		$mod_from = $state['delta_mod_from'] ?? '';
 
@@ -713,28 +814,155 @@ class TCGiant_Sync_Importer {
 			return;
 		}
 
-		$mod_to = gmdate( 'Y-m-d\TH:i:s.000\Z' );
-
 		// How much time to ask for. Starts at eBay's maximum and is cut down
-		// whenever eBay says the answer would be too large — see the refusal
-		// handling below.
+		// whenever the answer would be too large — see the handling below.
 		$window_minutes = (int) ( $state['delta_window_minutes'] ?? self::DELTA_WINDOW_MAX_MINUTES );
 		$window_minutes = max( self::DELTA_WINDOW_MIN_MINUTES, min( self::DELTA_WINDOW_MAX_MINUTES, $window_minutes ) );
 
+		// The last run to ask for exactly this window never came back.
+		//
+		// A request that runs out of memory or time is stopped dead: no error
+		// reaches this code, nothing is written, and the next run asked for the
+		// same window and died the same way, for ever. That is what a shop on
+		// WordPress.com was seeing - the action failing after several minutes,
+		// over and over, with its newest listings never arriving. So every fetch
+		// notes what it is about to ask for and clears the note once eBay has
+		// answered. Finding the note still here means the request was killed
+		// while reading, and the only cure in our hands is to ask for less. The
+		// size ceiling comes down with it, for a while: whatever stopped the
+		// host, it stopped it below the ceiling we had set, and otherwise the
+		// window would widen straight back into the same wall.
+		$kills         = 0;
+		$died_on_floor = false;
+
+		if ( self::delta_attempt_key( $mod_from, $window_minutes ) === (string) ( $state['delta_attempt'] ?? '' ) ) {
+			$kills = (int) ( $state['delta_attempt_kills'] ?? 0 ) + 1;
+
+			if ( $window_minutes > self::DELTA_WINDOW_MIN_MINUTES ) {
+				$asked    = min( $window_minutes, max( 1, (int) ( $state['delta_attempt_span'] ?? $window_minutes ) ) );
+				$narrower = self::narrower_delta_window( $window_minutes, $asked );
+				$ceiling  = max( self::DELTA_LEARNED_CEILING_MIN, (int) floor( self::delta_byte_ceiling( $state ) / 2 ) );
+
+				TCGiant_Sync_Logger::warning( sprintf(
+					'The last attempt to read %d minutes of changes from eBay was stopped before it finished, usually by the host for using too much memory or time. Asking for %d minutes instead, and reading no more than %d MB at a time for the next %d days — the sync position is unchanged, so nothing is skipped.',
+					$asked,
+					$narrower,
+					max( 1, (int) round( $ceiling / 1048576 ) ),
+					self::DELTA_LEARNED_CEILING_DAYS
+				) );
+
+				self::update_sync_state( array_merge( self::fresh_delta_window(), array(
+					'delta_window_minutes'     => $narrower,
+					'delta_byte_ceiling'       => $ceiling,
+					'delta_byte_ceiling_until' => time() + self::DELTA_LEARNED_CEILING_DAYS * DAY_IN_SECONDS,
+				) ) );
+
+				$window_minutes = $narrower;
+				$kills          = 0;
+				$state          = self::get_sync_state();
+			} elseif ( $kills >= self::DELTA_FLOOR_KILLS ) {
+				$died_on_floor = true;
+			} else {
+				TCGiant_Sync_Logger::warning( sprintf(
+					'The last attempt to read the %d minutes of changes from %s was stopped before it finished. Trying again (attempt %d of %d) before stepping over them.',
+					self::DELTA_WINDOW_MIN_MINUTES,
+					$mod_from,
+					$kills + 1,
+					self::DELTA_FLOOR_KILLS
+				) );
+			}
+		}
+
+		// Carrying on through a window keeps the end it started with. It used to
+		// become "now" again on every run, so the window grew between runs while
+		// the place in it was still counted from the top. The window's start is
+		// stored with its end, so a place belonging to some other window is
+		// never applied to this one. A sync updated part way through a window
+		// has no record of it either way, and carries on exactly as it did.
+		$offset      = max( 0, (int) ( $state['delta_offset'] ?? 0 ) );
+		$pinned_from = (string) ( $state['delta_window_from'] ?? '' );
+		$pinned_to   = (string) ( $state['delta_window_to'] ?? '' );
+		$resuming    = $offset > 0 && $pinned_from === $mod_from && '' !== $pinned_to;
+		$cursor      = $resuming ? (string) ( $state['delta_cursor'] ?? '' ) : '';
+
+		if ( $offset > 0 && ! $resuming && '' !== $pinned_from ) {
+			$offset = 0;
+		}
+
 		$from_ts = strtotime( $mod_from );
-		$to_ts   = strtotime( $mod_to );
 		$window  = $window_minutes * 60;
 
-		if ( ( $to_ts - $from_ts ) > $window ) {
-			$mod_to = gmdate( 'Y-m-d\TH:i:s.000\Z', $from_ts + $window );
-			TCGiant_Sync_Logger::log( sprintf(
-				'Reading changes from %s to %s this run (a %d minute window); the next sync resumes from there.',
-				$mod_from, $mod_to, $window_minutes
-			), 'warning' );
+		if ( $resuming ) {
+			$mod_to = $pinned_to;
+		} else {
+			$mod_to = gmdate( 'Y-m-d\TH:i:s.000\Z' );
+
+			if ( ( strtotime( $mod_to ) - $from_ts ) > $window ) {
+				$mod_to = gmdate( 'Y-m-d\TH:i:s.000\Z', $from_ts + $window );
+				TCGiant_Sync_Logger::log( sprintf(
+					'Reading changes from %s to %s this run (a %d minute window); the next sync resumes from there.',
+					$mod_from, $mod_to, $window_minutes
+				), 'warning' );
+			}
+		}
+
+		// How much time this run actually asks for, which is less than the
+		// window whenever the sync is nearly caught up. Narrowing halves this,
+		// not the window: a shop polled hourly with a 48-hour window used to
+		// need six refusals, each one downloaded in full, before the window was
+		// shorter than the hour it was actually asking about.
+		$span_minutes = max( 1, (int) ceil( ( strtotime( $mod_to ) - $from_ts ) / 60 ) );
+
+		// Cut short by the window rather than reaching the present, so there is
+		// more after it still to read.
+		$clamped = ( strtotime( $mod_to ) - $from_ts ) >= $window;
+
+		// Already at the shortest window, and the request reading it has been
+		// killed every time it was tried - without a size ceiling, so trying
+		// again would only die again. Refusing to move would stop the sync for
+		// good, which is worse than stepping over fifteen minutes and saying
+		// so, as the refusal below does when eBay will not answer at all.
+		if ( $died_on_floor ) {
+			TCGiant_Sync_Logger::error( sprintf(
+				'The changes between %s and %s could not be read even %d minutes at a time; each of %d attempts was stopped before it finished. Moving past them so syncing continues — run Fetch Inventory to pick up anything altered during that period.',
+				$mod_from,
+				$mod_to,
+				self::DELTA_WINDOW_MIN_MINUTES,
+				$kills
+			) );
+
+			self::update_sync_state( array_merge( self::fresh_delta_window(), array(
+				'status'                  => 'complete',
+				'last_completed'          => current_time( 'mysql' ),
+				'last_successful_sync_at' => $mod_to,
+				'delta_attempt'           => '',
+				'delta_attempt_kills'     => 0,
+			) ) );
+			return;
 		}
 
 		$api = TCGiant_Sync_API::instance();
-		$response = $api->get_seller_events( $mod_from, $mod_to );
+
+		// No ceiling once the window is as short as it goes. There is nothing
+		// narrower to ask for, so the choice is between trying and skipping,
+		// and the ceiling sits well below what would actually fail.
+		$ceiling    = self::delta_byte_ceiling( $state );
+		$byte_limit = $window_minutes > self::DELTA_WINDOW_MIN_MINUTES ? $ceiling : 0;
+
+		self::update_sync_state( array(
+			'delta_attempt'       => self::delta_attempt_key( $mod_from, $window_minutes ),
+			'delta_attempt_kills' => $kills,
+			'delta_attempt_span'  => $span_minutes,
+		) );
+
+		$response   = $api->get_seller_events( $mod_from, $mod_to, $byte_limit );
+		$body_bytes = $api->get_last_body_bytes();
+
+		// Answered, one way or another, so this request was not killed reading it.
+		self::update_sync_state( array(
+			'delta_attempt'       => '',
+			'delta_attempt_kills' => 0,
+		) );
 
 		// Handle rate limiting.
 		if ( is_wp_error( $response ) && 'rate_limited' === $response->get_error_code() ) {
@@ -753,6 +981,46 @@ class TCGiant_Sync_Importer {
 			return;
 		}
 
+		// More than this site can safely read at once - or so much that eBay
+		// could not send it before the request timed out, which used to retry
+		// the identical window for ever. The remedy for both is the same as for
+		// eBay's own refusal below - ask for less time - but kept apart from it,
+		// because that branch steps over the period once the window can narrow
+		// no further, and that must never happen to changes that are sitting
+		// there to be read. At the shortest window, which is fetched without a
+		// ceiling, a timeout falls to the general error handling instead, which
+		// holds the position and tries again on the next run.
+		$too_large = is_wp_error( $response ) && 'response_too_large' === $response->get_error_code();
+		$timed_out = is_wp_error( $response ) && 'http_request_failed' === $response->get_error_code()
+			&& false !== stripos( $response->get_error_message(), 'timed out' );
+
+		if ( ( $too_large || $timed_out ) && $window_minutes > self::DELTA_WINDOW_MIN_MINUTES ) {
+			$narrower = self::narrower_delta_window( $window_minutes, $span_minutes );
+
+			if ( $too_large ) {
+				TCGiant_Sync_Logger::log( sprintf(
+					'The changes for those %d minutes come to more than %d MB, which is more than this site can safely read at once with a %s memory limit. Asking for %d minutes instead and trying again — the sync position is unchanged, so nothing is skipped.',
+					$span_minutes,
+					max( 1, (int) round( $byte_limit / 1048576 ) ),
+					(string) ini_get( 'memory_limit' ),
+					$narrower
+				), 'warning' );
+			} else {
+				TCGiant_Sync_Logger::log( sprintf(
+					'eBay did not finish sending the changes for those %d minutes before the request timed out. Asking for %d minutes instead and trying again — the sync position is unchanged, so nothing is skipped.',
+					$span_minutes,
+					$narrower
+				), 'warning' );
+			}
+
+			self::continue_delta( array_merge( self::fresh_delta_window(), array(
+				'status'               => 'complete',
+				'last_completed'       => current_time( 'mysql' ),
+				'delta_window_minutes' => $narrower,
+			) ) );
+			return;
+		}
+
 		// eBay refuses any window whose answer would exceed 3000 records, and
 		// says to ask for less time. Retrying the same window can only ever earn
 		// the same refusal, so a busy period stopped the sync outright: the
@@ -764,23 +1032,20 @@ class TCGiant_Sync_Importer {
 		if ( is_wp_error( $response ) && self::is_result_set_too_large( $response ) ) {
 
 			if ( $window_minutes > self::DELTA_WINDOW_MIN_MINUTES ) {
-				$narrower = max( self::DELTA_WINDOW_MIN_MINUTES, (int) floor( $window_minutes / 2 ) );
-
-				self::update_sync_state( array(
-					'status'               => 'complete',
-					'last_completed'       => current_time( 'mysql' ),
-					'last_activity'        => current_time( 'mysql' ),
-					'delta_window_minutes' => $narrower,
-					'delta_offset'         => 0,
-				) );
+				$narrower = self::narrower_delta_window( $window_minutes, $span_minutes );
 
 				TCGiant_Sync_Logger::log( sprintf(
 					'eBay will not return that many changes at once. Asking for %d minutes instead of %d and trying again — the sync position is unchanged, so nothing is skipped.',
 					$narrower,
-					$window_minutes
+					$span_minutes
 				), 'warning' );
 
-				as_enqueue_async_action( 'tcgiant_sync_fetch_delta_events', array(), 'tcgiant_sync_group' );
+				self::continue_delta( array_merge( self::fresh_delta_window(), array(
+					'status'               => 'complete',
+					'last_completed'       => current_time( 'mysql' ),
+					'last_activity'        => current_time( 'mysql' ),
+					'delta_window_minutes' => $narrower,
+				) ) );
 				return;
 			}
 
@@ -794,13 +1059,12 @@ class TCGiant_Sync_Importer {
 				self::DELTA_WINDOW_MIN_MINUTES
 			) );
 
-			self::update_sync_state( array(
+			self::update_sync_state( array_merge( self::fresh_delta_window(), array(
 				'status'                  => 'complete',
 				'last_completed'          => current_time( 'mysql' ),
 				'last_activity'           => current_time( 'mysql' ),
 				'last_successful_sync_at' => $mod_to,
-				'delta_offset'            => 0,
-			) );
+			) ) );
 			return;
 		}
 
@@ -833,14 +1097,69 @@ class TCGiant_Sync_Importer {
 			}
 		}
 
+		// Only this run's slice of the items is kept below. The rest of the
+		// answer used to stay held through the whole import loop, the largest
+		// single thing in memory while forty products were saved.
+		unset( $response );
+
 		if ( empty( $items ) ) {
 			TCGiant_Sync_Logger::log( 'Delta sync complete. No items modified since last sync.' );
-			self::update_sync_state( array(
+
+			$chase = self::delta_chase_state( $state, $mod_to, $clamped );
+
+			// fresh_delta_window() matters here: a window can come back empty
+			// part way through, once everything left in it has changed again
+			// and moved on to a later one, and its place must not carry over.
+			self::update_sync_state( array_merge( self::fresh_delta_window(), array(
 				'status'                  => 'complete',
 				'last_completed'          => current_time( 'mysql' ),
 				'last_successful_sync_at' => $mod_to,
-			) );
+				'delta_window_minutes'    => self::next_delta_window_minutes( $window_minutes, $mod_to, 0, $body_bytes, $ceiling ),
+			), $chase ) );
+
+			if ( $chase ) {
+				as_enqueue_async_action( 'tcgiant_sync_fetch_delta_events', array(), self::GROUP_SCAN );
+			}
 			return;
+		}
+
+		$total_items = count( $items );
+		$first_run   = '' === $cursor && 0 === $offset;
+
+		// eBay's answer was full, so it may not be all of it - see
+		// DELTA_EBAY_MAX_ITEMS. Read the period again in shorter pieces rather
+		// than mark it done. This copies the narrowing in the refusal branch
+		// above but not the step-over beneath it: there, eBay sent nothing,
+		// while here every one of these listings is real and in hand.
+		if ( $total_items >= self::DELTA_EBAY_MAX_ITEMS ) {
+			if ( $window_minutes > self::DELTA_WINDOW_MIN_MINUTES ) {
+				$narrower = self::narrower_delta_window( $window_minutes, $span_minutes );
+
+				TCGiant_Sync_Logger::log( sprintf(
+					'eBay sent its maximum of %d changed listings for those %d minutes, which means some may have been left out. Asking for %d minutes instead and reading them again — the sync position is unchanged, so nothing is skipped.',
+					$total_items,
+					$span_minutes,
+					$narrower
+				), 'warning' );
+
+				self::continue_delta( array_merge( self::fresh_delta_window(), array(
+					'status'               => 'complete',
+					'last_completed'       => current_time( 'mysql' ),
+					'delta_window_minutes' => $narrower,
+				) ) );
+				return;
+			}
+
+			// Nothing shorter to ask for. Import what eBay did send and say
+			// plainly that there may be more - once, not on every run through.
+			if ( $first_run ) {
+				TCGiant_Sync_Logger::warning( sprintf(
+					'eBay sent its maximum of %d changed listings even for the %d minutes from %s, so some changes in that period may not have been sent. Importing the ones that were — run Fetch Inventory to pick up the rest.',
+					$total_items,
+					self::DELTA_WINDOW_MIN_MINUTES,
+					$mod_from
+				) );
+			}
 		}
 
 		// Work through the window a slice at a time, resuming where the last run
@@ -850,23 +1169,34 @@ class TCGiant_Sync_Importer {
 		// Resuming by position only works if the list is in the same order every
 		// time, and eBay does not promise that — the same window queried twice may
 		// come back arranged differently. Sorting by Item ID makes the order ours
-		// rather than theirs, so a resumed run continues from exactly where the
-		// last one stopped instead of skipping or repeating items.
+		// rather than theirs.
+		//
+		// Sorting fixes the order but not the membership. A listing that changes
+		// again while its window is being worked through - another sale, say -
+		// moves on to a later window, and everything after it in this one moves
+		// up a place. Counting from the top then jumped over one listing, which
+		// no later window would ever include. So a run resumes after the last
+		// listing it finished, by its ID, which nothing can move.
 		usort( $items, function ( $a, $b ) {
 			return strcmp( (string) ( $a['ItemID'] ?? '' ), (string) ( $b['ItemID'] ?? '' ) );
 		} );
 
-		$total_items = count( $items );
-		$offset      = max( 0, (int) ( $state['delta_offset'] ?? 0 ) );
-
-		if ( $offset >= $total_items ) {
-			$offset = 0;
+		if ( '' !== $cursor ) {
+			$remaining = array_values( array_filter( $items, function ( $item ) use ( $cursor ) {
+				return strcmp( (string) ( $item['ItemID'] ?? '' ), $cursor ) > 0;
+			} ) );
+		} else {
+			// A sync updated part way through a window, which kept only a count.
+			if ( $offset >= $total_items ) {
+				$offset = 0;
+			}
+			$remaining = array_slice( $items, $offset );
 		}
 
-		$items = array_slice( $items, $offset, self::DELTA_ITEMS_PER_RUN );
-
-		@set_time_limit( 300 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
-		ignore_user_abort( true );
+		$done  = $total_items - count( $remaining );
+		$items = array_slice( $remaining, 0, self::DELTA_ITEMS_PER_RUN );
+		$more  = count( $remaining ) > count( $items );
+		unset( $remaining );
 
 		// Category filtering (same logic as process_page_items).
 		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
@@ -883,14 +1213,23 @@ class TCGiant_Sync_Importer {
 		$skipped = 0;
 		$fallback_count = 0;
 
-		self::update_sync_state( array(
-			'status'      => 'importing',
-			'total_found' => count( $items ),
-		) );
+		// The whole window, not this run's slice of it: "40 found" on every run
+		// of a 2,000 item window made it impossible to see how far along it was.
+		//
+		// And not marked importing over an Emergency Stop pressed while eBay
+		// was being read. This write is what erased it, so the run went on to
+		// queue the next one as though nobody had pressed anything.
+		$update = array( 'total_found' => $total_items );
+		if ( 'stopped' !== ( self::get_sync_state()['status'] ?? '' ) ) {
+			$update['status'] = 'importing';
+		}
+		self::update_sync_state( $update );
 
 		TCGiant_Sync_Logger::log( sprintf(
-			'Delta events: %d modified items found. Processing inline [delta].',
-			count( $items )
+			'Delta events: %d modified items found. Processing %d to %d [delta].',
+			$total_items,
+			$done + 1,
+			$done + count( $items )
 		) );
 
 		foreach ( $items as $ebay_item ) {
@@ -1183,24 +1522,26 @@ class TCGiant_Sync_Importer {
 		// marked as running, and pick up from here on the next pass. The position
 		// is deliberately not advanced until the whole window is done, so an
 		// interruption costs a repeat rather than a hole.
-		$next_offset = $offset + count( $items );
-
-		if ( $next_offset < $total_items ) {
-			self::update_sync_state( array(
-				'status'          => 'scanning',
-				'delta_offset'    => $next_offset,
-				'total_found'     => $total_items,
-				'total_processed' => (int) ( $state['total_processed'] ?? 0 ) + $processed,
-				'total_errors'    => (int) ( $state['total_errors'] ?? 0 ) + $errors,
-				'last_activity'   => current_time( 'mysql' ),
-			) );
+		if ( $more ) {
+			$last = end( $items );
 
 			TCGiant_Sync_Logger::log( sprintf(
 				'Delta sync: %d of %d changed items done. Continuing with the rest.',
-				$next_offset, $total_items
+				$done + count( $items ),
+				$total_items
 			) );
 
-			as_enqueue_async_action( 'tcgiant_sync_fetch_delta_events', array(), 'tcgiant_sync_group' );
+			self::continue_delta( array(
+				'status'            => 'scanning',
+				'delta_offset'      => $done + count( $items ),
+				'delta_cursor'      => is_array( $last ) ? (string) ( $last['ItemID'] ?? '' ) : '',
+				'delta_window_from' => $mod_from,
+				'delta_window_to'   => $mod_to,
+				'total_found'       => $total_items,
+				'total_processed'   => (int) ( $state['total_processed'] ?? 0 ) + $processed,
+				'total_errors'      => (int) ( $state['total_errors'] ?? 0 ) + $errors,
+				'last_activity'     => current_time( 'mysql' ),
+			) );
 
 			return;
 		}
@@ -1211,16 +1552,11 @@ class TCGiant_Sync_Importer {
 		// skipped instead, despite the log promising the next sync would
 		// continue. It also closes a small gap where anything modified between
 		// the API call and this line was stepped over.
-		// Back to the widest window once the backlog is gone. While catching up a
-		// narrowed window is doing real work and should be left alone, but a
-		// store in step with eBay has little in any given window, so there is no
-		// reason to keep asking for slivers of time for ever.
-		$caught_up = ( time() - strtotime( $mod_to ) ) < ( 2 * MINUTE_IN_SECONDS );
+		$chase = self::delta_chase_state( $state, $mod_to, $clamped );
 
-		self::update_sync_state( array(
+		self::update_sync_state( array_merge( self::fresh_delta_window(), array(
 			'status'                  => 'complete',
-			'delta_offset'            => 0,
-			'delta_window_minutes'    => $caught_up ? self::DELTA_WINDOW_MAX_MINUTES : $window_minutes,
+			'delta_window_minutes'    => self::next_delta_window_minutes( $window_minutes, $mod_to, $total_items, $body_bytes, $ceiling ),
 			'total_found'             => $total_items,
 			'total_queued'            => $processed + $errors,
 			'total_processed'         => (int) ( $state['total_processed'] ?? 0 ) + $processed,
@@ -1228,7 +1564,192 @@ class TCGiant_Sync_Importer {
 			'last_completed'          => current_time( 'mysql' ),
 			'last_activity'           => current_time( 'mysql' ),
 			'last_successful_sync_at' => $mod_to,
-		) );
+		), $chase ) );
+
+		if ( $chase ) {
+			as_enqueue_async_action( 'tcgiant_sync_fetch_delta_events', array(), self::GROUP_SCAN );
+		}
+	}
+
+	/**
+	 * The note a delta fetch leaves while it is waiting on eBay.
+	 *
+	 * @param string $mod_from       Start of the window.
+	 * @param int    $window_minutes Width of the window.
+	 * @return string
+	 */
+	private static function delta_attempt_key( $mod_from, $window_minutes ) {
+		return $mod_from . '|' . (int) $window_minutes;
+	}
+
+	/**
+	 * State that forgets where the sync was inside a window.
+	 *
+	 * Every path that finishes a window or changes its width writes this, so
+	 * a place in one window can never be carried into another.
+	 *
+	 * @return array
+	 */
+	private static function fresh_delta_window() {
+		return array(
+			'delta_offset'      => 0,
+			'delta_cursor'      => '',
+			'delta_window_from' => '',
+			'delta_window_to'   => '',
+		);
+	}
+
+	/**
+	 * Half the time actually asked for, or the shortest window allowed.
+	 *
+	 * @param int $window_minutes Width of the window.
+	 * @param int $span_minutes   How much of it the request covered.
+	 * @return int
+	 */
+	private static function narrower_delta_window( $window_minutes, $span_minutes ) {
+		return max( self::DELTA_WINDOW_MIN_MINUTES, (int) floor( min( $window_minutes, max( 1, $span_minutes ) ) / 2 ) );
+	}
+
+	/**
+	 * Largest eBay answer this site should read just now, in bytes.
+	 *
+	 * The memory limit decides it, unless a request has recently been stopped
+	 * while reading, in which case the lower figure learned from that holds
+	 * for a while - see run_delta_events().
+	 *
+	 * @param array $state Sync state.
+	 * @return int
+	 */
+	private static function delta_byte_ceiling( $state ) {
+		$ceiling = TCGiant_Sync_API::get_events_byte_limit();
+		$learned = (int) ( $state['delta_byte_ceiling'] ?? 0 );
+
+		if ( $learned > 0 && time() < (int) ( $state['delta_byte_ceiling_until'] ?? 0 ) ) {
+			$ceiling = min( $ceiling, $learned );
+		}
+
+		return $ceiling;
+	}
+
+	/**
+	 * Record where the delta sync has got to and queue its next run - unless
+	 * it has been stopped in the meantime.
+	 *
+	 * Emergency Stop clears the queue and marks the sync stopped, but a run
+	 * already under way when it was pressed went on to queue the next one, and
+	 * the sync carried on regardless.
+	 *
+	 * @param array $updates State to write.
+	 */
+	private static function continue_delta( array $updates ) {
+		if ( 'stopped' === ( self::get_sync_state()['status'] ?? '' ) ) {
+			unset( $updates['status'] );
+			self::update_sync_state( $updates );
+			TCGiant_Sync_Logger::log( 'Delta sync stopped as requested. It starts again at the next scheduled sync.' );
+			return;
+		}
+
+		self::update_sync_state( $updates );
+		as_enqueue_async_action( 'tcgiant_sync_fetch_delta_events', array(), self::GROUP_SCAN );
+	}
+
+	/**
+	 * Whether the delta sync's next run is waiting in the queue, or running.
+	 *
+	 * @return bool
+	 */
+	private static function delta_run_queued() {
+		return function_exists( 'as_next_scheduled_action' )
+			&& false !== as_next_scheduled_action( 'tcgiant_sync_fetch_delta_events', null, self::GROUP_SCAN );
+	}
+
+	/**
+	 * How wide the next delta window should be, judged by how the last went.
+	 *
+	 * A narrowed window used to widen again only once the sync had caught up
+	 * with the present - which a narrow window may never manage, since it is
+	 * narrow precisely because there is a lot to read. Once narrowed it could
+	 * stay that way for good, reading slivers of time long after the busy
+	 * period had passed. So a window that came back comfortably small doubles
+	 * as well. "Comfortably" means under a quarter of both limits, so a
+	 * doubling cannot carry it straight back over either and set it see-sawing.
+	 *
+	 * @param int    $window_minutes Width of the window just read.
+	 * @param string $mod_to         End of the window just read.
+	 * @param int    $item_count     Listings eBay sent for it.
+	 * @param int    $body_bytes     Size of eBay's answer.
+	 * @param int    $ceiling        The size ceiling in force.
+	 * @return int
+	 */
+	private static function next_delta_window_minutes( $window_minutes, $mod_to, $item_count, $body_bytes, $ceiling ) {
+		// Back to the widest window once the backlog is gone. A store in step
+		// with eBay has little in any given window, so there is no reason to
+		// keep asking for slivers of time for ever.
+		if ( ( time() - strtotime( $mod_to ) ) < ( 2 * MINUTE_IN_SECONDS ) ) {
+			return self::DELTA_WINDOW_MAX_MINUTES;
+		}
+
+		$comfortable = ( $item_count * 4 ) < self::DELTA_EBAY_MAX_ITEMS
+			&& ( $body_bytes * 4 ) < $ceiling;
+
+		if ( $comfortable ) {
+			return min( self::DELTA_WINDOW_MAX_MINUTES, $window_minutes * 2 );
+		}
+
+		return $window_minutes;
+	}
+
+	/**
+	 * State that sends the sync straight on to the next window, or nothing.
+	 *
+	 * Written in the same update that finishes the window, so there is no
+	 * moment at which the sync reads as finished while the next window is
+	 * already on its way - a scheduled run arriving then would start a second
+	 * one alongside it.
+	 *
+	 * @param array  $state   Sync state as this run found it.
+	 * @param string $mod_to  End of the window just finished.
+	 * @param bool   $clamped Whether that window stopped short of the present.
+	 * @return array
+	 */
+	private static function delta_chase_state( $state, $mod_to, $clamped ) {
+		if ( ! $clamped ) {
+			return array();
+		}
+
+		// Stopped while this window was being read. The next scheduled sync
+		// carries on; this one does not.
+		if ( 'stopped' === ( self::get_sync_state()['status'] ?? '' ) ) {
+			return array();
+		}
+
+		$chain = (int) ( $state['delta_chain'] ?? 0 );
+
+		if ( $chain >= self::DELTA_CHAIN_MAX ) {
+			TCGiant_Sync_Logger::log( sprintf(
+				'Read %d windows of changes in a row. The rest of the backlog carries on from %s at the next scheduled sync.',
+				$chain + 1,
+				$mod_to
+			) );
+			return array();
+		}
+
+		$reserve = (int) ( TCGiant_Sync_API::DAILY_CALL_LIMIT * TCGiant_Sync_API::DAILY_CALL_SOFT_CEILING * self::DELTA_CHASE_BUDGET_SHARE );
+
+		if ( TCGiant_Sync_API::instance()->get_remaining_daily_budget() < $reserve ) {
+			TCGiant_Sync_Logger::log( sprintf(
+				'Most of today\'s eBay allowance is used, so the rest of the backlog carries on from %s at the next scheduled sync rather than straight away.',
+				$mod_to
+			) );
+			return array();
+		}
+
+		return array(
+			'status'         => 'scanning',
+			// Exactly where start_delta_sync() would put it, overlap included.
+			'delta_mod_from' => gmdate( 'Y-m-d\TH:i:s.000\Z', strtotime( $mod_to ) - self::DELTA_OVERLAP_SECONDS ),
+			'delta_chain'    => $chain + 1,
+		);
 	}
 
 	/**

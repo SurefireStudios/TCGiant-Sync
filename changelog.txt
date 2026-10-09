@@ -1,5 +1,21 @@
 *** TCGiant Sync Changelog ***
 
+2026-10-09 - version 3.26.0
+== New listings stopped arriving on some hosts ==
+- FIX: On a shop with large listings - HTML description templates, or many variations - the scheduled sync could run out of memory reading what had changed on eBay, and then do exactly the same on every run after, so new and changed listings stopped arriving. eBay sends every change for the period asked for in a single answer. The sync now checks how large that answer is before reading it and asks for a shorter period when it is too much for your site's memory, and it reads each answer using about half the memory it did.
+- If a run is still stopped by your host, the next one notices and asks for less, rather than repeating the same request for ever. It also reads less at a time for the following week.
+- FIX: If eBay took too long to send the changes for a period, the same period was asked for again on every run and never arrived. The sync now asks for a shorter one.
+- FIX: eBay sends at most 3,000 changed listings at a time, and when there were more it left the rest out without saying so. The sync now reads that period again in shorter pieces, so nothing is missed.
+- FIX: A listing that changed again - another sale, say - while the sync was part way through a large batch could make it skip the next listing in that batch for good. It now picks up after the last listing it finished, by its eBay item number.
+- A sync that has fallen behind now works through the backlog straight away, rather than one piece per scheduled run, while leaving most of the day's eBay allowance alone. A sync that had to ask for shorter periods goes back to longer ones once things are quiet.
+- Shops on eBay.de, .fr, .it or .es: eBay's "too many results" message arrived in your language and was not recognised. It is now asked for in English.
+- FIX: Emergency Stop pressed while the sync was reading from eBay was overwritten a moment later, and the sync carried on. It now stops.
+- Note: if a period cannot be read even fifteen minutes at a time - three attempts, each stopped - it is stepped over so the sync carries on, and the log names the minutes to pick up with Fetch Inventory. That was already true when eBay refused outright; it now also covers a request your host stops.
+
+== Syncs restarted or stuck, depending on your timezone ==
+- FIX: The check for a sync that has stopped responding read your site's local time as if it were UTC. On sites in the Americas a running sync looked stuck the moment it started, so every scheduled run restarted it from the beginning, and a large batch of changes could never finish. East of UTC, a sync that really had stopped was waited on for hours past the intended 30 minutes - eleven and a half in Sydney. It now behaves the same in every timezone, and the daily clean-up of stuck syncs, which had the same mistake, is fixed too.
+- A sync whose next step is still waiting in the queue is no longer taken for a stuck one, however long the queue takes - so a quiet site whose scheduled tasks only run when someone visits does not have its sync restarted from the beginning.
+
 2026-10-08 - version 3.25.0
 == Sold items not being removed ==
 - FIX: A product whose eBay listing sold out was often left in your catalogue with its stock set to zero. Three different parts of the plugin notice that a listing has ended, and only one of them could remove the product - so whichever noticed first decided whether it happened. On a large catalogue that was usually the wrong one, because the sync that could remove works through forty changed items at a time. All three can now remove, so it no longer depends on which gets there first.

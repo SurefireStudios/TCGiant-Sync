@@ -41,6 +41,37 @@ class TCGiant_Sync_API {
 	const DAILY_CALL_SOFT_CEILING = 0.80;
 
 	/**
+	 * How large a GetSellerEvents answer may be, as a share of the memory limit.
+	 *
+	 * The call has no pagination: it returns every listing changed in the
+	 * period asked for, in full, in one response. A shop on WordPress.com with
+	 * a 512 MB limit ran out of memory reading one, every time, so its newest
+	 * listings never arrived.
+	 *
+	 * Reading a response costs a multiple of its size, measured at 2 to 4 times
+	 * for most listings, nearer 7 for ones with many item specifics and little
+	 * description, and up to 9.5 for ones with many variations. A twentieth of
+	 * the limit keeps even that worst case under half of it, leaving the rest
+	 * for WordPress, WooCommerce and the import that follows. At 512 MB that is about 25 MB, which is more than eBay's own
+	 * ceiling of 3000 ordinary listings, so most shops never meet it.
+	 */
+	const EVENTS_BYTES_DIVISOR = 20;
+
+	/**
+	 * Bounds on that figure. The upper one also applies when PHP has no memory
+	 * limit at all, because the host's container still does.
+	 */
+	const EVENTS_BYTES_MIN = 4194304;
+	const EVENTS_BYTES_MAX = 33554432;
+
+	/**
+	 * Size of the last Trading API response body, in bytes.
+	 *
+	 * @var int
+	 */
+	private $last_body_bytes = 0;
+
+	/**
 	 * Supported Marketplaces.
 	 */
 	const MARKETPLACES = array(
@@ -64,6 +95,30 @@ class TCGiant_Sync_API {
 			self::$_instance = new self();
 		}
 		return self::$_instance;
+	}
+
+	/**
+	 * Largest GetSellerEvents response this site should try to read, in bytes.
+	 *
+	 * @return int
+	 */
+	public static function get_events_byte_limit() {
+		$limit = wp_convert_hr_to_bytes( (string) ini_get( 'memory_limit' ) );
+
+		if ( $limit <= 0 ) {
+			return self::EVENTS_BYTES_MAX;
+		}
+
+		return (int) max( self::EVENTS_BYTES_MIN, min( self::EVENTS_BYTES_MAX, (int) floor( $limit / self::EVENTS_BYTES_DIVISOR ) ) );
+	}
+
+	/**
+	 * Size of the last Trading API response body, in bytes.
+	 *
+	 * @return int
+	 */
+	public function get_last_body_bytes() {
+		return $this->last_body_bytes;
 	}
 
 	/**
@@ -150,9 +205,10 @@ class TCGiant_Sync_API {
 	 * @param string $call_name   Name of the Trading API call.
 	 * @param string $xml_body    The inner XML body.
 	 * @param bool   $allow_retry Whether to allow a single retry on token expiration.
+	 * @param int    $max_body_bytes Refuse a response larger than this, before reading it. 0 for no limit.
 	 * @return array|WP_Error Parsed API response or error.
 	 */
-	public function trading_api_request( $call_name, $xml_body, $allow_retry = true ) {
+	public function trading_api_request( $call_name, $xml_body, $allow_retry = true, $max_body_bytes = 0 ) {
 		// Block write operations on staging environments.
 		// CompleteSale is included: it marks an order shipped and pushes a
 		// tracking number to the seller's LIVE eBay account, so a staging clone
@@ -214,6 +270,15 @@ class TCGiant_Sync_API {
 			'timeout' => 45,
 		);
 
+		// Stop keeping the answer once it passes the ceiling, rather than hold
+		// all of something that is about to be refused. One byte over is enough
+		// to know.
+		if ( $max_body_bytes > 0 ) {
+			$args['limit_response_size'] = $max_body_bytes + 1;
+		}
+
+		$this->last_body_bytes = 0;
+
 		$response = $this->request_with_retry( $url, $args );
 
 		// Track the call regardless of outcome — eBay counts it either way.
@@ -230,16 +295,42 @@ class TCGiant_Sync_API {
 			return $response;
 		}
 
+		// The answer is read through four forms - the raw text, an XML tree, a
+		// JSON string and finally the array - and every one of them used to be
+		// kept until this function returned, along with a second copy of the
+		// raw text inside the response. For a large answer that alone was
+		// enough to exhaust a 512 MB limit. Each form is now let go as soon as
+		// the next exists, which roughly halves the peak and returns most of
+		// the memory before the import that follows begins. None of it changes
+		// the array handed back.
 		$body = wp_remote_retrieve_body( $response );
-		
+		unset( $response );
+
+		$this->last_body_bytes = strlen( $body );
+
+		if ( $max_body_bytes > 0 && $this->last_body_bytes > $max_body_bytes ) {
+			unset( $body );
+			return new WP_Error(
+				'response_too_large',
+				sprintf( 'eBay\'s answer to %s was larger than %d MB.', $call_name, (int) round( $max_body_bytes / 1048576 ) ),
+				array( 'limit' => $max_body_bytes )
+			);
+		}
+
 		$xml = simplexml_load_string( $body, 'SimpleXMLElement', LIBXML_NOCDATA );
+		unset( $body );
 		if ( ! $xml ) {
 			TCGiant_Sync_Logger::error( 'eBay Trading API Error: Invalid XML Response.' );
 			return new WP_Error( 'invalid_xml', 'Invalid XML from eBay Trading API.' );
 		}
 
-		$json = wp_json_encode( $xml );
+		// Unescaped, because escaping every non-Latin character as \uXXXX made
+		// the same listing cost a German or Russian shop more to read than an
+		// English one. It decodes to exactly the same array either way.
+		$json = wp_json_encode( $xml, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
+		unset( $xml );
 		$array = json_decode( $json, true );
+		unset( $json );
 
 		if ( isset( $array['Ack'] ) && 'Failure' === $array['Ack'] ) {
 			// Normalize: eBay may return a single error object or an indexed array of errors.
@@ -273,7 +364,7 @@ class TCGiant_Sync_API {
 				TCGiant_Sync_Logger::log( sprintf( 'eBay token expired during %s (%s). Refreshing token and retrying...', $call_name, $error_msg ), 'info' );
 				$new_token = TCGiant_Sync_OAuth::instance()->refresh_access_token();
 				if ( $new_token ) {
-					return $this->trading_api_request( $call_name, $xml_body, false );
+					return $this->trading_api_request( $call_name, $xml_body, false, $max_body_bytes );
 				}
 			}
 
@@ -551,10 +642,15 @@ class TCGiant_Sync_API {
 	 *
 	 * @param string $mod_time_from ISO 8601 UTC timestamp (start of window).
 	 * @param string $mod_time_to   ISO 8601 UTC timestamp (end of window). Max 48hr span.
+	 * @param int    $max_body_bytes Refuse an answer larger than this rather than read it. 0 for no limit.
 	 * @return array|WP_Error Parsed response or error.
 	 */
-	public function get_seller_events( $mod_time_from, $mod_time_to ) {
-		$xml = '
+	public function get_seller_events( $mod_time_from, $mod_time_to, $max_body_bytes = 0 ) {
+		// In English, as the listing calls already ask. The importer knows
+		// eBay's "too many results" refusal by its wording, and eBay answers in
+		// the language of the seller's own site - so for a shop on eBay.de or
+		// eBay.fr the refusal went unrecognised and the window never narrowed.
+		$xml = '<ErrorLanguage>en_US</ErrorLanguage>
 <ModTimeFrom>' . $mod_time_from . '</ModTimeFrom>
 <ModTimeTo>' . $mod_time_to . '</ModTimeTo>
 <DetailLevel>ReturnAll</DetailLevel>
@@ -562,7 +658,7 @@ class TCGiant_Sync_API {
 <IncludeVariationSpecifics>true</IncludeVariationSpecifics>
 <HideVariations>false</HideVariations>';
 
-		return $this->trading_api_request( 'GetSellerEvents', $xml );
+		return $this->trading_api_request( 'GetSellerEvents', $xml, true, $max_body_bytes );
 	}
 
 	/**

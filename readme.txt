@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.25.0
+Stable tag: 3.26.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,19 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.26.0 - 2026-10-09 =
+**New listings stopped arriving on some hosts**
+* FIX: On shops with large listings - HTML description templates, or many variations - the scheduled sync could run out of memory reading what had changed on eBay, and repeat that on every run, so new listings stopped arriving. It now checks the size of eBay's answer first and asks for a shorter period when it is too large, and reads each answer with about half the memory.
+* A run your host stops is noticed by the next one, which asks for less instead of repeating it for ever. A timeout from eBay is handled the same way.
+* FIX: eBay sends at most 3,000 changes at a time and silently left out the rest. That period is now read again in shorter pieces.
+* FIX: A listing that sold again mid-batch could make the sync skip the next one for good. It now resumes by eBay item number.
+* A sync that has fallen behind now catches up straight away rather than one piece per scheduled run, within a share of the day's eBay allowance.
+* eBay.de, .fr, .it and .es: eBay's "too many results" message is now asked for in English, so it is recognised.
+* FIX: Emergency Stop pressed while the sync was reading from eBay now actually stops it.
+
+**Syncs restarted or stuck, depending on your timezone**
+* FIX: The check for a stalled sync read local time as UTC. In the Americas a running sync was restarted on every scheduled run and a large batch could never finish; east of UTC a dead one was waited on for hours. It now behaves the same everywhere, and a sync still waiting in a slow queue is no longer mistaken for a stuck one.
 
 = 3.25.0 - 2026-10-08 =
 **Sold items not being removed**

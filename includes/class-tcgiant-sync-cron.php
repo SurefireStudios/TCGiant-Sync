@@ -689,8 +689,11 @@ class TCGiant_Sync_Cron {
 			return;
 		}
 
-		$last_activity = strtotime( $state['last_activity'] );
-		if ( $last_activity && ( time() - $last_activity ) > DAY_IN_SECONDS ) {
+		// last_activity is local time, and strtotime() read it as UTC, so this
+		// was out by the site's offset: a stuck sync in Sydney was reset after
+		// 35 hours rather than 24, and one in Los Angeles after 17.
+		$idle = TCGiant_Sync_Importer::sync_idle_seconds( $state );
+		if ( null !== $idle && $idle > DAY_IN_SECONDS ) {
 			TCGiant_Sync_Logger::warning( sprintf(
 				'Daily maintenance: Sync stuck in "%s" since %s. Resetting to idle.',
 				$state['status'], $state['last_activity']
