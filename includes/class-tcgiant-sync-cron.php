@@ -222,8 +222,10 @@ class TCGiant_Sync_Cron {
 
 							if ( null !== $settled ) {
 								TCGiant_Sync_Logger::log( sprintf(
-									'Ended listing check: WC #%d stock set to %d now its listing has finished.',
-									$pid, $settled
+									'Ended listing check: WC #%d stock now %d after its listing finished (eBay: %d listed, %d sold).',
+									$pid, $settled,
+									(int) ( $expired['Item']['Quantity'] ?? 0 ),
+									(int) ( $expired['Item']['SellingStatus']['QuantitySold'] ?? 0 )
 								) );
 							}
 
@@ -334,8 +336,10 @@ class TCGiant_Sync_Cron {
 
 				if ( null !== $settled ) {
 					TCGiant_Sync_Logger::log( sprintf(
-						'Ended listing check: WC #%d stock set to %d now its listing has finished.',
-						$pid, $settled
+						'Ended listing check: WC #%d stock now %d after its listing finished (eBay: %d listed, %d sold).',
+						$pid, $settled,
+						(int) ( $item['Quantity'] ?? 0 ),
+						(int) ( $item['SellingStatus']['QuantitySold'] ?? 0 )
 					) );
 				}
 
@@ -516,8 +520,7 @@ class TCGiant_Sync_Cron {
 	 * @return array{ran:string[], due:int} Hooks executed, and how many were due.
 	 */
 	public static function run_due_events_now() {
-		@set_time_limit( 300 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
-		ignore_user_abort( true );
+		TCGiant_Sync_Runtime::raise_time_limit( 300 );
 
 		$ran = array();
 		$now = time();
@@ -648,6 +651,7 @@ class TCGiant_Sync_Cron {
 		TCGiant_Sync_Logger::log( 'Daily maintenance: Starting...' );
 		$this->clean_old_logs();
 		$this->clean_stale_sync_state();
+		$this->warn_if_delta_behind();
 		$this->clean_orphaned_as_entries();
 		$this->log_daily_summary();
 		TCGiant_Sync_Logger::log( 'Daily maintenance: Complete.' );
@@ -702,6 +706,29 @@ class TCGiant_Sync_Cron {
 				'status' => 'idle',
 			) );
 		}
+	}
+
+	/**
+	 * Say so, once a day, when eBay's changes have not been read for a day.
+	 *
+	 * The reset above never fires on a sync that restarts every hour - it is
+	 * never idle for a day, only stuck - so two shops sat on one window for
+	 * days without a single line saying anything was wrong.
+	 */
+	private function warn_if_delta_behind() {
+		$behind = TCGiant_Sync_Importer::delta_behind_seconds();
+
+		if ( $behind <= TCGiant_Sync_Importer::delta_behind_threshold() ) {
+			return;
+		}
+
+		$state = TCGiant_Sync_Importer::get_sync_state();
+
+		TCGiant_Sync_Logger::error( sprintf(
+			'eBay changes have not been read since %s, %s ago. Sales, ended listings and new listings since then have not reached WooCommerce. The lines above from the sync say why.',
+			(string) ( $state['last_successful_sync_at'] ?? '' ),
+			human_time_diff( time() - $behind, time() )
+		) );
 	}
 
 	/**
@@ -838,49 +865,30 @@ class TCGiant_Sync_Cron {
 				continue;
 			}
 
-			// Only relist if WC stock > 0.
-			//
-			// is_in_stock() is checked as well as the quantity because a variable
-			// product usually does not manage stock itself — its variations do — so
-			// the quantity test alone passed products with nothing left to sell,
-			// and eBay refused the relist.
-			$product = wc_get_product( $product_id );
-			if ( ! $product || ! $product->is_in_stock() || ( $product->managing_stock() && $product->get_stock_quantity() <= 0 ) ) {
+			// Every check - stock, whether eBay says it sold out, the right call
+			// for its format, the quantity - is in the exporter, shared with bulk
+			// Relist. This used to check WooCommerce's stock only and send no
+			// quantity, so eBay relisted at whatever it had left.
+			$result = TCGiant_Sync_Exporter::instance()->relist_ended_listing( $product_id, 'Auto-Relist' );
+
+			if ( is_wp_error( $result ) && 'relist_refused' === $result->get_error_code() ) {
 				$skipped++;
 				continue;
 			}
 
-			// A listing with variations has to be relisted through eBay's
-			// fixed-price call. Through the ordinary one eBay relists the item and
-			// silently discards the variations, which would leave the seller with a
-			// live listing that has nothing in it to buy.
-			$result = TCGiant_Sync_Exporter::instance()->uses_fixed_price_calls( $product, array(), $ebay_item_id )
-				? $api->relist_fixed_price_item( $ebay_item_id )
-				: $api->relist_item( $ebay_item_id );
 			if ( is_wp_error( $result ) ) {
 				TCGiant_Sync_Logger::error( sprintf(
 					'Auto-Relist: Failed to relist eBay #%s (WC #%d): %s',
 					$ebay_item_id, $product_id, $result->get_error_message()
 				) );
-			} else {
-				$new_item_id = $result['ItemID'] ?? $ebay_item_id;
-				update_post_meta( $product_id, '_ebay_item_id', $new_item_id );
-				update_post_meta( $product_id, '_ebay_listing_status', 'Active' );
-
-				// Update custom table if available.
-				TCGiant_Sync_DB::upsert( array(
-					'product_id'     => $product_id,
-					'ebay_item_id'   => $new_item_id,
-					'listing_status' => 'Active',
-					'last_synced'    => current_time( 'mysql' ),
-				) );
-
-				$relisted++;
+				continue;
 			}
+
+			$relisted++;
 		}
 
 		TCGiant_Sync_Logger::log( sprintf(
-			'Auto-Relist: Complete. %d relisted, %d skipped (no stock).',
+			'Auto-Relist: Complete. %d relisted, %d not relisted (no stock, sold out on eBay, or already live).',
 			$relisted, $skipped
 		), $relisted > 0 ? 'success' : 'info' );
 	}

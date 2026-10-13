@@ -1,5 +1,34 @@
 *** TCGiant Sync Changelog ***
 
+2026-10-12 - version 3.27.0
+== The sync could restart the same batch of changes for ever ==
+- FIX: When your host stopped the scheduled sync part way through importing a batch of changes - for using too much memory or time - nothing recorded how far it had got, and the next run began the same batch again from the start. On some hosts that happened every hour, indefinitely, and nothing after that point reached your shop: no sales, no ended listings, no new listings. The sync now notes its place before every listing and carries on from there.
+- A listing that stops the sync every time it is imported is tried twice, then stepped over so the rest can be read. It still gets a stock check of its own, so a sale still takes it off your shop, and Stock Review lists it.
+- Each run now stops well inside your host's time and memory limits and hands over to a fresh one, instead of running until it is stopped. On hosts with a short limit that cannot be raised, a run no longer dies on its first listing.
+- A batch of changes is read from eBay once, not again on every run that works through it.
+- When your host does stop a run, the activity log now says so, and which listing it was on. The lines that would have said so used to be lost with the run.
+- NEW: If eBay's changes have not been read for more than a day (two sync intervals on a daily schedule), your plugin screens say so, and the activity log does once a day.
+- FIX: On PHP 8 hosts that disable set_time_limit(), every sync, scan and image batch stopped on its first line.
+
+== Items sold on your website could go back in stock ==
+- FIX: When an eBay listing ended, the plugin set the product's stock from eBay's own figures - listed minus sold. eBay never sees a sale made on your website, so an item that sold there, and whose eBay listing the plugin then ended, was put back in stock and offered again. An ended listing can now only lower your stock, never raise it.
+- NEW: Stock Review lists products this may already have happened to: ended, back in stock, with a website order placed after the listing started. The order is shown beside each. Set the ones that have gone to 0, or keep the stock of any you genuinely restocked - either way they leave the list. Nothing changes unless you press a button, and relisting or pushing them waits until you have looked.
+- Where eBay says more are left than your shop holds, your shop's figure now stands, and Stock Review lists it with a button to use eBay's figure instead.
+- If you sell only on eBay: a quantity raised in Seller Hub that the sync had not yet picked up when the listing ended is no longer applied automatically - check that list on Stock Review before relisting. Relisting now sends your shop's quantity to eBay.
+
+== eBay sales now come off your shop even when the sync is behind ==
+- FIX: Order sync skipped eBay sales of products linked to a listing and left them to the regular sync - so while that was behind, sold items stayed on your shop. Each eBay sale now gets a stock check of its own within minutes. It reads eBay's figures and can only lower stock. Emergency Stop leaves these checks in place.
+
+== Relisting ==
+- FIX: Relist on the Listings page relisted whatever was selected - items that had sold out, and products in the trash - at the original quantity. Relist and Auto-Relist now check with eBay first. A sale the sync has not reached yet is taken off the stock before anything is relisted, and a listing that sold out is not relisted. Your shop's current quantity is sent, and the new listing's end date is recorded, so the hourly check no longer marks a fresh relist as ended.
+- If you restock an item after it sold out, Relist and Push now list the restock. They no longer apply the old listing's sales to it a second time. Where a sale had not reached your stock yet, it is taken off first and the activity log says so, with the figures.
+- FIX: Pushing a product whose eBay listing had ended created a new listing without checking whether the old one had sold. It now checks first. A push or relist never moves a product to the trash.
+
+== Also ==
+- FIX: A full sync now records when it started rather than when it finished, so changes made on eBay while it ran are read by the next regular sync instead of skipped.
+- FIX: Imported eBay orders with an empty address field had "Array" written into the address, and WooCommerce logged "Array to string conversion". Orders already imported keep the text until edited.
+- FIX: The image downloader could get stuck on a product whose download was stopped by the host, starting every batch with it for ever. Each attempt is now counted before it begins, so after three that never finished the product is given up and the queue moves on. A single eBay photo download is capped at 30 seconds; it could wait five minutes. A product given up after ordinary failures is still tried again when you run an images-only sync for it.
+
 2026-10-09 - version 3.26.1
 == Having the dashboard open could restart the sync ==
 - FIX: While the sync worked through a batch of changes, the dashboard took it for finished and marked it complete - logging "Sync complete! ... out of 0 total" - so the next scheduled sync started that batch of changes again from the beginning. On a large shop that could keep it from ever reaching the newest sales. A batch that had stopped part way was "completed" the same way, instead of being restarted.

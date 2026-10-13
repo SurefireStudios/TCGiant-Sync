@@ -223,10 +223,10 @@ class TCGiant_Sync_Orders {
 	 * @return WC_Order|false Created order or false on failure.
 	 */
 	private function create_wc_order( $ebay_order ) {
-		$order_id    = $ebay_order['OrderID'] ?? '';
-		$buyer_email = $ebay_order['BuyerUserID'] ?? '';
+		$order_id    = TCGiant_Sync_API::scalar_value( $ebay_order['OrderID'] ?? '' );
+		$buyer_email = TCGiant_Sync_API::scalar_value( $ebay_order['BuyerUserID'] ?? '' );
 		$total       = TCGiant_Sync_API::money_value( $ebay_order['Total'] ?? 0 );
-		$status      = $ebay_order['OrderStatus'] ?? '';
+		$status      = TCGiant_Sync_API::scalar_value( $ebay_order['OrderStatus'] ?? '' );
 
 		try {
 			$wc_order = wc_create_order();
@@ -247,7 +247,7 @@ class TCGiant_Sync_Orders {
 			if ( ! empty( $buyer_transactions ) ) {
 				$first_tx = $buyer_transactions[0] ?? array();
 				$buyer_data = $first_tx['Buyer'] ?? array();
-				$email = $buyer_data['Email'] ?? '';
+				$email = TCGiant_Sync_API::scalar_value( $buyer_data['Email'] ?? '' );
 				if ( ! empty( $email ) && is_email( $email ) ) {
 					$wc_order->set_billing_email( $email );
 
@@ -302,7 +302,9 @@ class TCGiant_Sync_Orders {
 
 			return $wc_order;
 
-		} catch ( \Exception $e ) {
+		} catch ( \Throwable $e ) {
+			// Throwable, not Exception: a TypeError from bad eBay data is an
+			// Error, and slipped past this to kill the whole order import.
 			TCGiant_Sync_Logger::error( 'Order Import: Exception — ' . $e->getMessage() );
 			return false;
 		}
@@ -316,19 +318,28 @@ class TCGiant_Sync_Orders {
 	 */
 	private function parse_address( $ebay_order ) {
 		$shipping = $ebay_order['ShippingAddress'] ?? array();
-		$name     = $shipping['Name'] ?? '';
-		$parts    = explode( ' ', $name, 2 );
+		$shipping = is_array( $shipping ) ? $shipping : array();
+
+		// eBay sends an empty field as an empty element, and the XML to array
+		// conversion turns an empty element into an empty array - so a buyer
+		// with no second address line had "Array" written into their order,
+		// and WooCommerce logged "Array to string conversion" each time.
+		$field = function ( $key ) use ( $shipping ) {
+			return TCGiant_Sync_API::scalar_value( $shipping[ $key ] ?? '' );
+		};
+
+		$parts = explode( ' ', trim( $field( 'Name' ) ), 2 );
 
 		return array(
 			'first_name' => $parts[0] ?? '',
 			'last_name'  => $parts[1] ?? '',
-			'address_1'  => $shipping['Street1'] ?? '',
-			'address_2'  => $shipping['Street2'] ?? '',
-			'city'       => $shipping['CityName'] ?? '',
-			'state'      => $shipping['StateOrProvince'] ?? '',
-			'postcode'   => $shipping['PostalCode'] ?? '',
-			'country'    => $shipping['Country'] ?? '',
-			'phone'      => $shipping['Phone'] ?? '',
+			'address_1'  => $field( 'Street1' ),
+			'address_2'  => $field( 'Street2' ),
+			'city'       => $field( 'CityName' ),
+			'state'      => $field( 'StateOrProvince' ),
+			'postcode'   => $field( 'PostalCode' ),
+			'country'    => $field( 'Country' ),
+			'phone'      => $field( 'Phone' ),
 		);
 	}
 
@@ -357,8 +368,9 @@ class TCGiant_Sync_Orders {
 	 */
 	private function add_line_item( $wc_order, $transaction ) {
 		$item_data   = $transaction['Item'] ?? array();
-		$ebay_item_id = $item_data['ItemID'] ?? '';
-		$title       = $item_data['Title'] ?? 'eBay Item';
+		$ebay_item_id = TCGiant_Sync_API::scalar_value( $item_data['ItemID'] ?? '' );
+		$title       = TCGiant_Sync_API::scalar_value( $item_data['Title'] ?? '' );
+		$title       = '' !== $title ? $title : 'eBay Item';
 		$qty         = (int) TCGiant_Sync_API::scalar_value( $transaction['QuantityPurchased'] ?? 1 );
 		$qty         = max( 1, $qty );
 		$price       = TCGiant_Sync_API::money_value( $transaction['TransactionPrice'] ?? 0 );

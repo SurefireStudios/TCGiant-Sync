@@ -184,7 +184,11 @@ class TCGiant_Sync_Logger {
 			add_action( 'shutdown', array( __CLASS__, 'flush' ), 100 );
 		}
 
-		if ( count( self::$buffer ) >= self::BUFFER_LIMIT ) {
+		// Warnings and errors go to disk now, with everything buffered before
+		// them. Held until shutdown they were lost with the rest of the buffer
+		// whenever the request died - and a request that dies is exactly when
+		// they matter.
+		if ( count( self::$buffer ) >= self::BUFFER_LIMIT || $severity >= self::LEVELS['warning'] ) {
 			self::flush();
 		}
 
@@ -231,6 +235,29 @@ class TCGiant_Sync_Logger {
 		}
 
 		file_put_contents( $log_file, $entries, FILE_APPEND | LOCK_EX );
+	}
+
+	/**
+	 * Write one line straight to the log file, skipping the buffer.
+	 *
+	 * For a request that is dying: whatever is buffered goes first so the
+	 * order holds, and nothing is mirrored to WooCommerce's logger, which may
+	 * need more memory than is left.
+	 *
+	 * @param string $message Message.
+	 * @param string $level   Level.
+	 */
+	public static function write_now( $message, $level = 'error' ) {
+		$message = trim( preg_replace( '/\s+/', ' ', (string) $message ) );
+
+		self::$buffer[] = '[' . current_time( 'Y-m-d H:i:s' ) . "] [$level] $message" . PHP_EOL;
+
+		// Appended directly: flush() trims an oversized log by reading all of
+		// it into memory, which is the last thing a dying request should do.
+		$entries      = implode( '', self::$buffer );
+		self::$buffer = array();
+
+		file_put_contents( self::get_log_file(), $entries, FILE_APPEND | LOCK_EX );
 	}
 
 	/**

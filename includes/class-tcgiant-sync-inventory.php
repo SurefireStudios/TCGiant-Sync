@@ -19,6 +19,12 @@ if ( ! defined( 'ABSPATH' ) ) {
 class TCGiant_Sync_Inventory {
 
 	/**
+	 * Everything recorded about how one ended listing was settled. All of it
+	 * is about that listing, so all of it goes when a new one starts.
+	 */
+	const SETTLE_KEYS = array( '_ebay_stock_settled_at', '_ebay_stock_settled_item', '_ebay_unsold_at_end', '_ebay_quantity_listed', '_ebay_quantity_sold', '_ebay_restock_reviewed' );
+
+	/**
 	 * Instance.
 	 *
 	 * @var self|null
@@ -126,26 +132,32 @@ class TCGiant_Sync_Inventory {
 	// ───────────────────────────────────────────────────────────────────────────
 
 	/**
-	 * Detect when a product's stock changes (manual edit, REST API, CSV import).
-	 *
-	 * @param WC_Product $product The product whose stock changed.
-	 */
-	/**
 	 * Bring a product's stock into line once its eBay listing has ended.
 	 *
 	 * A listing holding one of something ends the moment it sells, so an ended
-	 * listing is where a sale of a single item is seen — the ordinary import
-	 * never runs for one. Two separate places notice a listing ending and both
-	 * recorded only the status, leaving sold goods showing as in stock.
+	 * listing is where a sale of a single item is seen - the ordinary import
+	 * never runs for one.
 	 *
-	 * eBay's own figures answer both cases: sold out leaves nothing, while a
-	 * listing the seller ended by hand still reports whatever went unsold, and
-	 * that stock is genuinely still theirs.
+	 * eBay's figures only ever LOWER WooCommerce's stock here, never raise it.
+	 * They used to be written over it outright, as "listed minus sold". But eBay
+	 * only knows about eBay's sales. A coin sold on the shop's own website had
+	 * its stock taken to 0 by WooCommerce; the plugin then ended the eBay
+	 * listing, which eBay records as 1 listed and 0 sold - and the next sync
+	 * wrote 1 back, putting a coin that had already gone up for sale again.
+	 *
+	 * So the lower of the two figures stands. eBay's is lower when it sold
+	 * something WooCommerce has not heard about yet; WooCommerce's is lower when
+	 * the sale happened on the website, or someone adjusted it by hand. Where
+	 * eBay says more remain than WooCommerce holds, that is recorded and logged
+	 * rather than applied: under-stocking can be put right later, an oversell
+	 * cannot.
 	 *
 	 * @param int      $product_id WooCommerce product.
 	 * @param int|null $listed     Quantity the listing held.
 	 * @param int|null $sold       Quantity eBay reports as sold.
-	 * @return int|null Stock applied, or null when eBay gave nothing to go on.
+	 * @return int|null Stock WooCommerce now holds (0 for an unmanaged product
+	 *                  that is out of stock), or null when eBay gave nothing to
+	 *                  go on or the write did not take.
 	 */
 	public static function apply_ended_listing_stock( $product_id, $listed, $sold ) {
 		if ( null === $listed || null === $sold ) {
@@ -157,38 +169,67 @@ class TCGiant_Sync_Inventory {
 			return null;
 		}
 
-		$remaining = max( 0, (int) $listed - (int) $sold );
+		$product_id     = (int) $product_id;
+		$ebay_remaining = max( 0, (int) $listed - (int) $sold );
 
-		// eBay has already accounted for the sale, so this must not travel back
-		// to eBay as a stock change of our own.
+		// eBay has already accounted for its own sales, so nothing written here
+		// may travel back to eBay as a stock change of ours.
 		self::begin_ebay_origin();
 
 		try {
 			if ( $product->managing_stock() ) {
-				wc_update_product_stock( (int) $product_id, $remaining, 'set' );
+				$current = $product->get_stock_quantity();
+				$held    = null === $current ? $ebay_remaining : min( (int) $current, $ebay_remaining );
 
-				// Confirm the quantity landed before touching anything else.
-				//
-				// The status write used to come first, so a quantity that
-				// failed to save still left the product marked out of stock —
-				// which is how the review screen decides a product no longer
-				// needs looking at. It would have vanished from the one list
-				// that could have caught it, with its quantity untouched.
-				$after = wc_get_product( (int) $product_id );
-
-				if ( ! $after || (int) $after->get_stock_quantity() !== $remaining ) {
-					TCGiant_Sync_Logger::warning( sprintf(
-						'Tried to set WC #%d to %d after its eBay listing ended, but the quantity did not change. Something else on this site is holding it, so nothing further was altered and the product stays on the Stock Review list.',
-						(int) $product_id,
-						$remaining
-					) );
-
-					// finally still runs, so the origin guard closes cleanly.
-					return null;
+				// Recorded when the shop still holds some, for a shop that sells
+				// only on eBay to review. Not when it holds none: that is the
+				// website sale whose listing the plugin then ended, and offering
+				// eBay's figure for it would invite putting a sold item back.
+				if ( null !== $current && (int) $current > 0 && $ebay_remaining > (int) $current ) {
+					self::note_unsold_at_end( $product_id, $ebay_remaining, (int) $current );
+				} else {
+					delete_post_meta( $product_id, '_ebay_unsold_at_end' );
 				}
-			}
 
-			wc_update_product_stock_status( (int) $product_id, $remaining > 0 ? 'instock' : 'outofstock' );
+				if ( null === $current || $held < (int) $current ) {
+					wc_update_product_stock( $product_id, $held, 'set' );
+
+					// Confirm the quantity landed before touching anything else.
+					//
+					// The status write used to come first, so a quantity that
+					// failed to save still left the product marked out of stock -
+					// which is how the review screen decides a product no longer
+					// needs looking at. It would have vanished from the one list
+					// that could have caught it, with its quantity untouched.
+					$after = wc_get_product( $product_id );
+
+					if ( ! $after || (int) $after->get_stock_quantity() !== $held ) {
+						TCGiant_Sync_Logger::warning( sprintf(
+							'Tried to set WC #%d to %d after its eBay listing ended, but the quantity did not change. Something else on this site is holding it, so nothing further was altered and the product stays on the Stock Review list.',
+							$product_id,
+							$held
+						) );
+
+						// finally still runs, so the origin guard closes cleanly.
+						return null;
+					}
+				}
+
+				// Out of stock when nothing is left; never back IN stock from here,
+				// for the same reason the quantity never rises.
+				if ( $held <= 0 ) {
+					wc_update_product_stock_status( $product_id, 'outofstock' );
+				}
+			} else {
+				// No quantity to compare, only a status: eBay can say it sold out,
+				// but not that the shop still has one.
+				if ( 0 === $ebay_remaining ) {
+					wc_update_product_stock_status( $product_id, 'outofstock' );
+				}
+
+				$after = wc_get_product( $product_id );
+				$held  = ( $after && 'outofstock' === $after->get_stock_status() ) ? 0 : $ebay_remaining;
+			}
 		} finally {
 			self::end_ebay_origin();
 		}
@@ -196,17 +237,105 @@ class TCGiant_Sync_Inventory {
 		// Remember that eBay has been asked about this one.
 		//
 		// A listing that ended without selling reports its stock as still
-		// present, quite correctly — the goods are unsold and remain the
+		// present, quite correctly - the goods are unsold and remain the
 		// seller's. But "ended and in stock" is also how an unsettled product
 		// looks, so without this the review screen could never tell a product
 		// it had already checked from one it had not, and a legitimately
 		// unsold item sat on the list for ever, unchanged however many times
 		// the button was pressed.
-		update_post_meta( (int) $product_id, '_ebay_stock_settled_at', current_time( 'mysql' ) );
+		update_post_meta( $product_id, '_ebay_stock_settled_at', current_time( 'mysql' ) );
 
-		return $remaining;
+		// eBay's own figures, kept so that "sold out on eBay" can be told apart
+		// from "sold on the website" later without asking eBay again - it drops
+		// old listings.
+		update_post_meta( $product_id, '_ebay_quantity_listed', (int) $listed );
+		update_post_meta( $product_id, '_ebay_quantity_sold', (int) $sold );
+
+		// And which listing they belong to. A settle is a statement about one
+		// listing; a relist or push later needs to know whether THIS listing's
+		// sales are already in the stock, or whether stock entered since is the
+		// shop's own restock.
+		update_post_meta( $product_id, '_ebay_stock_settled_item', (string) get_post_meta( $product_id, '_ebay_item_id', true ) );
+
+		return $held;
 	}
 
+	/**
+	 * Lower a product's stock to what eBay says is left on a live listing.
+	 *
+	 * Never raises it: eBay's figure is lower when it sold something WooCommerce
+	 * has not heard of, and WooCommerce's is lower when the website did. Either
+	 * way the lower one is true.
+	 *
+	 * @param int $product_id Product.
+	 * @param int $available  eBay's listed minus sold.
+	 * @return int|null Stock now held, or null when the product does not track
+	 *                  a quantity or the write did not take.
+	 */
+	public static function lower_stock_to( $product_id, $available ) {
+		$product = wc_get_product( (int) $product_id );
+
+		if ( ! $product || ! $product->managing_stock() ) {
+			return null;
+		}
+
+		$current   = $product->get_stock_quantity();
+		$available = max( 0, (int) $available );
+
+		if ( null !== $current && $available >= (int) $current ) {
+			return (int) $current;
+		}
+
+		self::begin_ebay_origin();
+
+		try {
+			wc_update_product_stock( (int) $product_id, $available, 'set' );
+
+			$after = wc_get_product( (int) $product_id );
+
+			if ( ! $after || (int) $after->get_stock_quantity() !== $available ) {
+				return null;
+			}
+
+			if ( $available <= 0 ) {
+				wc_update_product_stock_status( (int) $product_id, 'outofstock' );
+			}
+		} finally {
+			self::end_ebay_origin();
+		}
+
+		return $available;
+	}
+
+	/**
+	 * Record that eBay reported more left than WooCommerce holds.
+	 *
+	 * Logged once per product per figure, not on every pass.
+	 *
+	 * @param int $product_id     Product.
+	 * @param int $ebay_remaining eBay's listed minus sold.
+	 * @param int $current        WooCommerce's stock.
+	 */
+	private static function note_unsold_at_end( $product_id, $ebay_remaining, $current ) {
+		if ( (int) get_post_meta( $product_id, '_ebay_unsold_at_end', true ) === (int) $ebay_remaining ) {
+			return;
+		}
+
+		update_post_meta( $product_id, '_ebay_unsold_at_end', (int) $ebay_remaining );
+
+		TCGiant_Sync_Logger::log( sprintf(
+			'WC #%d: its eBay listing ended with %d unsold, but WooCommerce holds %d. The difference was sold or adjusted outside eBay, so WooCommerce\'s figure stands. Stock Review lists it if you want eBay\'s instead.',
+			$product_id,
+			$ebay_remaining,
+			$current
+		) );
+	}
+
+	/**
+	 * Detect when a product's stock changes (manual edit, REST API, CSV import).
+	 *
+	 * @param WC_Product $product The product whose stock changed.
+	 */
 	public function on_product_stock_change( $product ) {
 		if ( ! $product ) {
 			return;
@@ -519,6 +648,13 @@ class TCGiant_Sync_Inventory {
 				$product_id = $this->find_product_id_by_sku( $sku );
 				if ( $product_id ) {
 					update_post_meta( $product_id, '_ebay_listing_status', 'Ended' );
+
+					// And settled, there and then: the stock is 0, and nothing eBay
+					// says about this listing later can be lower. Recorded, so a
+					// relist after the shop restocks lists the restock instead of
+					// bringing the old listing's figures in over it.
+					update_post_meta( $product_id, '_ebay_stock_settled_at', current_time( 'mysql' ) );
+					update_post_meta( $product_id, '_ebay_stock_settled_item', (string) $item_id );
 				}
 				return;
 			}
@@ -618,7 +754,21 @@ class TCGiant_Sync_Inventory {
 	 * @return void
 	 */
 	public static function clear_settled_mark( $product_id ) {
-		delete_post_meta( (int) $product_id, '_ebay_stock_settled_at' );
+		foreach ( self::SETTLE_KEYS as $key ) {
+			delete_post_meta( (int) $product_id, $key );
+		}
+	}
+
+	/**
+	 * Whether this listing's ending is already in the product's stock.
+	 *
+	 * @param int    $product_id   Product.
+	 * @param string $ebay_item_id The listing.
+	 * @return bool
+	 */
+	public static function listing_already_settled( $product_id, $ebay_item_id ) {
+		return '' !== (string) get_post_meta( (int) $product_id, '_ebay_stock_settled_at', true )
+			&& (string) $ebay_item_id === (string) get_post_meta( (int) $product_id, '_ebay_stock_settled_item', true );
 	}
 
 	/**
@@ -741,6 +891,320 @@ class TCGiant_Sync_Inventory {
 	}
 
 	/**
+	 * Products that were probably sold on the website and then put back in
+	 * stock by the ended-listing settle before 3.27.0.
+	 *
+	 * That settle wrote eBay's "listed minus sold" over WooCommerce's stock.
+	 * eBay never sees a website sale, so a quantity-1 item sold on the website
+	 * - whose listing the plugin then ended - came back as 1 listed, 0 sold,
+	 * and went up for sale again. A coin shop found one; this finds the rest.
+	 *
+	 * Only settles made before 3.27.0 qualify - they are the ones with no
+	 * record of which listing they settled - because a settle since then
+	 * cannot raise stock.
+	 * Of those: ended, in stock, with a paid website order for the product
+	 * placed after its listing started. Each comes with that order so the shop
+	 * can judge it - a hand restock after the sale looks the same from here.
+	 * Nothing is changed by finding them.
+	 *
+	 * Cached for ten minutes.
+	 *
+	 * @param int $limit Most candidates to examine.
+	 * @return array[] Each: product_id, order_id.
+	 */
+	public static function find_restocked_after_website_sale( $limit = 200 ) {
+		$cached = get_transient( 'tcgiant_restocked_after_sale' );
+		if ( is_array( $cached ) ) {
+			return $cached;
+		}
+
+		$found = array();
+
+		foreach ( self::website_sales_since_listing( self::legacy_settled_in_stock( $limit ) ) as $product_id => $order_id ) {
+			$found[] = array(
+				'product_id' => (int) $product_id,
+				'order_id'   => (int) $order_id,
+			);
+		}
+
+		set_transient( 'tcgiant_restocked_after_sale', $found, 10 * MINUTE_IN_SECONDS );
+
+		return $found;
+	}
+
+	/**
+	 * Whether one product looks restocked by the old settle after a website
+	 * sale. For the relist paths, which must not relist such an item.
+	 *
+	 * @param int $product_id Product.
+	 * @return int The website order, or 0.
+	 */
+	public static function restocked_after_website_sale( $product_id ) {
+		$product_id = (int) $product_id;
+
+		if ( ! in_array( $product_id, self::legacy_settled_in_stock( 0, $product_id ), true ) ) {
+			return 0;
+		}
+
+		$sales = self::website_sales_since_listing( array( $product_id ) );
+
+		return isset( $sales[ $product_id ] ) ? (int) $sales[ $product_id ] : 0;
+	}
+
+	/**
+	 * Ended, in stock, and settled before 3.27.0.
+	 *
+	 * @param int $limit      Most to return; 0 for no limit.
+	 * @param int $product_id Only this product, or 0 for all.
+	 * @return int[]
+	 */
+	private static function legacy_settled_in_stock( $limit = 0, $product_id = 0 ) {
+		global $wpdb;
+
+		$sql = "SELECT p.ID
+			FROM {$wpdb->posts} p
+			INNER JOIN {$wpdb->postmeta} listing ON listing.post_id = p.ID AND listing.meta_key = '_ebay_listing_status'
+			INNER JOIN {$wpdb->postmeta} settled ON settled.post_id = p.ID AND settled.meta_key = '_ebay_stock_settled_at'
+			INNER JOIN {$wpdb->postmeta} stock   ON stock.post_id   = p.ID AND stock.meta_key   = '_stock_status'
+			LEFT JOIN  {$wpdb->postmeta} sitem   ON sitem.post_id   = p.ID AND sitem.meta_key   = '_ebay_stock_settled_item'
+			LEFT JOIN  {$wpdb->postmeta} reviewed ON reviewed.post_id = p.ID AND reviewed.meta_key = '_ebay_restock_reviewed'
+			WHERE p.post_type = 'product'
+			  AND p.post_status NOT IN ( 'trash', 'auto-draft' )
+			  AND listing.meta_value = 'Ended'
+			  AND stock.meta_value = 'instock'
+			  AND settled.meta_value <> ''
+			  -- Settled before 3.27.0: every settle since notes the listing.
+			  AND sitem.meta_id IS NULL
+			  AND reviewed.meta_id IS NULL";
+
+		if ( $product_id > 0 ) {
+			$sql .= $wpdb->prepare( ' AND p.ID = %d', (int) $product_id );
+		}
+
+		$sql .= ' ORDER BY p.ID DESC';
+
+		if ( $limit > 0 ) {
+			$sql .= $wpdb->prepare( ' LIMIT %d', (int) $limit );
+		}
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared
+		return array_map( 'intval', (array) $wpdb->get_col( $sql ) );
+	}
+
+	/**
+	 * For each product, a paid website order for it placed after its listing
+	 * started.
+	 *
+	 * One query over the order items for all of them, read through the tables
+	 * WooCommerce keeps whichever order storage is in use; then the orders
+	 * themselves, newest first. Refunds are skipped: WooCommerce stores a
+	 * refunded line as a line of the refund, under the product, and a refund
+	 * is not a sale.
+	 *
+	 * @param int[] $product_ids Products.
+	 * @return array product_id => order_id.
+	 */
+	private static function website_sales_since_listing( array $product_ids ) {
+		global $wpdb;
+
+		$product_ids = array_values( array_filter( array_map( 'intval', $product_ids ) ) );
+		if ( empty( $product_ids ) ) {
+			return array();
+		}
+
+		$in = implode( ',', array_fill( 0, count( $product_ids ), '%s' ) );
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared
+		$rows = $wpdb->get_results( $wpdb->prepare(
+			"SELECT DISTINCT CAST( im.meta_value AS UNSIGNED ) AS product_id, oi.order_id
+			FROM {$wpdb->prefix}woocommerce_order_items oi
+			INNER JOIN {$wpdb->prefix}woocommerce_order_itemmeta im ON im.order_item_id = oi.order_item_id
+			WHERE oi.order_item_type = 'line_item'
+			  AND im.meta_key IN ( '_product_id', '_variation_id' )
+			  AND im.meta_value IN ( {$in} )
+			ORDER BY oi.order_id DESC",
+			array_map( 'strval', $product_ids )
+		), ARRAY_A );
+
+		$found = array();
+
+		foreach ( (array) $rows as $row ) {
+			$product_id = (int) $row['product_id'];
+
+			if ( isset( $found[ $product_id ] ) ) {
+				continue;
+			}
+
+			// Only a sale the old settle could have written over: one made
+			// BEFORE it ran. A website sale since then took the stock down
+			// itself, and whatever the product holds now is real.
+			$settled_at = (string) get_post_meta( $product_id, '_ebay_stock_settled_at', true );
+			$settled_ts = '' !== $settled_at ? (int) get_gmt_from_date( $settled_at, 'U' ) : 0;
+
+			$order = wc_get_order( (int) $row['order_id'] );
+
+			// Real shop orders only - not refunds, subscriptions or anything else.
+			if ( ! $order instanceof WC_Order || 'shop_order' !== $order->get_type() ) {
+				continue;
+			}
+
+			if ( ! in_array( $order->get_status(), array( 'processing', 'completed', 'on-hold' ), true ) ) {
+				continue;
+			}
+
+			// eBay's own sales are not the question: eBay counted those.
+			if ( 'ebay' === $order->get_meta( '_ebay_order_source' ) ) {
+				continue;
+			}
+
+			$started = strtotime( (string) get_post_meta( $product_id, '_ebay_start_time', true ) );
+			$created = $order->get_date_created();
+			if ( $started && $created && $created->getTimestamp() < $started ) {
+				continue;
+			}
+			if ( $settled_ts && $created && $created->getTimestamp() > $settled_ts ) {
+				continue;
+			}
+
+			$total = (float) $order->get_total();
+			if ( $total > 0 && (float) $order->get_total_refunded() >= $total ) {
+				continue;
+			}
+
+			$found[ $product_id ] = (int) $row['order_id'];
+		}
+
+		return $found;
+	}
+
+	/**
+	 * Products whose eBay listing ended with more unsold than WooCommerce holds.
+	 *
+	 * Recorded by the settle, which no longer applies eBay's higher figure - see
+	 * apply_ended_listing_stock(). Usually the difference sold on the website;
+	 * listed so a shop that only sells on eBay can take eBay's figure instead.
+	 *
+	 * @param int $limit Most to return.
+	 * @return array[] Each: product_id, ebay_remaining.
+	 */
+	public static function find_unsold_at_end( $limit = 100 ) {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$rows = $wpdb->get_results( $wpdb->prepare(
+			"SELECT p.ID AS product_id, CAST( m.meta_value AS SIGNED ) AS ebay_remaining
+			FROM {$wpdb->posts} p
+			INNER JOIN {$wpdb->postmeta} m ON m.post_id = p.ID AND m.meta_key = '_ebay_unsold_at_end'
+			INNER JOIN {$wpdb->postmeta} listing ON listing.post_id = p.ID AND listing.meta_key = '_ebay_listing_status' AND listing.meta_value = 'Ended'
+			WHERE p.post_type = 'product'
+			  AND p.post_status NOT IN ( 'trash', 'auto-draft' )
+			ORDER BY p.ID DESC
+			LIMIT %d",
+			max( 1, (int) $limit )
+		), ARRAY_A );
+
+		return array_map( function ( $row ) {
+			return array(
+				'product_id'     => (int) $row['product_id'],
+				'ebay_remaining' => (int) $row['ebay_remaining'],
+			);
+		}, (array) $rows );
+	}
+
+	/**
+	 * Set a product's stock to 0 at the shop's request.
+	 *
+	 * Not sent to eBay: the listing has already ended.
+	 *
+	 * @param int $product_id Product.
+	 * @return bool
+	 */
+	public static function zero_stock( $product_id ) {
+		$product = wc_get_product( (int) $product_id );
+
+		// Only for a listing that has ended. The list it is chosen from is
+		// cached, and a product relisted since must not be zeroed here with
+		// eBay left selling it.
+		if ( ! $product || 'Ended' !== (string) get_post_meta( (int) $product_id, '_ebay_listing_status', true ) ) {
+			return false;
+		}
+
+		TCGiant_Sync_Logger::log( sprintf(
+			'Stock review: WC #%d stock was %s before being set to 0.',
+			(int) $product_id,
+			$product->managing_stock() ? (string) (int) $product->get_stock_quantity() : $product->get_stock_status()
+		) );
+
+		self::begin_ebay_origin();
+
+		try {
+			if ( $product->managing_stock() ) {
+				wc_update_product_stock( (int) $product_id, 0, 'set' );
+			}
+			wc_update_product_stock_status( (int) $product_id, 'outofstock' );
+		} finally {
+			self::end_ebay_origin();
+		}
+
+		// Looked at, and sold on the website - which also keeps it off the
+		// "sold out on eBay" list, whose trash button is for eBay sales.
+		update_post_meta( (int) $product_id, '_ebay_restock_reviewed', 'zeroed' );
+		delete_transient( 'tcgiant_restocked_after_sale' );
+
+		return true;
+	}
+
+	/**
+	 * The shop has looked at a product on the restocked list and its stock is
+	 * genuine. It leaves the list, and relisting it is no longer refused.
+	 *
+	 * @param int $product_id Product.
+	 * @return bool
+	 */
+	public static function keep_stock( $product_id ) {
+		if ( ! wc_get_product( (int) $product_id ) ) {
+			return false;
+		}
+
+		update_post_meta( (int) $product_id, '_ebay_restock_reviewed', 'kept' );
+		delete_transient( 'tcgiant_restocked_after_sale' );
+
+		return true;
+	}
+
+	/**
+	 * Take eBay's figure for an ended listing, at the shop's request.
+	 *
+	 * @param int $product_id Product.
+	 * @return int|null Stock now held, or null if there was nothing recorded.
+	 */
+	public static function use_ebay_figure( $product_id ) {
+		$product = wc_get_product( (int) $product_id );
+		$figure  = get_post_meta( (int) $product_id, '_ebay_unsold_at_end', true );
+
+		if ( ! $product || '' === $figure || 'Ended' !== (string) get_post_meta( (int) $product_id, '_ebay_listing_status', true ) ) {
+			return null;
+		}
+
+		$figure = max( 0, (int) $figure );
+
+		self::begin_ebay_origin();
+
+		try {
+			if ( $product->managing_stock() ) {
+				wc_update_product_stock( (int) $product_id, $figure, 'set' );
+			}
+			wc_update_product_stock_status( (int) $product_id, $figure > 0 ? 'instock' : 'outofstock' );
+		} finally {
+			self::end_ebay_origin();
+		}
+
+		delete_post_meta( (int) $product_id, '_ebay_unsold_at_end' );
+
+		return $figure;
+	}
+
+	/**
 	 * Products that sold out on eBay and are still in the catalogue.
 	 *
 	 * The backlog left by removal having lived on one code path. Every one of
@@ -762,11 +1226,22 @@ class TCGiant_Sync_Inventory {
 			INNER JOIN {$wpdb->postmeta} listing ON listing.post_id = p.ID AND listing.meta_key = '_ebay_listing_status'
 			INNER JOIN {$wpdb->postmeta} settled ON settled.post_id = p.ID AND settled.meta_key = '_ebay_stock_settled_at'
 			INNER JOIN {$wpdb->postmeta} stock   ON stock.post_id   = p.ID AND stock.meta_key   = '_stock_status'
+			LEFT JOIN  {$wpdb->postmeta} qlisted ON qlisted.post_id = p.ID AND qlisted.meta_key = '_ebay_quantity_listed'
+			LEFT JOIN  {$wpdb->postmeta} qsold   ON qsold.post_id   = p.ID AND qsold.meta_key   = '_ebay_quantity_sold'
+			LEFT JOIN  {$wpdb->postmeta} zeroed  ON zeroed.post_id  = p.ID AND zeroed.meta_key  = '_ebay_restock_reviewed' AND zeroed.meta_value = 'zeroed'
+			LEFT JOIN  {$wpdb->postmeta} sitem   ON sitem.post_id   = p.ID AND sitem.meta_key   = '_ebay_stock_settled_item'
 			WHERE p.post_type = 'product'
 			  AND p.post_status NOT IN ( 'trash', 'auto-draft' )
 			  AND listing.meta_value = 'Ended'
 			  AND stock.meta_value = 'outofstock'
 			  AND settled.meta_value <> ''
+			  -- Out of stock because eBay sold it, not because the website did.
+			  -- Settled before 3.27.0 there are no figures, and under the old rule
+			  -- out of stock after a settle could only mean an eBay sell-out.
+			  AND ( ( qlisted.meta_value IS NULL AND sitem.meta_id IS NULL )
+			        OR CAST( qsold.meta_value AS SIGNED ) >= CAST( qlisted.meta_value AS SIGNED ) )
+			  -- Set to 0 from Stock Review as a website sale: not eBay's to remove.
+			  AND zeroed.meta_id IS NULL
 			ORDER BY p.ID DESC";
 
 		if ( $limit > 0 ) {

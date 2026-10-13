@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.26.1
+Stable tag: 3.27.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,28 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.27.0 - 2026-10-12 =
+**The sync could restart the same batch of changes for ever**
+* FIX: A run your host stopped part way through a batch had recorded nothing, so the next began the batch again - on some hosts every hour, for ever, and no sales or new listings reached the shop. The sync now notes its place before every listing.
+* A listing that stops the sync every time is tried twice, then stepped over, given a stock check of its own and listed on Stock Review.
+* Runs now stop inside your host's limits and hand over, instead of being killed. A batch is read from eBay once.
+* The log now says when your host stopped a run, and on which listing. Your screens say so if eBay's changes have not been read for a day.
+* FIX: PHP 8 hosts that disable set_time_limit() stopped every sync on its first line.
+
+**Items sold on your website could go back in stock**
+* FIX: An ended eBay listing set stock from eBay's figures, which never include website sales - so a coin sold on the website went back on sale. An ended listing can now only lower stock.
+* NEW: Stock Review lists products this may already have happened to, with the website order beside each: set them to 0, or keep a genuine restock. Relist and Push wait until you have looked.
+* If you sell only on eBay: a higher figure eBay reports at the end is no longer applied automatically - Stock Review lists it with a button to use it.
+
+**eBay sales now come off your shop even when the sync is behind**
+* FIX: Each eBay sale of a linked product now gets its own stock check within minutes. It can only lower stock.
+
+**Relisting**
+* FIX: Relist relisted sold-out and trashed products at their original quantity. Relist and Auto-Relist now check with eBay first, send your shop's quantity, and record the new end date. A restock after a sell-out is now relisted normally. A push or relist never trashes a product.
+
+**Also**
+* FIX: A full sync now records when it started, so changes during it are not skipped. Empty address fields on imported eBay orders no longer become "Array". The image downloader no longer gets stuck on one product, and a photo download is capped at 30 seconds.
 
 = 3.26.1 - 2026-10-09 =
 **Having the dashboard open could restart the sync**

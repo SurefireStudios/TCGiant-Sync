@@ -194,7 +194,24 @@ class TCGiant_Sync_API {
 	public static function get_events_byte_limit() { return $GLOBALS['CAP']; }
 	public function get_last_body_bytes() { return $this->last_bytes; }
 	public function get_remaining_daily_budget() { return $GLOBALS['EBAY']['budget'] ?? 40000; }
-	public function get_item( $item_id ) { return new WP_Error( 'not_used', 'not used' ); }
+	/**
+	 * GetItem: the whole listing. The delta asks for it whenever what it holds
+	 * lacks item specifics or pictures - which a window kept in brief always
+	 * does, and which eBay's own events answer usually does too.
+	 */
+	public function get_item( $item_id ) {
+		$GLOBALS['EBAY']['get_items'][] = (string) $item_id;
+		if ( ! empty( $GLOBALS['EBAY']['on_get_item'] ) ) {
+			call_user_func( $GLOBALS['EBAY']['on_get_item'], (string) $item_id );
+		}
+		return array( 'Ack' => 'Success', 'Item' => array(
+			'ItemID'         => (string) $item_id,
+			'Title'          => 'Card ' . $item_id,
+			'SellingStatus'  => array( 'ListingStatus' => $GLOBALS['EBAY']['now_ended'][ (string) $item_id ] ?? 'Active' ),
+			'ItemSpecifics'  => array( 'NameValueList' => array() ),
+			'PictureDetails' => array( 'PictureURL' => 'https://i.ebayimg.com/' . $item_id . '.jpg' ),
+		) );
+	}
 
 	public function get_seller_events( $from, $to, $max_body_bytes = 0 ) {
 		$e  = &$GLOBALS['EBAY'];
@@ -257,6 +274,7 @@ class TCGiant_Sync_API {
 	}
 }
 
+require dirname( __DIR__ ) . '/includes/class-tcgiant-sync-runtime.php';
 require dirname( __DIR__ ) . '/includes/class-tcgiant-sync-importer.php';
 
 $IMP = TCGiant_Sync_Importer::instance();
@@ -309,6 +327,8 @@ function run_one() {
 	if ( 'tcgiant_sync_fetch_delta_events' !== $hook ) {
 		return;
 	}
+	// Each action is a request of its own, with its own clock.
+	$_SERVER['REQUEST_TIME_FLOAT'] = microtime( true );
 	try {
 		$IMP->fetch_delta_events();
 	} catch ( Killed_Request $e ) {
@@ -389,7 +409,9 @@ hourly_tick();
 $calls = $EBAY['calls'];
 check( 'every changed listing imported', imported_ids( $healthy ), 100 );
 check( '  each exactly once', max( $IMPORTED ), 1 );
-check( 'in three runs of forty, as before', count( $calls ), 3 );
+// One read of eBay for the window. Its later runs work from the listings
+// kept in brief, where every run used to download the whole window again.
+check( 'one read of eBay for the whole window', count( $calls ), 1 );
 check( 'all three asked for the same window', count( array_unique( array_map( function ( $c ) { return $c['from'] . $c['to']; }, $calls ) ) ), 1 );
 check( '  under the size ceiling', $calls[0]['max'], $CAP );
 check( 'finished, caught up', caught_up(), true );
@@ -820,7 +842,24 @@ fresh_site( 'UTC', array(
 	'last_successful_sync_at' => iso( $NOW - DAY_IN_SECONDS ),
 ) );
 $complete->invoke( $IMP );
-check( 'a full sync finishing still moves it to now', strtotime( state()['last_successful_sync_at'] ) >= $NOW - 5, true );
+check( 'a full sync from before 3.27 still moves it to now', strtotime( state()['last_successful_sync_at'] ) >= $NOW - 5, true );
+
+// But to when it STARTED. A sale on a page already read, made before the
+// scan finished, lies between the two - and recording the finish skipped it.
+fresh_site( 'UTC', array(
+	'status'                  => 'importing',
+	'sync_mode'               => 'full',
+	'total_queued'            => 10,
+	'total_processed'         => 10,
+	'full_started_at'         => iso( $NOW - 40 * MINUTE_IN_SECONDS ),
+	'last_successful_sync_at' => iso( $NOW - DAY_IN_SECONDS ),
+) );
+$complete->invoke( $IMP );
+check( 'a full sync finishing moves it to when the sync started', state()['last_successful_sync_at'], iso( $NOW - 40 * MINUTE_IN_SECONDS ) );
+
+$src = php_strip_whitespace( dirname( __DIR__ ) . '/includes/class-tcgiant-sync-importer.php' );
+check( '  as does a full sync that found nothing', substr_count( $src, "'last_successful_sync_at' => self::full_sync_position( \$state )" ), 1 );
+check( '  and the start is recorded when it begins', false !== strpos( $src, "'full_started_at' => gmdate(" ), true );
 
 echo "\nTIMEZONES\n" . str_repeat( '=', 122 ) . "\n";
 
@@ -880,6 +919,24 @@ check( 'Sydney: a sync silent for 31 minutes is presumed dead', logged( 'presume
 $cron = php_strip_whitespace( dirname( __DIR__ ) . '/includes/class-tcgiant-sync-cron.php' );
 check( 'the daily 24-hour reset uses the same clock', false !== strpos( $cron, 'TCGiant_Sync_Importer::sync_idle_seconds( $state )' ), true );
 check( '  and not the old one', false === strpos( $cron, "strtotime( \$state['last_activity'] )" ), true );
+
+echo "\nA LISTING THAT ENDS WHILE ITS WINDOW IS BEING WORKED THROUGH\n" . str_repeat( '=', 122 ) . "\n";
+
+// A big window takes many runs, and later runs work from the listings kept in
+// brief when it was first read. A coin that was live then may sell on the
+// website meanwhile - the plugin ends its eBay listing - before the delta
+// reaches it. eBay's answer to GetItem says so; what the window held does not.
+// Saved as live, its stock would be set from eBay's figures and the sold coin
+// put back on sale, which is the bug this release exists to fix.
+fresh_site( 'UTC', array( 'last_successful_sync_at' => iso( $NOW - HOUR_IN_SECONDS ) ) );
+$late = changes( 100, $NOW - 50 * MINUTE_IN_SECONDS, $NOW - 60, 5000, 950000 );
+add_changes( $late );
+$EBAY['now_ended'] = array( '000000950070' => 'Completed' );
+hourly_tick();
+
+check( 'a listing that ended since the window was read is not saved as live', isset( $IMPORTED['000000950070'] ), false );
+check( '  the rest of the window is', imported_ids( $late ), 99 );
+check( '  and the window still finishes', state()['status'], 'complete' );
 
 echo "\nA SITE UPDATED PART WAY THROUGH A WINDOW\n" . str_repeat( '=', 122 ) . "\n";
 

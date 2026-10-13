@@ -727,7 +727,11 @@ class TCGiant_Sync_DB {
 			'search' => '',
 		) ) );
 
-		$sql = "SELECT l.product_id FROM {$table} l WHERE {$where_clause} ORDER BY l.product_id ASC";
+		// Joined to the posts table so that a row outliving its product - or a
+		// product in the trash - is never acted on by "everything matching".
+		$sql = "SELECT l.product_id FROM {$table} l
+			INNER JOIN {$wpdb->posts} p ON p.ID = l.product_id AND p.post_status NOT IN ( 'trash', 'auto-draft' )
+			WHERE {$where_clause} ORDER BY l.product_id ASC";
 
 		$ids = $params
 			? $wpdb->get_col( $wpdb->prepare( $sql, $params ) )

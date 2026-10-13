@@ -46,6 +46,26 @@ class TCGiant_Sync_Image_Localizer {
 	const CRON_HOOK = 'tcgiant_sync_localize_images';
 
 	/**
+	 * How long a product is left alone after a batch starts on it.
+	 *
+	 * An attempt is charged BEFORE the work, with this as a lease, so that a
+	 * product whose batch is killed part way through is not first in line
+	 * again the moment the next batch starts. It used to be: the failure was
+	 * only ever counted by code that a killed batch never reached, so one
+	 * product could head every batch for ever and the queue never moved.
+	 */
+	const LEASE_SECONDS = 900;
+
+	/**
+	 * Longest one eBay photo download may take, and its largest size.
+	 *
+	 * media_sideload_image() passes a 300 s timeout of its own, which is why
+	 * the http_request_timeout filter this replaced never had any effect.
+	 */
+	const DOWNLOAD_TIMEOUT = 30;
+	const DOWNLOAD_MAX_BYTES = 15728640;
+
+	/**
 	 * Image widths eBay will serve, offered as import options.
 	 *
 	 * eBay hosts every size behind the same URL — the "s-l{width}" segment
@@ -163,11 +183,22 @@ class TCGiant_Sync_Image_Localizer {
 
 		global $wpdb;
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-		$pending = (int) $wpdb->get_var(
-			"SELECT COUNT(*) FROM {$wpdb->postmeta}
-			 WHERE meta_key = '_tcgiant_images_localized' AND meta_value = '0'
-			 LIMIT 1"
-		);
+		//
+		// Counted the way the batch selects, so that what it says is waiting is
+		// what a batch can actually do. It used to count every flag left at 0,
+		// including trashed products and ones waiting out a retry, so it re-armed
+		// for work no batch would ever pick up.
+		$pending = (int) $wpdb->get_var( $wpdb->prepare(
+			"SELECT COUNT(DISTINCT p.ID) FROM {$wpdb->posts} p
+			 INNER JOIN {$wpdb->postmeta} pm_ext ON p.ID = pm_ext.post_id AND pm_ext.meta_key = '_tcgiant_external_image_urls'
+			 INNER JOIN {$wpdb->postmeta} pm_loc ON p.ID = pm_loc.post_id AND pm_loc.meta_key = '_tcgiant_images_localized'
+			 LEFT JOIN {$wpdb->postmeta} pm_retry ON p.ID = pm_retry.post_id AND pm_retry.meta_key = '_tcgiant_localize_retry_after'
+			 WHERE p.post_type IN ('product', 'product_variation')
+			   AND p.post_status IN ('publish', 'draft', 'private')
+			   AND pm_loc.meta_value = '0'
+			   AND ( pm_retry.meta_value IS NULL OR CAST( pm_retry.meta_value AS UNSIGNED ) <= %d )",
+			time()
+		) );
 
 		if ( $pending < 1 ) {
 			return;
@@ -848,6 +879,20 @@ class TCGiant_Sync_Image_Localizer {
 	 * then reschedules itself if more remain.
 	 */
 	public function process_batch() {
+		// A batch PHP kills leaves a line saying how, and on which product.
+		TCGiant_Sync_Runtime::watch( 'Image localiser' );
+
+		try {
+			$this->run_batch();
+		} finally {
+			TCGiant_Sync_Runtime::unwatch();
+		}
+	}
+
+	/**
+	 * The body of process_batch(), watched by it.
+	 */
+	private function run_batch() {
 		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
 
 		// Check if localization is disabled.
@@ -855,8 +900,7 @@ class TCGiant_Sync_Image_Localizer {
 			return;
 		}
 
-		@set_time_limit( 300 );
-		ignore_user_abort( true );
+		TCGiant_Sync_Runtime::raise_time_limit( 300 );
 
 		require_once ABSPATH . 'wp-admin/includes/media.php';
 		require_once ABSPATH . 'wp-admin/includes/file.php';
@@ -913,9 +957,25 @@ class TCGiant_Sync_Image_Localizer {
 			count( $product_ids )
 		) );
 
-		// Lower HTTP timeout for image downloads.
-		$timeout_filter = function() { return 30; };
-		add_filter( 'http_request_timeout', $timeout_filter );
+		// A run for after the lease, in case this batch is killed. Nothing else
+		// would schedule the next one then, and only an admin page load re-arms
+		// the queue. Replaced below when the batch finishes normally.
+		wp_clear_scheduled_hook( self::CRON_HOOK );
+		wp_schedule_single_event( time() + self::LEASE_SECONDS + MINUTE_IN_SECONDS, self::CRON_HOOK );
+
+		// Cap each eBay photo download. http_request_timeout, used here before,
+		// only sets the default that media_sideload_image() overrides with 300 s.
+		$download_cap = function ( $args, $url ) {
+			$host = strtolower( (string) wp_parse_url( $url, PHP_URL_HOST ) );
+
+			if ( 'ebayimg.com' === $host || '.ebayimg.com' === substr( $host, -12 ) ) {
+				$args['timeout']             = min( (float) ( $args['timeout'] ?? self::DOWNLOAD_TIMEOUT ), self::DOWNLOAD_TIMEOUT );
+				$args['limit_response_size'] = self::DOWNLOAD_MAX_BYTES;
+			}
+
+			return $args;
+		};
+		add_filter( 'http_request_args', $download_cap, 10, 2 );
 
 		/**
 		 * JPEG quality for images imported from eBay.
@@ -940,14 +1000,52 @@ class TCGiant_Sync_Image_Localizer {
 		$total_skipped    = 0;
 		$total_failed     = 0;
 
+		$started_on = 0;
+		$stopped_for = '';
+
 		foreach ( $product_ids as $product_id ) {
-			$result = $this->localize_product_images( (int) $product_id );
+			// Stop starting products well short of whatever this host allows.
+			// A batch of fifty used to run until the host killed it.
+			if ( $started_on > 0 ) {
+				$stopped_for = TCGiant_Sync_Runtime::over_budget();
+				if ( '' !== $stopped_for ) {
+					break;
+				}
+			}
+
+			$started_on++;
+			TCGiant_Sync_Runtime::context( sprintf( 'WC #%d (%d of %d in this batch)', (int) $product_id, $started_on, count( $product_ids ) ) );
+
+			try {
+				$result = $this->localize_product_images( (int) $product_id );
+			} catch ( \Throwable $e ) {
+				// One product's trouble is not the batch's. Its attempt was
+				// charged before it started, so it cannot come round for ever.
+				TCGiant_Sync_Logger::error( sprintf( 'Image localizer: WC #%d failed: %s', (int) $product_id, $e->getMessage() ) );
+				$total_failed++;
+				continue;
+			}
+
 			$total_downloaded += $result['downloaded'];
 			$total_skipped    += $result['skipped'];
 			$total_failed     += $result['failed'];
 		}
 
-		remove_filter( 'http_request_timeout', $timeout_filter );
+		TCGiant_Sync_Runtime::context( '' );
+
+		if ( '' !== $stopped_for ) {
+			TCGiant_Sync_Logger::log( sprintf(
+				'Image localizer: stopped after %d product(s) to stay within this host\'s limits (%s).',
+				$started_on - 1,
+				$stopped_for
+			) );
+		}
+
+		remove_filter( 'http_request_args', $download_cap, 10 );
+
+		// Finished normally, so the fallback is not needed; what comes next is
+		// decided below.
+		wp_clear_scheduled_hook( self::CRON_HOOK );
 		remove_filter( 'wp_editor_set_quality', $quality_filter );
 
 		TCGiant_Sync_Logger::log( sprintf(
@@ -1001,6 +1099,45 @@ class TCGiant_Sync_Image_Localizer {
 			update_post_meta( $product_id, '_tcgiant_images_localized', 1 );
 			return $result;
 		}
+
+		// Charge the attempt before doing anything, and take a lease on the
+		// product - see LEASE_SECONDS. The in-flight mark is cleared however
+		// the attempt ends, so finding it still set means the last one died.
+		//
+		// Only attempts that DIED are given up on here. A product that failed
+		// in the ordinary way and was queued again - by an images-only sync,
+		// as the give-up message advises, or by a sync that touched it - gets
+		// a real attempt, as it always did.
+		$attempts = (int) get_post_meta( $product_id, '_tcgiant_localize_attempts', true );
+		$inflight = (string) get_post_meta( $product_id, '_tcgiant_localize_inflight', true );
+		$died     = '' !== $inflight;
+		$progress = (int) get_post_meta( $product_id, '_tcgiant_localize_progress', true );
+
+		// A run that died but downloaded something on the way did not fail -
+		// it ran out of room, and what it fetched is kept and reused. A product
+		// with many photos on a host that allows a few per request finishes
+		// a few at a time, so that death is not counted.
+		if ( $died && $progress > (int) $inflight - 1 ) {
+			$attempts = max( 0, $attempts - 1 );
+		}
+
+		if ( $died && $attempts >= self::MAX_LOCALIZE_ATTEMPTS ) {
+			delete_post_meta( $product_id, '_tcgiant_localize_inflight' );
+			update_post_meta( $product_id, '_tcgiant_images_localized', 1 );
+			delete_post_meta( $product_id, '_tcgiant_localize_retry_after' );
+			TCGiant_Sync_Logger::error( sprintf(
+				'Image localizer: WC #%d gave up after %d attempts that never finished - the request was stopped while working on it each time. Its eBay photos stay in place. Re-run an images-only sync for this item to try again.',
+				$product_id,
+				$attempts
+			) );
+			$result['failed'] = count( $image_entries );
+			return $result;
+		}
+
+		update_post_meta( $product_id, '_tcgiant_localize_attempts', $attempts + 1 );
+		update_post_meta( $product_id, '_tcgiant_localize_retry_after', time() + self::LEASE_SECONDS );
+		// How far it had got, plus one, so the mark is never empty.
+		update_post_meta( $product_id, '_tcgiant_localize_inflight', $progress + 1 );
 
 		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
 		$overwrite_images = ! empty( $settings['overwrite_images'] );
@@ -1104,6 +1241,9 @@ class TCGiant_Sync_Image_Localizer {
 			// Store source URL on attachment for future dedup.
 			update_post_meta( $id, '_tcgiant_source_url', $clean_url );
 
+			// Progress, for an attempt the host stops part way through.
+			update_post_meta( $product_id, '_tcgiant_localize_progress', (int) get_post_meta( $product_id, '_tcgiant_localize_progress', true ) + 1 );
+
 			if ( $variation_id ) {
 				set_post_thumbnail( $variation_id, $id );
 			} elseif ( $needs_thumbnail ) {
@@ -1156,6 +1296,10 @@ class TCGiant_Sync_Image_Localizer {
 		// setting it unconditionally meant a single timeout or transient 5xx
 		// lost the product's images permanently — the localizer would never
 		// look at it again.
+		// The attempt finished, whichever way it went.
+		delete_post_meta( $product_id, '_tcgiant_localize_inflight' );
+		delete_post_meta( $product_id, '_tcgiant_localize_progress' );
+
 		if ( 0 === $result['failed'] ) {
 			update_post_meta( $product_id, '_tcgiant_images_localized', 1 );
 			delete_post_meta( $product_id, '_tcgiant_localize_attempts' );
@@ -1168,8 +1312,8 @@ class TCGiant_Sync_Image_Localizer {
 				) );
 			}
 		} else {
-			$attempts = (int) get_post_meta( $product_id, '_tcgiant_localize_attempts', true ) + 1;
-			update_post_meta( $product_id, '_tcgiant_localize_attempts', $attempts );
+			// Already charged at the start.
+			$attempts = max( 1, (int) get_post_meta( $product_id, '_tcgiant_localize_attempts', true ) );
 
 			if ( $attempts >= self::MAX_LOCALIZE_ATTEMPTS ) {
 				// Give up so one unreachable image can't pin the queue open.

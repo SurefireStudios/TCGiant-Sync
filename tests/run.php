@@ -22,13 +22,31 @@ if ( empty( $files ) ) {
 	exit( 1 );
 }
 
+// Harnesses that must also pass on a differently configured PHP.
+//
+// Shared PHP 8 hosts commonly list set_time_limit and ignore_user_abort in
+// disable_functions, where calling either is a fatal "undefined function".
+// Every delta, scan and image batch used to die on its first line there.
+$variants = array(
+	'test-delta-window' => array( 'no set_time_limit' => '-d disable_functions=set_time_limit,ignore_user_abort' ),
+);
+
+$runs = array();
+foreach ( $files as $file ) {
+	$base   = basename( $file, '.php' );
+	$runs[] = array( $file, '', $base );
+	foreach ( $variants[ $base ] ?? array() as $label => $flags ) {
+		$runs[] = array( $file, $flags, $base . ' [' . $label . ']' );
+	}
+}
+
 $total_pass = 0;
 $total_fail = 0;
 $broken     = array();
 
-foreach ( $files as $file ) {
-	$name = basename( $file, '.php' );
-	$cmd  = escapeshellarg( PHP_BINARY ) . ' ' . escapeshellarg( $file ) . ' 2>&1';
+foreach ( $runs as $run ) {
+	list( $file, $flags, $name ) = $run;
+	$cmd  = escapeshellarg( PHP_BINARY ) . ( '' !== $flags ? ' ' . $flags : '' ) . ' ' . escapeshellarg( $file ) . ' 2>&1';
 	$out  = array();
 	exec( $cmd, $out, $code );
 	$text = implode( "\n", $out );
@@ -37,7 +55,7 @@ foreach ( $files as $file ) {
 		// No summary line means the script died before finishing - a fatal, a
 		// missing file, a parse error. That is a failure of the test itself.
 		$broken[] = $name;
-		printf( "  %-26s BROKEN (no summary; exit %d)\n", $name, $code );
+		printf( "  %-46s BROKEN (no summary; exit %d)\n", $name, $code );
 		echo preg_replace( '/^/m', '      ', $text ), "\n";
 		continue;
 	}
@@ -47,7 +65,7 @@ foreach ( $files as $file ) {
 	$total_pass += $pass;
 	$total_fail += $fail;
 
-	printf( "  %-26s %s  %d passed, %d failed\n", $name, $fail ? 'FAIL' : 'ok  ', $pass, $fail );
+	printf( "  %-46s %s  %d passed, %d failed\n", $name, $fail ? 'FAIL' : 'ok  ', $pass, $fail );
 
 	if ( $verbose || $fail ) {
 		foreach ( $out as $line ) {
@@ -59,7 +77,7 @@ foreach ( $files as $file ) {
 }
 
 echo "\n";
-printf( "  %d file(s), %d assertions: %d passed, %d failed", count( $files ), $total_pass + $total_fail, $total_pass, $total_fail );
+printf( "  %d file(s), %d run(s), %d assertions: %d passed, %d failed", count( $files ), count( $runs ), $total_pass + $total_fail, $total_pass, $total_fail );
 if ( $broken ) {
 	printf( ", %d broken (%s)", count( $broken ), implode( ', ', $broken ) );
 }

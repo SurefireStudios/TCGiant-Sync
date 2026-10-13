@@ -63,6 +63,7 @@ if ( function_exists( 'as_unschedule_all_actions' ) ) {
 		'tcgiant_sync_process_item_import',
 		'tcgiant_sync_prune_orphans',
 		'tcgiant_sync_update_ebay_stock',
+		'tcgiant_sync_settle_item',        // Per-listing stock checks, 3.27.0.
 
 		// The exporter's queue. This was listed as tcgiant_sync_push_product,
 		// which is not a hook this plugin has ever registered, so queued pushes
@@ -178,6 +179,10 @@ $tcgiant_options = array(
 	'tcgiant_sync_ebay_settings',      // Settings + OAuth tokens + relay secret.
 	'tcgiant_sync_state',              // Import state machine.
 	'tcgiant_sync_active_ids',         // Scan bookkeeping.
+	'tcgiant_sync_delta_progress',     // Delta's place in its window, 3.27.0.
+	'tcgiant_sync_delta_window',       // Delta's window kept in brief, 3.27.0.
+	'tcgiant_sync_delta_held',         // Listings the delta stepped over, 3.27.0.
+	'tcgiant_sync_last_crash',         // Last run PHP killed, 3.27.0.
 	'tcgiant_sync_jobs',               // Bulk job progress records.
 	'tcgiant_export_state',            // Export state machine.
 	'tcgiant_listings_table_version',

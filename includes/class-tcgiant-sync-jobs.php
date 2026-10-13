@@ -250,7 +250,7 @@ class TCGiant_Sync_Jobs {
 			wp_send_json_error( array( 'message' => 'Missing type or product_ids.' ) );
 		}
 
-		$valid_types = array( 'bulk_push', 'bulk_end', 'bulk_verify', 'bulk_relist', 'bulk_settle', 'bulk_restore_images', 'bulk_set_format', 'bulk_remove_sold' );
+		$valid_types = array( 'bulk_push', 'bulk_end', 'bulk_verify', 'bulk_relist', 'bulk_settle', 'bulk_restore_images', 'bulk_set_format', 'bulk_remove_sold', 'bulk_zero_stock', 'bulk_use_ebay_figure', 'bulk_keep_stock' );
 		if ( ! in_array( $type, $valid_types, true ) ) {
 			wp_send_json_error( array( 'message' => 'Invalid job type.' ) );
 		}
@@ -423,6 +423,40 @@ class TCGiant_Sync_Jobs {
 					}
 					break;
 
+				case 'bulk_zero_stock':
+					// Products the old settle put back in stock after a website
+					// sale. Chosen one by one by the shop from a list that shows
+					// the order behind each.
+					if ( TCGiant_Sync_Inventory::zero_stock( $product_id ) ) {
+						$succeeded++;
+						TCGiant_Sync_Logger::log( sprintf( 'Stock review: WC #%d set to 0 - it had sold on the website and been put back in stock.', $product_id ) );
+					} else {
+						$failed++;
+						$errors[] = sprintf( '#%d: product not found.', $product_id );
+					}
+					break;
+
+				case 'bulk_keep_stock':
+					if ( TCGiant_Sync_Inventory::keep_stock( $product_id ) ) {
+						$succeeded++;
+						TCGiant_Sync_Logger::log( sprintf( 'Stock review: WC #%d kept as it is - the shop says its stock is real.', $product_id ) );
+					} else {
+						$failed++;
+						$errors[] = sprintf( '#%d: product not found.', $product_id );
+					}
+					break;
+
+				case 'bulk_use_ebay_figure':
+					$now = TCGiant_Sync_Inventory::use_ebay_figure( $product_id );
+					if ( null !== $now ) {
+						$succeeded++;
+						TCGiant_Sync_Logger::log( sprintf( 'Stock review: WC #%d set to %d, the figure eBay reported when its listing ended.', $product_id, $now ) );
+					} else {
+						$failed++;
+						$errors[] = sprintf( '#%d: no eBay figure recorded.', $product_id );
+					}
+					break;
+
 				case 'bulk_verify':
 					$exporter = TCGiant_Sync_Exporter::instance();
 					$settings = $exporter->get_export_settings( $product_id );
@@ -486,7 +520,7 @@ class TCGiant_Sync_Jobs {
 						$errors[] = sprintf( '#%d: could not be settled — stock left exactly as it was. The log says why.', $product_id );
 					} else {
 						TCGiant_Sync_Logger::log( sprintf(
-							'Stock review: WC #%d settled to %d from ended eBay listing %s.',
+							'Stock review: WC #%d stock now %d after ended eBay listing %s.',
 							$product_id, $settled, $ebay_id
 						) );
 
@@ -511,20 +545,18 @@ class TCGiant_Sync_Jobs {
 					break;
 
 				case 'bulk_relist':
-					$ebay_id = get_post_meta( $product_id, '_ebay_item_id', true );
-					if ( empty( $ebay_id ) ) {
-						$failed++;
-						$errors[] = sprintf( '#%d: No eBay Item ID.', $product_id );
-						break;
-					}
-					$result = $api->relist_item( $ebay_id );
-					if ( is_wp_error( $result ) ) {
+					// Every check is in the exporter, shared with auto-relist. This
+					// used to relist whatever was selected - sold-out coins at their
+					// original quantity, and trashed products too.
+					$result = TCGiant_Sync_Exporter::instance()->relist_ended_listing( $product_id, 'Bulk relist' );
+					if ( is_wp_error( $result ) && 'relist_refused' === $result->get_error_code() ) {
+						// Right not to, so neither a success nor a failure.
+						$kept++;
+						$errors[] = sprintf( '#%d: not relisted - %s.', $product_id, $result->get_error_message() );
+					} elseif ( is_wp_error( $result ) ) {
 						$failed++;
 						$errors[] = sprintf( '#%d: %s', $product_id, $result->get_error_message() );
 					} else {
-						$new_id = $result['ItemID'] ?? $ebay_id;
-						update_post_meta( $product_id, '_ebay_item_id', $new_id );
-						update_post_meta( $product_id, '_ebay_listing_status', 'Active' );
 						$succeeded++;
 					}
 					break;

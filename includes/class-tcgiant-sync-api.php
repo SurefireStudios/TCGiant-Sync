@@ -975,11 +975,15 @@ class TCGiant_Sync_API {
 	 * @param string $item_id Ended eBay Item ID.
 	 * @return array|WP_Error
 	 */
-	public function relist_fixed_price_item( $item_id ) {
+	public function relist_fixed_price_item( $item_id, $quantity = null ) {
+		// Without a quantity eBay relists at what was left available - which
+		// for a listing that sold out is nothing - so the shop's own figure
+		// is sent when there is one.
 		$xml = '
 <Item>
 <ItemID>' . esc_attr( $item_id ) . '</ItemID>
-<UUID>' . self::generate_ebay_uuid() . '</UUID>
+<UUID>' . self::generate_ebay_uuid() . '</UUID>'
+			. ( null !== $quantity ? "\n<Quantity>" . max( 1, (int) $quantity ) . '</Quantity>' : '' ) . '
 </Item>';
 
 		$result = $this->trading_api_request( 'RelistFixedPriceItem', $xml );
@@ -995,11 +999,12 @@ class TCGiant_Sync_API {
 		return $result;
 	}
 
-	public function relist_item( $item_id ) {
+	public function relist_item( $item_id, $quantity = null ) {
 		$xml = '
 <Item>
 <ItemID>' . esc_attr( $item_id ) . '</ItemID>
-<UUID>' . self::generate_ebay_uuid() . '</UUID>
+<UUID>' . self::generate_ebay_uuid() . '</UUID>'
+			. ( null !== $quantity ? "\n<Quantity>" . max( 1, (int) $quantity ) . '</Quantity>' : '' ) . '
 </Item>';
 
 		$result = $this->trading_api_request( 'RelistItem', $xml );

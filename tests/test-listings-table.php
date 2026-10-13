@@ -69,7 +69,9 @@ check( 'subsystems still start at plugins_loaded priority 20', $pm[1] ?? '', '20
 echo "\nA PUSH PUTS THE PRODUCT ON THE LISTINGS SCREEN\n" . str_repeat( '=', 118 ) . "\n";
 
 $exporter = file_get_contents( $root . '/includes/class-tcgiant-sync-exporter.php' );
-check( 'the exporter writes to the listings table', substr_count( $exporter, 'TCGiant_Sync_DB::upsert(' ), 1 );
+// Once from a push, and from a relist: the new listing, and a listing that
+// turned out to be live after all.
+check( 'the exporter writes to the listings table', substr_count( $exporter, 'TCGiant_Sync_DB::upsert(' ), 3 );
 
 // It has to happen after the product is saved and only on success, so take the
 // slice between the success branch and the export-state update that closes it.

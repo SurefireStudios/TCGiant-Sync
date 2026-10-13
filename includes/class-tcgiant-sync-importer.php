@@ -43,6 +43,15 @@ class TCGiant_Sync_Importer {
 	const GROUP_IMAGES  = 'tcgiant_sync_images';
 
 	/**
+	 * Per-listing stock checks.
+	 *
+	 * A group of their own because starting a sync clears the scan and import
+	 * groups, and a stock check queued for a sale must survive that: it is the
+	 * one thing that takes a sold item off the site while the delta is behind.
+	 */
+	const GROUP_SETTLE  = 'tcgiant_sync_settle';
+
+	/**
 	 * Option holding the eBay Item IDs seen during the current scan.
 	 */
 	const ACTIVE_IDS_OPTION = 'tcgiant_sync_active_ids';
@@ -103,6 +112,9 @@ class TCGiant_Sync_Importer {
 		// The scan resumes itself through WP-Cron, not Action Scheduler.
 		wp_clear_scheduled_hook( 'tcgiant_sync_scan_resume' );
 
+		// A stopped sync starts its next window cleanly.
+		self::clear_delta_progress();
+
 		// Otherwise the next sync is blocked until the lock goes stale.
 		self::release_lock();
 	}
@@ -128,6 +140,7 @@ class TCGiant_Sync_Importer {
 		add_action( 'tcgiant_sync_scan_resume', array( $this, 'scan_all_pages' ) ); // WP-Cron resume hook.
 		add_action( 'tcgiant_sync_fetch_delta_events', array( $this, 'fetch_delta_events' ) );
 		add_action( 'tcgiant_sync_prune_orphans', array( $this, 'prune_orphaned_items' ) );
+		add_action( 'tcgiant_sync_settle_item', array( $this, 'settle_item' ), 10, 1 );
 
 		// Note: 'tcgiant_sync_fetch_listings' (per-page scanning, superseded by
 		// scan_all_pages in 2.0.0) and 'tcgiant_sync_download_images' (the
@@ -193,6 +206,56 @@ class TCGiant_Sync_Importer {
 	 * position is never advanced and the state is never cleared.
 	 */
 	const DELTA_ITEMS_PER_RUN = 40;
+
+	/**
+	 * Where the delta is inside the window it is working through.
+	 *
+	 * Written before every listing, in an option of its own and never
+	 * autoloaded: the sync state is autoloaded, and rewriting it once a listing
+	 * would rewrite every autoloaded option in a persistent object cache with
+	 * it. Holds: from, to, cursor (last ItemID finished), done, in_flight (the
+	 * ItemID being worked on), kills, kill_item, body_bytes, ts.
+	 */
+	const DELTA_PROGRESS_OPTION = 'tcgiant_sync_delta_progress';
+
+	/**
+	 * The listings in the window being worked through, in brief, so that later
+	 * runs need not ask eBay for all of them again. Never autoloaded.
+	 */
+	const DELTA_WINDOW_CACHE_OPTION = 'tcgiant_sync_delta_window';
+
+	/**
+	 * Listings the delta had to step over because importing them kept killing
+	 * the request. Never autoloaded; shown on Stock Review.
+	 */
+	const DELTA_HELD_OPTION = 'tcgiant_sync_delta_held';
+
+	/**
+	 * Runs that may die on the same listing before it is stepped over.
+	 *
+	 * Two: one death can be bad luck - a slow eBay answer, a busy server - and
+	 * the retry costs one listing. A second on the same listing is the listing.
+	 */
+	const DELTA_SLICE_KILLS = 2;
+
+	/**
+	 * Share of the memory limit already in use at which a run hands the read
+	 * to a fresh request rather than start it here. Once per window.
+	 */
+	const DELTA_START_MEMORY_SHARE = 0.5;
+
+	/**
+	 * Most listings held back on the review list at once.
+	 */
+	const DELTA_HELD_MAX = 50;
+
+	/**
+	 * Whether the delta is part way through importing a listing, for the
+	 * shutdown handler.
+	 *
+	 * @var bool
+	 */
+	private static $slice_in_flight = false;
 
 	/**
 	 * Widest delta window, in minutes. eBay refuses more than 48 hours.
@@ -305,8 +368,17 @@ class TCGiant_Sync_Importer {
 	 * @return int|null Null when the state has never recorded any activity.
 	 */
 	public static function sync_idle_seconds( $state ) {
-		if ( ! empty( $state['last_activity_ts'] ) ) {
-			return time() - (int) $state['last_activity_ts'];
+		// The delta notes its place before every listing without touching the
+		// state, so a run working steadily through a long batch is not idle.
+		$latest   = (int) ( $state['last_activity_ts'] ?? 0 );
+		$progress = get_option( self::DELTA_PROGRESS_OPTION, array() );
+
+		if ( is_array( $progress ) && ! empty( $progress['ts'] ) ) {
+			$latest = max( $latest, (int) $progress['ts'] );
+		}
+
+		if ( $latest > 0 ) {
+			return time() - $latest;
 		}
 
 		// Written before the timestamp existed, so convert the local time
@@ -538,6 +610,8 @@ class TCGiant_Sync_Importer {
 			'total_pages'         => 0,
 			'filter_name'         => $filter_name,
 			'started_at'          => current_time( 'mysql' ),
+			// Where the delta picks up once this finishes - see full_sync_position().
+			'full_started_at'     => gmdate( 'Y-m-d\TH:i:s.000\Z' ),
 			'last_item_title'     => '',
 			'rate_limit_retries'  => 0,
 			'scan_complete_clean' => false,
@@ -618,6 +692,14 @@ class TCGiant_Sync_Importer {
 		$buffer_seconds = self::DELTA_OVERLAP_SECONDS;
 		$mod_from_ts = strtotime( $last_sync ) - $buffer_seconds;
 		$mod_from_iso = gmdate( 'Y-m-d\TH:i:s.000\Z', $mod_from_ts );
+
+		// Restarting the same window keeps its place. A restart used to begin
+		// again from the first listing, so a window whose runs kept dying was
+		// worked from the top every hour and never got further.
+		$progress = self::delta_progress();
+		if ( ! empty( $progress ) && (string) ( $progress['from'] ?? '' ) !== $mod_from_iso ) {
+			self::clear_delta_progress();
+		}
 
 		self::update_sync_state( array(
 			'status'          => 'scanning',
@@ -791,26 +873,71 @@ class TCGiant_Sync_Importer {
 	 * reason.
 	 */
 	public function fetch_delta_events() {
+		// A run PHP kills leaves a line saying how, and on which listing, where
+		// it used to leave nothing at all - the lines that would have said so
+		// were still in the log buffer.
+		TCGiant_Sync_Runtime::watch( 'Delta sync', array( __CLASS__, 'on_delta_death' ) );
+
 		try {
 			$this->run_delta_events();
 		} finally {
+			TCGiant_Sync_Runtime::unwatch();
+			self::$slice_in_flight = false;
 			self::release_lock();
+		}
+	}
+
+	/**
+	 * PHP has killed a delta run. Runs on shutdown, so it must allocate little.
+	 *
+	 * The `finally` above never runs after a fatal, so the lock is released
+	 * here. And a run killed while importing a listing hands straight on to the
+	 * next, instead of leaving the sync to sit until the hourly poll decides it
+	 * is dead: that run finds the listing it died on, tries it once more, and
+	 * steps over it if it dies again, so this cannot go round for ever.
+	 *
+	 * @param string $message What the death record said.
+	 */
+	public static function on_delta_death( $message ) {
+		self::release_lock();
+
+		if ( ! self::$slice_in_flight || ! function_exists( 'as_enqueue_async_action' ) ) {
+			return;
+		}
+
+		// Not after Emergency Stop, which the dying run may not have seen. Read
+		// from the table itself: this request's cached copy is the one from
+		// before Stop was pressed, and reloading every autoloaded option to
+		// refresh it is too much to ask of a request that has run out of memory.
+		global $wpdb;
+		if ( isset( $wpdb ) && is_object( $wpdb ) && method_exists( $wpdb, 'get_var' ) ) {
+			$raw   = $wpdb->get_var( $wpdb->prepare( "SELECT option_value FROM {$wpdb->options} WHERE option_name = %s LIMIT 1", self::STATE_OPTION ) );
+			$state = is_string( $raw ) ? maybe_unserialize( $raw ) : array();
+		} else {
+			$state = get_option( self::STATE_OPTION, array() );
+		}
+		if ( is_array( $state ) && 'stopped' === ( $state['status'] ?? '' ) ) {
+			return;
+		}
+
+		if ( ! self::delta_run_queued() ) {
+			as_enqueue_async_action( 'tcgiant_sync_fetch_delta_events', array(), self::GROUP_SCAN );
 		}
 	}
 
 	/**
 	 * Fetch modified items via GetSellerEvents and process them directly.
 	 *
-	 * This replaces the GetSellerList + per-item GetItem flow for delta syncs.
-	 * GetSellerEvents returns full item data inline, so no individual GetItem calls are needed.
-	 * Max time window is 48 hours per eBay API rules.
+	 * GetSellerEvents says which listings changed in a period, but in practice
+	 * without their item specifics or full pictures, so most changed listings
+	 * still cost a GetItem each - see the fallback in the loop. Max time window
+	 * is 48 hours per eBay API rules.
 	 */
 	private function run_delta_events() {
 		// Raised before the fetch, which is the slow part. It used to be raised
 		// a hundred lines further down, after the download and the parse had
 		// already run under whatever limit the host set.
-		@set_time_limit( 300 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
-		ignore_user_abort( true );
+		TCGiant_Sync_Runtime::raise_time_limit( 300 );
 
 		$state = self::get_sync_state();
 		$mod_from = $state['delta_mod_from'] ?? '';
@@ -890,14 +1017,62 @@ class TCGiant_Sync_Importer {
 		// stored with its end, so a place belonging to some other window is
 		// never applied to this one. A sync updated part way through a window
 		// has no record of it either way, and carries on exactly as it did.
-		$offset      = max( 0, (int) ( $state['delta_offset'] ?? 0 ) );
-		$pinned_from = (string) ( $state['delta_window_from'] ?? '' );
-		$pinned_to   = (string) ( $state['delta_window_to'] ?? '' );
-		$resuming    = $offset > 0 && $pinned_from === $mod_from && '' !== $pinned_to;
-		$cursor      = $resuming ? (string) ( $state['delta_cursor'] ?? '' ) : '';
+		//
+		// The place is kept per listing, not per batch of forty, and outlives a
+		// restart of the same window. Before, a run that died anywhere in its
+		// batch had saved nothing, the hourly restart wiped what an earlier
+		// batch had saved, and the next run began the window again from its
+		// first listing - every hour, for ever. Two shops sat on one window
+		// that way, one for eleven days.
+		$progress = self::delta_progress();
 
-		if ( $offset > 0 && ! $resuming && '' !== $pinned_from ) {
-			$offset = 0;
+		if ( empty( $progress ) ) {
+			$progress = self::legacy_delta_progress( $state, $mod_from );
+		}
+
+		$resuming = (string) ( $progress['from'] ?? '' ) === $mod_from && '' !== (string) ( $progress['to'] ?? '' );
+
+		if ( ! $resuming && ! empty( $progress ) ) {
+			self::clear_delta_progress();
+			$progress = array();
+		}
+
+		// The last run died while importing a listing - after eBay had
+		// answered, so the read note above says nothing about it.
+		if ( $resuming && '' !== (string) ( $progress['in_flight'] ?? '' ) ) {
+			$progress = self::after_slice_death( $progress, $mod_from );
+		}
+
+		$cursor    = $resuming ? (string) ( $progress['cursor'] ?? '' ) : '';
+		$offset    = $resuming ? max( 0, (int) ( $progress['done'] ?? 0 ) ) : 0;
+		$pinned_to = $resuming ? (string) $progress['to'] : '';
+
+		// A sync updated from 3.25 part way through a window kept only a count,
+		// and no record of which window. It carries on by that count, as it
+		// always did.
+		if ( ! $resuming && '' === (string) ( $state['delta_window_from'] ?? '' ) ) {
+			$offset = max( 0, (int) ( $state['delta_offset'] ?? 0 ) );
+		}
+
+		// Carrying on through a window already read: its listings were kept,
+		// in brief, the first time, so eBay is not asked for all of them again.
+		// Every run used to re-download and re-parse the whole window to work
+		// on forty of it.
+		$cached     = $resuming ? self::cached_delta_rows( $mod_from, $pinned_to ) : null;
+		$from_cache = null !== $cached;
+
+		// A request already heavy before eBay has even been asked - the hourly
+		// poll shares its request with the order sync and anything else due -
+		// hands the read to a fresh one. Once per window, so it cannot bounce.
+		if ( ! $from_cache
+			&& TCGiant_Sync_Runtime::memory_share() > self::DELTA_START_MEMORY_SHARE
+			&& $mod_from !== (string) ( $state['delta_fresh_request_for'] ?? '' ) ) {
+			TCGiant_Sync_Logger::log( sprintf(
+				'This request was already using %d%% of the memory limit before reading eBay, so the read moves to a fresh request.',
+				(int) round( TCGiant_Sync_Runtime::memory_share() * 100 )
+			) );
+			self::continue_delta( array( 'delta_fresh_request_for' => $mod_from ) );
+			return;
 		}
 
 		$from_ts = strtotime( $mod_from );
@@ -960,20 +1135,27 @@ class TCGiant_Sync_Importer {
 		$ceiling    = self::delta_byte_ceiling( $state );
 		$byte_limit = $window_minutes > self::DELTA_WINDOW_MIN_MINUTES ? $ceiling : 0;
 
-		self::update_sync_state( array(
-			'delta_attempt'       => self::delta_attempt_key( $mod_from, $window_minutes ),
-			'delta_attempt_kills' => $kills,
-			'delta_attempt_span'  => $span_minutes,
-		) );
+		if ( $from_cache ) {
+			// Shaped as eBay's answer, so everything below reads it the same way.
+			$response   = array( 'Ack' => 'Success', 'ItemArray' => array( 'Item' => $cached ) );
+			$body_bytes = (int) ( $progress['body_bytes'] ?? 0 );
+			unset( $cached );
+		} else {
+			self::update_sync_state( array(
+				'delta_attempt'       => self::delta_attempt_key( $mod_from, $window_minutes ),
+				'delta_attempt_kills' => $kills,
+				'delta_attempt_span'  => $span_minutes,
+			) );
 
-		$response   = $api->get_seller_events( $mod_from, $mod_to, $byte_limit );
-		$body_bytes = $api->get_last_body_bytes();
+			$response   = $api->get_seller_events( $mod_from, $mod_to, $byte_limit );
+			$body_bytes = $api->get_last_body_bytes();
 
-		// Answered, one way or another, so this request was not killed reading it.
-		self::update_sync_state( array(
-			'delta_attempt'       => '',
-			'delta_attempt_kills' => 0,
-		) );
+			// Answered, one way or another, so this request was not killed reading it.
+			self::update_sync_state( array(
+				'delta_attempt'       => '',
+				'delta_attempt_kills' => 0,
+			) );
+		}
 
 		// Handle rate limiting.
 		if ( is_wp_error( $response ) && 'rate_limited' === $response->get_error_code() ) {
@@ -1192,6 +1374,10 @@ class TCGiant_Sync_Importer {
 			return strcmp( (string) ( $a['ItemID'] ?? '' ), (string) ( $b['ItemID'] ?? '' ) );
 		} );
 
+		if ( ! $from_cache ) {
+			self::cache_delta_rows( $mod_from, $mod_to, $items );
+		}
+
 		if ( '' !== $cursor ) {
 			$remaining = array_values( array_filter( $items, function ( $item ) use ( $cursor ) {
 				return strcmp( (string) ( $item['ItemID'] ?? '' ), $cursor ) > 0;
@@ -1208,6 +1394,19 @@ class TCGiant_Sync_Importer {
 		$items = array_slice( $remaining, 0, self::DELTA_ITEMS_PER_RUN );
 		$more  = count( $remaining ) > count( $items );
 		unset( $remaining );
+
+		// Pinned before any listing is touched, so that a first batch which dies
+		// still leaves its window behind for the next run to carry on with.
+		$progress = array_merge( $progress, array(
+			'from'       => $mod_from,
+			'to'         => $mod_to,
+			'cursor'     => $cursor,
+			'done'       => $done,
+			'in_flight'  => '',
+			'body_bytes' => $body_bytes,
+			'ts'         => time(),
+		) );
+		self::save_delta_progress( $progress );
 
 		// Category filtering (same logic as process_page_items).
 		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
@@ -1254,7 +1453,58 @@ class TCGiant_Sync_Importer {
 			$done + count( $items )
 		) );
 
+		$handled      = 0;
+		$last_handled = $cursor;
+		$current      = null;
+		$stopped_for  = '';
+
 		foreach ( $items as $ebay_item ) {
+			// The listing before this one is finished, whichever way it went:
+			// every `continue` below lands here.
+			if ( null !== $current ) {
+				if ( '' !== $current ) {
+					$last_handled = $current;
+				}
+				$handled++;
+				$current = null;
+			}
+
+			// Stop starting listings well short of whatever this host allows,
+			// and hand the rest to a fresh request - rather than run on until
+			// the host kills the request part way through one. Always at least
+			// one listing, so every run moves the window on.
+			if ( $handled > 0 ) {
+				$stopped_for = TCGiant_Sync_Runtime::over_budget();
+				if ( '' !== $stopped_for ) {
+					break;
+				}
+			}
+
+			$current = (string) ( $ebay_item['ItemID'] ?? '' );
+
+			// Before the work, so that if this request dies on this listing the
+			// next one knows which, and where to carry on from.
+			self::save_delta_progress( array_merge( $progress, array(
+				'cursor'    => $last_handled,
+				'done'      => $done + $handled,
+				'in_flight' => $current,
+				'ts'        => time(),
+			) ) );
+			TCGiant_Sync_Runtime::context( sprintf(
+				'eBay item %s (%d of %d in the changes from %s)',
+				$current,
+				$done + $handled + 1,
+				$total_items,
+				$mod_from
+			) );
+			self::$slice_in_flight = true;
+
+			// The last listing's answers are done with.
+			unset( $full_response, $product_data, $full_for_filter );
+			if ( $handled > 0 && 0 === $handled % 10 ) {
+				self::release_request_cache();
+			}
+
 			try {
 				// License check.
 				//
@@ -1372,90 +1622,12 @@ class TCGiant_Sync_Importer {
 				// listings are still reflected; only creation is prevented.
 				$listing_status = $ebay_item['SellingStatus']['ListingStatus'] ?? '';
 				if ( '' !== $listing_status && 'Active' !== $listing_status ) {
-					global $wpdb;
-					$existing_id = $wpdb->get_var( $wpdb->prepare(
-						"SELECT pm.post_id FROM {$wpdb->postmeta} pm
-						 INNER JOIN {$wpdb->posts} p ON pm.post_id = p.ID
-						 WHERE pm.meta_key = '_ebay_item_id' AND pm.meta_value = %s
-						   AND p.post_status != 'trash'
-						 LIMIT 1",
-						$item_id
-					) );
+					$existing_id = self::find_live_product_for_item( $item_id );
 
-					if ( ! $existing_id ) {
-						$skipped++;
-						continue;
+					if ( $existing_id && self::settle_ended_listing( $existing_id, $ebay_item, $listing_status, 'Delta' ) ) {
+						$fallback_count++;
 					}
 
-					// Known product — record that its listing is over.
-					update_post_meta( (int) $existing_id, '_ebay_listing_status', 'Ended' );
-					if ( ! empty( $ebay_item['ListingDetails']['EndTime'] ) ) {
-						update_post_meta( (int) $existing_id, '_ebay_end_time', $ebay_item['ListingDetails']['EndTime'] );
-					}
-
-					// Recorded on the way past even though the listing is over: a seller
-					// rotating unsold stock wants to know how long the last attempt ran.
-					if ( ! empty( $ebay_item['ListingDetails']['StartTime'] ) ) {
-						update_post_meta( (int) $existing_id, '_ebay_start_time', $ebay_item['ListingDetails']['StartTime'] );
-					}
-
-					// And bring its stock into line, which used to be missed entirely.
-					//
-					// A listing with one of something ends the moment it sells, so
-					// this branch — not the ordinary import — is where a sale of a
-					// single item is seen. It only recorded the status and moved on,
-					// while the order sync had stopped adjusting stock for linked
-					// products on the grounds that "the mapper sets it from eBay
-					// anyway". That is true of a live listing and false of an ended
-					// one, because an ended listing never reaches the mapper. So a
-					// sold coin stayed in stock in WooCommerce indefinitely.
-					//
-					// eBay's own figures answer both cases correctly: sold out gives
-					// nothing left, while a listing the seller ended by hand still
-					// reports whatever was unsold, so stock is left where it is.
-					$listed = $ebay_item['Quantity'] ?? null;
-					$sold   = $ebay_item['SellingStatus']['QuantitySold'] ?? null;
-
-					// The events feed is often partial, which is why the fallback
-					// below exists at all. Ask for the item outright rather than
-					// guess at a quantity.
-					if ( null === $listed || null === $sold ) {
-						$ended_detail = $api->get_item( $item_id );
-						if ( ! is_wp_error( $ended_detail ) && isset( $ended_detail['Item'] ) ) {
-							$fallback_count++;
-							$listed = $ended_detail['Item']['Quantity'] ?? null;
-							$sold   = $ended_detail['Item']['SellingStatus']['QuantitySold'] ?? null;
-						}
-					}
-
-					$remaining = TCGiant_Sync_Inventory::apply_ended_listing_stock( (int) $existing_id, $listed, $sold );
-
-					if ( null !== $remaining ) {
-						// Settle the stock first and decide afterwards whether the
-						// product should still be here at all. In that order,
-						// because a removal that is refused must still leave the
-						// quantity correct.
-						if ( TCGiant_Sync_Inventory::maybe_remove_sold_out( (int) $existing_id, $listed, $sold ) ) {
-							TCGiant_Sync_Logger::log( sprintf(
-								'Delta: eBay item %s sold out — WC #%d moved to the trash (%d listed, %d sold).',
-								$item_id, (int) $existing_id, (int) $listed, (int) $sold
-							) );
-							$skipped++;
-							continue;
-						}
-
-						TCGiant_Sync_Logger::log( sprintf(
-							'Delta: eBay item %s is %s — WC #%d marked ended and stock set to %d (%d listed, %d sold).',
-							$item_id, $listing_status, (int) $existing_id, $remaining, (int) $listed, (int) $sold
-						) );
-						$skipped++;
-						continue;
-					}
-
-					TCGiant_Sync_Logger::log( sprintf(
-						'Delta: eBay item %s is %s — marked WC #%d as ended. Its stock could not be settled, so it is unchanged; the preceding line says why.',
-						$item_id, $listing_status, (int) $existing_id
-					), 'warning' );
 					$skipped++;
 					continue;
 				}
@@ -1487,6 +1659,21 @@ class TCGiant_Sync_Importer {
 					} else {
 						$errors++;
 						TCGiant_Sync_Logger::error( sprintf( 'Delta fallback failed for item %s. Skipping.', $item_id ) );
+						continue;
+					}
+
+					// What eBay says now, not what the window said. A window can take
+					// hours to work through, and a listing that was live when it was
+					// read may have sold or ended since - on the website, say, with the
+					// plugin ending the eBay listing. Saved as live, its stock would be
+					// set from eBay's figures and a sold coin put back on sale.
+					$now_status = (string) ( $ebay_item['SellingStatus']['ListingStatus'] ?? '' );
+					if ( '' !== $now_status && 'Active' !== $now_status ) {
+						$existing_id = self::find_live_product_for_item( $item_id );
+						if ( $existing_id ) {
+							self::settle_ended_listing( $existing_id, $ebay_item, $now_status, 'Delta' );
+						}
+						$skipped++;
 						continue;
 					}
 				}
@@ -1532,31 +1719,63 @@ class TCGiant_Sync_Importer {
 			}
 		}
 
+		// The last listing reached finished too, unless the budget stopped the
+		// loop before it began.
+		if ( null !== $current ) {
+			if ( '' !== $current ) {
+				$last_handled = $current;
+			}
+			$handled++;
+		}
+
+		self::$slice_in_flight = false;
+		TCGiant_Sync_Runtime::context( '' );
+
+		$more     = $more || $handled < count( $items );
+		$progress = array_merge( $progress, array(
+			'cursor'    => $last_handled,
+			'done'      => $done + $handled,
+			'in_flight' => '',
+			'kills'     => 0,
+			'kill_item' => '',
+			'ts'        => time(),
+		) );
+
 		// Log summary.
 		$filter_label = $skipped > 0 ? sprintf( ', %d skipped (category filter)', $skipped ) : '';
 		$fallback_label = $fallback_count > 0 ? sprintf( ', %d GetItem fallbacks', $fallback_count ) : '';
 		TCGiant_Sync_Logger::log( sprintf(
 			'Delta sync complete! %d imported, %d errors out of %d modified items%s%s.',
-			$processed, $errors, count( $items ), $filter_label, $fallback_label
+			$processed, $errors, $handled, $filter_label, $fallback_label
 		), 'success' );
+
+		if ( '' !== $stopped_for ) {
+			TCGiant_Sync_Logger::log( sprintf(
+				'Delta sync: stopped this batch after %d listing(s) to stay within this host\'s limits (%s). The rest carries on in a fresh request.',
+				$handled,
+				$stopped_for
+			) );
+		}
 
 		// More of this window still to go: record where we got to, keep the sync
 		// marked as running, and pick up from here on the next pass. The position
 		// is deliberately not advanced until the whole window is done, so an
 		// interruption costs a repeat rather than a hole.
 		if ( $more ) {
-			$last = end( $items );
+			self::save_delta_progress( $progress );
 
 			TCGiant_Sync_Logger::log( sprintf(
 				'Delta sync: %d of %d changed items done. Continuing with the rest.',
-				$done + count( $items ),
+				$done + $handled,
 				$total_items
 			) );
 
+			// The state keeps a copy of the place for a site that goes back to
+			// 3.26 mid-window; the progress option is what this version reads.
 			self::continue_delta( array(
 				'status'            => 'scanning',
-				'delta_offset'      => $done + count( $items ),
-				'delta_cursor'      => is_array( $last ) ? (string) ( $last['ItemID'] ?? '' ) : '',
+				'delta_offset'      => $done + $handled,
+				'delta_cursor'      => $last_handled,
 				'delta_window_from' => $mod_from,
 				'delta_window_to'   => $mod_to,
 				'total_found'       => $total_items,
@@ -1605,6 +1824,311 @@ class TCGiant_Sync_Importer {
 	}
 
 	/**
+	 * The delta's place in its window, read fresh.
+	 *
+	 * @return array
+	 */
+	private static function delta_progress() {
+		// Another request may have moved it on since this one first read it.
+		if ( function_exists( 'wp_cache_delete' ) ) {
+			wp_cache_delete( self::DELTA_PROGRESS_OPTION, 'options' );
+		}
+
+		$progress = get_option( self::DELTA_PROGRESS_OPTION, array() );
+
+		return is_array( $progress ) ? $progress : array();
+	}
+
+	/**
+	 * Write the delta's place in its window.
+	 *
+	 * @param array $progress Place.
+	 */
+	private static function save_delta_progress( array $progress ) {
+		update_option( self::DELTA_PROGRESS_OPTION, $progress, false );
+	}
+
+	/**
+	 * Forget the delta's place and the window it was kept for.
+	 */
+	private static function clear_delta_progress() {
+		delete_option( self::DELTA_PROGRESS_OPTION );
+		delete_option( self::DELTA_WINDOW_CACHE_OPTION );
+	}
+
+	/**
+	 * A place kept by 3.26, which held it in the sync state.
+	 *
+	 * @param array  $state    Sync state.
+	 * @param string $mod_from Start of the window being read.
+	 * @return array Progress, or empty if there is none for this window.
+	 */
+	private static function legacy_delta_progress( array $state, $mod_from ) {
+		$from   = (string) ( $state['delta_window_from'] ?? '' );
+		$to     = (string) ( $state['delta_window_to'] ?? '' );
+		$cursor = (string) ( $state['delta_cursor'] ?? '' );
+		$done   = (int) ( $state['delta_offset'] ?? 0 );
+
+		if ( $from !== $mod_from || '' === $to || ( '' === $cursor && $done <= 0 ) ) {
+			return array();
+		}
+
+		return array(
+			'from'   => $from,
+			'to'     => $to,
+			'cursor' => $cursor,
+			'done'   => $done,
+		);
+	}
+
+	/**
+	 * The last run died while importing a listing: try it once more, or step
+	 * over it if it has killed a run before.
+	 *
+	 * Stepping over is not dropping. The listing is queued for a stock check of
+	 * its own - which reads eBay's figures without the import that died - and
+	 * listed on Stock Review, because for a quantity-1 coin or card a sale the
+	 * sync never saw is an oversell waiting to happen.
+	 *
+	 * @param array  $progress Place, with in_flight set.
+	 * @param string $mod_from Start of the window.
+	 * @return array Place, updated and saved.
+	 */
+	private static function after_slice_death( array $progress, $mod_from ) {
+		$dead_on = (string) $progress['in_flight'];
+		$kills   = (string) ( $progress['kill_item'] ?? '' ) === $dead_on
+			? (int) ( $progress['kills'] ?? 0 ) + 1
+			: 1;
+
+		if ( $kills >= self::DELTA_SLICE_KILLS ) {
+			TCGiant_Sync_Logger::error( sprintf(
+				'The delta sync was stopped %d times in a row while importing eBay item %s (in the changes from %s). Moving past it so the rest can be read. It is queued for a stock check of its own and listed on the Stock Review page; the error line before this one says what stopped it, where PHP said.',
+				$kills,
+				$dead_on,
+				$mod_from
+			) );
+
+			self::hold_back_listing( $dead_on, $mod_from );
+			self::queue_settle( $dead_on );
+
+			$progress['cursor']    = $dead_on;
+			$progress['done']      = (int) ( $progress['done'] ?? 0 ) + 1;
+			$progress['kills']     = 0;
+			$progress['kill_item'] = '';
+		} else {
+			TCGiant_Sync_Logger::warning( sprintf(
+				'The last delta run stopped while importing eBay item %s. Trying it once more before moving past it.',
+				$dead_on
+			) );
+
+			$progress['kills']     = $kills;
+			$progress['kill_item'] = $dead_on;
+		}
+
+		$progress['in_flight'] = '';
+		self::save_delta_progress( $progress );
+
+		return $progress;
+	}
+
+	/**
+	 * Add a listing to the held-back list.
+	 *
+	 * @param string $item_id  eBay ItemID.
+	 * @param string $mod_from Start of the window it was in.
+	 */
+	private static function hold_back_listing( $item_id, $mod_from ) {
+		$held = self::held_back_listings();
+
+		$held[ (string) $item_id ] = array(
+			'item_id' => (string) $item_id,
+			'from'    => (string) $mod_from,
+			'at'      => time(),
+		);
+
+		if ( count( $held ) > self::DELTA_HELD_MAX ) {
+			$held = array_slice( $held, -self::DELTA_HELD_MAX, null, true );
+		}
+
+		update_option( self::DELTA_HELD_OPTION, $held, false );
+	}
+
+	/**
+	 * Seconds since the delta last finished reading eBay's changes, or 0 when
+	 * that is not a question worth asking - syncing switched off, or no sync yet.
+	 *
+	 * @return int
+	 */
+	public static function delta_behind_seconds() {
+		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
+		$interval = is_array( $settings ) && ! empty( $settings['sync_interval'] ) ? $settings['sync_interval'] : 'tcgiant_hourly';
+
+		// Nothing to fall behind on with syncing switched off or no eBay account.
+		if ( 'disabled' === $interval || ! TCGiant_Sync_OAuth::instance()->is_authenticated() ) {
+			return 0;
+		}
+
+		$last = (string) ( self::get_sync_state()['last_successful_sync_at'] ?? '' );
+		$ts   = '' !== $last ? strtotime( $last ) : false;
+
+		return $ts ? max( 0, time() - (int) $ts ) : 0;
+	}
+
+	/**
+	 * How far behind the delta may be before that is worth saying.
+	 *
+	 * Two sync intervals, and never less than a day - a shop syncing daily is
+	 * a day behind as a matter of course.
+	 *
+	 * @return int Seconds.
+	 */
+	public static function delta_behind_threshold() {
+		$settings  = get_option( 'tcgiant_sync_ebay_settings', array() );
+		$interval  = is_array( $settings ) && ! empty( $settings['sync_interval'] ) ? $settings['sync_interval'] : 'tcgiant_hourly';
+		$schedules = function_exists( 'wp_get_schedules' ) ? wp_get_schedules() : array();
+		$seconds   = isset( $schedules[ $interval ]['interval'] ) ? (int) $schedules[ $interval ]['interval'] : HOUR_IN_SECONDS;
+
+		return max( DAY_IN_SECONDS, 2 * $seconds );
+	}
+
+	/**
+	 * Listings the delta had to step over, keyed by ItemID.
+	 *
+	 * @return array
+	 */
+	public static function held_back_listings() {
+		$held = get_option( self::DELTA_HELD_OPTION, array() );
+
+		return is_array( $held ) ? $held : array();
+	}
+
+	/**
+	 * Take listings off the held-back list.
+	 *
+	 * @param string[] $item_ids ItemIDs, or empty for all of them.
+	 */
+	public static function forget_held_back( array $item_ids = array() ) {
+		if ( empty( $item_ids ) ) {
+			delete_option( self::DELTA_HELD_OPTION );
+			return;
+		}
+
+		$held = self::held_back_listings();
+
+		foreach ( $item_ids as $id ) {
+			unset( $held[ (string) $id ] );
+		}
+
+		update_option( self::DELTA_HELD_OPTION, $held, false );
+	}
+
+	/**
+	 * Keep the window's listings in brief.
+	 *
+	 * Only what the loop reads before it decides whether to ask eBay for the
+	 * whole listing: its ID, status, quantities, times and categories. Nothing
+	 * a GetItem would not supply again - which it does, because a brief row
+	 * carries no item specifics or pictures, and in practice eBay's events
+	 * answer did not either.
+	 *
+	 * @param string $from  Start of the window.
+	 * @param string $to    End of the window.
+	 * @param array  $items Listings, as eBay sent them.
+	 */
+	private static function cache_delta_rows( $from, $to, array $items ) {
+		$rows = array();
+
+		foreach ( $items as $item ) {
+			if ( is_array( $item ) && ! empty( $item['ItemID'] ) ) {
+				$rows[] = self::compact_delta_item( $item );
+			}
+		}
+
+		update_option( self::DELTA_WINDOW_CACHE_OPTION, array( 'key' => $from . '|' . $to, 'rows' => $rows ), false );
+	}
+
+	/**
+	 * The listings kept for this window, or null if there are none.
+	 *
+	 * @param string $from Start of the window.
+	 * @param string $to   End of the window.
+	 * @return array|null
+	 */
+	private static function cached_delta_rows( $from, $to ) {
+		if ( function_exists( 'wp_cache_delete' ) ) {
+			wp_cache_delete( self::DELTA_WINDOW_CACHE_OPTION, 'options' );
+		}
+
+		$cache = get_option( self::DELTA_WINDOW_CACHE_OPTION, array() );
+
+		if ( ! is_array( $cache ) || (string) ( $cache['key'] ?? '' ) !== $from . '|' . $to
+			|| ! isset( $cache['rows'] ) || ! is_array( $cache['rows'] ) || empty( $cache['rows'] ) ) {
+			return null;
+		}
+
+		return $cache['rows'];
+	}
+
+	/**
+	 * One listing, reduced to what the loop reads before a GetItem.
+	 *
+	 * @param array $item Listing as eBay sent it.
+	 * @return array
+	 */
+	private static function compact_delta_item( array $item ) {
+		$row = array( 'ItemID' => (string) $item['ItemID'] );
+
+		if ( isset( $item['Quantity'] ) && ! is_array( $item['Quantity'] ) ) {
+			$row['Quantity'] = $item['Quantity'];
+		}
+
+		foreach ( array( 'ListingStatus', 'QuantitySold' ) as $key ) {
+			if ( isset( $item['SellingStatus'][ $key ] ) && ! is_array( $item['SellingStatus'][ $key ] ) ) {
+				$row['SellingStatus'][ $key ] = $item['SellingStatus'][ $key ];
+			}
+		}
+
+		foreach ( array( 'StartTime', 'EndTime' ) as $key ) {
+			if ( ! empty( $item['ListingDetails'][ $key ] ) && ! is_array( $item['ListingDetails'][ $key ] ) ) {
+				$row['ListingDetails'][ $key ] = $item['ListingDetails'][ $key ];
+			}
+		}
+
+		if ( isset( $item['PrimaryCategory']['CategoryID'] ) && ! is_array( $item['PrimaryCategory']['CategoryID'] ) ) {
+			$row['PrimaryCategory']['CategoryID'] = $item['PrimaryCategory']['CategoryID'];
+		}
+
+		foreach ( array( 'StoreCategoryID', 'StoreCategory2ID' ) as $key ) {
+			if ( isset( $item['Storefront'][ $key ] ) && ! is_array( $item['Storefront'][ $key ] ) ) {
+				$row['Storefront'][ $key ] = $item['Storefront'][ $key ];
+			}
+		}
+
+		// Marks it as a variation listing, which makes the loop fetch it whole.
+		if ( ! empty( $item['Variations'] ) ) {
+			$row['Variations'] = array( 'Variation' => array() );
+		}
+
+		return $row;
+	}
+
+	/**
+	 * Let go of what the object cache has kept in this request.
+	 *
+	 * A persistent object cache keeps a copy of every key a request touches,
+	 * for the rest of that request. Over a long batch of product saves that is
+	 * thousands of keys. The persistent copies are untouched; only this
+	 * request's memory of them goes.
+	 */
+	private static function release_request_cache() {
+		if ( function_exists( 'wp_using_ext_object_cache' ) && wp_using_ext_object_cache()
+			&& function_exists( 'wp_cache_supports' ) && wp_cache_supports( 'flush_runtime' )
+			&& function_exists( 'wp_cache_flush_runtime' ) ) {
+			wp_cache_flush_runtime();
+		}
+	}
+
+	/**
 	 * State that forgets where the sync was inside a window.
 	 *
 	 * Every path that finishes a window or changes its width writes this, so
@@ -1613,6 +2137,8 @@ class TCGiant_Sync_Importer {
 	 * @return array
 	 */
 	private static function fresh_delta_window() {
+		self::clear_delta_progress();
+
 		return array(
 			'delta_offset'      => 0,
 			'delta_cursor'      => '',
@@ -1872,9 +2398,22 @@ class TCGiant_Sync_Importer {
 	const PAGES_PER_BATCH = 10;
 
 	public function scan_all_pages() {
+		// A batch PHP kills leaves a line saying how, and on which page.
+		TCGiant_Sync_Runtime::watch( 'Full sync scan' );
+
+		try {
+			$this->run_scan_all_pages();
+		} finally {
+			TCGiant_Sync_Runtime::unwatch();
+		}
+	}
+
+	/**
+	 * The body of scan_all_pages(), watched by it.
+	 */
+	private function run_scan_all_pages() {
 		// Try to extend the time limit, but don't rely on it.
-		@set_time_limit( 300 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
-		ignore_user_abort( true );
+		TCGiant_Sync_Runtime::raise_time_limit( 300 );
 
 		$state = self::get_sync_state();
 		$start_page = max( 1, (int) ( $state['current_page'] ?? 1 ) );
@@ -1896,6 +2435,8 @@ class TCGiant_Sync_Importer {
 		$pages_this_batch = 0;
 
 		for ( $current_page = $start_page; $pages_this_batch < self::PAGES_PER_BATCH; $current_page++ ) {
+			TCGiant_Sync_Runtime::context( sprintf( 'page %d of %s', $current_page, $total_pages > 0 ? (string) $total_pages : 'an unknown number' ) );
+
 			self::update_sync_state( array(
 				'status'              => 'scanning',
 				'current_page'        => $current_page,
@@ -1999,6 +2540,25 @@ class TCGiant_Sync_Importer {
 	}
 
 	/**
+	 * Where the delta sync should pick up after a full sync: when it STARTED.
+	 *
+	 * A full sync reads a page at a time over minutes or hours. A listing on a
+	 * page already read that sold before the scan finished was recorded as
+	 * read up to the moment the scan finished, so the delta started after the
+	 * sale and never saw it - and on a quantity-1 shop a missed sale is an
+	 * oversell. Starting from the scan's own start re-reads anything that
+	 * changed during it, which costs a little and misses nothing.
+	 *
+	 * @param array $state Sync state.
+	 * @return string ISO 8601 UTC.
+	 */
+	private static function full_sync_position( array $state ) {
+		$started = (string) ( $state['full_started_at'] ?? '' );
+
+		return '' !== $started && false !== strtotime( $started ) ? $started : gmdate( 'Y-m-d\TH:i:s.000\Z' );
+	}
+
+	/**
 	 * Finalize the scan — transition to importing or complete state.
 	 *
 	 * @param bool $clean True when every page was scanned without error. Only a
@@ -2021,7 +2581,7 @@ class TCGiant_Sync_Importer {
 			self::update_sync_state( array(
 				'status'                  => 'complete',
 				'last_completed'          => current_time( 'mysql' ),
-				'last_successful_sync_at' => gmdate( 'Y-m-d\TH:i:s.000\Z' ),
+				'last_successful_sync_at' => self::full_sync_position( $state ),
 				'scan_complete_clean'     => (bool) $clean,
 			) );
 			TCGiant_Sync_Logger::log( 'Scan complete. No matching items found.' );
@@ -2291,6 +2851,211 @@ class TCGiant_Sync_Importer {
 	}
 
 	/**
+	 * The live (non-trashed) product linked to an eBay listing, if any.
+	 *
+	 * @param string $item_id eBay ItemID.
+	 * @return int Product ID, or 0.
+	 */
+	public static function find_live_product_for_item( $item_id ) {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		return (int) $wpdb->get_var( $wpdb->prepare(
+			"SELECT pm.post_id FROM {$wpdb->postmeta} pm
+			 INNER JOIN {$wpdb->posts} p ON pm.post_id = p.ID
+			 WHERE pm.meta_key = '_ebay_item_id' AND pm.meta_value = %s
+			   AND p.post_status != 'trash'
+			 LIMIT 1",
+			(string) $item_id
+		) );
+	}
+
+	/**
+	 * Record that a product's eBay listing is over, settle its stock, and decide
+	 * whether the product should still be here.
+	 *
+	 * Shared by the delta sync and the per-listing stock check, so the two can
+	 * never disagree about what an ended listing means.
+	 *
+	 * Products are never CREATED for ended listings - a sale is a modification,
+	 * so the items most likely to arrive here are the ones that just sold, and
+	 * importing them looked like deleted products rising from the dead. Only an
+	 * existing product is brought up to date.
+	 *
+	 * A listing with one of something ends the moment it sells, so this - not
+	 * the ordinary import - is where a sale of a single item is seen. eBay's own
+	 * figures decide: sold out leaves nothing, a listing ended by hand still
+	 * reports what went unsold. And they can only lower WooCommerce's stock, never
+	 * raise it - see apply_ended_listing_stock().
+	 *
+	 * @param int    $existing_id    Product linked to the listing.
+	 * @param array  $ebay_item      The listing as eBay sent it.
+	 * @param string $listing_status eBay's ListingStatus.
+	 * @param string $source         Prefix for the log lines.
+	 * @return bool Whether a GetItem call was needed for the figures.
+	 */
+	private static function settle_ended_listing( $existing_id, array $ebay_item, $listing_status, $source ) {
+		$existing_id = (int) $existing_id;
+		$item_id     = (string) ( $ebay_item['ItemID'] ?? '' );
+		$used_get    = false;
+
+		update_post_meta( $existing_id, '_ebay_listing_status', 'Ended' );
+		if ( ! empty( $ebay_item['ListingDetails']['EndTime'] ) ) {
+			update_post_meta( $existing_id, '_ebay_end_time', $ebay_item['ListingDetails']['EndTime'] );
+		}
+
+		// Recorded on the way past even though the listing is over: a seller
+		// rotating unsold stock wants to know how long the last attempt ran.
+		if ( ! empty( $ebay_item['ListingDetails']['StartTime'] ) ) {
+			update_post_meta( $existing_id, '_ebay_start_time', $ebay_item['ListingDetails']['StartTime'] );
+		}
+
+		// This listing's ending is already in the stock - settled by the sale
+		// check, or when the plugin ended it at 0. Whatever the product holds
+		// now was entered since, and applying the old figures again would wipe
+		// a restock.
+		if ( TCGiant_Sync_Inventory::listing_already_settled( $existing_id, $item_id ) ) {
+			TCGiant_Sync_Logger::log( sprintf(
+				'%s: eBay item %s is %s — WC #%d marked ended; its sales were already in the stock, so the stock is left as it is.',
+				$source, $item_id, $listing_status, $existing_id
+			) );
+			return false;
+		}
+
+		$listed = $ebay_item['Quantity'] ?? null;
+		$sold   = $ebay_item['SellingStatus']['QuantitySold'] ?? null;
+
+		// The events feed is often partial. Ask for the item outright rather
+		// than guess at a quantity.
+		if ( null === $listed || null === $sold ) {
+			$ended_detail = TCGiant_Sync_API::instance()->get_item( $item_id );
+			if ( ! is_wp_error( $ended_detail ) && isset( $ended_detail['Item'] ) ) {
+				$used_get = true;
+				$listed   = $ended_detail['Item']['Quantity'] ?? null;
+				$sold     = $ended_detail['Item']['SellingStatus']['QuantitySold'] ?? null;
+			}
+		}
+
+		$remaining = TCGiant_Sync_Inventory::apply_ended_listing_stock( (int) $existing_id, $listed, $sold );
+
+		if ( null === $remaining ) {
+			TCGiant_Sync_Logger::log( sprintf(
+				'%s: eBay item %s is %s — marked WC #%d as ended. Its stock could not be settled, so it is unchanged; the preceding line says why.',
+				$source, $item_id, $listing_status, $existing_id
+			), 'warning' );
+			return $used_get;
+		}
+
+		// Settle the stock first and decide afterwards whether the product should
+		// still be here at all. In that order, because a removal that is refused
+		// must still leave the quantity correct.
+		if ( TCGiant_Sync_Inventory::maybe_remove_sold_out( (int) $existing_id, $listed, $sold ) ) {
+			TCGiant_Sync_Logger::log( sprintf(
+				'%s: eBay item %s sold out — WC #%d moved to the trash (%d listed, %d sold).',
+				$source, $item_id, $existing_id, (int) $listed, (int) $sold
+			) );
+			return $used_get;
+		}
+
+		TCGiant_Sync_Logger::log( sprintf(
+			'%s: eBay item %s is %s — WC #%d marked ended, stock now %d (eBay: %d listed, %d sold).',
+			$source, $item_id, $listing_status, $existing_id, $remaining, (int) $listed, (int) $sold
+		) );
+
+		return $used_get;
+	}
+
+	/**
+	 * Queue a stock check for one eBay listing, unless one is already waiting.
+	 *
+	 * @param string $item_id eBay ItemID.
+	 * @return bool Whether one was queued.
+	 */
+	public static function queue_settle( $item_id ) {
+		$item_id = (string) $item_id;
+
+		if ( '' === $item_id || ! function_exists( 'as_enqueue_async_action' ) ) {
+			return false;
+		}
+
+		if ( function_exists( 'as_next_scheduled_action' )
+			&& false !== as_next_scheduled_action( 'tcgiant_sync_settle_item', array( $item_id ), self::GROUP_SETTLE ) ) {
+			return false;
+		}
+
+		as_enqueue_async_action( 'tcgiant_sync_settle_item', array( $item_id ), self::GROUP_SETTLE );
+
+		return true;
+	}
+
+	/**
+	 * Bring one product into line with its eBay listing, now.
+	 *
+	 * Queued for every eBay sale of a linked product, and for a listing the delta
+	 * had to step over. Order sync used to skip linked products altogether, on
+	 * the grounds that the delta sync sets their stock from eBay - true while the
+	 * delta keeps up, and nothing at all while it is behind. A shop whose delta
+	 * had been stuck for eleven days saw no eBay sale reach the site in that
+	 * time, and removed sold items by hand.
+	 *
+	 * An ended listing is settled exactly as the delta would settle it. A live
+	 * one only has its stock lowered to what eBay says is left, never raised -
+	 * the delta and the mapper own everything else about a live listing.
+	 *
+	 * @param string $item_id eBay ItemID.
+	 */
+	public function settle_item( $item_id ) {
+		$item_id     = (string) $item_id;
+		$existing_id = self::find_live_product_for_item( $item_id );
+
+		if ( ! $existing_id ) {
+			return;
+		}
+
+		$detail = TCGiant_Sync_API::instance()->get_item( $item_id );
+
+		if ( is_wp_error( $detail ) || empty( $detail['Item'] ) ) {
+			TCGiant_Sync_Logger::warning( sprintf(
+				'Sale check: could not read eBay item %s for WC #%d (%s). The delta sync will settle it when it reaches the sale.',
+				$item_id,
+				$existing_id,
+				is_wp_error( $detail ) ? $detail->get_error_message() : 'eBay returned nothing'
+			) );
+			return;
+		}
+
+		$item   = $detail['Item'];
+		$status = (string) ( $item['SellingStatus']['ListingStatus'] ?? '' );
+
+		if ( '' !== $status && 'Active' !== $status ) {
+			self::settle_ended_listing( $existing_id, $item, $status, 'Sale check' );
+			return;
+		}
+
+		// A variation listing's Quantity is the whole listing's, which says
+		// nothing about any one variation. The delta handles those.
+		if ( ! empty( $item['Variations'] ) ) {
+			return;
+		}
+
+		$listed = $item['Quantity'] ?? null;
+		$sold   = $item['SellingStatus']['QuantitySold'] ?? null;
+
+		if ( null === $listed || null === $sold ) {
+			return;
+		}
+
+		$now = TCGiant_Sync_Inventory::lower_stock_to( $existing_id, max( 0, (int) $listed - (int) $sold ) );
+
+		if ( null !== $now ) {
+			TCGiant_Sync_Logger::log( sprintf(
+				'Sale check: eBay item %s - WC #%d stock now %d (eBay: %d listed, %d sold).',
+				$item_id, $existing_id, $now, (int) $listed, (int) $sold
+			) );
+		}
+	}
+
+	/**
 	 * Sync recent orders and reduce stock.
 	 */
 	public function sync_recent_orders() {
@@ -2307,7 +3072,8 @@ class TCGiant_Sync_Importer {
 			return;
 		}
 
-		$order_count = 0;
+		$order_count  = 0;
+		$settle_count = 0;
 		foreach ( $response['orders'] as $order ) {
 			if ( empty( $order['lineItems'] ) ) {
 				continue;
@@ -2353,7 +3119,18 @@ class TCGiant_Sync_Importer {
 				// mapper), and eBay's figure already excludes what has sold. Taking
 				// another unit off here deducted the same sale twice. Products with no
 				// eBay link are not touched by that path, so they still need this.
-				if ( get_post_meta( $product_id, '_ebay_item_id', true ) ) {
+				//
+				// But only while the delta keeps up, and a delta that is behind
+				// brought no eBay sale to the site at all. So each sale of a linked
+				// product now queues a stock check for its listing: it reads eBay's
+				// own figures and only ever lowers stock, so it cannot deduct twice.
+				$linked_item = (string) get_post_meta( $product_id, '_ebay_item_id', true );
+				if ( '' !== $linked_item ) {
+					// The listing that sold, which is not always the one this
+					// product's SKU happened to match.
+					if ( self::queue_settle( '' !== (string) $legacy_item_id ? (string) $legacy_item_id : $linked_item ) ) {
+						$settle_count++;
+					}
 					update_post_meta( $product_id, '_ebay_order_processed_' . $line_item_id, current_time( 'mysql' ) );
 					continue;
 				}
@@ -2375,7 +3152,11 @@ class TCGiant_Sync_Importer {
 			}
 		}
 
-		TCGiant_Sync_Logger::log( sprintf( 'Order sync complete. Processed %d new line items.', $order_count ) );
+		TCGiant_Sync_Logger::log( sprintf(
+			'Order sync complete. Processed %d new line items; %d eBay sales of linked products queued for a stock check.',
+			$order_count,
+			$settle_count
+		) );
 	}
 
 	/**
@@ -2544,7 +3325,7 @@ class TCGiant_Sync_Importer {
 			// every change on eBay since its last window - an hour's worth on
 			// a shop in step, far more on one catching up - was never read.
 			if ( 'full' === $mode ) {
-				$done_state['last_successful_sync_at'] = gmdate( 'Y-m-d\TH:i:s.000\Z' );
+				$done_state['last_successful_sync_at'] = self::full_sync_position( $state );
 			}
 
 			self::update_sync_state( $done_state );

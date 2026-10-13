@@ -113,7 +113,7 @@ check( 'the guards apply to the backlog too', false !== strpos( $inventory, 'pub
 check( '  which is what the arithmetic path calls', false !== strpos( $inventory, 'return self::remove_if_allowed( $product_id );' ), true );
 
 check( 'it is a job the shop starts', false !== strpos( $jobs, "case 'bulk_remove_sold':" ), true );
-check( '  an accepted type', false !== strpos( $jobs, "'bulk_set_format', 'bulk_remove_sold' )" ), true );
+check( '  an accepted type', false !== strpos( $jobs, "'bulk_set_format', 'bulk_remove_sold'," ), true );
 check( '  resolved server-side for select-all', false !== strpos( $jobs, "TCGiant_Sync_Inventory::find_sold_out_not_removed();" ), true );
 
 // Kept is neither a success nor a failure, and inflating either would misreport

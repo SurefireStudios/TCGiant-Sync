@@ -1,0 +1,630 @@
+<?php
+/**
+ * Harness: one product that stops the image batch, and the batches after it.
+ *
+ * Products come in from eBay showing eBay's own copies of their photos, and a
+ * background batch replaces them with copies in the shop's media library -
+ * eBay's copies stop working once a listing ends. On 3.26.1 one product whose
+ * photos stopped a batch held the whole queue up:
+ *
+ * - a failed attempt was only counted once the product's work had finished,
+ *   so a batch the host killed part way through never counted it. The product
+ *   headed the next batch, and the one after that, and the queue never moved;
+ * - an exception from one product ended the batch for every product after it,
+ *   with the same result;
+ * - the 30-second limit on photo downloads, set through http_request_timeout,
+ *   never applied: media_sideload_image() passes 300 seconds of its own, so a
+ *   single slow eBay photo could hold a batch until the host killed it.
+ *
+ * 3.27.0 charges the attempt, and takes a fifteen-minute lease on the
+ * product, before any download; gives up on a product whose attempts all
+ * ended that way; catches whatever one product throws; and caps each eBay
+ * photo download through http_request_args. This loads the real
+ * TCGiant_Sync_Image_Localizer and TCGiant_Sync_Runtime with WordPress
+ * stubbed, plays eBay's photo servers, and drives localize_product_images()
+ * (private, through reflection) and process_batch().
+ *
+ * A host killing a request is a PHP fatal - no catch, no finally, nothing
+ * after it - so that part runs each batch as a PHP process of its own (this
+ * file again, with --one-batch), with post meta kept in a file the way the
+ * database keeps it, and the fatal is real: a memory limit exhausted inside
+ * the download.
+ *
+ * @package TCGiant_Sync
+ */
+
+$CHILD = in_array( '--one-batch', (array) ( $argv ?? array() ), true );
+
+$pass = 0;
+$fail = 0;
+
+function check( $label, $got, $want ) {
+	global $pass, $fail;
+	$ok = ( $got === $want );
+	if ( $ok ) { $pass++; } else { $fail++; }
+	printf( "  %s  %-74s got %-14s want %s\n", $ok ? 'PASS' : 'FAIL', $label, str_replace( "\n", ' ', var_export( $got, true ) ), str_replace( "\n", ' ', var_export( $want, true ) ) );
+}
+
+$ROOT  = dirname( __DIR__ );
+$WORLD = str_replace( '\\', '/', sys_get_temp_dir() ) . '/tcg-image-lease-' . substr( md5( __FILE__ ), 0, 8 );
+
+// --- the world the localiser runs in -----------------------------------------
+define( 'ABSPATH', $WORLD . '/' );
+define( 'MINUTE_IN_SECONDS', 60 );
+
+// process_batch() loads WordPress's media code; it is played here.
+foreach ( array( 'media', 'file', 'image' ) as $f ) {
+	if ( ! is_file( ABSPATH . "wp-admin/includes/$f.php" ) ) {
+		@mkdir( ABSPATH . 'wp-admin/includes', 0777, true );
+		file_put_contents( ABSPATH . "wp-admin/includes/$f.php", "<?php\n" );
+	}
+}
+
+$META      = array(); // post ID => meta key => value. Attachments carry their parent as _parent.
+$PRODUCTS  = array(); // published products
+$OPTIONS   = array();
+$DOWNLOADS = array(); // [ post ID, URL ] for every photo media_sideload_image() was asked for
+$ARGS_SEEN = array(); // [ URL, what WP_Http would have sent for it ]
+$SCHEDULED = array(); // single WP-Cron events, by time
+$HOOKS     = array();
+$LOG       = array();
+$NEXT_ID   = 9000;
+$KILLS     = array(); // photos whose download kills the request outright
+$PHOTO     = function () { return 'ok'; }; // what eBay's photo server does with a request
+
+// In a request of its own, every write goes straight to "the database".
+function save_site() {
+	file_put_contents( $GLOBALS['WORLD'] . '/site.json', json_encode( array(
+		'meta'      => $GLOBALS['META'],
+		'products'  => $GLOBALS['PRODUCTS'],
+		'options'   => $GLOBALS['OPTIONS'],
+		'downloads' => $GLOBALS['DOWNLOADS'],
+		'next_id'   => $GLOBALS['NEXT_ID'],
+		'kills'     => $GLOBALS['KILLS'],
+	) ) );
+}
+function load_site() {
+	$s = json_decode( file_get_contents( $GLOBALS['WORLD'] . '/site.json' ), true );
+	$GLOBALS['META']      = $s['meta'];
+	$GLOBALS['PRODUCTS']  = $s['products'];
+	$GLOBALS['OPTIONS']   = $s['options'];
+	$GLOBALS['DOWNLOADS'] = $s['downloads'];
+	$GLOBALS['NEXT_ID']   = $s['next_id'];
+	$GLOBALS['KILLS']     = $s['kills'];
+}
+function persist() {
+	if ( $GLOBALS['CHILD'] ) {
+		save_site();
+	}
+}
+
+class WP_Error {
+	private $code;
+	private $message;
+	public function __construct( $code = '', $message = '' ) {
+		$this->code    = $code;
+		$this->message = $message;
+	}
+	public function get_error_code() { return $this->code; }
+	public function get_error_message() { return $this->message; }
+}
+function is_wp_error( $thing ) { return $thing instanceof WP_Error; }
+function __( $text ) { return $text; }
+
+function get_option( $name, $default = false ) { return array_key_exists( $name, $GLOBALS['OPTIONS'] ) ? $GLOBALS['OPTIONS'][ $name ] : $default; }
+function update_option( $name, $value, $autoload = null ) { $GLOBALS['OPTIONS'][ $name ] = $value; persist(); return true; }
+
+function get_post_meta( $id, $key = '', $single = false ) { return $GLOBALS['META'][ $id ][ $key ] ?? ''; }
+function update_post_meta( $id, $key, $value ) { $GLOBALS['META'][ $id ][ $key ] = $value; persist(); return true; }
+function delete_post_meta( $id, $key ) { unset( $GLOBALS['META'][ $id ][ $key ] ); persist(); return true; }
+function has_post_thumbnail( $id ) { return ! empty( $GLOBALS['META'][ $id ]['_thumbnail_id'] ); }
+function get_post_thumbnail_id( $id ) { return (int) ( $GLOBALS['META'][ $id ]['_thumbnail_id'] ?? 0 ); }
+function set_post_thumbnail( $id, $thumb ) { return update_post_meta( $id, '_thumbnail_id', (int) $thumb ); }
+function wc_get_product( $id ) { return in_array( (int) $id, $GLOBALS['PRODUCTS'], true ) ? (object) array( 'id' => (int) $id ) : false; }
+function wp_parse_url( $url, $component = -1 ) { return parse_url( $url, $component ); }
+
+function wp_insert_attachment( $args, $file = false, $parent = 0 ) {
+	$id = ++$GLOBALS['NEXT_ID'];
+	$GLOBALS['META'][ $id ] = array( '_parent' => (int) $parent );
+	persist();
+	return $id;
+}
+function wp_delete_attachment( $id, $force = false ) { unset( $GLOBALS['META'][ $id ] ); persist(); return true; }
+function get_posts( $args ) {
+	$out = array();
+	foreach ( $GLOBALS['META'] as $id => $m ) {
+		if ( ! isset( $m['_parent'] ) ) {
+			continue; // not an attachment
+		}
+		if ( isset( $args['post_parent'] ) && (int) $m['_parent'] !== (int) $args['post_parent'] ) {
+			continue;
+		}
+		if ( isset( $args['meta_key'] ) && ( $m[ $args['meta_key'] ] ?? null ) !== $args['meta_value'] ) {
+			continue;
+		}
+		foreach ( $args['meta_query'] ?? array() as $q ) {
+			$miss = ( 'NOT EXISTS' === ( $q['compare'] ?? '' ) ) ? isset( $m[ $q['key'] ] ) : ( ( $m[ $q['key'] ] ?? null ) !== $q['value'] );
+			if ( $miss ) {
+				continue 2;
+			}
+		}
+		$out[] = $id;
+	}
+	return array_slice( $out, 0, $args['numberposts'] ?? 5 );
+}
+
+function wp_next_scheduled( $hook ) { return $GLOBALS['SCHEDULED'] ? end( $GLOBALS['SCHEDULED'] ) : false; }
+function wp_schedule_single_event( $when, $hook ) { $GLOBALS['SCHEDULED'][] = (int) $when; return true; }
+function wp_clear_scheduled_hook( $hook ) { $GLOBALS['SCHEDULED'] = array(); return 0; }
+
+// Hooks, as WordPress keeps them.
+function add_filter( $hook, $callback, $priority = 10, $accepted_args = 1 ) { $GLOBALS['HOOKS'][ $hook ][] = array( $callback, $accepted_args ); return true; }
+function add_action( $hook, $callback, $priority = 10, $accepted_args = 1 ) { return add_filter( $hook, $callback, $priority, $accepted_args ); }
+function remove_filter( $hook, $callback, $priority = 10 ) {
+	foreach ( $GLOBALS['HOOKS'][ $hook ] ?? array() as $i => $h ) {
+		if ( $h[0] === $callback ) {
+			unset( $GLOBALS['HOOKS'][ $hook ][ $i ] );
+			return true;
+		}
+	}
+	return false;
+}
+function apply_filters( $hook, $value, ...$more ) {
+	foreach ( $GLOBALS['HOOKS'][ $hook ] ?? array() as $h ) {
+		$value = call_user_func_array( $h[0], array_slice( array_merge( array( $value ), $more ), 0, $h[1] ) );
+	}
+	return $value;
+}
+function filters_on( $hook ) { return count( $GLOBALS['HOOKS'][ $hook ] ?? array() ); }
+
+/**
+ * What WP_Http::request() holds for a download_url() call - the request
+ * media_sideload_image() makes - just before it applies http_request_args.
+ */
+function download_args( $timeout ) {
+	return array( 'method' => 'GET', 'timeout' => $timeout, 'redirection' => 5, 'stream' => true, 'filename' => '/tmp/s-l1600-AbC1.tmp', 'limit_response_size' => null, 'reject_unsafe_urls' => true );
+}
+
+/** media_sideload_image(), with eBay's photo server played by $PHOTO. */
+function media_sideload_image( $file, $post_id, $desc = null, $return = 'html' ) {
+	$GLOBALS['DOWNLOADS'][] = array( (int) $post_id, $file );
+	persist();
+
+	$GLOBALS['ARGS_SEEN'][] = array( $file, apply_filters( 'http_request_args', download_args( 300 ), $file ) );
+
+	$outcome = call_user_func( $GLOBALS['PHOTO'], $file, (int) $post_id );
+	if ( is_wp_error( $outcome ) ) {
+		return $outcome;
+	}
+	return wp_insert_attachment( array(), false, $post_id );
+}
+
+class TCGiant_Sync_Logger {
+	public static function log( $message, $level = 'info' ) {
+		$line = "[$level] $message";
+		if ( $GLOBALS['CHILD'] ) {
+			file_put_contents( $GLOBALS['WORLD'] . '/activity.log', $line . "\n", FILE_APPEND );
+		} else {
+			$GLOBALS['LOG'][] = $line;
+		}
+	}
+	public static function error( $message ) { self::log( $message, 'error' ); }
+	public static function warning( $message ) { self::log( $message, 'warning' ); }
+	public static function write_now( $message, $level = 'error' ) { self::log( $message, $level ); }
+}
+
+/**
+ * The products the batch's query would select: queued, not waiting out a
+ * retry or a lease, lowest ID first.
+ */
+function due_products( $now ) {
+	$due = array();
+	foreach ( $GLOBALS['PRODUCTS'] as $id ) {
+		$m = $GLOBALS['META'][ $id ] ?? array();
+		if ( ! array_key_exists( '_tcgiant_external_image_urls', $m ) || ! array_key_exists( '_tcgiant_images_localized', $m ) ) {
+			continue;
+		}
+		if ( '0' !== (string) $m['_tcgiant_images_localized'] ) {
+			continue;
+		}
+		if ( isset( $m['_tcgiant_localize_retry_after'] ) && (int) $m['_tcgiant_localize_retry_after'] > $now ) {
+			continue;
+		}
+		$due[] = $id;
+	}
+	sort( $due );
+	return $due;
+}
+
+class Harness_Wpdb {
+	public $posts    = 'wp_posts';
+	public $postmeta = 'wp_postmeta';
+	public function prepare( $query, ...$args ) { return vsprintf( $query, $args ); }
+	public function get_col( $sql ) {
+		preg_match( '/<= (\d+)/', $sql, $now );
+		preg_match( '/LIMIT (\d+)/', $sql, $limit );
+		return array_slice( due_products( (int) $now[1] ), 0, (int) $limit[1] );
+	}
+	public function get_var( $sql ) {
+		if ( false !== strpos( $sql, 'MIN(' ) ) {
+			preg_match( '/> (\d+)/', $sql, $now );
+			$next = null;
+			foreach ( $GLOBALS['PRODUCTS'] as $id ) {
+				$m = $GLOBALS['META'][ $id ] ?? array();
+				if ( '0' === (string) ( $m['_tcgiant_images_localized'] ?? '' ) && isset( $m['_tcgiant_localize_retry_after'] ) && (int) $m['_tcgiant_localize_retry_after'] > (int) $now[1] ) {
+					$next = null === $next ? (int) $m['_tcgiant_localize_retry_after'] : min( $next, (int) $m['_tcgiant_localize_retry_after'] );
+				}
+			}
+			return null === $next ? null : (string) $next;
+		}
+		if ( false !== strpos( $sql, 'COUNT(' ) ) {
+			preg_match( '/<= (\d+)/', $sql, $now );
+			return (string) count( due_products( (int) $now[1] ) );
+		}
+		return null;
+	}
+}
+$wpdb = new Harness_Wpdb();
+
+// --- the real classes --------------------------------------------------------
+if ( is_file( $ROOT . '/includes/class-tcgiant-sync-runtime.php' ) ) {
+	require $ROOT . '/includes/class-tcgiant-sync-runtime.php'; // new in 3.27.0
+}
+require $ROOT . '/includes/class-tcgiant-sync-image-localizer.php';
+
+// The time and memory budget is another harness's subject: here a batch is
+// never cut short by it.
+if ( class_exists( 'TCGiant_Sync_Runtime' ) ) {
+	TCGiant_Sync_Runtime::$clock        = function () { return (float) $_SERVER['REQUEST_TIME_FLOAT']; };
+	TCGiant_Sync_Runtime::$memory_probe = function () { return 0; };
+}
+
+// --- one batch, in a request of its own ---------------------------------------
+if ( $CHILD ) {
+	load_site();
+	$PHOTO = function ( $url ) {
+		if ( in_array( $url, $GLOBALS['KILLS'], true ) ) {
+			// A real, uncatchable fatal: what a host's memory_limit does to a
+			// request decoding a photo too large for it.
+			ini_set( 'memory_limit', '32M' );
+			$GLOBALS['TOO_BIG'] = str_repeat( 'x', 64 * 1048576 );
+		}
+		return 'ok';
+	};
+	TCGiant_Sync_Image_Localizer::instance()->process_batch();
+	exit( 0 );
+}
+
+// --- driving it --------------------------------------------------------------
+
+function photo( $n ) { return sprintf( 'https://i.ebayimg.com/images/g/P%03dAAOSwAbC/s-l1600.jpg', $n ); }
+function timeout() { return new WP_Error( 'http_request_failed', 'cURL error 28: Operation timed out after 30000 milliseconds with 0 bytes received' ); }
+
+function fresh_site() {
+	$GLOBALS['META']      = array();
+	$GLOBALS['PRODUCTS']  = array();
+	$GLOBALS['OPTIONS']   = array();
+	$GLOBALS['DOWNLOADS'] = array();
+	$GLOBALS['ARGS_SEEN'] = array();
+	$GLOBALS['SCHEDULED'] = array();
+	$GLOBALS['LOG']       = array();
+	$GLOBALS['KILLS']     = array();
+	$GLOBALS['PHOTO']     = function () { return 'ok'; };
+	// Whatever an earlier batch left behind does not carry over to this one.
+	unset( $GLOBALS['HOOKS']['http_request_args'], $GLOBALS['HOOKS']['http_request_timeout'], $GLOBALS['HOOKS']['wp_editor_set_quality'] );
+	@unlink( $GLOBALS['WORLD'] . '/activity.log' );
+}
+
+/**
+ * A product as the importer leaves it: its eBay photo addresses stored, an
+ * eBay-hosted placeholder as its main image, and queued for the batch.
+ */
+function product( $id, array $photos, array $meta = array() ) {
+	$GLOBALS['PRODUCTS'][] = $id;
+	$GLOBALS['META'][ $id ] = array();
+	TCGiant_Sync_Image_Localizer::set_external_images( $id, $photos );
+	foreach ( $meta as $key => $value ) {
+		$GLOBALS['META'][ $id ][ $key ] = $value;
+	}
+}
+
+/** The private per-product step, called the way process_batch() calls it. */
+function localize( $id ) {
+	$step = new ReflectionMethod( 'TCGiant_Sync_Image_Localizer', 'localize_product_images' );
+	$step->setAccessible( true );
+	return $step->invoke( TCGiant_Sync_Image_Localizer::instance(), $id );
+}
+
+/** A batch, as WP-Cron runs it. Returns whatever escaped it, or ''. */
+function batch() {
+	try {
+		TCGiant_Sync_Image_Localizer::instance()->process_batch();
+		return '';
+	} catch ( \Throwable $e ) {
+		return get_class( $e ) . ': ' . $e->getMessage();
+	}
+}
+
+/** A batch in a PHP process of its own, so that a fatal is a real one. */
+function one_batch() {
+	save_site();
+	shell_exec( '"' . PHP_BINARY . '" "' . __FILE__ . '" --one-batch 2>&1' );
+	load_site();
+}
+
+/** Time passes: every retry and lease is that much nearer. */
+function time_passes( $seconds ) {
+	foreach ( $GLOBALS['META'] as $id => $m ) {
+		if ( isset( $m['_tcgiant_localize_retry_after'] ) ) {
+			$GLOBALS['META'][ $id ]['_tcgiant_localize_retry_after'] = (int) $m['_tcgiant_localize_retry_after'] - $seconds;
+		}
+	}
+}
+
+function meta( $id, $key ) { return $GLOBALS['META'][ $id ][ $key ] ?? ''; }
+function has_meta( $id, $key ) { return isset( $GLOBALS['META'][ $id ] ) && array_key_exists( $key, $GLOBALS['META'][ $id ] ); }
+function done( $id ) { return '1' === (string) meta( $id, '_tcgiant_images_localized' ); }
+function own_photo( $id ) { return TCGiant_Sync_Image_Localizer::has_local_thumbnail( $id ); }
+function downloads_of( $id ) { return count( array_filter( $GLOBALS['DOWNLOADS'], function ( $d ) use ( $id ) { return (int) $d[0] === $id; } ) ); }
+/** Whether a timestamp is about this many seconds from now. */
+function in_about( $ts, $seconds ) { return abs( (int) $ts - ( time() + $seconds ) ) <= 15; }
+function log_has( $text ) {
+	foreach ( $GLOBALS['LOG'] as $line ) {
+		if ( false !== strpos( $line, $text ) ) {
+			return true;
+		}
+	}
+	return false;
+}
+function site_log_has( $text ) { $p = $GLOBALS['WORLD'] . '/activity.log'; return is_file( $p ) && false !== strpos( file_get_contents( $p ), $text ); }
+
+echo "\nTHE ATTEMPT IS CHARGED BEFORE ANY DOWNLOAD\n" . str_repeat( '=', 122 ) . "\n";
+
+fresh_site();
+product( 101, array( photo( 1 ), photo( 2 ) ) );
+$seen  = null;
+$PHOTO = function ( $url, $id ) use ( &$seen ) {
+	if ( null === $seen ) {
+		$seen = array( (int) get_post_meta( $id, '_tcgiant_localize_attempts', true ), (int) get_post_meta( $id, '_tcgiant_localize_retry_after', true ) );
+	}
+	// From inside, a request killed mid-download is one that never comes back.
+	throw new RuntimeException( 'killed mid-download' );
+};
+try {
+	localize( 101 );
+} catch ( RuntimeException $e ) {
+	// As far as this product's code is concerned, the request is over.
+}
+
+check( 'when the first photo is asked for, the attempt is already counted', $seen[0] ?? null, 1 );
+check( '  and the product leased for fifteen minutes', in_about( $seen[1] ?? 0, 900 ), true );
+check( 'a run that never comes back leaves it counted', (int) meta( 101, '_tcgiant_localize_attempts' ), 1 );
+check( '  and out of the queue until the lease runs out', in_array( 101, due_products( time() ), true ), false );
+check( '  back in it once it has', in_array( 101, due_products( time() + 901 ), true ), true );
+check( '  its second photo was never reached', downloads_of( 101 ), 1 );
+
+echo "\nA PRODUCT THAT GETS FURTHER EACH TIME IS NOT GIVEN UP\n" . str_repeat( '=', 122 ) . "\n";
+
+// Many photos on a host that allows a few per request: every attempt dies,
+// but each fetched more, and what it fetched is kept. Three attempts charged,
+// the last died having taken the count from 2 to 4 - progress, not failure.
+fresh_site();
+product( 105, array( photo( 11 ), photo( 12 ) ), array(
+	'_tcgiant_localize_attempts'    => 3,
+	'_tcgiant_localize_retry_after' => time() - 60,
+	'_tcgiant_localize_inflight'    => 3,
+	'_tcgiant_localize_progress'    => 4,
+) );
+localize( 105 );
+check( 'it is tried again', downloads_of( 105 ) > 0, true );
+check( '  not given up', log_has( 'WC #105 gave up after' ), false );
+
+// The same, with no progress since: those deaths do count.
+fresh_site();
+product( 106, array( photo( 13 ), photo( 14 ) ), array(
+	'_tcgiant_localize_attempts'    => 3,
+	'_tcgiant_localize_retry_after' => time() - 60,
+	'_tcgiant_localize_inflight'    => 5,
+	'_tcgiant_localize_progress'    => 4,
+) );
+localize( 106 );
+check( 'with nothing gained by the last death, it is given up', downloads_of( 106 ), 0 );
+
+echo "\nA PRODUCT WHOSE ATTEMPTS ALL NEVER FINISHED IS GIVEN UP\n" . str_repeat( '=', 122 ) . "\n";
+
+fresh_site();
+// Three attempts charged and the last still marked in flight: none of them
+// came back. (Attempts that FINISHED and failed are retried when the product
+// is queued again - see the images-only sync case below.)
+product( 102, array( photo( 3 ), photo( 4 ) ), array( '_tcgiant_localize_attempts' => 3, '_tcgiant_localize_retry_after' => time() - 60, '_tcgiant_localize_inflight' => 1 ) );
+$placeholder = get_post_thumbnail_id( 102 );
+$r = localize( 102 );
+
+check( 'three attempts used up: no fourth download', downloads_of( 102 ), 0 );
+check( '  it leaves the queue', done( 102 ), true );
+check( '  with nothing pending for it', has_meta( 102, '_tcgiant_localize_retry_after' ), false );
+check( '  its eBay photo stays in place', get_post_thumbnail_id( 102 ), $placeholder );
+check( '  the batch counts its photos as failed', $r['failed'], 2 );
+check( '  and the log says so, naming it', log_has( '[error] Image localizer: WC #102 gave up after 3 attempts' ), true );
+
+// One short of the limit, the last attempt is still made.
+fresh_site();
+product( 105, array( photo( 5 ) ), array( '_tcgiant_localize_attempts' => 2, '_tcgiant_localize_retry_after' => time() - 60 ) );
+$PHOTO = function () { return timeout(); };
+localize( 105 );
+
+check( 'two attempts used: the third is still made', downloads_of( 105 ), 1 );
+check( '  and when it fails too, the product is given up', array( (int) meta( 105, '_tcgiant_localize_attempts' ), done( 105 ) ), array( 3, true ) );
+
+echo "\nAN ORDINARY TIMEOUT IS COUNTED ONCE\n" . str_repeat( '=', 122 ) . "\n";
+
+fresh_site();
+product( 103, array( photo( 6 ) ) );
+$PHOTO = function () { return timeout(); };
+localize( 103 );
+
+check( 'a timed-out photo is one attempt, not two', (int) meta( 103, '_tcgiant_localize_attempts' ), 1 );
+check( '  the log calls it attempt 1 of 3', log_has( 'attempt 1 of 3' ), true );
+check( '  ten minutes\' backoff replaces the lease', in_about( meta( 103, '_tcgiant_localize_retry_after' ), 600 ), true );
+check( '  and it stays queued', done( 103 ), false );
+
+time_passes( 601 );
+localize( 103 );
+check( 'the second is attempt 2, twenty minutes off', array( (int) meta( 103, '_tcgiant_localize_attempts' ), in_about( meta( 103, '_tcgiant_localize_retry_after' ), 1200 ) ), array( 2, true ) );
+
+time_passes( 1201 );
+localize( 103 );
+check( 'the third gives it up', done( 103 ), true );
+check( '  three downloads in all, as before', downloads_of( 103 ), 3 );
+
+echo "\nA SUCCESS CLEARS THE SLATE\n" . str_repeat( '=', 122 ) . "\n";
+
+fresh_site();
+product( 104, array( photo( 7 ), photo( 8 ) ), array( '_tcgiant_localize_attempts' => 2, '_tcgiant_localize_retry_after' => time() - 60 ) );
+$r = localize( 104 );
+
+check( 'both photos downloaded', $r['downloaded'], 2 );
+check( '  the product is done', done( 104 ), true );
+check( '  its attempts are cleared', has_meta( 104, '_tcgiant_localize_attempts' ), false );
+check( '  and so is its lease', has_meta( 104, '_tcgiant_localize_retry_after' ), false );
+check( '  it shows the shop\'s own copy', own_photo( 104 ), true );
+
+echo "\nONE PRODUCT THAT THROWS DOES NOT END THE BATCH\n" . str_repeat( '=', 122 ) . "\n";
+
+fresh_site();
+product( 201, array( photo( 21 ) ) );
+product( 202, array( photo( 22 ) ) );
+product( 203, array( photo( 23 ) ) );
+$PHOTO = function ( $url ) {
+	if ( photo( 22 ) === $url ) {
+		// An Error, not an Exception: what a host without WebP support in GD
+		// throws on an eBay .webp photo.
+		throw new Error( 'Call to undefined function imagecreatefromwebp()' );
+	}
+	return 'ok';
+};
+$escaped = batch();
+
+check( 'nothing one product throws escapes the batch', $escaped, '' );
+check( '  the product before it is done', done( 201 ), true );
+check( '  and so is the one after it', done( 203 ), true );
+check( '  the one that threw is counted, and leased', array( (int) meta( 202, '_tcgiant_localize_attempts' ), in_about( meta( 202, '_tcgiant_localize_retry_after' ), 900 ) ), array( 1, true ) );
+check( '  the log names it', log_has( '[error] Image localizer: WC #202 failed: Call to undefined function imagecreatefromwebp()' ), true );
+check( '  and the batch line counts it', log_has( 'Batch complete. 2 downloaded, 0 skipped, 1 failed.' ), true );
+check( 'the JPEG quality setting does not outlive the batch', filters_on( 'wp_editor_set_quality' ), 0 );
+check( '  nor does the download cap', filters_on( 'http_request_args' ), 0 );
+
+$SCHEDULED = array();
+batch();
+check( 'the next batch, straight after, does not start with it again', downloads_of( 202 ), 1 );
+check( '  nothing else is due, so it looks again when the lease is up', in_about( end( $SCHEDULED ), 900 ), true );
+
+echo "\nONE SLOW EBAY PHOTO CANNOT HOLD A BATCH FOR FIVE MINUTES\n" . str_repeat( '=', 122 ) . "\n";
+
+fresh_site();
+product( 211, array( photo( 31 ) ) );
+$asked = array();
+$PHOTO = function () use ( &$asked ) {
+	// Other requests made while the batch is downloading, and what WP_Http
+	// would send for each.
+	foreach ( array(
+		'short'     => array( photo( 31 ), 10 ),
+		'thumbs'    => array( 'https://thumbs.ebayimg.com/images/g/P031AAOSwAbC/s-l225.jpg', 300 ),
+		'upper'     => array( 'https://I.EBAYIMG.COM/images/g/P031AAOSwAbC/s-l1600.jpg', 300 ),
+		'api'       => array( 'https://api.ebay.com/ws/api.dll', 300 ),
+		'other'     => array( 'https://images.example.com/photo.jpg', 300 ),
+		'lookalike' => array( 'https://i.ebayimg.com.example.net/photo.jpg', 300 ),
+		'suffix'    => array( 'https://notebayimg.com/photo.jpg', 300 ),
+	) as $k => $req ) {
+		$asked[ $k ] = apply_filters( 'http_request_args', download_args( $req[1] ), $req[0] );
+	}
+	return 'ok';
+};
+batch();
+
+$sent = $ARGS_SEEN[0][1] ?? array();
+$rest = function ( $args ) { unset( $args['timeout'], $args['limit_response_size'] ); return $args; };
+
+check( 'an eBay photo download may take 30 s, not 300', (int) ( $sent['timeout'] ?? 0 ), 30 );
+check( '  and fetch at most 15 MB', $sent['limit_response_size'] ?? null, 15728640 );
+check( '  nothing else about the request is changed', $rest( $sent ) === $rest( download_args( 300 ) ), true );
+check( 'a shorter timeout someone else set is kept', (int) ( $asked['short']['timeout'] ?? 0 ), 10 );
+check( 'eBay\'s other photo hosts are capped too', (int) ( $asked['thumbs']['timeout'] ?? 0 ), 30 );
+check( '  whatever case the address is written in', (int) ( $asked['upper']['timeout'] ?? 0 ), 30 );
+check( 'eBay\'s API is not a photo host: untouched', ( $asked['api'] ?? null ) === download_args( 300 ), true );
+check( 'another host\'s request is untouched', ( $asked['other'] ?? null ) === download_args( 300 ), true );
+check( '  so is one that only starts i.ebayimg.com', ( $asked['lookalike'] ?? null ) === download_args( 300 ), true );
+check( '  and one that only ends in ebayimg.com', ( $asked['suffix'] ?? null ) === download_args( 300 ), true );
+check( 'after the batch the cap is gone', filters_on( 'http_request_args' ), 0 );
+check( '  an eBay photo fetched later is sent as asked', apply_filters( 'http_request_args', download_args( 300 ), photo( 31 ) ) === download_args( 300 ), true );
+
+echo "\nA PHOTO THAT GETS THE BATCH KILLED, EVERY TIME\n" . str_repeat( '=', 122 ) . "\n";
+
+// Each batch is a request of its own, and WC #311's photo kills it outright.
+fresh_site();
+foreach ( array( 311, 312, 313, 314, 315 ) as $n => $id ) {
+	product( $id, array( photo( 40 + $n ) ) );
+}
+$KILLS       = array( photo( 40 ) );
+$placeholder = get_post_thumbnail_id( 311 );
+one_batch();
+
+check( 'the batch is killed on WC #311, first in the queue', array( downloads_of( 311 ), done( 312 ) ), array( 1, false ) );
+check( '  the log says how, and on which product', site_log_has( 'Image localiser stopped by a PHP fatal error' ) && site_log_has( 'while working on WC #311' ), true );
+check( '  its attempt was counted before it died', (int) meta( 311, '_tcgiant_localize_attempts' ), 1 );
+check( '  and it is leased for fifteen minutes', in_about( meta( 311, '_tcgiant_localize_retry_after' ), 900 ), true );
+
+one_batch();
+check( 'the next batch, straight after, does not start with it again', downloads_of( 311 ), 1 );
+check( '  and gets the rest of the queue done', array( done( 312 ), done( 313 ), done( 314 ), done( 315 ) ), array( true, true, true, true ) );
+
+time_passes( 901 );
+one_batch(); // killed again
+time_passes( 901 );
+one_batch(); // and again
+time_passes( 901 );
+one_batch();
+
+check( 'WC #311 is tried three times in all, fifteen minutes apart', downloads_of( 311 ), 3 );
+check( '  then given up on without a fourth download', done( 311 ), true );
+check( '  keeping its eBay photo', get_post_thumbnail_id( 311 ), $placeholder );
+check( '  and the log says why', site_log_has( 'WC #311 gave up after 3 attempts that never finished' ), true );
+check( 'the queue is empty', due_products( time() + 86400 ), array() );
+
+echo "\nWHAT THE GIVE-UP LINE TELLS THE SHOP TO DO STILL WORKS\n" . str_repeat( '=', 122 ) . "\n";
+
+// eBay's photo server times out all day: three ordinary failures, an hour
+// apart, and the product is given up on - in 3.26.1 and 3.27.0 alike.
+fresh_site();
+product( 501, array( photo( 51 ) ) );
+$PHOTO = function () { return timeout(); };
+for ( $i = 0; $i < 3; $i++ ) {
+	batch();
+	time_passes( 3600 );
+}
+
+check( 'three timed-out attempts: given up', array( (int) meta( 501, '_tcgiant_localize_attempts' ), done( 501 ) ), array( 3, true ) );
+check( '  the log tells the shop to re-run an images-only sync', log_has( 'Re-run an images-only sync for this item to try again' ), true );
+
+// The server is back, and the shop does as it was told. An images-only sync
+// hands the product's eBay photos back unchanged - start_images_only_sync()
+// calls set_external_images() without $force - and that queues it again.
+$PHOTO = function () { return 'ok'; };
+$LOG   = array();
+TCGiant_Sync_Image_Localizer::set_external_images( 501, array( photo( 51 ) ) );
+check( 'the re-run queues it again', done( 501 ), false );
+
+batch();
+check( '  and the next batch really tries its photo again', downloads_of( 501 ), 4 );
+check( '  so the product ends with the shop\'s own copy', own_photo( 501 ), true );
+check( '  and no line claims a request was stopped on it 3 times', log_has( 'attempts that never finished' ), false );
+
+foreach ( array( 'site.json', 'activity.log', 'wp-admin/includes/media.php', 'wp-admin/includes/file.php', 'wp-admin/includes/image.php' ) as $f ) {
+	@unlink( "$WORLD/$f" );
+}
+@rmdir( "$WORLD/wp-admin/includes" );
+@rmdir( "$WORLD/wp-admin" );
+@rmdir( $WORLD );
+
+printf( "\n  %d passed, %d failed\n\n", $pass, $fail );
+exit( $fail > 0 ? 1 : 0 );

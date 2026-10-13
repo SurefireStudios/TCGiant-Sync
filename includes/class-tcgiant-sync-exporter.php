@@ -401,6 +401,12 @@ class TCGiant_Sync_Exporter {
 					$product->update_meta_data( '_ebay_listing_status', 'Active' );
 					$product->delete_meta_data( '_ebay_end_time' );
 
+					// What was settled about the listing this replaces is spent.
+					foreach ( TCGiant_Sync_Inventory::SETTLE_KEYS as $settle_key ) {
+						$product->delete_meta_data( $settle_key );
+					}
+					delete_transient( 'tcgiant_restocked_after_sale' );
+
 					// Record what was created. The revise path picks its eBay call from
 					// this, so a product relisted as an auction that still read as
 					// fixed-price would have been revised through the wrong one.
@@ -642,6 +648,20 @@ class TCGiant_Sync_Exporter {
 				return $response;
 			}
 
+			// Before creating a new listing for an ended one, make sure the stock
+			// it would be created with is real - see ended_listing_check().
+			$check = $this->ended_listing_check( $product, (string) $ebay_item_id );
+			if ( is_wp_error( $check ) ) {
+				return $check;
+			}
+
+			// The stock may have come down to what is really left, and the item
+			// was built from the figure before that.
+			if ( $check ) {
+				$product  = wc_get_product( $product->get_id() );
+				$item_xml = $this->build_item_xml( $product, $settings );
+			}
+
 			TCGiant_Sync_Logger::log( sprintf(
 				'eBay listing %s has ended and cannot be revised — creating a new listing for WC #%d instead.',
 				$ebay_item_id,
@@ -770,6 +790,247 @@ class TCGiant_Sync_Exporter {
 	 * @param array      $settings Merged export settings.
 	 * @return string XML string.
 	 */
+	/**
+	 * Whether an ended listing's product may go back on eBay with the stock it
+	 * holds.
+	 *
+	 * Before a relist, or a push that has found its listing ended and is about
+	 * to create a new one:
+	 *
+	 * - A product the settle before 3.27.0 put back in stock after a website
+	 *   sale is refused, with its order named. Relisting it would sell twice
+	 *   the coin a website buyer already has.
+	 * - If this listing's own sales are not in the stock yet, they are brought
+	 *   in first - lowering only - and the product is refused if nothing is
+	 *   left. That is a sale the sync has not reached yet.
+	 * - If they are already in the stock, whatever it holds now was entered
+	 *   since, and it is the shop's to list. The listing's old figures are not
+	 *   applied again: they once wiped a restock and blocked relisting for good.
+	 *
+	 * Never removes the product. A relist or a push is a request to list it.
+	 *
+	 * @param WC_Product $product      Product.
+	 * @param string     $ebay_item_id The ended listing.
+	 * @param array|null $item         eBay's GetItem answer for it, if in hand.
+	 * @return bool|WP_Error True if the stock was brought down and should be
+	 *                       read again, false if untouched, or why not.
+	 */
+	private function ended_listing_check( WC_Product $product, $ebay_item_id, $item = null ) {
+		$product_id = $product->get_id();
+
+		$order_id = TCGiant_Sync_Inventory::restocked_after_website_sale( $product_id );
+		if ( $order_id ) {
+			return new WP_Error( 'relist_refused', sprintf(
+				/* translators: %d: order number */
+				__( 'it looks as though it sold on your website (order #%d) and an older version of this plugin put it back in stock. On the Stock Review page, set it to 0 if it has gone, or keep its stock if it is real - then it can be listed again', 'tcgiant-sync' ),
+				$order_id
+			) );
+		}
+
+		if ( '' === (string) $ebay_item_id || $product->is_type( 'variable' )
+			|| TCGiant_Sync_Inventory::listing_already_settled( $product_id, $ebay_item_id ) ) {
+			return false;
+		}
+
+		if ( null === $item ) {
+			$detail = TCGiant_Sync_API::instance()->get_item( $ebay_item_id );
+			if ( is_wp_error( $detail ) || empty( $detail['Item'] ) ) {
+				return new WP_Error( 'relist_unchecked', sprintf(
+					/* translators: 1: eBay item ID, 2: error */
+					__( 'could not ask eBay whether listing %1$s sold (%2$s), so it was not listed again', 'tcgiant-sync' ),
+					$ebay_item_id,
+					is_wp_error( $detail ) ? $detail->get_error_message() : __( 'no answer', 'tcgiant-sync' )
+				) );
+			}
+			$item = $detail['Item'];
+		}
+
+		$listed = $item['Quantity'] ?? null;
+		$sold   = $item['SellingStatus']['QuantitySold'] ?? null;
+
+		// eBay sold nothing on this listing, so there is no sale to bring in,
+		// and the stock is the shop's - a website sale, or a restock since.
+		if ( null !== $sold && ! is_array( $sold ) && 0 === (int) $sold ) {
+			return false;
+		}
+
+		$before  = $product->managing_stock() ? (int) $product->get_stock_quantity() : null;
+		$settled = TCGiant_Sync_Inventory::apply_ended_listing_stock( $product_id, $listed, $sold );
+
+		// Never list on a figure that could not be checked: eBay gave no
+		// numbers, or the stock write did not take.
+		if ( null === $settled ) {
+			return new WP_Error( 'relist_unchecked', sprintf(
+				/* translators: %s: eBay item ID */
+				__( 'the sales on eBay listing %s could not be brought into the stock, so it was not listed again. The activity log says why', 'tcgiant-sync' ),
+				$ebay_item_id
+			) );
+		}
+
+		if ( null !== $before && $settled < $before ) {
+			TCGiant_Sync_Logger::warning( sprintf(
+				'WC #%d stock lowered from %d to %d before listing it again: eBay sold %d of %d on listing %s, and the sync had not brought that in yet. If you restocked since, set the stock again and relist.',
+				$product_id,
+				$before,
+				$settled,
+				(int) $sold,
+				(int) $listed,
+				$ebay_item_id
+			) );
+		}
+
+		$now = wc_get_product( $product_id );
+
+		if ( ! $now || ! $now->is_in_stock() || ( $now->managing_stock() && (int) $now->get_stock_quantity() < 1 ) ) {
+			return new WP_Error( 'relist_refused', sprintf(
+				/* translators: 1: quantity listed, 2: quantity sold */
+				__( 'it sold out on eBay (%1$d listed, %2$d sold), so its stock was set from that instead', 'tcgiant-sync' ),
+				(int) $listed,
+				(int) $sold
+			) );
+		}
+
+		return true;
+	}
+
+	/**
+	 * Relist a product's ended eBay listing - if it is right to.
+	 *
+	 * The one path for bulk Relist and auto-relist. Bulk Relist had no checks
+	 * at all: select-all on the Ended tab relisted every coin that had sold,
+	 * at its original quantity, and trashed products too. Auto-relist checked
+	 * WooCommerce's stock but not eBay's, and sent no quantity, so eBay relisted
+	 * at whatever it had left.
+	 *
+	 * Refuses unless the product is published and has stock to sell; makes
+	 * sure that stock is real (ended_listing_check()); relists through the
+	 * call eBay says the listing's format needs, at the shop's quantity; and
+	 * records the new listing's times, so the hourly check does not mark a
+	 * fresh relist ended because the old end date passed.
+	 *
+	 * @param int    $product_id Product.
+	 * @param string $source     For the log, e.g. "Bulk relist".
+	 * @return array|WP_Error item_id and previous_item_id, or why not -
+	 *                        'relist_refused' when it was right not to.
+	 */
+	public function relist_ended_listing( $product_id, $source ) {
+		$product_id = (int) $product_id;
+		$product    = wc_get_product( $product_id );
+
+		if ( ! $product || 'publish' !== get_post_status( $product_id ) ) {
+			return new WP_Error( 'relist_refused', __( 'the product is not published', 'tcgiant-sync' ) );
+		}
+
+		$ebay_item_id = (string) $product->get_meta( '_ebay_item_id' );
+		if ( '' === $ebay_item_id ) {
+			return new WP_Error( 'relist_refused', __( 'it has no eBay listing', 'tcgiant-sync' ) );
+		}
+
+		if ( ! $product->is_in_stock() || ( $product->managing_stock() && (int) $product->get_stock_quantity() < 1 ) ) {
+			return new WP_Error( 'relist_refused', __( 'it has no stock to sell', 'tcgiant-sync' ) );
+		}
+
+		$api    = TCGiant_Sync_API::instance();
+		$detail = $api->get_item( $ebay_item_id );
+
+		if ( is_wp_error( $detail ) || empty( $detail['Item'] ) ) {
+			return new WP_Error( 'relist_unchecked', sprintf(
+				/* translators: 1: eBay item ID, 2: error */
+				__( 'could not ask eBay whether listing %1$s sold (%2$s), so it was not relisted', 'tcgiant-sync' ),
+				$ebay_item_id,
+				is_wp_error( $detail ) ? $detail->get_error_message() : __( 'no answer', 'tcgiant-sync' )
+			) );
+		}
+
+		$item   = $detail['Item'];
+		$status = (string) ( $item['SellingStatus']['ListingStatus'] ?? '' );
+
+		if ( 'Active' === $status ) {
+			update_post_meta( $product_id, '_ebay_listing_status', 'Active' );
+			TCGiant_Sync_DB::upsert( array(
+				'product_id'     => $product_id,
+				'ebay_item_id'   => $ebay_item_id,
+				'listing_status' => 'Active',
+				'last_synced'    => current_time( 'mysql' ),
+			) );
+			return new WP_Error( 'relist_refused', __( 'its eBay listing is still live', 'tcgiant-sync' ) );
+		}
+
+		$check = $this->ended_listing_check( $product, $ebay_item_id, $item );
+		if ( is_wp_error( $check ) ) {
+			return $check;
+		}
+		if ( $check ) {
+			$product = wc_get_product( $product_id );
+		}
+
+		// The call the listing's own format needs, as eBay reports it. Local
+		// records of the format can be wrong; eBay's answer is in hand.
+		$type  = TCGiant_Sync_API::scalar_value( $item['ListingType'] ?? '' );
+		$fixed = '' !== $type ? 'Chinese' !== $type : $this->uses_fixed_price_calls( $product, array(), $ebay_item_id );
+		$quantity = null;
+
+		// An auction is always one item; a variation listing carries its own
+		// quantities. Otherwise the shop's figure, or its default when it does
+		// not track stock.
+		if ( $fixed && ! $product->is_type( 'variable' ) ) {
+			$settings = $this->get_export_settings( $product_id );
+			$stock    = $product->get_stock_quantity();
+			$quantity = null !== $stock ? max( 1, (int) $stock ) : max( 1, (int) ( $settings['default_quantity'] ?? 1 ) );
+		}
+
+		$result = $fixed
+			? $api->relist_fixed_price_item( $ebay_item_id, $quantity )
+			: $api->relist_item( $ebay_item_id, $quantity );
+
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		$new_id = TCGiant_Sync_API::scalar_value( $result['ItemID'] ?? '' );
+		if ( '' === $new_id ) {
+			return new WP_Error( 'no_item_id', __( 'eBay did not return a new Item ID. The listing may have been relisted - check your eBay account.', 'tcgiant-sync' ) );
+		}
+
+		update_post_meta( $product_id, '_ebay_item_id', $new_id );
+		update_post_meta( $product_id, '_ebay_listing_status', 'Active' );
+
+		$end_time = TCGiant_Sync_API::scalar_value( $result['EndTime'] ?? '' );
+		if ( '' !== $end_time ) {
+			update_post_meta( $product_id, '_ebay_end_time', $end_time );
+		} else {
+			delete_post_meta( $product_id, '_ebay_end_time' );
+		}
+
+		$start_time = TCGiant_Sync_API::scalar_value( $result['StartTime'] ?? '' );
+		update_post_meta( $product_id, '_ebay_start_time', '' !== $start_time ? $start_time : gmdate( 'Y-m-d\TH:i:s.000\Z' ) );
+
+		// A new listing: what was settled about the old one no longer applies.
+		TCGiant_Sync_Inventory::clear_settled_mark( $product_id );
+		delete_transient( 'tcgiant_restocked_after_sale' );
+
+		TCGiant_Sync_DB::upsert( array(
+			'product_id'     => $product_id,
+			'ebay_item_id'   => $new_id,
+			'listing_status' => 'Active',
+			'last_synced'    => current_time( 'mysql' ),
+		) );
+
+		TCGiant_Sync_Logger::log( sprintf(
+			'%s: WC #%d relisted on eBay as %s (was %s)%s.',
+			$source,
+			$product_id,
+			$new_id,
+			$ebay_item_id,
+			null !== $quantity ? sprintf( ', quantity %d', $quantity ) : ''
+		), 'success' );
+
+		return array(
+			'item_id'          => $new_id,
+			'previous_item_id' => $ebay_item_id,
+		);
+	}
+
 	/**
 	 * Whether this listing must go through eBay's fixed-price calls.
 	 *

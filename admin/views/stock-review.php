@@ -27,12 +27,25 @@ $page_ids  = array_slice( $all_ids, ( $paged - 1 ) * $per_page, $per_page );
 $base_url  = admin_url( 'admin.php?page=tcgiant-stock-review' );
 
 // Products that sold out on eBay and are still in the catalogue.
-	//
+//
 // Separate from the list below, which is about stock that was never
 // settled. These were settled - correctly, from eBay's own figures - and
 // came out at nothing, but removal used to live on a single code path and
 // whichever path noticed the ending first decided whether it ever ran.
 $sold_out_ids = TCGiant_Sync_Inventory::find_sold_out_not_removed();
+
+// Probably sold on the website and then put back in stock by the settle
+// before 3.27.0, which wrote eBay's figure over WooCommerce's.
+$restocked = TCGiant_Sync_Inventory::find_restocked_after_website_sale();
+
+// Ended on eBay with more unsold than WooCommerce holds - kept, not applied.
+$unsold_at_end = TCGiant_Sync_Inventory::find_unsold_at_end();
+
+// Listings the delta sync had to step over.
+$held_back = TCGiant_Sync_Importer::held_back_listings();
+
+$tc_ajax_url = admin_url( 'admin-ajax.php' );
+$tc_nonce    = wp_create_nonce( 'tcgiant_sync_ajax' );
 ?>
 
 <div class="wrap tc-dashboard-wrap">
@@ -109,6 +122,137 @@ $sold_out_ids = TCGiant_Sync_Inventory::find_sold_out_not_removed();
 				}
 			}( jQuery ) );
 		</script>
+	<?php endif; ?>
+
+	<?php if ( ! empty( $restocked ) || ! empty( $unsold_at_end ) ) : ?>
+		<script>
+			// Runs a Stock Review job over the ticked rows of one panel.
+			window.tcRunStockJob = window.tcRunStockJob || function ( type, panel, button ) {
+				var $ = jQuery;
+				var $panel = $( panel );
+				var ids = $panel.find( '.tc-row-cb:checked' ).map( function () { return parseInt( this.value, 10 ); } ).get();
+				var $btn = button ? $( button ) : $panel.find( '.tc-panel-run' ).first();
+				var $say = $panel.find( '.tc-panel-status' );
+
+				if ( ! ids.length ) { $say.text( '<?php echo esc_js( __( 'Tick at least one product.', 'tcgiant-sync' ) ); ?>' ); return; }
+				if ( ! confirm( $btn.data( 'confirm' ) ) ) { return; }
+
+				$panel.find( '.tc-panel-run' ).prop( 'disabled', true );
+				$say.text( '<?php echo esc_js( __( 'Starting...', 'tcgiant-sync' ) ); ?>' );
+
+				var next = function ( jobId, total ) {
+					$.post( '<?php echo esc_url( $tc_ajax_url ); ?>', { action: 'tcgiant_job_process', job_id: jobId, _ajax_nonce: '<?php echo esc_js( $tc_nonce ); ?>' }, function ( r ) {
+						if ( ! r.success ) { $say.text( r.data && r.data.message ? r.data.message : 'Stopped.' ); $btn.prop( 'disabled', false ); return; }
+						var done = r.data.processed || 0;
+						$say.text( done + ' / ' + total );
+						if ( 'complete' === r.data.status || done >= total ) { $say.text( '<?php echo esc_js( __( 'Done. Reloading...', 'tcgiant-sync' ) ); ?>' ); location.reload(); return; }
+						next( jobId, total );
+					} );
+				};
+
+				$.post( '<?php echo esc_url( $tc_ajax_url ); ?>', { action: 'tcgiant_job_start', type: type, product_ids: ids, _ajax_nonce: '<?php echo esc_js( $tc_nonce ); ?>' }, function ( r ) {
+					if ( ! r.success ) { $btn.prop( 'disabled', false ); $say.text( r.data && r.data.message ? r.data.message : 'Could not start.' ); return; }
+					next( r.data.job_id, r.data.total );
+				} );
+			};
+		</script>
+	<?php endif; ?>
+
+	<?php if ( ! empty( $restocked ) ) : ?>
+		<div class="notice notice-warning tc-stock-panel" id="tc-restocked" style="margin-top:16px;padding:12px 14px;">
+			<p style="margin:0 0 6px;">
+				<strong><?php printf( esc_html( _n( '%s product may have sold on your website and been put back in stock.', '%s products may have sold on your website and been put back in stock.', count( $restocked ), 'tcgiant-sync' ) ), esc_html( number_format_i18n( count( $restocked ) ) ) ); ?></strong>
+			</p>
+			<p style="margin:0 0 10px;"><?php esc_html_e( 'Before this version, when an eBay listing ended the plugin set the stock from eBay\'s figures, and eBay never sees a sale made on your website. Each product below has a website order placed after its listing started and is in stock again. Check each order. Tick the ones whose item has gone and set them to 0; tick any you have genuinely restocked and keep their stock. Either way they leave this list, and relisting them is no longer held back. Nothing changes unless you press a button.', 'tcgiant-sync' ); ?></p>
+			<table class="widefat striped" style="margin-bottom:10px;">
+				<thead><tr><th style="width:28px;"></th><th><?php esc_html_e( 'Product', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'Stock now', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'Website order', 'tcgiant-sync' ); ?></th></tr></thead>
+				<tbody>
+				<?php foreach ( $restocked as $row ) : ?>
+					<?php $p = wc_get_product( $row['product_id'] ); ?>
+					<?php if ( ! $p ) { continue; } ?>
+					<tr>
+						<td><input type="checkbox" class="tc-row-cb" value="<?php echo esc_attr( $row['product_id'] ); ?>" /></td>
+						<td><a href="<?php echo esc_url( (string) get_edit_post_link( $row['product_id'] ) ); ?>"><?php echo esc_html( $p->get_name() ); ?></a> <span style="color:#777;">#<?php echo esc_html( $row['product_id'] ); ?></span></td>
+						<td><?php echo $p->managing_stock() ? esc_html( (string) (int) $p->get_stock_quantity() ) : esc_html__( 'In stock', 'tcgiant-sync' ); ?></td>
+						<?php $tc_order = wc_get_order( $row['order_id'] ); ?>
+						<td>
+							<?php if ( $tc_order instanceof WC_Order ) : ?>
+								<a href="<?php echo esc_url( $tc_order->get_edit_order_url() ); ?>">#<?php echo esc_html( $row['order_id'] ); ?></a>
+							<?php else : ?>
+								#<?php echo esc_html( $row['order_id'] ); ?>
+							<?php endif; ?>
+						</td>
+					</tr>
+				<?php endforeach; ?>
+				</tbody>
+			</table>
+			<p style="margin:0;">
+				<button type="button" class="button button-primary tc-panel-run" data-confirm="<?php echo esc_attr__( 'Set the ticked products to 0 stock?', 'tcgiant-sync' ); ?>" onclick="tcRunStockJob( 'bulk_zero_stock', '#tc-restocked', this );"><?php esc_html_e( 'Set ticked products to 0', 'tcgiant-sync' ); ?></button>
+				<button type="button" class="button tc-panel-run" data-confirm="<?php echo esc_attr__( 'Keep the ticked products\' stock as it is, and stop listing them here?', 'tcgiant-sync' ); ?>" onclick="tcRunStockJob( 'bulk_keep_stock', '#tc-restocked', this );"><?php esc_html_e( 'Keep their stock - it is real', 'tcgiant-sync' ); ?></button>
+				<span class="tc-panel-status" style="margin-left:10px;color:#555;"></span>
+			</p>
+		</div>
+	<?php endif; ?>
+
+	<?php if ( ! empty( $unsold_at_end ) ) : ?>
+		<div class="notice notice-info tc-stock-panel" id="tc-unsold-at-end" style="margin-top:16px;padding:12px 14px;">
+			<p style="margin:0 0 6px;">
+				<strong><?php printf( esc_html( _n( '%s ended listing reported more unsold than your shop holds.', '%s ended listings reported more unsold than your shop holds.', count( $unsold_at_end ), 'tcgiant-sync' ) ), esc_html( number_format_i18n( count( $unsold_at_end ) ) ) ); ?></strong>
+			</p>
+			<p style="margin:0 0 10px;"><?php esc_html_e( 'Your shop\'s figure was kept, because the difference usually sold on your website and eBay cannot know that. If you only sell on eBay, or you know the items are still here, you can take eBay\'s figure instead.', 'tcgiant-sync' ); ?></p>
+			<table class="widefat striped" style="margin-bottom:10px;">
+				<thead><tr><th style="width:28px;"></th><th><?php esc_html_e( 'Product', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'Your shop', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'eBay said unsold', 'tcgiant-sync' ); ?></th></tr></thead>
+				<tbody>
+				<?php foreach ( $unsold_at_end as $row ) : ?>
+					<?php $p = wc_get_product( $row['product_id'] ); ?>
+					<?php if ( ! $p ) { continue; } ?>
+					<tr>
+						<td><input type="checkbox" class="tc-row-cb" value="<?php echo esc_attr( $row['product_id'] ); ?>" /></td>
+						<td><a href="<?php echo esc_url( (string) get_edit_post_link( $row['product_id'] ) ); ?>"><?php echo esc_html( $p->get_name() ); ?></a> <span style="color:#777;">#<?php echo esc_html( $row['product_id'] ); ?></span></td>
+						<td><?php echo $p->managing_stock() ? esc_html( (string) (int) $p->get_stock_quantity() ) : esc_html( $p->get_stock_status() ); ?></td>
+						<td><?php echo esc_html( (string) $row['ebay_remaining'] ); ?></td>
+					</tr>
+				<?php endforeach; ?>
+				</tbody>
+			</table>
+			<p style="margin:0;">
+				<button type="button" class="button tc-panel-run" data-confirm="<?php echo esc_attr__( 'Use eBay\'s figure for the ticked products?', 'tcgiant-sync' ); ?>" onclick="tcRunStockJob( 'bulk_use_ebay_figure', '#tc-unsold-at-end', this );"><?php esc_html_e( 'Use eBay\'s figure for ticked products', 'tcgiant-sync' ); ?></button>
+				<span class="tc-panel-status" style="margin-left:10px;color:#555;"></span>
+			</p>
+		</div>
+	<?php endif; ?>
+
+	<?php if ( ! empty( $held_back ) ) : ?>
+		<div class="notice notice-error" style="margin-top:16px;padding:12px 14px;">
+			<p style="margin:0 0 6px;">
+				<strong><?php printf( esc_html( _n( '%s eBay listing stopped the sync every time it was imported.', '%s eBay listings stopped the sync every time they were imported.', count( $held_back ), 'tcgiant-sync' ) ), esc_html( number_format_i18n( count( $held_back ) ) ) ); ?></strong>
+			</p>
+			<p style="margin:0 0 10px;"><?php esc_html_e( 'The sync moved past each of these so it could carry on with the rest. Each was given a separate stock check, so a sale still takes it off your shop, but its other details may be out of date. The Activity Log says what stopped the sync. Syncing the item by hand from the Import page tries it again.', 'tcgiant-sync' ); ?></p>
+			<table class="widefat striped" style="margin-bottom:10px;">
+				<thead><tr><th><?php esc_html_e( 'eBay item', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'Product', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'Moved past', 'tcgiant-sync' ); ?></th></tr></thead>
+				<tbody>
+				<?php foreach ( array_reverse( $held_back, true ) as $held ) : ?>
+					<?php $held_pid = TCGiant_Sync_Importer::find_live_product_for_item( $held['item_id'] ); ?>
+					<tr>
+						<td><?php echo esc_html( $held['item_id'] ); ?></td>
+						<td>
+							<?php if ( $held_pid ) : ?>
+								<a href="<?php echo esc_url( (string) get_edit_post_link( $held_pid ) ); ?>">#<?php echo esc_html( $held_pid ); ?></a>
+							<?php else : ?>
+								<span style="color:#777;"><?php esc_html_e( 'Not imported', 'tcgiant-sync' ); ?></span>
+							<?php endif; ?>
+						</td>
+						<td><?php echo esc_html( wp_date( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), (int) $held['at'] ) ); ?></td>
+					</tr>
+				<?php endforeach; ?>
+				</tbody>
+			</table>
+			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin:0;">
+				<input type="hidden" name="action" value="tcgiant_forget_held" />
+				<?php wp_nonce_field( 'tcgiant_forget_held' ); ?>
+				<button type="submit" class="button"><?php esc_html_e( 'Clear this list', 'tcgiant-sync' ); ?></button>
+			</form>
+		</div>
 	<?php endif; ?>
 
 	<?php if ( 0 === $total ) : ?>
