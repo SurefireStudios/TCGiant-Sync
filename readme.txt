@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.27.0
+Stable tag: 3.27.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,11 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.27.1 - 2026-10-13 =
+**eBay sales now come off your shop on every connected shop**
+* FIX: 3.27.0's per-sale stock check only ran if "Reduce WooCommerce stock on eBay sale?" was Yes, which it is not by default. It now runs for every connected shop, and can only lower stock.
+* That setting now only decides whether an eBay sale reduces a product not linked to an eBay listing.
 
 = 3.27.0 - 2026-10-12 =
 **The sync could restart the same batch of changes for ever**

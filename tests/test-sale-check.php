@@ -439,8 +439,9 @@ check( '  nothing taken off by order sync', stock( 105 ), 5 );
 echo "\nA PRODUCT WITH NO EBAY LINK IS STILL REDUCED, ONCE\n" . str_repeat( '=', 124 ) . "\n";
 
 // Sold on an eBay listing the plugin does not manage. Nothing else will ever
-// take it off, so order sync still does.
-fresh_shop();
+// take it off, so order sync does - for a shop that has said Yes to
+// "Reduce WooCommerce stock on eBay sale?".
+fresh_shop( array( 'enable_order_sync' => '1' ) );
 product( 201, 'WEB-1', 5 );
 orders( array( sale( '20001', '120000000001', 'WEB-1', 2 ) ) );
 order_sync();
@@ -599,7 +600,7 @@ echo "\nA SALE OF ONE VARIATION\n" . str_repeat( '=', 124 ) . "\n";
 // happens until then, so a change either way is seen.
 $want = array( 'the delta counted it first' => 1, 'the delta behind' => 2 );
 foreach ( array( 'the delta counted it first' => 2, 'the delta behind' => 3 ) as $when => $before ) {
-	fresh_shop();
+	fresh_shop( array( 'enable_order_sync' => '1' ) );
 	product( 401, 'SET-401', null, '140000000001' );
 	product( 402, 'SET-401-RED', $before, '', array( 'parent' => 401 ) );
 	listing( '140000000001', 'Active', 5, 2, array( 'Variations' => array( 'Variation' => array(
@@ -626,6 +627,31 @@ listing( '130000000009', 'Completed', 1, 1 );
 sale_check( '130000000009' );
 check( 'a restock after the ending was settled is left alone', stock( 309 ), 3 );
 check( '  and the product is still marked ended', meta( 309, '_ebay_listing_status' ), 'Ended' );
+
+echo "\nEVERY CONNECTED SHOP GETS THE STOCK CHECK (3.27.1)\n" . str_repeat( '=', 124 ) . "\n";
+
+// 3.27.0's stock check sat behind "Reduce WooCommerce stock on eBay sale?",
+// which defaults to No - so most shops never ran it. Now the setting governs
+// only products that are not linked to a listing, as its label always said.
+foreach ( array( 'never saved' => array(), 'set to No' => array( 'enable_order_sync' => '0' ) ) as $how => $settings ) {
+	fresh_shop( $settings );
+	product( 501, 'COIN-501', 1, '150000000001' );
+	product( 502, 'WEB-502', 5 );
+	orders( array(
+		sale( '50001', '150000000001', 'COIN-501' ),
+		sale( '50002', '150000000099', 'WEB-502', 2 ),
+	) );
+	order_sync();
+	check( sprintf( 'the setting %s: a linked sale is still checked against eBay', $how ), checks_queued(), array( array( '150000000001' ) ) );
+	check( '  an unlinked product is left alone', stock( 502 ), 5 );
+	check( '  and left unmarked, so saying Yes later still reduces it', (string) meta( 502, '_ebay_order_processed_50002' ), '' );
+}
+
+$cron_src = php_strip_whitespace( dirname( __DIR__ ) . '/includes/class-tcgiant-sync-cron.php' );
+$from     = strpos( $cron_src, 'public function sync_orders()' );
+$body     = false !== $from ? substr( $cron_src, $from, 600 ) : '';
+check( 'order sync runs for every connected shop', false !== strpos( $body, 'is_authenticated()' ), true );
+check( '  and no longer stops at the old setting', false === strpos( $body, "enable_order_sync" ), true );
 
 printf( "\n  %d passed, %d failed\n\n", $pass, $fail );
 exit( $fail > 0 ? 1 : 0 );

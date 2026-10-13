@@ -1,5 +1,10 @@
 *** TCGiant Sync Changelog ***
 
+2026-10-13 - version 3.27.1
+== eBay sales now come off your shop on every connected shop ==
+- FIX: 3.27.0 gave each eBay sale of a linked product a stock check of its own, so sold items come off your shop even when the regular sync is behind. But it only ran if "Reduce WooCommerce stock on eBay sale?" was set to Yes, and that setting starts at No - so most shops never got it. It now runs for every shop connected to eBay. It can only lower stock.
+- "Reduce WooCommerce stock on eBay sale?" now does only what its label and hint describe: it decides whether an eBay sale reduces the stock of a product that is not linked to an eBay listing.
+
 2026-10-12 - version 3.27.0
 == The sync could restart the same batch of changes for ever ==
 - FIX: When your host stopped the scheduled sync part way through importing a batch of changes - for using too much memory or time - nothing recorded how far it had got, and the next run began the same batch again from the start. On some hosts that happened every hour, indefinitely, and nothing after that point reached your shop: no sales, no ended listings, no new listings. The sync now notes its place before every listing and carries on from there.

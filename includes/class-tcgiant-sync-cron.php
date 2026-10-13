@@ -633,9 +633,14 @@ class TCGiant_Sync_Cron {
 	 * Run the order syncing task.
 	 */
 	public function sync_orders() {
-		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
-		if ( empty( $settings['enable_order_sync'] ) ) {
-			return; // disabled
+		// Every connected shop. Each eBay sale of a product linked to a listing
+		// gets a stock check, which only ever lowers stock - 3.27.0 added that,
+		// but left it behind the "Reduce WooCommerce stock on eBay sale?"
+		// setting, which defaults to No, so most shops never ran it. That
+		// setting now governs only what its label and hint describe: products
+		// that are not linked to a listing - see sync_recent_orders().
+		if ( ! TCGiant_Sync_OAuth::instance()->is_authenticated() ) {
+			return;
 		}
 		
 		TCGiant_Sync_Logger::log( 'WP-Cron: Starting scheduled eBay Order Sync...' );

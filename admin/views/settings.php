@@ -487,7 +487,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 							<label><input type="radio" name="tcgiant_sync_ebay_settings[enable_order_sync]" value="1" <?php checked( $settings['enable_order_sync'] ?? '0', '1' ); ?>> Yes</label>
 							<label><input type="radio" name="tcgiant_sync_ebay_settings[enable_order_sync]" value="0" <?php checked( $settings['enable_order_sync'] ?? '0', '0' ); ?>> No</label>
 						</div>
-						<p class="tc-hint"><?php esc_html_e( 'Only applies to products that are not linked to an eBay listing. Linked products always take their quantity from eBay directly.', 'tcgiant-sync' ); ?></p>
+						<p class="tc-hint"><?php esc_html_e( 'Only applies to products that are not linked to an eBay listing. Linked products always take their quantity from eBay directly, and each eBay sale of one is checked against eBay whatever this is set to.', 'tcgiant-sync' ); ?></p>
 					</div>
 					<div class="tc-field">
 						<label class="tc-label"><?php esc_html_e( 'Check stock against eBay weekly?', 'tcgiant-sync' ); ?></label>

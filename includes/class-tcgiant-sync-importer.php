@@ -3074,6 +3074,11 @@ class TCGiant_Sync_Importer {
 
 		$order_count  = 0;
 		$settle_count = 0;
+
+		// "Reduce WooCommerce stock on eBay sale?" - for products NOT linked to
+		// a listing. Linked products get a stock check whatever it says.
+		$sync_settings   = get_option( 'tcgiant_sync_ebay_settings', array() );
+		$reduce_unlinked = is_array( $sync_settings ) && '1' === (string) ( $sync_settings['enable_order_sync'] ?? '' );
 		foreach ( $response['orders'] as $order ) {
 			if ( empty( $order['lineItems'] ) ) {
 				continue;
@@ -3132,6 +3137,13 @@ class TCGiant_Sync_Importer {
 						$settle_count++;
 					}
 					update_post_meta( $product_id, '_ebay_order_processed_' . $line_item_id, current_time( 'mysql' ) );
+					continue;
+				}
+
+				// Not linked, and the shop has not asked for these to be reduced.
+				// Left unmarked, so switching the setting on later still reduces
+				// a recent sale.
+				if ( ! $reduce_unlinked ) {
 					continue;
 				}
 
