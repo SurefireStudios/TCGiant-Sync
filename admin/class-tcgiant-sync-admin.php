@@ -1102,6 +1102,7 @@ class TCGiant_Sync_Admin {
 
 		if ( $oauth->save_tokens_from_relay( $data ) ) {
 			TCGiant_Sync_Logger::log( 'eBay account connected successfully.', 'success' );
+			TCGiant_Sync_Importer::after_reconnect();
 			wp_safe_redirect( admin_url( 'admin.php?page=tcgiant-sync&auth=success' ) );
 			exit;
 		}
@@ -1961,21 +1962,97 @@ class TCGiant_Sync_Admin {
 			return;
 		}
 
-		$crash = get_option( 'tcgiant_sync_last_crash', array() );
-		$crash = is_array( $crash ) && ! empty( $crash['at'] ) && ( time() - (int) $crash['at'] ) < DAY_IN_SECONDS ? (string) $crash['message'] : '';
+		// A sync working through a backlog - after an update, say - is not a
+		// broken one, and said so in the same red as one that had stopped.
+		$catch_up = $late ? TCGiant_Sync_Importer::delta_catch_up() : null;
+
+		// The death of the job that brings eBay's changes in - the delta, or a
+		// full sync while one runs - not of whichever job died last. A photo
+		// download dying on one product was being given as the reason.
+		$state = TCGiant_Sync_Importer::get_sync_state();
+		$job   = 'full' === ( $state['sync_mode'] ?? '' ) ? 'Full sync scan' : TCGiant_Sync_Importer::DELTA_JOB;
+		$crash = TCGiant_Sync_Runtime::last_crash( $job );
+		$crash = null !== $crash && ( time() - (int) $crash['at'] ) < DAY_IN_SECONDS ? (string) $crash['message'] : '';
+
+		$format = get_option( 'date_format' ) . ' ' . get_option( 'time_format' );
+		$up_to  = wp_date( $format, time() - $behind );
+		$ago    = human_time_diff( time() - $behind, time() );
 		?>
-		<div class="notice notice-error">
-			<?php if ( $late ) : ?>
+		<div class="notice <?php echo null !== $catch_up ? 'notice-warning' : 'notice-error'; ?>">
+			<?php if ( $late && null !== $catch_up ) : ?>
+				<p>
+					<strong><?php esc_html_e( 'TCGiant Sync — catching up with eBay', 'tcgiant-sync' ); ?></strong><br>
+					<?php
+					printf(
+						/* translators: 1: date and time, 2: how long ago, e.g. "3 days" */
+						esc_html__( 'Your shop has eBay\'s changes up to %1$s (%2$s ago), and the sync is working through the ones since then now. Sales, ended listings and new listings arrive as it reaches them.', 'tcgiant-sync' ),
+						esc_html( $up_to ),
+						esc_html( $ago )
+					);
+					?>
+				</p>
+				<?php if ( $catch_up['total'] > 0 ) : ?>
+					<p>
+						<?php
+						printf(
+							/* translators: 1: date and time, 2: listings done, 3: listings in all */
+							esc_html__( 'Now on the changes from %1$s: %2$s of %3$s listings done.', 'tcgiant-sync' ),
+							esc_html( wp_date( $format, (int) strtotime( $catch_up['from'] ) ) ),
+							esc_html( number_format_i18n( $catch_up['done'] ) ),
+							esc_html( number_format_i18n( $catch_up['total'] ) )
+						);
+						?>
+					</p>
+				<?php endif; ?>
+				<?php if ( '' !== $catch_up['paused_for'] ) : ?>
+					<p>
+						<?php
+						printf(
+							/* translators: 1: eBay's or the connection's error, 2: time */
+							esc_html__( 'Paused, because eBay could not be read just now (%1$s). It tries again by itself at %2$s.', 'tcgiant-sync' ),
+							esc_html( $catch_up['paused_for'] ),
+							esc_html( wp_date( get_option( 'time_format' ), $catch_up['paused_until'] ) )
+						);
+						?>
+					</p>
+				<?php endif; ?>
+			<?php elseif ( $late ) : ?>
 				<p>
 					<strong><?php esc_html_e( 'TCGiant Sync — eBay changes are not reaching your shop', 'tcgiant-sync' ); ?></strong><br>
 					<?php
 					printf(
-						/* translators: %s: how long ago, e.g. "3 days" */
-						esc_html__( 'The sync last finished reading eBay %s ago. Sales, ended listings and new listings since then have not been applied.', 'tcgiant-sync' ),
-						esc_html( human_time_diff( time() - $behind, time() ) )
+						/* translators: 1: date and time, 2: how long ago, e.g. "3 days" */
+						esc_html__( 'Your shop has eBay\'s changes up to %1$s (%2$s ago). Sales, ended listings and new listings since then have not been applied.', 'tcgiant-sync' ),
+						esc_html( $up_to ),
+						esc_html( $ago )
 					);
 					?>
 				</p>
+				<?php
+				// Only a pause that can be why it is red: running out of calls
+				// never turns it red by itself.
+				if ( '' !== (string) ( $state['delta_paused_for'] ?? '' ) && 'delta' === ( $state['sync_mode'] ?? '' )
+					&& 'out_of_calls' !== ( $state['delta_paused_code'] ?? '' ) ) :
+					?>
+					<p>
+						<?php
+						printf(
+							/* translators: %s: eBay's or the connection's error */
+							esc_html__( 'It keeps pausing because eBay cannot be read (%s).', 'tcgiant-sync' ),
+							esc_html( (string) $state['delta_paused_for'] )
+						);
+						?>
+						<?php if ( 'no_token' === ( $state['delta_paused_code'] ?? '' ) ) : ?>
+							<?php
+							printf(
+								/* translators: %s: link to the Settings page */
+								esc_html__( 'eBay is not accepting this shop\'s connection. If this goes on, reconnect your eBay account on the %s page.', 'tcgiant-sync' ),
+								'<a href="' . esc_url( admin_url( 'admin.php?page=tcgiant-settings' ) ) . '">' . esc_html__( 'Settings', 'tcgiant-sync' ) . '</a>'
+							);
+							?>
+						<?php endif; ?>
+					</p>
+				<?php endif; ?>
 				<?php if ( '' !== $crash ) : ?>
 					<p><?php esc_html_e( 'The last run was stopped by the server:', 'tcgiant-sync' ); ?> <code><?php echo esc_html( $crash ); ?></code></p>
 				<?php endif; ?>

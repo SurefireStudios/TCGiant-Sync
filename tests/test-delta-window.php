@@ -68,12 +68,17 @@ class WP_Error {
 
 class Killed_Request extends Exception {}
 
+// The table itself, where it can differ from this request's copy of an
+// option: $DB_STATE, when set, is the sync state as another request left it.
+$DB_STATE = null;
 class Harness_Wpdb {
 	public $postmeta = 'wp_postmeta';
 	public $posts    = 'wp_posts';
+	public $options  = 'wp_options';
 	public function prepare( $query ) { return $query; }
-	public function get_var( $query ) { return null; }
+	public function get_var( $query ) { return null !== $GLOBALS['DB_STATE'] && false !== strpos( $query, 'wp_options' ) ? serialize( $GLOBALS['DB_STATE'] ) : null; }
 }
+function maybe_unserialize( $v ) { $u = @unserialize( $v ); return false === $u && 'b:0;' !== $v ? $v : $u; }
 $wpdb = new Harness_Wpdb();
 
 function is_wp_error( $thing ) { return $thing instanceof WP_Error; }
@@ -126,18 +131,36 @@ function mysql2date( $format, $date, $translate = true ) {
 	return $datetime->format( $format );
 }
 
-// Action Scheduler, as far as the delta sync uses it.
+// Action Scheduler, as far as the delta sync uses it. An action scheduled for
+// later waits in LATER until later() says the time has come.
+$LATER = array();
 function as_enqueue_async_action( $hook ) { $GLOBALS['QUEUE'][] = $hook; return 1; }
-function as_schedule_single_action( $when, $hook ) { $GLOBALS['QUEUE'][] = $hook; return 1; }
-function as_next_scheduled_action( $hook ) { return in_array( $hook, $GLOBALS['QUEUE'], true ) ? true : false; }
+function as_schedule_single_action( $when, $hook ) {
+	if ( $when > time() + 5 ) {
+		$GLOBALS['LATER'][] = $hook;
+	} else {
+		$GLOBALS['QUEUE'][] = $hook;
+	}
+	return 1;
+}
+function as_next_scheduled_action( $hook ) { return in_array( $hook, array_merge( $GLOBALS['QUEUE'], $GLOBALS['LATER'] ), true ) ? true : false; }
+// Everything in QUEUE was queued $QUEUE_AGE seconds ago; LATER is yet to come.
+$QUEUE_AGE = 0;
 function as_get_scheduled_actions( $args ) {
-	return in_array( $args['hook'], $GLOBALS['QUEUE'], true ) ? array( 1 ) : array();
+	$queued = in_array( $args['hook'], $GLOBALS['QUEUE'], true )
+		&& ( ! isset( $args['date'] ) || time() - $GLOBALS['QUEUE_AGE'] >= (int) $args['date'] );
+	return $queued || in_array( $args['hook'], $GLOBALS['LATER'], true ) ? array( 1 ) : array();
+}
+function later() {
+	$GLOBALS['QUEUE'] = array_merge( $GLOBALS['QUEUE'], $GLOBALS['LATER'] );
+	$GLOBALS['LATER'] = array();
 }
 class ActionScheduler_Store {
 	const STATUS_PENDING = 'pending';
 }
 function as_unschedule_all_actions( $hook ) {
 	$GLOBALS['QUEUE'] = array_values( array_filter( $GLOBALS['QUEUE'], function ( $h ) use ( $hook ) { return $h !== $hook; } ) );
+	$GLOBALS['LATER'] = array_values( array_filter( $GLOBALS['LATER'] ?? array(), function ( $h ) use ( $hook ) { return $h !== $hook; } ) );
 }
 
 class TCGiant_Sync_Logger {
@@ -204,6 +227,14 @@ class TCGiant_Sync_API {
 		if ( ! empty( $GLOBALS['EBAY']['on_get_item'] ) ) {
 			call_user_func( $GLOBALS['EBAY']['on_get_item'], (string) $item_id );
 		}
+		// eBay, or the way to it, out of action - or an answer about the
+		// listing itself.
+		if ( ! empty( $GLOBALS['EBAY']['get_item_error'] ) ) {
+			$error = call_user_func( $GLOBALS['EBAY']['get_item_error'], (string) $item_id );
+			if ( $error ) {
+				return $error;
+			}
+		}
 		return array( 'Ack' => 'Success', 'Item' => array(
 			'ItemID'         => (string) $item_id,
 			'Title'          => 'Card ' . $item_id,
@@ -211,6 +242,18 @@ class TCGiant_Sync_API {
 			'ItemSpecifics'  => array( 'NameValueList' => array() ),
 			'PictureDetails' => array( 'PictureURL' => 'https://i.ebayimg.com/' . $item_id . '.jpg' ),
 		) );
+	}
+
+	/** GeteBayOfficialTime: does eBay answer at all. Fails when get_item_error fails it. */
+	public function get_official_time() {
+		$GLOBALS['EBAY']['clock_checks'] = ( $GLOBALS['EBAY']['clock_checks'] ?? 0 ) + 1;
+		if ( ! empty( $GLOBALS['EBAY']['get_item_error'] ) ) {
+			$error = call_user_func( $GLOBALS['EBAY']['get_item_error'], 'GeteBayOfficialTime' );
+			if ( $error ) {
+				return $error;
+			}
+		}
+		return array( 'Ack' => 'Success', 'Timestamp' => gmdate( 'Y-m-d\TH:i:s.000\Z' ) );
 	}
 
 	public function get_seller_events( $from, $to, $max_body_bytes = 0 ) {
@@ -251,6 +294,14 @@ class TCGiant_Sync_API {
 			$this->last_bytes = 0;
 			return new WP_Error( 'http_request_failed', $e['fail'] );
 		}
+		if ( ! empty( $e['out_of_calls'] ) ) {
+			$this->last_bytes = 0;
+			return new WP_Error( 'rate_limited', 'Daily API call budget exhausted. Will resume tomorrow.', array( 'daily_budget' => true ) );
+		}
+		if ( ! empty( $e['no_token'] ) ) {
+			$this->last_bytes = 0;
+			return new WP_Error( 'no_token', 'No valid eBay token.' );
+		}
 		if ( ! empty( $e['death_bytes'] ) && $bytes > $e['death_bytes'] ) {
 			$e['killed']++;
 			throw new Killed_Request();
@@ -259,13 +310,19 @@ class TCGiant_Sync_API {
 		$this->last_bytes = $bytes;
 		$items = array();
 		foreach ( $in as $event ) {
-			$items[] = array(
+			$item = array(
 				'ItemID'         => $event['id'],
 				'Title'          => 'Card ' . $event['id'],
 				'SellingStatus'  => array( 'ListingStatus' => 'Active' ),
 				'ItemSpecifics'  => array( 'NameValueList' => array() ),
 				'PictureDetails' => array( 'PictureURL' => 'https://i.ebayimg.com/' . $event['id'] . '.jpg' ),
 			);
+			// What eBay really sends, in the shops' logs: no item specifics
+			// or pictures, so every listing costs a GetItem.
+			if ( ! empty( $e['bare_events'] ) ) {
+				unset( $item['ItemSpecifics'], $item['PictureDetails'] );
+			}
+			$items[] = $item;
 		}
 		if ( 1 === count( $items ) ) {
 			$items = $items[0];
@@ -289,6 +346,10 @@ function lock_file() { return trailingslashit( $GLOBALS['UPLOADS'] ) . 'tcgiant_
 function fresh_site( $tz = 'UTC', array $state = array() ) {
 	$GLOBALS['OPTIONS']  = array();
 	$GLOBALS['QUEUE']    = array();
+	$GLOBALS['QUEUE_AGE'] = 0;
+	$GLOBALS['DB_STATE'] = null;
+	$GLOBALS['LATER']    = array();
+	$GLOBALS['OTHER']    = array();
 	$GLOBALS['LOG']      = array();
 	$GLOBALS['IMPORTED'] = array();
 	$GLOBALS['TZ']       = $tz;
@@ -325,6 +386,7 @@ function run_one() {
 	global $IMP;
 	$hook = array_shift( $GLOBALS['QUEUE'] );
 	if ( 'tcgiant_sync_fetch_delta_events' !== $hook ) {
+		$GLOBALS['OTHER'][] = $hook;
 		return;
 	}
 	// Each action is a request of its own, with its own clock.
@@ -969,6 +1031,426 @@ add_changes( $mid );
 $QUEUE[] = 'tcgiant_sync_fetch_delta_events';
 run_one();
 check( 'a place from another window starts this one at 1', isset( $IMPORTED['000000900000'] ), true );
+
+echo "\nEBAY CANNOT BE READ PART WAY THROUGH A WINDOW\n" . str_repeat( '=', 122 ) . "\n";
+
+// Every listing in a window costs a GetItem. When eBay could not be read -
+// the calls used up, a timeout, the token or the relay down - the listing was
+// logged "Skipping" and the cursor moved past it, and the window was marked
+// read: its changes were lost, and with every call failing a whole window
+// went that way in seconds. Shops working through a backlog after an update
+// make thousands of these calls in a day, out of one allowance every shop
+// shares.
+function progress() { return get_option( TCGiant_Sync_Importer::DELTA_PROGRESS_OPTION, array() ); }
+
+$budget_out = function () { return new WP_Error( 'rate_limited', 'Daily API call budget exhausted. Will resume tomorrow.', array( 'daily_budget' => true ) ); };
+
+fresh_site( 'UTC', array( 'last_successful_sync_at' => iso( $NOW - HOUR_IN_SECONDS ) ) );
+$batch = changes( 100, $NOW - 50 * MINUTE_IN_SECONDS, $NOW - 180, 5000, 700000 );
+add_changes( $batch );
+$EBAY['bare_events'] = true;
+$EBAY['get_item_error'] = function ( $id ) use ( $budget_out ) {
+	return count( $GLOBALS['EBAY']['get_items'] ) > 10 ? $budget_out() : null;
+};
+$was_at = state()['last_successful_sync_at'];
+hourly_tick();
+
+check( 'out of calls at the 11th listing: 10 imported', imported_ids( $batch ), 10 );
+check( '  nothing logged as skipped', logged( 'Skipping' ), false );
+check( '  the sync is still running', state()['status'], 'scanning' );
+check( '  the window is not marked read', state()['last_successful_sync_at'], $was_at );
+check( '  the place is the last listing done', progress()['cursor'] ?? '', '000000700009' );
+check( '  the next run waits for later', array( $QUEUE, $LATER ), array( array(), array( 'tcgiant_sync_fetch_delta_events' ) ) );
+check( '  and says so', logged( 'paused at eBay item 000000700010 with 10 of 100 changed listings done' ), true );
+check( '  running out of calls is not held against the listing', progress()['stops'] ?? null, 0 );
+check( '  the batch is not called complete', logged( 'Delta sync complete!' ), false );
+
+$catch = TCGiant_Sync_Importer::delta_catch_up();
+check( 'the notice can say where it is', array( $catch['done'] ?? null, $catch['total'] ?? null ), array( 10, 100 ) );
+check( '  and why it is paused', $catch['paused_for'] ?? '', 'Daily API call budget exhausted. Will resume tomorrow.' );
+
+$LOG = array();
+hourly_tick();
+check( 'the hourly poll leaves a paused sync alone', logged( 'Sync already in progress' ), true );
+check( '  its place untouched', progress()['cursor'] ?? '', '000000700009' );
+
+// Still out of calls when it tries again: it waits again, longer, and the
+// listing is never stepped over for it.
+later();
+drain();
+later();
+drain();
+check( 'still out of calls: still paused at the same listing', array( imported_ids( $batch ), progress()['cursor'] ?? '' ), array( 10, '000000700009' ) );
+check( '  backing off further each time', state()['rate_limit_retries'], 3 );
+check( '  and nothing stepped over', TCGiant_Sync_Importer::held_back_listings(), array() );
+
+$EBAY['get_item_error'] = null;
+later();
+drain();
+check( 'calls back: every listing imported', imported_ids( $batch ), 100 );
+check( '  each once', max( $IMPORTED ), 1 );
+check( '  the window finished', caught_up(), true );
+check( '  and the back-off forgotten', state()['rate_limit_retries'], 0 );
+check( '  and the pause', TCGiant_Sync_Importer::delta_catch_up()['paused_for'] ?? '', '' );
+
+// One listing that times out every time. Not the listing's fault, usually -
+// but if it keeps happening on the same one, it must not hold the sync.
+fresh_site( 'UTC', array( 'last_successful_sync_at' => iso( $NOW - HOUR_IN_SECONDS ) ) );
+$batch = changes( 30, $NOW - 50 * MINUTE_IN_SECONDS, $NOW - 180, 5000, 710000 );
+add_changes( $batch );
+$EBAY['bare_events'] = true;
+$bad = '000000710004';
+$EBAY['get_item_error'] = function ( $id ) use ( $bad ) {
+	return $id === $bad ? new WP_Error( 'http_request_failed', 'cURL error 28: Operation timed out after 45001 milliseconds' ) : null;
+};
+hourly_tick();
+check( 'a listing that times out: the run stops before it', array( imported_ids( $batch ), progress()['stops'] ?? null ), array( 4, 1 ) );
+later();
+drain();
+check( '  and again', array( imported_ids( $batch ), progress()['stops'] ?? null ), array( 4, 2 ) );
+later();
+drain();
+check( '  the third time it is moved past', isset( TCGiant_Sync_Importer::held_back_listings()[ $bad ] ), true );
+check( '  saying why', logged( 'eBay item ' . $bad . ' could not be read 3 runs in a row (cURL error 28' ), true );
+check( '  every other listing imported', imported_ids( $batch ), 29 );
+check( '  the window finished', caught_up(), true );
+check( '  and the listing queued for a stock check of its own', in_array( 'tcgiant_sync_settle_item', $OTHER, true ), true );
+
+// A timeout that clears by the next try costs nothing.
+fresh_site( 'UTC', array( 'last_successful_sync_at' => iso( $NOW - HOUR_IN_SECONDS ) ) );
+$batch = changes( 30, $NOW - 50 * MINUTE_IN_SECONDS, $NOW - 180, 5000, 720000 );
+add_changes( $batch );
+$EBAY['bare_events'] = true;
+$EBAY['get_item_error'] = function ( $id ) {
+	static $once = false;
+	if ( '000000720007' === $id && ! $once ) {
+		$once = true;
+		return new WP_Error( 'no_token', 'No valid eBay token.' );
+	}
+	return null;
+};
+hourly_tick();
+later();
+drain();
+check( 'a token that refreshes by the next try: all imported', imported_ids( $batch ), 30 );
+check( '  nothing held back', TCGiant_Sync_Importer::held_back_listings(), array() );
+check( '  finished', caught_up(), true );
+
+// eBay's 518 - its own call limit - never counts against a listing. Its
+// 10007, reported as a rate limit too, is an error inside eBay that one
+// listing can keep hitting, so it does.
+fresh_site( 'UTC', array( 'last_successful_sync_at' => iso( $NOW - HOUR_IN_SECONDS ) ) );
+$batch = changes( 10, $NOW - 50 * MINUTE_IN_SECONDS, $NOW - 180, 5000, 730000 );
+add_changes( $batch );
+$EBAY['bare_events'] = true;
+$EBAY['get_item_error'] = function ( $id ) {
+	return '000000730002' === $id ? new WP_Error( 'rate_limited', 'Calls to this call have exceeded the call limit.', array( 'Ack' => 'Failure', 'Errors' => array( 'ErrorCode' => '518' ) ) ) : null;
+};
+hourly_tick();
+for ( $r = 0; $r < 4; $r++ ) {
+	later();
+	drain();
+}
+check( "eBay's 518, five runs: still paused, nothing stepped over", array( imported_ids( $batch ), TCGiant_Sync_Importer::held_back_listings() ), array( 2, array() ) );
+
+fresh_site( 'UTC', array( 'last_successful_sync_at' => iso( $NOW - HOUR_IN_SECONDS ) ) );
+$batch = changes( 10, $NOW - 50 * MINUTE_IN_SECONDS, $NOW - 180, 5000, 740000 );
+add_changes( $batch );
+$EBAY['bare_events'] = true;
+$EBAY['get_item_error'] = function ( $id ) {
+	return '000000740002' === $id ? new WP_Error( 'rate_limited', 'Internal error to the application.', array( 'Ack' => 'Failure', 'Errors' => array( array( 'ErrorCode' => '10007' ) ) ) ) : null;
+};
+hourly_tick();
+for ( $r = 0; $r < 2; $r++ ) {
+	later();
+	drain();
+}
+check( "eBay's 10007 on one listing: moved past after three runs", array( imported_ids( $batch ), isset( TCGiant_Sync_Importer::held_back_listings()['000000740002'] ) ), array( 9, true ) );
+
+// An answer about the listing itself is not eBay being out of action. It is
+// skipped at once, as before.
+fresh_site( 'UTC', array( 'last_successful_sync_at' => iso( $NOW - HOUR_IN_SECONDS ) ) );
+$batch = changes( 10, $NOW - 50 * MINUTE_IN_SECONDS, $NOW - 180, 5000, 750000 );
+add_changes( $batch );
+$EBAY['bare_events'] = true;
+$EBAY['get_item_error'] = function ( $id ) {
+	return '000000750003' === $id ? new WP_Error( 'api_error', 'The item specified was not found.' ) : null;
+};
+hourly_tick();
+check( 'eBay says the listing is not there: skipped at once', array( imported_ids( $batch ), logged( 'Delta fallback failed for item 000000750003. Skipping.' ), caught_up() ), array( 9, true, true ) );
+check( '  and not held back', TCGiant_Sync_Importer::held_back_listings(), array() );
+
+// A token that will not refresh - the relay down overnight - is never this
+// listing's doing. Nothing is moved past, however long it lasts.
+fresh_site( 'UTC', array( 'last_successful_sync_at' => iso( $NOW - HOUR_IN_SECONDS ) ) );
+$batch = changes( 5, $NOW - 50 * MINUTE_IN_SECONDS, $NOW - 180, 5000, 780000 );
+add_changes( $batch );
+$EBAY['bare_events']    = true;
+$EBAY['get_item_error'] = function () { return new WP_Error( 'no_token', 'No valid eBay token.' ); };
+hourly_tick();
+for ( $r = 0; $r < 8; $r++ ) {
+	later();
+	drain();
+}
+check( 'no token for nine runs: nothing moved past', TCGiant_Sync_Importer::held_back_listings(), array() );
+check( '  still paused at the first listing', array( imported_ids( $batch ), progress()['stop_item'] ?? '', progress()['stops'] ?? null ), array( 0, '000000780000', 0 ) );
+check( '  the window not marked read', state()['status'], 'scanning' );
+$EBAY['get_item_error'] = null;
+later();
+drain();
+check( '  token back: every listing imported', array( imported_ids( $batch ), caught_up() ), array( 5, true ) );
+
+// eBay down altogether - the same timeout for every call. Before a listing is
+// blamed, eBay is asked the time; when that fails too, nothing is moved past.
+fresh_site( 'UTC', array( 'last_successful_sync_at' => iso( $NOW - HOUR_IN_SECONDS ) ) );
+$batch = changes( 5, $NOW - 50 * MINUTE_IN_SECONDS, $NOW - 180, 5000, 790000 );
+add_changes( $batch );
+$EBAY['bare_events']    = true;
+$EBAY['get_item_error'] = function () { return new WP_Error( 'http_request_failed', 'cURL error 6: Could not resolve host: api.ebay.com' ); };
+hourly_tick();
+for ( $r = 0; $r < 8; $r++ ) {
+	later();
+	drain();
+}
+check( 'eBay unreachable for nine runs: nothing moved past', array( imported_ids( $batch ), TCGiant_Sync_Importer::held_back_listings() ), array( 0, array() ) );
+check( '  eBay was asked whether it answers at all', ( $EBAY['clock_checks'] ?? 0 ) > 0, true );
+check( '  the window not marked read', state()['status'], 'scanning' );
+
+// Emergency Stop pressed in another request while this run was reading:
+// this run's copy of the state still says "scanning", the table says stopped.
+fresh_site( 'UTC', array( 'last_successful_sync_at' => iso( $NOW - HOUR_IN_SECONDS ) ) );
+$batch = changes( 10, $NOW - 50 * MINUTE_IN_SECONDS, $NOW - 180, 5000, 800000 );
+add_changes( $batch );
+$EBAY['bare_events']    = true;
+$EBAY['get_item_error'] = function ( $id ) {
+	if ( '000000800003' !== $id ) {
+		return null;
+	}
+	$GLOBALS['DB_STATE'] = array_merge( TCGiant_Sync_Importer::get_sync_state(), array( 'status' => 'stopped' ) );
+	return new WP_Error( 'http_request_failed', 'cURL error 28: Operation timed out after 45001 milliseconds' );
+};
+hourly_tick();
+check( 'Stop pressed elsewhere during a run that pauses: no retry queued', array( $QUEUE, $LATER ), array( array(), array() ) );
+check( '  and it says so', logged( 'Delta sync stopped as requested' ), true );
+check( '  not "paused"', logged( 'paused at eBay item' ), false );
+
+// The same, pressed while the run is importing its batch: it finishes the
+// batch and does not hand on to the next.
+fresh_site( 'UTC', array( 'last_successful_sync_at' => iso( $NOW - HOUR_IN_SECONDS ) ) );
+$window = changes( 100, $NOW - 50 * MINUTE_IN_SECONDS, $NOW - 180, 5000, 810000 );
+add_changes( $window );
+$EBAY['bare_events']    = true;
+$EBAY['get_item_error'] = function () {
+	if ( null === $GLOBALS['DB_STATE'] ) {
+		$GLOBALS['DB_STATE'] = array_merge( TCGiant_Sync_Importer::get_sync_state(), array( 'status' => 'stopped' ) );
+	}
+	return null;
+};
+$IMP->start_delta_sync();
+drain();
+check( 'Stop pressed elsewhere mid-batch: the batch is not handed on', imported_ids( $window ), 40 );
+check( '  and the state says stopped', state()['status'], 'stopped' );
+
+// The window read itself refused because the calls ran out: the notice is
+// told why it is waiting.
+fresh_site( 'UTC', array( 'last_successful_sync_at' => iso( $NOW - HOUR_IN_SECONDS ) ) );
+add_changes( changes( 5, $NOW - 50 * MINUTE_IN_SECONDS, $NOW - 180, 5000, 820000 ) );
+$EBAY['out_of_calls'] = true;
+hourly_tick();
+$catch = TCGiant_Sync_Importer::delta_catch_up();
+check( 'the window read refused for calls: the notice can say why', $catch['paused_for'] ?? '', 'Daily API call budget exhausted. Will resume tomorrow.' );
+check( '  as running out of calls', $catch['paused_code'] ?? '', 'out_of_calls' );
+
+// Emergency Stop pressed while eBay was being read - the slow part of a run.
+// Writing down that eBay had answered used to put "scanning" back over it.
+fresh_site( 'UTC', array( 'last_successful_sync_at' => iso( $NOW - HOUR_IN_SECONDS ) ) );
+$window = changes( 60, $NOW - 50 * MINUTE_IN_SECONDS, $NOW - 180, 5000, 830000 );
+add_changes( $window );
+$EBAY['on_call'] = function () { $GLOBALS['DB_STATE'] = array_merge( TCGiant_Sync_Importer::get_sync_state(), array( 'status' => 'stopped' ) ); };
+$IMP->start_delta_sync();
+drain();
+check( 'Stop pressed during the eBay read: nothing imported', imported_ids( $window ), 0 );
+check( '  nothing queued, and it says stopped', array( $QUEUE, $LATER, state()['status'] ), array( array(), array(), 'stopped' ) );
+check( '  the read is not taken for one the host killed', state()['delta_attempt'], '' );
+$EBAY['on_call'] = null;
+$DB_STATE        = null;
+hourly_tick();
+check( '  the next scheduled sync gets everything', imported_ids( $window ), 60 );
+
+// A long wait for the day's calls, then one timeout after progress: a fresh
+// start for the back-off and the notice, not a fourth pause in a row.
+fresh_site( 'UTC', array( 'last_successful_sync_at' => iso( $NOW - HOUR_IN_SECONDS ) ) );
+$batch = changes( 30, $NOW - 50 * MINUTE_IN_SECONDS, $NOW - 180, 5000, 840000 );
+add_changes( $batch );
+$EBAY['bare_events']    = true;
+$EBAY['get_item_error'] = function () { return new WP_Error( 'rate_limited', 'Daily API call budget exhausted. Will resume tomorrow.', array( 'daily_budget' => true ) ); };
+hourly_tick();
+later();
+drain();
+later();
+drain();
+check( 'three pauses for calls in a row', state()['rate_limit_retries'], 3 );
+$EBAY['get_item_error'] = function ( $id ) { return '000000840005' === $id ? new WP_Error( 'http_request_failed', 'cURL error 28: Operation timed out' ) : null; };
+later();
+drain();
+check( '  then calls back, five read, one timeout: the count starts again', state()['rate_limit_retries'], 1 );
+check( '  still catching up, not red', null !== TCGiant_Sync_Importer::delta_catch_up(), true );
+
+// A flaky connection: a different listing times out once in each run, with
+// listings read in between. Each is a passing hiccup, not the third pause
+// of an outage, and must not turn the notice red or stretch the back-off.
+fresh_site( 'UTC', array( 'last_successful_sync_at' => iso( $NOW - HOUR_IN_SECONDS ) ) );
+$batch = changes( 30, $NOW - 50 * MINUTE_IN_SECONDS, $NOW - 180, 5000, 845000 );
+add_changes( $batch );
+$EBAY['bare_events']    = true;
+$EBAY['get_item_error'] = function ( $id ) {
+	static $failed = array();
+	if ( in_array( $id, array( '000000845005', '000000845010', '000000845015' ), true ) && ! isset( $failed[ $id ] ) ) {
+		$failed[ $id ] = true;
+		return new WP_Error( 'http_request_failed', 'cURL error 28: Operation timed out' );
+	}
+	return null;
+};
+hourly_tick();
+later();
+drain();
+later();
+drain();
+check( 'a timeout on a different listing each run: never more than one pause in a row', state()['rate_limit_retries'], 1 );
+check( '  so still catching up, not red', null !== TCGiant_Sync_Importer::delta_catch_up(), true );
+later();
+drain();
+check( '  and every listing imported in the end', array( imported_ids( $batch ), caught_up() ), array( 30, true ) );
+
+// A shop that is up to date when its token dies: the window read fails hour
+// after hour, and the notice is told why.
+fresh_site( 'UTC', array( 'last_successful_sync_at' => iso( $NOW - HOUR_IN_SECONDS ) ) );
+$EBAY['no_token'] = true;
+hourly_tick();
+check( 'no token at the window read: the reason is kept for the notice', array( state()['delta_paused_for'] ?? '', state()['delta_paused_code'] ?? '' ), array( 'No valid eBay token.', 'no_token' ) );
+$EBAY['no_token'] = false;
+hourly_tick();
+check( '  and forgotten once eBay is read again', array( state()['delta_paused_for'] ?? '', state()['delta_paused_code'] ?? '' ), array( '', '' ) );
+
+// Reconnecting to eBay clears a pause for the token, and brings the run
+// waiting for later forward instead of leaving it two hours off.
+fresh_site( 'UTC', array( 'last_successful_sync_at' => iso( $NOW - HOUR_IN_SECONDS ) ) );
+$batch = changes( 10, $NOW - 50 * MINUTE_IN_SECONDS, $NOW - 180, 5000, 850000 );
+add_changes( $batch );
+$EBAY['bare_events']    = true;
+$EBAY['get_item_error'] = function () { return new WP_Error( 'no_token', 'No valid eBay token.' ); };
+hourly_tick();
+check( 'paused for the token, the next run two hours off at most', array( $QUEUE, $LATER ), array( array(), array( 'tcgiant_sync_fetch_delta_events' ) ) );
+$EBAY['get_item_error'] = null;
+TCGiant_Sync_Importer::after_reconnect();
+check( 'reconnected: the pause is forgotten', array( state()['delta_paused_code'] ?? '', state()['rate_limit_retries'] ), array( '', 0 ) );
+check( '  and the run brought forward', array( $QUEUE, $LATER ), array( array( 'tcgiant_sync_fetch_delta_events' ), array() ) );
+drain();
+check( '  which gets everything', array( imported_ids( $batch ), caught_up() ), array( 10, true ) );
+
+// A pause for calls that ends with an empty window leaves nothing behind for
+// a later notice to blame.
+fresh_site( 'UTC', array( 'last_successful_sync_at' => iso( $NOW - HOUR_IN_SECONDS ) ) );
+$EBAY['out_of_calls'] = true;
+hourly_tick();
+$EBAY['out_of_calls'] = false;
+later();
+drain();
+check( 'a pause for calls, then an empty window: no reason left behind', array( state()['delta_paused_for'] ?? '', state()['rate_limit_retries'] ), array( '', 0 ) );
+
+echo "\nWHAT THE NOTICE IS TOLD\n" . str_repeat( '=', 122 ) . "\n";
+
+// After an update a shop two weeks behind is shown its sync working through
+// the backlog, not "not reaching your shop" in red.
+fresh_site( 'UTC', array( 'last_successful_sync_at' => iso( $NOW - 14 * DAY_IN_SECONDS ) ) );
+$old = changes( 120, $NOW - 14 * DAY_IN_SECONDS + 60, $NOW - 14 * DAY_IN_SECONDS + 600, 5000, 760000 );
+add_changes( $old );
+check( 'before any run: not moving', TCGiant_Sync_Importer::delta_catch_up(), null );
+$IMP->start_delta_sync();
+run_one();
+$catch = TCGiant_Sync_Importer::delta_catch_up();
+check( 'one batch in: moving, 40 of 120 done', array( $catch['done'] ?? null, $catch['total'] ?? null ), array( 40, 120 ) );
+check( '  in the window it is on', $catch['from'] ?? '', state()['delta_mod_from'] );
+check( '  not paused', $catch['paused_for'] ?? null, '' );
+
+// Work done three hours ago and nothing queued: stopped, on an hourly sync.
+$QUEUE = array();
+$pr       = progress();
+$pr['ts'] = time() - 3 * HOUR_IN_SECONDS;
+update_option( TCGiant_Sync_Importer::DELTA_PROGRESS_OPTION, $pr );
+check( 'nothing for three hours and nothing queued: not moving', TCGiant_Sync_Importer::delta_catch_up(), null );
+
+// Between scheduled syncs, after a batch of windows: the position moved
+// recently, so it is still catching up, between windows.
+$s = state();
+$s['status']         = 'complete';
+$s['delta_moved_at'] = time() - 20 * MINUTE_IN_SECONDS;
+update_option( TCGiant_Sync_Importer::STATE_OPTION, $s );
+$catch = TCGiant_Sync_Importer::delta_catch_up();
+check( 'resting between scheduled syncs: still catching up', null !== $catch, true );
+check( '  between windows, so no count', array( $catch['done'] ?? null, $catch['total'] ?? null, $catch['from'] ?? null ), array( 0, 0, '' ) );
+
+$s['status'] = 'stopped';
+update_option( TCGiant_Sync_Importer::STATE_OPTION, $s );
+check( 'after Emergency Stop: not moving', TCGiant_Sync_Importer::delta_catch_up(), null );
+
+// A run that sits in a queue that no longer runs is not a sync that is moving.
+$s = state();
+$s['status']         = 'scanning';
+$s['delta_moved_at'] = 0;
+update_option( TCGiant_Sync_Importer::STATE_OPTION, $s );
+$pr       = progress();
+$pr['ts'] = time() - 3 * HOUR_IN_SECONDS;
+update_option( TCGiant_Sync_Importer::DELTA_PROGRESS_OPTION, $pr );
+$QUEUE     = array( 'tcgiant_sync_fetch_delta_events' );
+$QUEUE_AGE = 20 * MINUTE_IN_SECONDS;
+check( 'a run queued 20 minutes ago: still moving', null !== TCGiant_Sync_Importer::delta_catch_up(), true );
+$QUEUE_AGE = 3 * HOUR_IN_SECONDS;
+check( 'a run queued 3 hours ago and never run: not moving', TCGiant_Sync_Importer::delta_catch_up(), null );
+$QUEUE     = array();
+$QUEUE_AGE = 0;
+
+// Paused again and again for something other than the calls running out -
+// a token that will not refresh - is not a passing outage, queue or no queue.
+$LATER = array( 'tcgiant_sync_fetch_delta_events' );
+$s     = state();
+$s['delta_paused_for']   = 'No valid eBay token.';
+$s['delta_paused_code']  = 'no_token';
+$s['delta_paused_until'] = time() + 7200;
+$s['rate_limit_retries'] = 2;
+update_option( TCGiant_Sync_Importer::STATE_OPTION, $s );
+check( 'paused twice for the token: still catching up', null !== TCGiant_Sync_Importer::delta_catch_up(), true );
+$s['rate_limit_retries'] = 3;
+update_option( TCGiant_Sync_Importer::STATE_OPTION, $s );
+check( '  three times: not moving', TCGiant_Sync_Importer::delta_catch_up(), null );
+$s['delta_paused_for']   = 'Daily API call budget exhausted. Will resume tomorrow.';
+$s['delta_paused_code']  = 'out_of_calls';
+$s['rate_limit_retries'] = 5;
+update_option( TCGiant_Sync_Importer::STATE_OPTION, $s );
+check( '  but out of calls five times over: still catching up, as it will', null !== TCGiant_Sync_Importer::delta_catch_up(), true );
+$LATER = array();
+
+// A Fetch Inventory that is moving brings eBay's listings in, and the delta
+// waits for it; one that has stalled does not.
+$s = array_merge( state(), array( 'status' => 'importing', 'sync_mode' => 'full', 'last_activity_ts' => time() - 120 ) );
+update_option( TCGiant_Sync_Importer::STATE_OPTION, $s );
+check( 'a moving full sync: catching up', null !== TCGiant_Sync_Importer::delta_catch_up(), true );
+$s['last_activity_ts'] = time() - 2 * HOUR_IN_SECONDS;
+update_option( TCGiant_Sync_Importer::STATE_OPTION, $s );
+check( '  a stalled one: not', TCGiant_Sync_Importer::delta_catch_up(), null );
+
+// Finishing a window stamps when the position moved; failing to read one
+// does not.
+fresh_site( 'UTC', array( 'last_successful_sync_at' => iso( $NOW - HOUR_IN_SECONDS ) ) );
+add_changes( changes( 5, $NOW - 50 * MINUTE_IN_SECONDS, $NOW - 180, 5000, 770000 ) );
+hourly_tick();
+check( 'a finished window stamps the moment the position moved', abs( (int) ( state()['delta_moved_at'] ?? 0 ) - time() ) < 5, true );
+$s = state();
+$s['delta_moved_at'] = 1;
+update_option( TCGiant_Sync_Importer::STATE_OPTION, $s );
+$EBAY['fail'] = 'cURL error 6: Could not resolve host';
+hourly_tick();
+check( '  a window that could not be read does not', state()['delta_moved_at'], 1 );
 
 @unlink( lock_file() );
 @rmdir( $UPLOADS );

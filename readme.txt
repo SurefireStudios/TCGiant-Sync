@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.27.1
+Stable tag: 3.27.2
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,19 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.27.2 - 2026-10-13 =
+**A sync working through a backlog keeps going, and says so**
+* FIX: A delta run the host ended without a PHP error handed nothing on, so each one cost the sync an hour. It now hands on straight away.
+* FIX: When eBay could not be read for a listing (calls used up, a timeout, the token or relay down), the delta moved past it and marked the window read, losing those changes. It now keeps its place and tries again later. Only a listing that fails three runs in a row while eBay answers other calls is moved past, and listed on Stock Review.
+* FIX: Emergency Stop pressed while a delta run was part way through could be undone by that run. It now holds.
+* FIX: The "not reaching your shop" notice gave any job's death as the reason, such as a photo download. It now gives only the sync's own.
+* NEW: While the sync works through a backlog, the notice says so in yellow, with how far it has got. It turns red, with the reason, when the sync stops moving; when eBay refuses the shop's connection it says to reconnect, and reconnecting sets the sync going again at once.
+* FIX: The image batch now stops between photos when its time is up, instead of overrunning on a product with many photos until the host ends the request. Stopping part way is not a failed attempt. A killed batch is followed five minutes later, not sixteen.
+* FIX: A product whose photos were fetched over several batches no longer shows its main photo twice, and one that already does is put right.
+* FIX: A photo download timing out "after 30403 milliseconds" is no longer taken for a missing photo.
+* FIX: Photos kept outside eBay's servers get the same 30 s download limit as eBay's.
+* FIX: Long syncs stop running out of memory on WordPress.com: the delta, the scan and the image batch clear the memcached cache's per-request records, and WordPress's query log under SAVEQUERIES, between items.
 
 = 3.27.1 - 2026-10-13 =
 **eBay sales now come off your shop on every connected shop**

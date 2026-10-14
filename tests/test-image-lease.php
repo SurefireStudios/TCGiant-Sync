@@ -101,12 +101,15 @@ function persist() {
 class WP_Error {
 	private $code;
 	private $message;
-	public function __construct( $code = '', $message = '' ) {
+	private $data;
+	public function __construct( $code = '', $message = '', $data = '' ) {
 		$this->code    = $code;
 		$this->message = $message;
+		$this->data    = $data;
 	}
 	public function get_error_code() { return $this->code; }
 	public function get_error_message() { return $this->message; }
+	public function get_error_data() { return $this->data; }
 }
 function is_wp_error( $thing ) { return $thing instanceof WP_Error; }
 function __( $text ) { return $text; }
@@ -618,6 +621,224 @@ batch();
 check( '  and the next batch really tries its photo again', downloads_of( 501 ), 4 );
 check( '  so the product ends with the shop\'s own copy', own_photo( 501 ), true );
 check( '  and no line claims a request was stopped on it 3 times', log_has( 'attempts that never finished' ), false );
+
+echo "\nA PRODUCT WITH MORE PHOTOS THAN ONE REQUEST HAS TIME FOR\n" . str_repeat( '=', 122 ) . "\n";
+
+// Dobson Parts' host ends a request three minutes in, and one product's
+// photos took longer than that: every batch started on it, died on it, and
+// sixteen minutes later started on it again, with 454 products waiting
+// behind. The batch only looked at the clock between products. Now it looks
+// between photos too, and a product too big for one request is finished over
+// several, each well inside the budget.
+//
+// A clock that moves only when a photo is fetched: 25 s a photo, 60 s budget.
+$FAKE_NOW = 2000000.0;
+TCGiant_Sync_Runtime::$clock = function () { return $GLOBALS['FAKE_NOW']; };
+function new_request( $already = 0 ) {
+	$_SERVER['REQUEST_TIME_FLOAT'] = $GLOBALS['FAKE_NOW'] - $already;
+}
+$slow = function ( $seconds ) {
+	return function () use ( $seconds ) {
+		$GLOBALS['FAKE_NOW'] += $seconds;
+		return 'ok';
+	};
+};
+function gallery( $id ) { return array_values( array_filter( explode( ',', (string) meta( $id, '_product_image_gallery' ) ) ) ); }
+function stand_ins( $id ) {
+	return array_values( array_filter( gallery( $id ), function ( $g ) { return '' !== (string) meta( (int) $g, '_tcgiant_external_url' ); } ) );
+}
+function stand_ins_left( $id ) {
+	$n = 0;
+	foreach ( $GLOBALS['META'] as $m ) {
+		if ( (int) ( $m['_parent'] ?? 0 ) === $id && '' !== (string) ( $m['_tcgiant_external_url'] ?? '' ) ) {
+			$n++;
+		}
+	}
+	return $n;
+}
+
+fresh_site();
+product( 601, array( photo( 61 ), photo( 62 ), photo( 63 ), photo( 64 ), photo( 65 ), photo( 66 ) ) );
+$before_gallery = gallery( 601 );
+$fallback_at    = null;
+$PHOTO = function () use ( &$fallback_at ) {
+	if ( null === $fallback_at ) {
+		$fallback_at = end( $GLOBALS['SCHEDULED'] );
+	}
+	$GLOBALS['FAKE_NOW'] += 25;
+	return 'ok';
+};
+new_request();
+batch();
+
+check( 'the batch fetches what fits, then stops between photos', downloads_of( 601 ), 3 );
+check( '  saying where, and that it carries on', log_has( 'WC #601 paused at photo 4 of 6' ), true );
+check( '  an ordinary end to the batch, not a death', log_has( 'Batch complete. 3 downloaded, 0 skipped, 0 failed.' ), true );
+check( '  no warning or error', count( array_filter( $LOG, function ( $l ) { return 0 === strpos( $l, '[warning]' ) || 0 === strpos( $l, '[error]' ); } ) ), 0 );
+check( '  not done yet', done( 601 ), false );
+check( '  the attempt handed back: a pause is not a failure', (int) meta( 601, '_tcgiant_localize_attempts' ), 0 );
+check( '  no mark of a death left', array( has_meta( 601, '_tcgiant_localize_inflight' ), has_meta( 601, '_tcgiant_localize_progress' ) ), array( false, false ) );
+check( '  due again in a minute', in_about( meta( 601, '_tcgiant_localize_retry_after' ), 60 ), true );
+check( '  and the next batch then', in_about( end( $SCHEDULED ), 60 ), true );
+check( '  its main photo is the shop\'s own copy already', own_photo( 601 ), true );
+check( '  its gallery untouched meanwhile: every photo still shows', gallery( 601 ), $before_gallery );
+check( 'while it worked, the run after a death was set inside the lease', in_about( $fallback_at, 300 ), true );
+
+time_passes( 61 );
+$LOG = array();
+new_request();
+batch();
+
+check( 'the next batch carries on from photo 4', downloads_of( 601 ), 6 );
+check( '  fetching none twice', log_has( 'Batch complete. 3 downloaded, 3 skipped, 0 failed.' ), true );
+check( '  and finishes the product', done( 601 ), true );
+check( '  gallery: the five other photos, all the shop\'s own copies', array( count( gallery( 601 ) ), stand_ins( 601 ) ), array( 5, array() ) );
+check( '  the main photo is not in it twice', in_array( (string) get_post_thumbnail_id( 601 ), gallery( 601 ), true ), false );
+check( '  no eBay stand-in left behind', stand_ins_left( 601 ), 0 );
+check( '  and its counts cleared', array( has_meta( 601, '_tcgiant_localize_attempts' ), has_meta( 601, '_tcgiant_localize_pauses' ) ), array( false, false ) );
+
+// Two products: the one that paused waits its minute while the other goes.
+fresh_site();
+product( 611, array( photo( 71 ), photo( 72 ), photo( 73 ), photo( 74 ) ) );
+product( 612, array( photo( 75 ) ) );
+$PHOTO = $slow( 40 );
+new_request();
+batch();
+check( 'a pause ends the batch there', array( downloads_of( 611 ), downloads_of( 612 ) ), array( 2, 0 ) );
+check( '  with the next batch in 30 s, for the product behind it', in_about( end( $SCHEDULED ), 30 ), true );
+time_passes( 31 );
+new_request();
+batch();
+check( '  which that batch finishes, while the first waits its minute', array( downloads_of( 611 ), done( 612 ) ), array( 2, true ) );
+time_passes( 31 );
+new_request();
+batch();
+check( '  then the first carries on, and finishes', array( downloads_of( 611 ), done( 611 ) ), array( 4, true ) );
+
+// A batch that starts with its time already gone - after other cron jobs in
+// the same request - still fetches one photo each time, and is never given up.
+fresh_site();
+product( 621, array( photo( 81 ), photo( 82 ), photo( 83 ) ) );
+$PHOTO = $slow( 5 );
+for ( $r = 0; $r < 3; $r++ ) {
+	new_request( 100 );
+	batch();
+	time_passes( 61 );
+}
+check( 'a request with its time used up: one photo each, three requests', array( downloads_of( 621 ), done( 621 ) ), array( 3, true ) );
+check( '  never counted as a failed attempt', log_has( 'gave up' ), false );
+
+// A product already near its last attempt is not pushed over it by pausing.
+fresh_site();
+product( 631, array( photo( 91 ), photo( 92 ), photo( 93 ) ), array( '_tcgiant_localize_attempts' => 2 ) );
+$PHOTO = $slow( 40 );
+new_request();
+batch();
+check( 'two attempts used, then a pause: still two', (int) meta( 631, '_tcgiant_localize_attempts' ), 2 );
+time_passes( 61 );
+new_request();
+batch();
+time_passes( 61 );
+new_request();
+batch();
+check( '  and it finishes, not given up', array( done( 631 ), log_has( 'gave up' ) ), array( true, false ) );
+
+// Overwrite Images on: eBay's photos replace the gallery once the product is
+// done, and until then it is left alone.
+fresh_site();
+$OPTIONS['tcgiant_sync_ebay_settings'] = array( 'overwrite_images' => 1 );
+product( 641, array( photo( 101 ), photo( 102 ), photo( 103 ), photo( 104 ) ) );
+$before_gallery = gallery( 641 );
+$PHOTO = $slow( 40 );
+new_request();
+batch();
+check( 'Overwrite Images: the pause leaves the gallery as it was', gallery( 641 ), $before_gallery );
+time_passes( 61 );
+new_request();
+batch();
+check( '  finished: three copies, no stand-ins, main photo not repeated', array( count( gallery( 641 ) ), stand_ins( 641 ), in_array( (string) get_post_thumbnail_id( 641 ), gallery( 641 ), true ) ), array( 3, array(), false ) );
+check( '  every photo fetched once', downloads_of( 641 ), 4 );
+
+// A photo kept on the seller's own server is held to the same 30 s as one on
+// eBay's - it had all of media_sideload_image()'s 300 s, longer than some
+// hosts let a request run - but not cut short in size.
+fresh_site();
+product( 651, array( 'https://parts.example.com/photos/651-front.jpg' ) );
+$PHOTO = function () { return 'ok'; };
+new_request();
+batch();
+$sent = $ARGS_SEEN[0][1] ?? array();
+check( 'a photo on another server: 30 s', (int) ( $sent['timeout'] ?? 0 ), 30 );
+check( '  and no size limit', $sent['limit_response_size'] ?? null, null );
+check( '  done', done( 651 ), true );
+
+// A new photo set starts the pause count again, as it does the attempts: a
+// count left from the old set would otherwise charge the new one's pauses.
+fresh_site();
+product( 661, array( photo( 111 ), photo( 112 ) ), array( '_tcgiant_localize_pauses' => 9, '_tcgiant_localize_attempts' => 2 ) );
+TCGiant_Sync_Image_Localizer::set_external_images( 661, array( photo( 113 ) ) );
+check( 'a new photo set: pauses and attempts start again', array( has_meta( 661, '_tcgiant_localize_pauses' ), has_meta( 661, '_tcgiant_localize_attempts' ) ), array( false, false ) );
+
+// Giving up clears the pause count with the rest.
+fresh_site();
+product( 671, array( photo( 121 ) ), array( '_tcgiant_localize_pauses' => 1, '_tcgiant_localize_attempts' => 2 ) );
+$PHOTO = function () { return timeout(); };
+new_request();
+batch();
+check( 'given up: the pause count goes too', array( done( 671 ), has_meta( 671, '_tcgiant_localize_pauses' ) ), array( true, false ) );
+
+// A timeout is never taken for a missing photo. The numbers in a timeout's
+// message used to be matched on their own: "30403 milliseconds" read as a 403,
+// and the photo was dropped for good.
+fresh_site();
+product( 681, array( photo( 131 ) ) );
+$PHOTO = function () { return new WP_Error( 'http_request_failed', 'cURL error 28: Operation timed out after 30403 milliseconds with 0 out of 0 bytes received' ); };
+new_request();
+batch();
+check( 'a timeout "after 30403 milliseconds": tried again, not dropped', array( done( 681 ), log_has( '[PERMANENT]' ) ), array( false, false ) );
+fresh_site();
+product( 682, array( photo( 132 ) ) );
+// What download_url() really returns: "http_404" for every status but 200,
+// with the status itself in the data.
+$PHOTO = function () { return new WP_Error( 'http_404', 'Not Found', array( 'code' => 404 ) ); };
+new_request();
+batch();
+check( 'a real 404: dropped, and said so', array( done( 682 ), log_has( '[PERMANENT]' ) ), array( true, true ) );
+foreach ( array( 503 => 'Service Unavailable', 429 => 'Too Many Requests', 502 => 'Bad Gateway' ) as $status => $phrase ) {
+	fresh_site();
+	product( 683, array( photo( 133 ) ) );
+	$PHOTO = function () use ( $status, $phrase ) { return new WP_Error( 'http_404', $phrase, array( 'code' => $status ) ); };
+	new_request();
+	batch();
+	check( "a $status from the photo server: tried again, not dropped", array( done( 683 ), log_has( '[PERMANENT]' ) ), array( false, false ) );
+}
+fresh_site();
+product( 684, array( photo( 134 ) ) );
+$PHOTO = function () { return new WP_Error( 'http_404', 'Gone', array( 'code' => 410 ) ); };
+new_request();
+batch();
+check( 'a 410: dropped', done( 684 ), true );
+
+// A product already showing its main photo twice, from an earlier version, is
+// put right the next time its photos are fetched; a photo the shop put in the
+// gallery itself is left alone.
+fresh_site();
+product( 691, array( photo( 141 ), photo( 142 ) ) );
+$PHOTO = function () { return 'ok'; };
+new_request();
+batch();
+$main = get_post_thumbnail_id( 691 );
+$own  = wp_insert_attachment( array(), false, 691 ); // the shop's own upload
+update_post_meta( 691, '_product_image_gallery', implode( ',', array_merge( array( $main ), gallery( 691 ), array( $own ) ) ) );
+TCGiant_Sync_Image_Localizer::set_external_images( 691, array( photo( 141 ), photo( 142 ) ), true );
+new_request();
+batch();
+check( 'shown twice before: the main photo leaves the gallery', in_array( (string) $main, gallery( 691 ), true ), false );
+check( '  the shop\'s own photo stays', in_array( (string) $own, gallery( 691 ), true ), true );
+
+// Back to the frozen clock the earlier sections use.
+TCGiant_Sync_Runtime::$clock = function () { return (float) $_SERVER['REQUEST_TIME_FLOAT']; };
+$OPTIONS = array();
 
 foreach ( array( 'site.json', 'activity.log', 'wp-admin/includes/media.php', 'wp-admin/includes/file.php', 'wp-admin/includes/image.php' ) as $f ) {
 	@unlink( "$WORLD/$f" );

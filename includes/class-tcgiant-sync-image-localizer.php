@@ -57,6 +57,21 @@ class TCGiant_Sync_Image_Localizer {
 	const LEASE_SECONDS = 900;
 
 	/**
+	 * When the next batch runs if this one is killed.
+	 *
+	 * Inside the lease, so the products behind the one it died on get their
+	 * turn while that one waits. It ran at the end of the lease, which put
+	 * the same product first in every batch, a quarter of an hour apart,
+	 * while the rest of the queue waited behind it.
+	 */
+	const FALLBACK_SECONDS = 300;
+
+	/**
+	 * How soon a product that stopped part way through comes round again.
+	 */
+	const PAUSE_SECONDS = 60;
+
+	/**
 	 * Longest one eBay photo download may take, and its largest size.
 	 *
 	 * media_sideload_image() passes a 300 s timeout of its own, which is why
@@ -64,6 +79,21 @@ class TCGiant_Sync_Image_Localizer {
 	 */
 	const DOWNLOAD_TIMEOUT = 30;
 	const DOWNLOAD_MAX_BYTES = 15728640;
+
+	/**
+	 * The photo being downloaded now, so its download is held to the same
+	 * time limit wherever it is hosted.
+	 *
+	 * @var string
+	 */
+	private static $downloading = '';
+
+	/**
+	 * What the batch is working on, for the line a killed request leaves.
+	 *
+	 * @var string
+	 */
+	private $context = '';
 
 	/**
 	 * Image widths eBay will serve, offered as import options.
@@ -705,6 +735,7 @@ class TCGiant_Sync_Image_Localizer {
 		// would be given up on immediately, and a stale backoff would delay it.
 		if ( $force || $new_hash !== $stored_hash ) {
 			delete_post_meta( $product_id, '_tcgiant_localize_attempts' );
+			delete_post_meta( $product_id, '_tcgiant_localize_pauses' );
 			delete_post_meta( $product_id, '_tcgiant_localize_retry_after' );
 		}
 
@@ -961,15 +992,23 @@ class TCGiant_Sync_Image_Localizer {
 		// would schedule the next one then, and only an admin page load re-arms
 		// the queue. Replaced below when the batch finishes normally.
 		wp_clear_scheduled_hook( self::CRON_HOOK );
-		wp_schedule_single_event( time() + self::LEASE_SECONDS + MINUTE_IN_SECONDS, self::CRON_HOOK );
+		wp_schedule_single_event( time() + self::FALLBACK_SECONDS, self::CRON_HOOK );
 
-		// Cap each eBay photo download. http_request_timeout, used here before,
-		// only sets the default that media_sideload_image() overrides with 300 s.
+		// Cap each photo download. http_request_timeout, used here before,
+		// only sets the default that media_sideload_image() overrides with
+		// 300 s. A listing's photos are not always on eBay's servers, and one
+		// elsewhere had the whole 300 s - longer than some hosts let a request
+		// run. Only eBay's are capped in size: a seller's own server may hold
+		// larger originals, and cutting one short would break it.
 		$download_cap = function ( $args, $url ) {
 			$host = strtolower( (string) wp_parse_url( $url, PHP_URL_HOST ) );
+			$ebay = 'ebayimg.com' === $host || '.ebayimg.com' === substr( $host, -12 );
 
-			if ( 'ebayimg.com' === $host || '.ebayimg.com' === substr( $host, -12 ) ) {
-				$args['timeout']             = min( (float) ( $args['timeout'] ?? self::DOWNLOAD_TIMEOUT ), self::DOWNLOAD_TIMEOUT );
+			if ( $ebay || ( '' !== self::$downloading && $url === self::$downloading ) ) {
+				$args['timeout'] = min( (float) ( $args['timeout'] ?? self::DOWNLOAD_TIMEOUT ), self::DOWNLOAD_TIMEOUT );
+			}
+
+			if ( $ebay ) {
 				$args['limit_response_size'] = self::DOWNLOAD_MAX_BYTES;
 			}
 
@@ -1002,11 +1041,13 @@ class TCGiant_Sync_Image_Localizer {
 
 		$started_on = 0;
 		$stopped_for = '';
+		$paused      = false;
 
 		foreach ( $product_ids as $product_id ) {
 			// Stop starting products well short of whatever this host allows.
 			// A batch of fifty used to run until the host killed it.
 			if ( $started_on > 0 ) {
+				TCGiant_Sync_Runtime::release_memory();
 				$stopped_for = TCGiant_Sync_Runtime::over_budget();
 				if ( '' !== $stopped_for ) {
 					break;
@@ -1014,7 +1055,8 @@ class TCGiant_Sync_Image_Localizer {
 			}
 
 			$started_on++;
-			TCGiant_Sync_Runtime::context( sprintf( 'WC #%d (%d of %d in this batch)', (int) $product_id, $started_on, count( $product_ids ) ) );
+			$this->context = sprintf( 'WC #%d (%d of %d in this batch)', (int) $product_id, $started_on, count( $product_ids ) );
+			TCGiant_Sync_Runtime::context( $this->context );
 
 			try {
 				$result = $this->localize_product_images( (int) $product_id );
@@ -1029,6 +1071,13 @@ class TCGiant_Sync_Image_Localizer {
 			$total_downloaded += $result['downloaded'];
 			$total_skipped    += $result['skipped'];
 			$total_failed     += $result['failed'];
+
+			// Out of time part way through it. Nothing more fits in this
+			// request; the next batch carries on.
+			if ( ! empty( $result['paused'] ) ) {
+				$paused = true;
+				break;
+			}
 		}
 
 		TCGiant_Sync_Runtime::context( '' );
@@ -1074,6 +1123,12 @@ class TCGiant_Sync_Image_Localizer {
 				$remaining
 			) );
 			wp_schedule_single_event( time() + 30, self::CRON_HOOK );
+			return;
+		}
+
+		// A product that stopped part way through is due again in a minute.
+		if ( $paused ) {
+			wp_schedule_single_event( time() + self::PAUSE_SECONDS, self::CRON_HOOK );
 			return;
 		}
 
@@ -1125,6 +1180,7 @@ class TCGiant_Sync_Image_Localizer {
 			delete_post_meta( $product_id, '_tcgiant_localize_inflight' );
 			update_post_meta( $product_id, '_tcgiant_images_localized', 1 );
 			delete_post_meta( $product_id, '_tcgiant_localize_retry_after' );
+			delete_post_meta( $product_id, '_tcgiant_localize_pauses' );
 			TCGiant_Sync_Logger::error( sprintf(
 				'Image localizer: WC #%d gave up after %d attempts that never finished - the request was stopped while working on it each time. Its eBay photos stay in place. Re-run an images-only sync for this item to try again.',
 				$product_id,
@@ -1175,7 +1231,11 @@ class TCGiant_Sync_Image_Localizer {
 			}
 		}
 
+		// Which photo this is, for the line a killed request leaves.
+		$photo = 0;
+
 		foreach ( $image_entries as $image_entry ) {
+			++$photo;
 			$variation_id = false;
 			$image_url = $image_entry;
 			if ( is_array( $image_entry ) ) {
@@ -1203,21 +1263,42 @@ class TCGiant_Sync_Image_Localizer {
 				} elseif ( $needs_thumbnail ) {
 					set_post_thumbnail( $product_id, $existing_attachment );
 					$needs_thumbnail = false;
-				} else {
+				} elseif ( (int) $existing_attachment !== (int) get_post_thumbnail_id( $product_id ) ) {
 					// Reused images still belong in the gallery. Skipping this
 					// step meant every re-localization (hash change, relist,
 					// images-only sync) dropped already-downloaded images from
 					// _product_image_gallery, so galleries shrank over time.
+					// Not the main image, though: a product finished over more
+					// than one batch showed its main photo twice.
 					$gallery_ids[] = $existing_attachment;
 				}
 				$result['skipped']++;
 				continue;
 			}
 
+			// Out of time, with something to show for it: stop here, and let
+			// the next batch carry on from this photo. A product with a lot of
+			// photos used to run on until the host killed the request - every
+			// time, on a host that cuts requests off after three minutes -
+			// while the rest of the queue waited behind it. Time only: the
+			// memory in use is this product's own, and the batch checks
+			// memory between products.
+			if ( $result['downloaded'] > 0 ) {
+				TCGiant_Sync_Runtime::release_memory();
+				if ( '' !== TCGiant_Sync_Runtime::over_time_budget() ) {
+					$result['paused'] = true;
+					break;
+				}
+			}
+
+			TCGiant_Sync_Runtime::context( sprintf( '%s, photo %d of %d', $this->context, $photo, count( $image_entries ) ) );
+
 			// Download the image, honouring the configured maximum width.
 			// $clean_url (the original address) remains the dedup key, so
 			// changing the size setting never orphans existing downloads.
-			$id = media_sideload_image( self::apply_image_size_preference( $image_url ), $product_id, null, 'id' );
+			self::$downloading = self::apply_image_size_preference( $image_url );
+			$id                = media_sideload_image( self::$downloading, $product_id, null, 'id' );
+			self::$downloading = '';
 			if ( is_wp_error( $id ) ) {
 				// A 404/403/410 will never succeed, so it must not keep the
 				// product in the retry queue forever. Anything else (timeout,
@@ -1264,13 +1345,52 @@ class TCGiant_Sync_Image_Localizer {
 			$result['downloaded']++;
 		}
 
+		// Stopped part way, which is not a failure: hand back the attempt it
+		// was charged, so pausing can never use up a product's tries, and come
+		// round again soon. Every pause has downloaded a photo the next batch
+		// finds and skips, so a product pauses at most once per photo; past
+		// that, something is wrong and it is charged like any other attempt.
+		//
+		// The gallery is left as it is - the eBay stand-ins for the photos
+		// still to come stay in place - and is rebuilt when the product is
+		// finished, from the copies made along the way.
+		if ( ! empty( $result['paused'] ) ) {
+			$pauses = (int) get_post_meta( $product_id, '_tcgiant_localize_pauses', true ) + 1;
+			update_post_meta( $product_id, '_tcgiant_localize_pauses', $pauses );
+
+			if ( $pauses <= count( $image_entries ) ) {
+				update_post_meta( $product_id, '_tcgiant_localize_attempts', $attempts );
+			}
+
+			delete_post_meta( $product_id, '_tcgiant_localize_inflight' );
+			delete_post_meta( $product_id, '_tcgiant_localize_progress' );
+			update_post_meta( $product_id, '_tcgiant_localize_retry_after', time() + self::PAUSE_SECONDS );
+
+			TCGiant_Sync_Logger::log( sprintf(
+				'Image localizer: WC #%d paused at photo %d of %d, to stay within this host\'s limits. The next batch carries on from there.',
+				$product_id,
+				$photo,
+				count( $image_entries )
+			) );
+
+			return $result;
+		}
+
 		// Update gallery.
 		if ( ! empty( $gallery_ids ) ) {
 			$gallery_ids = array_unique( array_filter( $gallery_ids ) );
 			// Remove any external placeholder IDs from gallery.
 			$clean_gallery = array();
 			$placeholders  = array();
+			$main_photo    = (int) get_post_thumbnail_id( $product_id );
 			foreach ( $gallery_ids as $gid ) {
+				// A copy this plugin made of the main photo is the main photo,
+				// not another gallery entry. One a product already shows twice
+				// is put right here, the next time its photos are fetched; one
+				// the shop put in the gallery itself is left alone.
+				if ( (int) $gid === $main_photo && get_post_meta( (int) $gid, '_tcgiant_source_url', true ) ) {
+					continue;
+				}
 				$is_external = get_post_meta( (int) $gid, '_tcgiant_external_url', true );
 				if ( empty( $is_external ) ) {
 					$clean_gallery[] = $gid;
@@ -1303,6 +1423,7 @@ class TCGiant_Sync_Image_Localizer {
 		if ( 0 === $result['failed'] ) {
 			update_post_meta( $product_id, '_tcgiant_images_localized', 1 );
 			delete_post_meta( $product_id, '_tcgiant_localize_attempts' );
+			delete_post_meta( $product_id, '_tcgiant_localize_pauses' );
 			delete_post_meta( $product_id, '_tcgiant_localize_retry_after' );
 
 			if ( $result['permanent'] > 0 ) {
@@ -1319,6 +1440,7 @@ class TCGiant_Sync_Image_Localizer {
 				// Give up so one unreachable image can't pin the queue open.
 				update_post_meta( $product_id, '_tcgiant_images_localized', 1 );
 				delete_post_meta( $product_id, '_tcgiant_localize_retry_after' );
+				delete_post_meta( $product_id, '_tcgiant_localize_pauses' );
 				TCGiant_Sync_Logger::error( sprintf(
 					'Image localizer: WC #%d gave up after %d attempts with %d image(s) still failing. '
 					. 'Re-run an images-only sync for this item to try again.',
@@ -1351,10 +1473,29 @@ class TCGiant_Sync_Image_Localizer {
 	 * @return bool True if the failure is permanent.
 	 */
 	private static function is_permanent_image_failure( $wp_error ) {
+		$code = (string) $wp_error->get_error_code();
+
+		// download_url() answers every status but 200 with "http_404", and
+		// keeps the real one in the error's data. Only 403, 404 and 410 are
+		// for good: a 429 or a 5xx is a server having a bad moment.
+		if ( 'http_404' === $code ) {
+			$data   = $wp_error->get_error_data();
+			$status = is_array( $data ) ? (int) ( $data['code'] ?? 0 ) : 0;
+			if ( $status > 0 ) {
+				return in_array( $status, array( 403, 404, 410 ), true );
+			}
+		}
+
+		// Timeouts, resets, DNS: worth another attempt. The numbers in the
+		// message used to be matched on their own, so a timeout "after 30403
+		// milliseconds" was taken for a 403 and its photo dropped for good.
+		if ( 'http_request_failed' === $code ) {
+			return false;
+		}
+
 		$message = strtolower( $wp_error->get_error_message() );
 
 		$permanent_patterns = array(
-			'404', '403', '410',
 			'not found', 'forbidden', 'gone',
 			'file is empty', 'invalid url', 'invalid image',
 			'not an accepted', 'could not calculate',

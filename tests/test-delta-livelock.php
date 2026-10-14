@@ -18,6 +18,13 @@
  * in the database, and the fatal is real - a memory limit exhausted inside the
  * product save, as on the shops that wrote in.
  *
+ * Some hosts end a long request without any PHP error - a limit of their own,
+ * enforced from outside PHP. Action Scheduler then goes on counting the action
+ * that request was running as scheduled, for five minutes, and on 3.27.1 the
+ * dying run took that for its own successor and handed nothing on. The queue
+ * here keeps a running action visible the way Action Scheduler does, and
+ * forgets it only when its fatal-error monitor sees a PHP fatal.
+ *
  * Loaded for real: TCGiant_Sync_Importer and TCGiant_Sync_Runtime.
  *
  * @package TCGiant_Sync
@@ -80,14 +87,24 @@ function wp_timezone() { return new DateTimeZone( 'UTC' ); }
 function current_time( $type, $gmt = 0 ) { return gmdate( 'Y-m-d H:i:s' ); }
 function get_gmt_from_date( $d, $f = 'Y-m-d H:i:s' ) { return gmdate( $f, strtotime( $d ) ); }
 
-// Action Scheduler: a queue of [hook, args].
+// Action Scheduler: a queue of [hook, args], and the action being run, which
+// it counts as scheduled until the run is marked finished or failed.
 function as_enqueue_async_action( $hook, $args = array() ) { $q = jload( 'queue', array() ); $q[] = array( $hook, $args ); jsave( 'queue', $q ); return 1; }
 function as_schedule_single_action( $w, $hook, $args = array() ) { return as_enqueue_async_action( $hook, $args ); }
 function as_next_scheduled_action( $hook, $args = null ) {
+	$running = jload( 'running', null );
+	if ( is_array( $running ) && $running[0] === $hook ) { return true; }
 	foreach ( jload( 'queue', array() ) as $a ) {
 		if ( $a[0] === $hook && ( null === $args || $a[1] === $args ) ) { return true; }
 	}
 	return false;
+}
+function as_get_scheduled_actions( $args, $return = 'objects' ) {
+	$found = array();
+	foreach ( jload( 'queue', array() ) as $i => $a ) {
+		if ( $a[0] === ( $args['hook'] ?? '' ) ) { $found[] = $i + 1; }
+	}
+	return 'pending' === ( $args['status'] ?? '' ) ? $found : array();
 }
 function as_unschedule_all_actions( $hook ) { jsave( 'queue', array_values( array_filter( jload( 'queue', array() ), function ( $a ) use ( $hook ) { return $a[0] !== $hook; } ) ) ); }
 
@@ -146,6 +163,12 @@ class TCGiant_Sync_Mapper {
 			// A real, uncatchable fatal: what a host's memory_limit does.
 			ini_set( 'memory_limit', '32M' );
 			$x = str_repeat( 'x', 64 * 1048576 );
+		}
+
+		// A host that ends the request from outside PHP: no error at all,
+		// just the end of the request, shutdown functions and all.
+		if ( in_array( $id, (array) scenario( 'end_always', array() ), true ) ) {
+			exit;
 		}
 
 		$imp = jload( 'imported', array() );
@@ -207,8 +230,18 @@ $q = jload( 'queue', array() );
 $a = array_shift( $q );
 jsave( 'queue', $q );
 if ( $a && 'tcgiant_sync_fetch_delta_events' === $a[0] ) {
+	// Marked running, and only marked failed on a PHP fatal - by Action
+	// Scheduler's monitor on WordPress's shutdown, ahead of the plugin's own.
+	jsave( 'running', $a );
+	register_shutdown_function( function () {
+		$e = error_get_last();
+		if ( is_array( $e ) && in_array( (int) $e['type'], array( E_ERROR, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR ), true ) ) {
+			jsave( 'running', null );
+		}
+	} );
 	$per = jload( 'per_request', array() ); $per[] = 0; jsave( 'per_request', $per );
 	TCGiant_Sync_Importer::instance()->fetch_delta_events();
+	jsave( 'running', null );
 } elseif ( $a && 'tcgiant_sync_settle_item' === $a[0] ) {
 	$s = jload( 'settled', array() ); $s[] = $a[1][0]; jsave( 'settled', $s );
 }
@@ -267,8 +300,9 @@ function hour( $flags = '' ) {
 	}
 }
 
-/** An hour passes. */
+/** An hour passes. Action Scheduler has long since failed a dead action. */
 function an_hour_passes() {
+	jput( 'running', null );
 	$o = jget( 'options', array() );
 	$o['tcgiant_sync_state']['last_activity_ts'] = ( $o['tcgiant_sync_state']['last_activity_ts'] ?? time() ) - 3600;
 	if ( isset( $o['tcgiant_sync_delta_progress']['ts'] ) ) {
@@ -331,6 +365,27 @@ check( '  every listing imported', count( array_intersect( $listings, array_keys
 check( '  none more than once', max( $imp ), 1 );
 check( '  nothing stepped over - each died only once', jget( 'settled', array() ), array() );
 check( '  every death recorded', substr_count( (string) @file_get_contents( $WORLD . '/data/activity.log' ), 'stopped by a PHP fatal error' ), 6 );
+
+echo "\nA HOST THAT ENDS THE REQUEST WITHOUT AN ERROR\n" . str_repeat( '=', 126 ) . "\n";
+
+// What Dobson Parts' host does to a request three minutes in: shutdown runs,
+// error_get_last() is empty, and Action Scheduler still has the action down
+// as running. 3.27.1 saw that as a run already queued and handed nothing on,
+// so each death cost the sync the hour until the next poll.
+$listings = ids( 120 );
+$poison   = $listings[1];
+$from     = stuck_site( array( 'listings' => 120, 'end_always' => array( $poison ) ) );
+hour();
+
+$s   = st();
+$imp = jget( 'imported', array() );
+
+check( 'the window is finished within the hour', $s['status'] ?? '', 'complete' );
+check( '  every other listing imported once', count( array_intersect( array_keys( $imp ), array_diff( $listings, array( $poison ) ) ) ) === 119 && 1 === max( $imp ), true );
+check( '  the listing the host keeps ending is tried twice, then stepped over', log_has( 'stopped 2 times in a row while importing eBay item ' . $poison ), true );
+check( '  each ending is in the log, naming the listing', substr_count( (string) @file_get_contents( $WORLD . '/data/activity.log' ), 'ended without finishing, by exit() or a host limit while working on eBay item ' . $poison ), 2 );
+check( '  it is queued for a stock check of its own', in_array( $poison, jget( 'settled', array() ), true ), true );
+check( '  eBay asked for the window once', stuck_reads(), 1 );
 
 echo "\nA HOST WITH A 30 SECOND LIMIT THAT CANNOT BE RAISED\n" . str_repeat( '=', 126 ) . "\n";
 

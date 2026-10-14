@@ -360,12 +360,21 @@ class TCGiant_Sync_API {
 				|| false !== strpos( $error_str, 'token expired' )
 				|| false !== strpos( $error_str, 'iaf token' );
 
-			if ( $is_token_expired && $allow_retry ) {
-				TCGiant_Sync_Logger::log( sprintf( 'eBay token expired during %s (%s). Refreshing token and retrying...', $call_name, $error_msg ), 'info' );
-				$new_token = TCGiant_Sync_OAuth::instance()->refresh_access_token();
-				if ( $new_token ) {
-					return $this->trading_api_request( $call_name, $xml_body, false, $max_body_bytes );
+			if ( $is_token_expired ) {
+				if ( $allow_retry ) {
+					TCGiant_Sync_Logger::log( sprintf( 'eBay token expired during %s (%s). Refreshing token and retrying...', $call_name, $error_msg ), 'info' );
+					$new_token = TCGiant_Sync_OAuth::instance()->refresh_access_token();
+					if ( $new_token ) {
+						return $this->trading_api_request( $call_name, $xml_body, false, $max_body_bytes );
+					}
 				}
+
+				// eBay will not take the token, and no fresh one could be had.
+				// That says nothing about what was asked for, so it is reported
+				// as no token - which the delta waits out - rather than as an
+				// error about the listing, which it moved past.
+				TCGiant_Sync_Logger::error( sprintf( 'eBay Trading API Error (%s): %s - the eBay token could not be refreshed.', $call_name, is_string( $error_msg ) ? $error_msg : 'token rejected' ) );
+				return new WP_Error( 'no_token', is_string( $error_msg ) ? $error_msg : __( 'No valid eBay token.', 'tcgiant-sync' ), $array );
 			}
 
 			// eBay rate limit error codes:
@@ -666,6 +675,16 @@ class TCGiant_Sync_API {
 	 *
 	 * @param string $item_id The Item ID.
 	 */
+	/**
+	 * eBay's clock: the cheapest call there is, for finding out whether eBay
+	 * answers at all.
+	 *
+	 * @return array|WP_Error
+	 */
+	public function get_official_time() {
+		return $this->trading_api_request( 'GeteBayOfficialTime', '' );
+	}
+
 	public function get_item( $item_id ) {
 		$xml = '
 <ItemID>' . esc_attr( $item_id ) . '</ItemID>

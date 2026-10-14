@@ -183,6 +183,9 @@ $tcgiant_options = array(
 	'tcgiant_sync_delta_window',       // Delta's window kept in brief, 3.27.0.
 	'tcgiant_sync_delta_held',         // Listings the delta stepped over, 3.27.0.
 	'tcgiant_sync_last_crash',         // Last run PHP killed, 3.27.0.
+	'tcgiant_sync_last_crash_delta_sync',      // The same, per job, 3.27.2.
+	'tcgiant_sync_last_crash_full_sync_scan',
+	'tcgiant_sync_last_crash_image_localiser',
 	'tcgiant_sync_jobs',               // Bulk job progress records.
 	'tcgiant_export_state',            // Export state machine.
 	'tcgiant_listings_table_version',

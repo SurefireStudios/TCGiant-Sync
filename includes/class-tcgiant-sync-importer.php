@@ -239,6 +239,23 @@ class TCGiant_Sync_Importer {
 	const DELTA_SLICE_KILLS = 2;
 
 	/**
+	 * Runs in a row the delta may stop on one listing eBay will not hand over
+	 * before it moves past it.
+	 *
+	 * A stop keeps the place and tries again later, because the cause is
+	 * usually eBay or the way to it - a timeout, a token that will not
+	 * refresh, the relay down. A listing that fails this way run after run is
+	 * moved past in the end, so one bad listing cannot hold the sync for good.
+	 * Running out of calls never counts against a listing.
+	 */
+	const DELTA_READ_STOPS = 3;
+
+	/**
+	 * The name the delta is watched under, and its deaths recorded under.
+	 */
+	const DELTA_JOB = 'Delta sync';
+
+	/**
 	 * Share of the memory limit already in use at which a run hands the read
 	 * to a fresh request rather than start it here. Once per window.
 	 */
@@ -343,6 +360,14 @@ class TCGiant_Sync_Importer {
 	 */
 	public static function update_sync_state( $updates ) {
 		$state = self::get_sync_state();
+
+		// When the delta last moved its position, for telling a sync working
+		// through a backlog from one that has stopped.
+		if ( isset( $updates['last_successful_sync_at'] )
+			&& (string) $updates['last_successful_sync_at'] !== (string) ( $state['last_successful_sync_at'] ?? '' ) ) {
+			$updates['delta_moved_at'] = time();
+		}
+
 		$state = array_merge( $state, $updates );
 		$state['last_activity'] = current_time( 'mysql' );
 		// The same moment as a plain timestamp, for working out how long ago it
@@ -615,6 +640,9 @@ class TCGiant_Sync_Importer {
 			'last_item_title'     => '',
 			'rate_limit_retries'  => 0,
 			'scan_complete_clean' => false,
+			'delta_paused_for'    => '',
+			'delta_paused_code'   => '',
+			'delta_paused_until'  => 0,
 		) );
 
 		// Clear active IDs list for pruning orphaned items.
@@ -723,6 +751,9 @@ class TCGiant_Sync_Importer {
 			'delta_window_from'   => '',
 			'delta_window_to'     => '',
 			'delta_chain'         => 0,
+			'delta_paused_for'    => '',
+			'delta_paused_code'   => '',
+			'delta_paused_until'  => 0,
 			// delta_attempt is deliberately kept. It is how the first run of a
 			// restarted sync learns that the last one died reading this window.
 			'last_activity'       => current_time( 'mysql' ),
@@ -876,7 +907,7 @@ class TCGiant_Sync_Importer {
 		// A run PHP kills leaves a line saying how, and on which listing, where
 		// it used to leave nothing at all - the lines that would have said so
 		// were still in the log buffer.
-		TCGiant_Sync_Runtime::watch( 'Delta sync', array( __CLASS__, 'on_delta_death' ) );
+		TCGiant_Sync_Runtime::watch( self::DELTA_JOB, array( __CLASS__, 'on_delta_death' ) );
 
 		try {
 			$this->run_delta_events();
@@ -905,22 +936,17 @@ class TCGiant_Sync_Importer {
 			return;
 		}
 
-		// Not after Emergency Stop, which the dying run may not have seen. Read
-		// from the table itself: this request's cached copy is the one from
-		// before Stop was pressed, and reloading every autoloaded option to
-		// refresh it is too much to ask of a request that has run out of memory.
-		global $wpdb;
-		if ( isset( $wpdb ) && is_object( $wpdb ) && method_exists( $wpdb, 'get_var' ) ) {
-			$raw   = $wpdb->get_var( $wpdb->prepare( "SELECT option_value FROM {$wpdb->options} WHERE option_name = %s LIMIT 1", self::STATE_OPTION ) );
-			$state = is_string( $raw ) ? maybe_unserialize( $raw ) : array();
-		} else {
-			$state = get_option( self::STATE_OPTION, array() );
-		}
-		if ( is_array( $state ) && 'stopped' === ( $state['status'] ?? '' ) ) {
+		// Not after Emergency Stop, which the dying run may not have seen.
+		if ( self::stop_pressed() ) {
 			return;
 		}
 
-		if ( ! self::delta_run_queued() ) {
+		// Pending, not merely queued: Action Scheduler still counts the action
+		// this request was running. When the host ends a request without a
+		// PHP error - a time limit of its own - nothing marks that action
+		// finished for five minutes, so "queued" was true, nothing was handed
+		// on, and the sync sat until the hourly poll found it idle.
+		if ( ! self::delta_run_pending() ) {
 			as_enqueue_async_action( 'tcgiant_sync_fetch_delta_events', array(), self::GROUP_SCAN );
 		}
 	}
@@ -1151,20 +1177,38 @@ class TCGiant_Sync_Importer {
 			$body_bytes = $api->get_last_body_bytes();
 
 			// Answered, one way or another, so this request was not killed reading it.
-			self::update_sync_state( array(
+			$answered = array(
 				'delta_attempt'       => '',
 				'delta_attempt_kills' => 0,
-			) );
+			);
+
+			// Stop pressed while eBay was being read - the slow part of a run.
+			// This request's copy of the state predates it, and writing the
+			// note above into that copy put "scanning" back over the Stop.
+			// The note is cleared in the same write: left behind, the next
+			// run would take the read for one the host had killed.
+			if ( self::stop_pressed() ) {
+				$answered['status'] = 'stopped';
+				self::update_sync_state( $answered );
+				TCGiant_Sync_Logger::log( 'Delta sync stopped as requested. It starts again at the next scheduled sync.' );
+				return;
+			}
+
+			self::update_sync_state( $answered );
 		}
 
 		// Handle rate limiting.
 		if ( is_wp_error( $response ) && 'rate_limited' === $response->get_error_code() ) {
 			$state_for_retry = self::get_sync_state();
-			$retries = (int) ( $state_for_retry['rate_limit_retries'] ?? 0 );
-			$retry_delay = $this->get_rate_limit_backoff_delay( $retries );
+			$paused_code     = self::is_out_of_calls( $response ) ? 'out_of_calls' : 'rate_limited';
+			$retries         = self::pauses_in_a_row( $state_for_retry, $paused_code, false );
+			$retry_delay     = $this->get_rate_limit_backoff_delay( $retries );
 			self::update_sync_state( array(
 				'status'             => 'rate_limited',
 				'rate_limit_retries' => $retries + 1,
+				'delta_paused_for'   => $response->get_error_message(),
+				'delta_paused_code'  => $paused_code,
+				'delta_paused_until' => time() + $retry_delay,
 			) );
 			TCGiant_Sync_Logger::log( sprintf(
 				'eBay API rate limit hit during delta events fetch (attempt %d). Auto-retry in %d minutes.',
@@ -1274,9 +1318,17 @@ class TCGiant_Sync_Importer {
 			// on eBay during an outage — an expired token, a relay problem — fell
 			// into a gap that no later delta sync would ever look at again, and
 			// only a full Fetch Inventory could recover.
+			//
+			// Why, for the notice, when eBay or the way to it was out of
+			// action: a token that has died shows here first on a shop that
+			// is up to date, hour after hour, and the notice had no reason to
+			// give - nor the pointer to reconnect.
+			$passing = self::is_passing_read_failure( $response );
 			self::update_sync_state( array(
-				'status'         => 'complete',
-				'last_completed' => current_time( 'mysql' ),
+				'status'            => 'complete',
+				'last_completed'    => current_time( 'mysql' ),
+				'delta_paused_for'  => $passing ? $response->get_error_message() : '',
+				'delta_paused_code' => $passing ? (string) $response->get_error_code() : '',
 			) );
 			return;
 		}
@@ -1308,6 +1360,7 @@ class TCGiant_Sync_Importer {
 				'last_completed'          => current_time( 'mysql' ),
 				'last_successful_sync_at' => $mod_to,
 				'delta_window_minutes'    => self::next_delta_window_minutes( $window_minutes, $mod_to, 0, $body_bytes, $ceiling ),
+				'rate_limit_retries'      => 0,
 			), $chase ) );
 
 			if ( $chase ) {
@@ -1441,9 +1494,10 @@ class TCGiant_Sync_Importer {
 		// This write is what erased it, so the run went on to queue the next
 		// one as though nobody had pressed anything.
 		$update = array( 'total_found' => $total_items );
-		if ( 'stopped' !== ( self::get_sync_state()['status'] ?? '' ) ) {
-			$update['status'] = 'scanning';
-		}
+		// Written either way: this request's copy of the state may still say
+		// "scanning" from before Stop was pressed, and leaving the status out
+		// wrote that copy's back.
+		$update['status'] = self::stop_pressed() ? 'stopped' : 'scanning';
 		self::update_sync_state( $update );
 
 		TCGiant_Sync_Logger::log( sprintf(
@@ -1457,6 +1511,7 @@ class TCGiant_Sync_Importer {
 		$last_handled = $cursor;
 		$current      = null;
 		$stopped_for  = '';
+		$read_stop    = null;
 
 		foreach ( $items as $ebay_item ) {
 			// The listing before this one is finished, whichever way it went:
@@ -1502,7 +1557,7 @@ class TCGiant_Sync_Importer {
 			// The last listing's answers are done with.
 			unset( $full_response, $product_data, $full_for_filter );
 			if ( $handled > 0 && 0 === $handled % 10 ) {
-				self::release_request_cache();
+				TCGiant_Sync_Runtime::release_memory();
 			}
 
 			try {
@@ -1657,6 +1712,52 @@ class TCGiant_Sync_Importer {
 						$ebay_item = $full_response['Item'];
 						TCGiant_Sync_Logger::log( sprintf( 'Delta fallback: Used GetItem for %s (missing data in events response).', $item_id ) );
 					} else {
+						// eBay, or the way to it, was out of action - which says
+						// nothing about this listing. Moving past it lost its
+						// changes, since nothing reads a finished window again,
+						// and with every call failing a whole window went that
+						// way in seconds. So stop here and keep the place.
+						if ( self::is_passing_read_failure( $full_response ) ) {
+							// Never this listing's doing: out of calls, or no
+							// token to ask with - decided before eBay is asked.
+							$out_of_calls = self::is_out_of_calls( $full_response );
+							$not_its_own  = $out_of_calls || 'no_token' === $full_response->get_error_code();
+							$before       = (string) ( $progress['stop_item'] ?? '' ) === (string) $item_id ? (int) ( $progress['stops'] ?? 0 ) : 0;
+							$stops        = $not_its_own ? $before : $before + 1;
+
+							// A timeout or an eBay error page, run after run, may
+							// be eBay or the way to it being down rather than this
+							// listing. Before blaming the listing, see whether
+							// eBay answers anything at all.
+							if ( ! $not_its_own && $stops >= self::DELTA_READ_STOPS
+								&& self::is_passing_read_failure( TCGiant_Sync_API::instance()->get_official_time() ) ) {
+								$stops = self::DELTA_READ_STOPS - 1;
+							}
+
+							if ( $not_its_own || $stops < self::DELTA_READ_STOPS ) {
+								$read_stop = array(
+									'item'   => (string) $item_id,
+									'stops'  => $stops,
+									'reason' => $full_response->get_error_message(),
+									'code'   => $out_of_calls ? 'out_of_calls' : (string) $full_response->get_error_code(),
+								);
+								// Not handled, so the next run starts with it.
+								$current = null;
+								break;
+							}
+
+							TCGiant_Sync_Logger::error( sprintf(
+								'Delta: eBay item %s could not be read %d runs in a row (%s). Moving past it so the rest can be read. It is queued for a stock check of its own and listed on the Stock Review page.',
+								$item_id,
+								$stops,
+								$full_response->get_error_message()
+							) );
+							self::hold_back_listing( $item_id, $mod_from );
+							self::queue_settle( $item_id );
+							$errors++;
+							continue;
+						}
+
 						$errors++;
 						TCGiant_Sync_Logger::error( sprintf( 'Delta fallback failed for item %s. Skipping.', $item_id ) );
 						continue;
@@ -1738,16 +1839,68 @@ class TCGiant_Sync_Importer {
 			'in_flight' => '',
 			'kills'     => 0,
 			'kill_item' => '',
+			'stops'     => null !== $read_stop ? $read_stop['stops'] : 0,
+			'stop_item' => null !== $read_stop ? $read_stop['item'] : '',
 			'ts'        => time(),
 		) );
 
-		// Log summary.
+		// Log summary. "Complete" only when the window is: it was said after
+		// every batch of forty, so a sync two weeks behind read as finished.
 		$filter_label = $skipped > 0 ? sprintf( ', %d skipped (category filter)', $skipped ) : '';
 		$fallback_label = $fallback_count > 0 ? sprintf( ', %d GetItem fallbacks', $fallback_count ) : '';
 		TCGiant_Sync_Logger::log( sprintf(
-			'Delta sync complete! %d imported, %d errors out of %d modified items%s%s.',
+			$more || null !== $read_stop
+				? 'Delta batch done: %d imported, %d errors out of %d modified items%s%s.'
+				: 'Delta sync complete! %d imported, %d errors out of %d modified items%s%s.',
 			$processed, $errors, $handled, $filter_label, $fallback_label
 		), 'success' );
+
+		// eBay could not be read. Keep the window and the place, stay running
+		// with the next run queued for later - the hourly poll leaves a sync
+		// with a queued run alone - and back off: 15 minutes, doubling to two
+		// hours. Not the "rate_limited" status, whose Resume button starts a
+		// full sync instead.
+		if ( null !== $read_stop ) {
+			self::save_delta_progress( $progress );
+
+			if ( self::stop_pressed() ) {
+				TCGiant_Sync_Logger::log( 'Delta sync stopped as requested. It starts again at the next scheduled sync.' );
+				return;
+			}
+
+			$retries = self::pauses_in_a_row( self::get_sync_state(), $read_stop['code'], $handled > 0 );
+			$delay   = $this->get_rate_limit_backoff_delay( $retries );
+
+			self::update_sync_state( array(
+				'status'             => 'scanning',
+				'rate_limit_retries' => $retries + 1,
+				'delta_offset'       => $done + $handled,
+				'delta_cursor'       => $last_handled,
+				'delta_window_from'  => $mod_from,
+				'delta_window_to'    => $mod_to,
+				'total_found'        => $total_items,
+				'total_processed'    => (int) ( $state['total_processed'] ?? 0 ) + $processed,
+				'total_errors'       => (int) ( $state['total_errors'] ?? 0 ) + $errors,
+				'delta_paused_for'   => $read_stop['reason'],
+				'delta_paused_code'  => $read_stop['code'],
+				'delta_paused_until' => time() + $delay,
+			) );
+
+			TCGiant_Sync_Logger::warning( sprintf(
+				'Delta sync: paused at eBay item %s with %d of %d changed listings done, because eBay could not be read just now (%s). The place is kept and nothing is skipped; it tries again in %d minutes.',
+				$read_stop['item'],
+				$done + $handled,
+				$total_items,
+				$read_stop['reason'],
+				(int) round( $delay / 60 )
+			) );
+
+			if ( ! self::delta_run_pending() ) {
+				as_schedule_single_action( time() + $delay, 'tcgiant_sync_fetch_delta_events', array(), self::GROUP_SCAN );
+			}
+
+			return;
+		}
 
 		if ( '' !== $stopped_for ) {
 			TCGiant_Sync_Logger::log( sprintf(
@@ -1773,15 +1926,19 @@ class TCGiant_Sync_Importer {
 			// The state keeps a copy of the place for a site that goes back to
 			// 3.26 mid-window; the progress option is what this version reads.
 			self::continue_delta( array(
-				'status'            => 'scanning',
-				'delta_offset'      => $done + $handled,
-				'delta_cursor'      => $last_handled,
-				'delta_window_from' => $mod_from,
-				'delta_window_to'   => $mod_to,
-				'total_found'       => $total_items,
-				'total_processed'   => (int) ( $state['total_processed'] ?? 0 ) + $processed,
-				'total_errors'      => (int) ( $state['total_errors'] ?? 0 ) + $errors,
-				'last_activity'     => current_time( 'mysql' ),
+				'status'             => 'scanning',
+				'delta_offset'       => $done + $handled,
+				'delta_cursor'       => $last_handled,
+				'delta_window_from'  => $mod_from,
+				'delta_window_to'    => $mod_to,
+				'total_found'        => $total_items,
+				'total_processed'    => (int) ( $state['total_processed'] ?? 0 ) + $processed,
+				'total_errors'       => (int) ( $state['total_errors'] ?? 0 ) + $errors,
+				'last_activity'      => current_time( 'mysql' ),
+				'rate_limit_retries' => 0,
+				'delta_paused_for'   => '',
+				'delta_paused_code'  => '',
+				'delta_paused_until' => 0,
 			) );
 
 			return;
@@ -1805,6 +1962,10 @@ class TCGiant_Sync_Importer {
 			'last_completed'          => current_time( 'mysql' ),
 			'last_activity'           => current_time( 'mysql' ),
 			'last_successful_sync_at' => $mod_to,
+			'rate_limit_retries'      => 0,
+			'delta_paused_for'        => '',
+			'delta_paused_code'       => '',
+			'delta_paused_until'      => 0,
 		), $chase ) );
 
 		if ( $chase ) {
@@ -2113,22 +2274,6 @@ class TCGiant_Sync_Importer {
 	}
 
 	/**
-	 * Let go of what the object cache has kept in this request.
-	 *
-	 * A persistent object cache keeps a copy of every key a request touches,
-	 * for the rest of that request. Over a long batch of product saves that is
-	 * thousands of keys. The persistent copies are untouched; only this
-	 * request's memory of them goes.
-	 */
-	private static function release_request_cache() {
-		if ( function_exists( 'wp_using_ext_object_cache' ) && wp_using_ext_object_cache()
-			&& function_exists( 'wp_cache_supports' ) && wp_cache_supports( 'flush_runtime' )
-			&& function_exists( 'wp_cache_flush_runtime' ) ) {
-			wp_cache_flush_runtime();
-		}
-	}
-
-	/**
 	 * State that forgets where the sync was inside a window.
 	 *
 	 * Every path that finishes a window or changes its width writes this, so
@@ -2140,11 +2285,38 @@ class TCGiant_Sync_Importer {
 		self::clear_delta_progress();
 
 		return array(
-			'delta_offset'      => 0,
-			'delta_cursor'      => '',
-			'delta_window_from' => '',
-			'delta_window_to'   => '',
+			'delta_offset'       => 0,
+			'delta_cursor'       => '',
+			'delta_window_from'  => '',
+			'delta_window_to'    => '',
+			'delta_paused_for'   => '',
+			'delta_paused_code'  => '',
+			'delta_paused_until' => 0,
 		);
+	}
+
+	/**
+	 * How many pauses in a row came before this one, for the back-off and for
+	 * the notice: only pauses of the same kind, with nothing read between.
+	 *
+	 * Running out of calls is one kind, everything else - a timeout, a token,
+	 * eBay down - the other, so a long wait for the day's calls never makes a
+	 * single timeout afterwards look like an outage. A run that got through
+	 * listings before it paused starts the count again.
+	 *
+	 * @param array  $state    Sync state.
+	 * @param string $code     The kind of pause about to be recorded.
+	 * @param bool   $read_any Whether this run read any listings first.
+	 * @return int
+	 */
+	private static function pauses_in_a_row( array $state, $code, $read_any ) {
+		$before = (string) ( $state['delta_paused_code'] ?? '' );
+
+		if ( $read_any || '' === $before || ( 'out_of_calls' === $before ) !== ( 'out_of_calls' === (string) $code ) ) {
+			return 0;
+		}
+
+		return (int) ( $state['rate_limit_retries'] ?? 0 );
 	}
 
 	/**
@@ -2190,8 +2362,10 @@ class TCGiant_Sync_Importer {
 	 * @param array $updates State to write.
 	 */
 	private static function continue_delta( array $updates ) {
-		if ( 'stopped' === ( self::get_sync_state()['status'] ?? '' ) ) {
-			unset( $updates['status'] );
+		if ( self::stop_pressed() ) {
+			// Said outright: this request's copy of the state may predate the
+			// Stop, and merging into it wrote "scanning" back over it.
+			$updates['status'] = 'stopped';
 			self::update_sync_state( $updates );
 			TCGiant_Sync_Logger::log( 'Delta sync stopped as requested. It starts again at the next scheduled sync.' );
 			return;
@@ -2209,6 +2383,213 @@ class TCGiant_Sync_Importer {
 	private static function delta_run_queued() {
 		return function_exists( 'as_next_scheduled_action' )
 			&& false !== as_next_scheduled_action( 'tcgiant_sync_fetch_delta_events', null, self::GROUP_SCAN );
+	}
+
+	/**
+	 * Whether a delta run is waiting in the queue, not counting one running.
+	 *
+	 * @return bool
+	 */
+	private static function delta_run_pending( $since = null ) {
+		if ( ! function_exists( 'as_get_scheduled_actions' ) ) {
+			return self::delta_run_queued();
+		}
+
+		$query = array(
+			'hook'     => 'tcgiant_sync_fetch_delta_events',
+			'group'    => self::GROUP_SCAN,
+			'status'   => 'pending',
+			'per_page' => 1,
+		);
+
+		// Only one due since then, or due later: a run queued long ago that
+		// the queue never got round to is not a sync that is moving.
+		if ( null !== $since ) {
+			$query['date']         = (int) $since;
+			$query['date_compare'] = '>=';
+		}
+
+		return ! empty( as_get_scheduled_actions( $query, 'ids' ) );
+	}
+
+	/**
+	 * Whether Emergency Stop has been pressed, read from the table.
+	 *
+	 * A run's own copy of the state is the one from when it read it, and a
+	 * Stop pressed since is not in it. Reloading every autoloaded option to
+	 * refresh it is too much to ask - of a request that has run out of memory
+	 * above all - so the one row is read directly.
+	 *
+	 * @return bool
+	 */
+	private static function stop_pressed() {
+		global $wpdb;
+
+		$state = null;
+		if ( isset( $wpdb ) && is_object( $wpdb ) && method_exists( $wpdb, 'get_var' ) && isset( $wpdb->options ) ) {
+			$raw = $wpdb->get_var( $wpdb->prepare( "SELECT option_value FROM {$wpdb->options} WHERE option_name = %s LIMIT 1", self::STATE_OPTION ) );
+			if ( is_string( $raw ) ) {
+				$state = maybe_unserialize( $raw );
+			}
+		}
+
+		if ( ! is_array( $state ) ) {
+			$state = self::get_sync_state();
+		}
+
+		return 'stopped' === ( $state['status'] ?? '' );
+	}
+
+	/**
+	 * Whether a failed eBay read says nothing about the listing asked for:
+	 * out of calls, timed out, no token, the relay or eBay down. Trying again
+	 * later should work.
+	 *
+	 * An error from eBay about the listing itself - ended long ago, not this
+	 * seller's - is not one of these. Waiting would not change it.
+	 *
+	 * @param mixed $error What the call returned.
+	 * @return bool
+	 */
+	private static function is_passing_read_failure( $error ) {
+		return is_wp_error( $error )
+			&& in_array( $error->get_error_code(), array( 'rate_limited', 'no_token', 'http_request_failed', 'invalid_xml' ), true );
+	}
+
+	/**
+	 * Whether a failed call ran into a call allowance - this shop's, every
+	 * shop's together, or eBay's own - rather than anything about the
+	 * listing. eBay's 10007 is reported as a rate limit too, but it is an
+	 * error inside eBay that one listing can keep hitting, so it is not this.
+	 *
+	 * @param mixed $error What the call returned.
+	 * @return bool
+	 */
+	private static function is_out_of_calls( $error ) {
+		if ( ! is_wp_error( $error ) || 'rate_limited' !== $error->get_error_code() ) {
+			return false;
+		}
+
+		$data = $error->get_error_data();
+		if ( ! is_array( $data ) ) {
+			return false;
+		}
+
+		// The plugin's own budget, and eBay's HTTP 429.
+		if ( ! empty( $data['daily_budget'] ) || array_key_exists( 'retry_after', $data ) ) {
+			return true;
+		}
+
+		// eBay's 518, "exceeded the call limit".
+		$errors = $data['Errors'] ?? array();
+		if ( is_array( $errors ) && isset( $errors['ErrorCode'] ) ) {
+			$errors = array( $errors );
+		}
+		foreach ( (array) $errors as $one ) {
+			if ( is_array( $one ) && '518' === (string) ( $one['ErrorCode'] ?? '' ) ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * The shop has just connected to eBay again.
+	 *
+	 * A delta paused because eBay would not take the old token is told so,
+	 * and its next run - which may be two hours off - is brought forward.
+	 * Until then the notice went on saying to reconnect, as though doing it
+	 * had not worked.
+	 */
+	public static function after_reconnect() {
+		$state = self::get_sync_state();
+
+		if ( 'delta' !== ( $state['sync_mode'] ?? '' ) || 'no_token' !== ( $state['delta_paused_code'] ?? '' ) ) {
+			return;
+		}
+
+		self::update_sync_state( array(
+			'rate_limit_retries' => 0,
+			'delta_paused_for'   => '',
+			'delta_paused_code'  => '',
+			'delta_paused_until' => 0,
+		) );
+
+		// Only a run waiting for later; one running now uses the new token
+		// on its next call.
+		if ( 'scanning' === ( $state['status'] ?? '' ) && self::delta_run_pending()
+			&& function_exists( 'as_unschedule_all_actions' ) && function_exists( 'as_enqueue_async_action' ) ) {
+			as_unschedule_all_actions( 'tcgiant_sync_fetch_delta_events', null, self::GROUP_SCAN );
+			as_enqueue_async_action( 'tcgiant_sync_fetch_delta_events', array(), self::GROUP_SCAN );
+		}
+	}
+
+	/**
+	 * Where the delta has got to while it works through a backlog, or null
+	 * when it is not moving.
+	 *
+	 * Moving means a run is waiting in the queue, or the sync did some work
+	 * recently: started a listing, or finished a window. Recently is two sync
+	 * intervals, and never less than an hour, because a sync working through
+	 * a long backlog rests between scheduled syncs once it has read a batch
+	 * of windows.
+	 *
+	 * @return array|null done, total, from (the window being worked through,
+	 *                    or empty between windows), paused_for and
+	 *                    paused_until (a pause because eBay could not be read).
+	 */
+	public static function delta_catch_up() {
+		$state = self::get_sync_state();
+
+		// A Fetch Inventory that is moving brings eBay's listings in too, and
+		// the delta waits for it.
+		if ( 'full' === ( $state['sync_mode'] ?? '' ) ) {
+			$idle   = self::sync_idle_seconds( $state );
+			$moving = in_array( $state['status'] ?? '', array( 'scanning', 'importing' ), true )
+				&& null !== $idle && $idle <= self::SYNC_STALL_MINUTES * MINUTE_IN_SECONDS;
+
+			return $moving ? array( 'done' => 0, 'total' => 0, 'from' => '', 'paused_for' => '', 'paused_until' => 0, 'paused_code' => '' ) : null;
+		}
+
+		if ( 'stopped' === ( $state['status'] ?? '' ) || 'delta' !== ( $state['sync_mode'] ?? '' ) ) {
+			return null;
+		}
+
+		$settings  = get_option( 'tcgiant_sync_ebay_settings', array() );
+		$interval  = is_array( $settings ) && ! empty( $settings['sync_interval'] ) ? $settings['sync_interval'] : 'tcgiant_hourly';
+		$schedules = function_exists( 'wp_get_schedules' ) ? wp_get_schedules() : array();
+		$seconds   = isset( $schedules[ $interval ]['interval'] ) ? (int) $schedules[ $interval ]['interval'] : HOUR_IN_SECONDS;
+		$recent    = max( HOUR_IN_SECONDS, 2 * $seconds );
+
+		$progress  = self::delta_progress();
+		$worked_at = max( (int) ( $progress['ts'] ?? 0 ), (int) ( $state['delta_moved_at'] ?? 0 ) );
+
+		if ( ( time() - $worked_at ) > $recent && ! self::delta_run_pending( time() - $recent ) ) {
+			return null;
+		}
+
+		// Paused three runs in a row - an hour and three quarters - for
+		// anything but the day's calls running out is not a passing outage,
+		// whatever the queue says: a token that will not refresh, say.
+		$paused_code = (string) ( $state['delta_paused_code'] ?? '' );
+		if ( '' !== (string) ( $state['delta_paused_for'] ?? '' ) && 'out_of_calls' !== $paused_code
+			&& (int) ( $state['rate_limit_retries'] ?? 0 ) >= self::DELTA_READ_STOPS ) {
+			return null;
+		}
+
+		$in_window = ! empty( $progress ) && (string) ( $progress['from'] ?? '' ) === (string) ( $state['delta_mod_from'] ?? '' )
+			&& in_array( $state['status'] ?? '', array( 'scanning', 'importing' ), true );
+		$paused    = (int) ( $state['delta_paused_until'] ?? 0 ) > time() ? (string) ( $state['delta_paused_for'] ?? '' ) : '';
+
+		return array(
+			'done'         => $in_window ? (int) ( $progress['done'] ?? 0 ) : 0,
+			'total'        => $in_window ? (int) ( $state['total_found'] ?? 0 ) : 0,
+			'from'         => $in_window ? (string) $progress['from'] : '',
+			'paused_for'   => $paused,
+			'paused_until' => '' !== $paused ? (int) $state['delta_paused_until'] : 0,
+			'paused_code'  => '' !== $paused ? $paused_code : '',
+		);
 	}
 
 	/**
@@ -2266,8 +2647,9 @@ class TCGiant_Sync_Importer {
 		}
 
 		// Stopped while this window was being read. The next scheduled sync
-		// carries on; this one does not.
-		if ( 'stopped' === ( self::get_sync_state()['status'] ?? '' ) ) {
+		// carries on; this one does not. Read from the table: this request's
+		// copy of the state predates the Stop, and chased straight past it.
+		if ( self::stop_pressed() ) {
 			return array();
 		}
 
@@ -2435,6 +2817,9 @@ class TCGiant_Sync_Importer {
 		$pages_this_batch = 0;
 
 		for ( $current_page = $start_page; $pages_this_batch < self::PAGES_PER_BATCH; $current_page++ ) {
+			if ( $pages_this_batch > 0 ) {
+				TCGiant_Sync_Runtime::release_memory();
+			}
 			TCGiant_Sync_Runtime::context( sprintf( 'page %d of %s', $current_page, $total_pages > 0 ? (string) $total_pages : 'an unknown number' ) );
 
 			self::update_sync_state( array(

@@ -70,6 +70,12 @@ class TCGiant_Sync_Runtime {
 	const AFTER_DEATH_HEADROOM = 33554432;
 
 	/**
+	 * The last death of any job. Each job's own is kept beside it, under this
+	 * name and the job's - see crash_option().
+	 */
+	const CRASH_OPTION = 'tcgiant_sync_last_crash';
+
+	/**
 	 * Seconds the last raise_time_limit() secured, or 0 if it could not.
 	 *
 	 * @var int
@@ -264,22 +270,109 @@ class TCGiant_Sync_Runtime {
 	}
 
 	/**
+	 * Hand back memory a long job has no more use for.
+	 *
+	 * Called between items, never inside one. Two things grow with every
+	 * query and cache lookup until the request ends:
+	 *
+	 * - With SAVEQUERIES on, wpdb keeps every query with the call stack that
+	 *   made it. Nothing reads them in a background run.
+	 * - A persistent object cache keeps its own copy of every key the request
+	 *   has touched. Automattic's memcached drop-in (WordPress.com, VIP) also
+	 *   keeps a record of every operation, and a call stack for each one
+	 *   slower than 5 ms - on a busy cache server, a lot of them. A shop on
+	 *   WordPress.com had delta runs die at 512 MB in exactly those two
+	 *   places: the drop-in itself, then wp_debug_backtrace_summary().
+	 *
+	 * The cache is emptied the way the drop-in offers. One that offers no way
+	 * gets the reset WP-CLI gives every drop-in in its long commands: the
+	 * request's own copies go, the stored values stay. WordPress's built-in
+	 * cache, which holds the only copy, is left alone.
+	 */
+	public static function release_memory() {
+		global $wpdb, $wp_object_cache;
+
+		if ( defined( 'SAVEQUERIES' ) && SAVEQUERIES && is_object( $wpdb ) ) {
+			self::empty_public_array( $wpdb, 'queries' );
+		}
+
+		if ( ! function_exists( 'wp_using_ext_object_cache' ) || ! wp_using_ext_object_cache() ) {
+			return;
+		}
+
+		if ( function_exists( 'wp_cache_supports' ) && wp_cache_supports( 'flush_runtime' )
+			&& function_exists( 'wp_cache_flush_runtime' ) ) {
+			wp_cache_flush_runtime();
+			return;
+		}
+
+		if ( is_object( $wp_object_cache ) ) {
+			foreach ( array( 'cache', 'group_ops', 'memcache_debug' ) as $property ) {
+				self::empty_public_array( $wp_object_cache, $property );
+			}
+		}
+	}
+
+	/**
+	 * Empty one array property of an object, if it is public and not empty.
+	 *
+	 * get_object_vars() from here sees public properties only, so a drop-in's
+	 * private state is never touched.
+	 *
+	 * @param object $object   The object.
+	 * @param string $property Property name.
+	 */
+	private static function empty_public_array( $object, $property ) {
+		$vars = get_object_vars( $object );
+		if ( ! isset( $vars[ $property ] ) || ! is_array( $vars[ $property ] ) || array() === $vars[ $property ] ) {
+			return;
+		}
+		unset( $vars );
+
+		try {
+			$object->$property = array();
+		} catch ( \Throwable $e ) {
+			// Read-only. Leave it.
+			unset( $e );
+		}
+	}
+
+	/**
 	 * Why a job should stop starting new work now, or '' to carry on.
 	 *
 	 * @return string
 	 */
 	public static function over_budget() {
-		$elapsed = self::elapsed();
-		$budget  = self::time_budget();
+		$late = self::over_time_budget();
 
-		if ( $elapsed >= $budget ) {
-			return sprintf( '%d s of this request used, of a %d s budget', (int) $elapsed, (int) $budget );
+		if ( '' !== $late ) {
+			return $late;
 		}
 
 		$share = self::memory_share();
 
 		if ( $share >= self::BUDGET_MEMORY_SHARE ) {
 			return sprintf( '%d%% of the memory limit in use', (int) round( $share * 100 ) );
+		}
+
+		return '';
+	}
+
+	/**
+	 * Why a job should stop for time alone, or '' to carry on.
+	 *
+	 * For stopping part way through one item - between the photos of one
+	 * product, say - where memory already in use is the item's own and would
+	 * only be needed again to finish it.
+	 *
+	 * @return string
+	 */
+	public static function over_time_budget() {
+		$elapsed = self::elapsed();
+		$budget  = self::time_budget();
+
+		if ( $elapsed >= $budget ) {
+			return sprintf( '%d s of this request used, of a %d s budget', (int) $elapsed, (int) $budget );
 		}
 
 		return '';
@@ -381,7 +474,8 @@ class TCGiant_Sync_Runtime {
 
 		$error       = self::$death;
 		self::$death = null;
-		$fatal = is_array( $error ) && in_array( (int) $error['type'], array( E_ERROR, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR ), true );
+		// No error at all is an empty array, not one with a type in it.
+		$fatal = is_array( $error ) && isset( $error['type'] ) && in_array( (int) $error['type'], array( E_ERROR, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR ), true );
 
 		if ( $fatal ) {
 			$how = sprintf(
@@ -417,7 +511,53 @@ class TCGiant_Sync_Runtime {
 			call_user_func( $watch['on_death'], $message );
 		}
 
-		self::record_crash( $message );
+		self::record_crash( $message, $watch['job'] );
+	}
+
+	/**
+	 * The last time PHP killed a job, or null if nothing recorded it.
+	 *
+	 * Each job's death is kept apart from the others'. 3.27.0 and 3.27.1 kept
+	 * one record for every job, so a photo download dying on one product every
+	 * quarter of an hour was what "eBay changes are not reaching your shop"
+	 * gave as its reason. A record from then names no job, but its message
+	 * starts with the job's name, which is how it is matched.
+	 *
+	 * @param string $job Job name, as passed to watch().
+	 * @return array|null at, message.
+	 */
+	public static function last_crash( $job ) {
+		$found = null;
+
+		$own = get_option( self::crash_option( $job ), array() );
+		if ( is_array( $own ) && ! empty( $own['at'] ) ) {
+			$found = array( 'at' => (int) $own['at'], 'message' => (string) ( $own['message'] ?? '' ) );
+		}
+
+		// The shared record too, if it is this job's and newer: written alone
+		// by 3.27.0 or 3.27.1, after going back to one of them for a while.
+		$any = get_option( self::CRASH_OPTION, array() );
+		if ( is_array( $any ) && ! empty( $any['at'] ) && isset( $any['message'] ) ) {
+			$theirs = isset( $any['job'] )
+				? (string) $any['job'] === (string) $job
+				: 0 === strpos( (string) $any['message'], $job . ' ' );
+
+			if ( $theirs && ( null === $found || (int) $any['at'] > $found['at'] ) ) {
+				$found = array( 'at' => (int) $any['at'], 'message' => (string) $any['message'] );
+			}
+		}
+
+		return $found;
+	}
+
+	/**
+	 * Where one job's last death is kept.
+	 *
+	 * @param string $job Job name, e.g. "Delta sync".
+	 * @return string E.g. tcgiant_sync_last_crash_delta_sync.
+	 */
+	public static function crash_option( $job ) {
+		return self::CRASH_OPTION . '_' . trim( (string) preg_replace( '/[^a-z0-9]+/', '_', strtolower( (string) $job ) ), '_' );
 	}
 
 	/**
@@ -427,30 +567,46 @@ class TCGiant_Sync_Runtime {
 	 * reloads every autoloaded option to keep its cache in step - on a big site
 	 * a megabyte or more, in a request that has just run out of memory.
 	 *
+	 * Kept twice: as the last death of any job, as 3.27.0 kept it, and as this
+	 * job's own, so that one job dying often cannot hide another's death.
+	 * Each is a whole-row write, with nothing read first, so two jobs dying at
+	 * once cannot lose either's own record.
+	 *
 	 * @param string $message What happened.
+	 * @param string $job     Which job it happened to.
 	 */
-	private static function record_crash( $message ) {
+	private static function record_crash( $message, $job = '' ) {
 		global $wpdb;
+
+		$record = array( 'at' => time(), 'message' => $message, 'job' => (string) $job );
+		$names  = array( self::CRASH_OPTION );
+		if ( '' !== (string) $job ) {
+			$names[] = self::crash_option( $job );
+		}
 
 		if ( ! isset( $wpdb ) || ! is_object( $wpdb ) || ! method_exists( $wpdb, 'replace' ) ) {
 			if ( function_exists( 'update_option' ) ) {
-				update_option( 'tcgiant_sync_last_crash', array( 'at' => time(), 'message' => $message ), false );
+				foreach ( $names as $name ) {
+					update_option( $name, $record, false );
+				}
 			}
 			return;
 		}
 
-		$wpdb->replace(
-			$wpdb->options,
-			array(
-				'option_name'  => 'tcgiant_sync_last_crash',
-				'option_value' => serialize( array( 'at' => time(), 'message' => $message ) ), // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.serialize_serialize
-				'autoload'     => 'no',
-			),
-			array( '%s', '%s', '%s' )
-		);
+		foreach ( $names as $name ) {
+			$wpdb->replace(
+				$wpdb->options,
+				array(
+					'option_name'  => $name,
+					'option_value' => serialize( $record ), // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.serialize_serialize
+					'autoload'     => 'no',
+				),
+				array( '%s', '%s', '%s' )
+			);
 
-		if ( function_exists( 'wp_cache_delete' ) ) {
-			wp_cache_delete( 'tcgiant_sync_last_crash', 'options' );
+			if ( function_exists( 'wp_cache_delete' ) ) {
+				wp_cache_delete( $name, 'options' );
+			}
 		}
 
 		// WordPress remembers options it found missing. Without this, a site
@@ -458,9 +614,8 @@ class TCGiant_Sync_Runtime {
 		// the first death would go on reporting there is none.
 		if ( function_exists( 'wp_cache_get' ) && function_exists( 'wp_cache_set' ) ) {
 			$missing = wp_cache_get( 'notoptions', 'options' );
-			if ( is_array( $missing ) && isset( $missing['tcgiant_sync_last_crash'] ) ) {
-				unset( $missing['tcgiant_sync_last_crash'] );
-				wp_cache_set( 'notoptions', $missing, 'options' );
+			if ( is_array( $missing ) && array_intersect_key( $missing, array_flip( $names ) ) ) {
+				wp_cache_set( 'notoptions', array_diff_key( $missing, array_flip( $names ) ), 'options' );
 			}
 		}
 	}
