@@ -111,6 +111,48 @@ class TCGiant_Sync_Runtime {
 	private static $reserve = '';
 
 	/**
+	 * Object-cache reads between the guard's looks at memory.
+	 */
+	const GUARD_EVERY = 250;
+
+	/**
+	 * Share of the memory limit below which the guard never empties the
+	 * object cache's copies part way through an item.
+	 */
+	const GUARD_MEMORY_SHARE = 0.5;
+
+	/**
+	 * How far an item must have taken memory, as a share of the limit, beyond
+	 * where it began, before the guard empties the cache part way through it.
+	 * A request that is simply heavy - other plugins, a low limit - is not
+	 * the item's doing, and emptying the cache would not change it.
+	 */
+	const GUARD_GROWTH_SHARE = 0.1;
+
+	/**
+	 * Share of the limit an emptying must give back to count as having done
+	 * any good - the mark of copies piling up in the cache.
+	 */
+	const GUARD_FREED_SHARE = 0.05;
+
+	/**
+	 * The cache guard, while on: how deep it is nested, the share it acts at
+	 * for this item and the floor it may not drop below, what it has seen of
+	 * this item, and whether the request is dying.
+	 *
+	 * @var array|null
+	 */
+	private static $guard = null;
+
+	/**
+	 * The memory limit as it was when the request ran out of memory, before
+	 * make_room() raised it.
+	 *
+	 * @var string|null
+	 */
+	private static $limit_at_death = null;
+
+	/**
 	 * Whether the shutdown handler has been registered in this request.
 	 *
 	 * @var bool
@@ -272,7 +314,12 @@ class TCGiant_Sync_Runtime {
 	/**
 	 * Hand back memory a long job has no more use for.
 	 *
-	 * Called between items, never inside one. Two things grow with every
+	 * Called between items - and, by the cache guard (on_cache_read()), from
+	 * inside a wp_cache_get() part way through one. So it only ever drops
+	 * this request's own copies: wpdb's saved queries, and the drop-in's
+	 * cache, group_ops and memcache_debug, or wp_cache_flush_runtime() where
+	 * the drop-in offers it. Never wp_cache_flush(), and nothing here may read
+	 * or write the object cache. Two things grow with every
 	 * query and cache lookup until the request ends:
 	 *
 	 * - With SAVEQUERIES on, wpdb keeps every query with the call stack that
@@ -311,6 +358,151 @@ class TCGiant_Sync_Runtime {
 				self::empty_public_array( $wp_object_cache, $property );
 			}
 		}
+	}
+
+	/**
+	 * Watch the object cache while items are worked on, and empty its copies
+	 * part way through one when the request runs short of memory.
+	 *
+	 * release_memory() runs between items. What it cannot reach is an item
+	 * that fills the request on its own: on a WordPress.com shop each delta
+	 * run died inside the one listing it started, about 100 s and 500 MB in,
+	 * at a point where the memcached drop-in was holding a copy of everything
+	 * read since - which only grows if something reads posts by the thousand,
+	 * as other plugins can when a product is saved. Every read goes through
+	 * the drop-in's pre_wp_cache_get filter, so that is where to look. The
+	 * values themselves stay in memcached; only this request's copies go, as
+	 * WP-CLI drops them in its long commands. Automattic's memcached drop-in
+	 * (WordPress.com, VIP, wp-memcached 4.x) applies that filter; others -
+	 * Redis Object Cache, LiteSpeed, older memcached ones - do not, and there
+	 * the guard stays idle and only the release between items applies.
+	 * Without a persistent object cache there is nothing of this kind to
+	 * empty, and the guard stays off.
+	 */
+	public static function guard_cache() {
+		if ( null !== self::$guard ) {
+			self::$guard['depth']++;
+			return;
+		}
+
+		if ( ! function_exists( 'add_filter' ) || ! function_exists( 'wp_using_ext_object_cache' ) || ! wp_using_ext_object_cache() ) {
+			return;
+		}
+
+		self::$guard = array(
+			'depth'    => 1,
+			'reads'    => 0,
+			'releases' => 0,
+			'freed'    => 0,
+			'floor'    => self::GUARD_MEMORY_SHARE,
+			'at'       => self::GUARD_MEMORY_SHARE,
+			'frozen'   => false,
+		);
+		self::guard_from_here();
+		add_filter( 'pre_wp_cache_get', array( __CLASS__, 'on_cache_read' ), PHP_INT_MAX );
+	}
+
+	/**
+	 * Measure the item's starting point: the guard acts only once memory has
+	 * grown well past it, and never below half the limit.
+	 */
+	private static function guard_from_here() {
+		if ( null === self::$guard ) {
+			return;
+		}
+
+		self::$guard['floor'] = max( self::GUARD_MEMORY_SHARE, self::memory_share() + self::GUARD_GROWTH_SHARE );
+		self::$guard['at']    = self::$guard['floor'];
+	}
+
+	/**
+	 * Stop watching the object cache - once whoever else turned it on has
+	 * finished too.
+	 */
+	public static function unguard_cache() {
+		if ( null === self::$guard ) {
+			return;
+		}
+
+		if ( --self::$guard['depth'] > 0 ) {
+			return;
+		}
+
+		self::$guard = null;
+		if ( function_exists( 'remove_filter' ) ) {
+			remove_filter( 'pre_wp_cache_get', array( __CLASS__, 'on_cache_read' ), PHP_INT_MAX );
+		}
+	}
+
+	/**
+	 * What the guard has seen since it was last asked - reads, how often it
+	 * emptied the cache, and how many bytes that gave back - and start
+	 * counting again.
+	 *
+	 * @return array reads, releases, freed (bytes).
+	 */
+	public static function cache_guard_take() {
+		if ( null === self::$guard ) {
+			return array( 'reads' => 0, 'releases' => 0, 'freed' => 0 );
+		}
+
+		$seen = array(
+			'reads'    => self::$guard['reads'],
+			'releases' => self::$guard['releases'],
+			'freed'    => self::$guard['freed'],
+		);
+
+		self::$guard['reads']    = 0;
+		self::$guard['releases'] = 0;
+		self::$guard['freed']    = 0;
+
+		return $seen;
+	}
+
+	/**
+	 * pre_wp_cache_get: count, and now and then look at memory. The value is
+	 * passed on untouched - this never answers a read.
+	 *
+	 * @param mixed $value What earlier filters made of the read.
+	 * @return mixed
+	 */
+	public static function on_cache_read( $value ) {
+		if ( null === self::$guard || self::$guard['frozen'] ) {
+			return $value;
+		}
+
+		self::$guard['reads']++;
+		if ( 0 !== self::$guard['reads'] % self::GUARD_EVERY ) {
+			return $value;
+		}
+
+		// A request that has died is reading on its way out - WordPress's own
+		// fatal error handler runs before anything of the plugin's. What the
+		// cache holds now is what the record of the death needs to count.
+		$error = error_get_last();
+		if ( is_array( $error ) && in_array( (int) $error['type'], array( E_ERROR, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR ), true ) ) {
+			self::$guard['frozen'] = true;
+			return $value;
+		}
+
+		if ( self::memory_share() >= self::$guard['at'] ) {
+			$before = self::memory_used();
+			self::release_memory();
+			$after = self::memory_used();
+
+			self::$guard['releases']++;
+			$limit = self::memory_limit();
+			if ( $limit > 0 && ( $before - $after ) >= self::GUARD_FREED_SHARE * $limit ) {
+				self::$guard['freed'] += $before - $after;
+			}
+
+			// Not again until memory has grown that far once more - from
+			// here, if emptying did not bring it down: the memory is held
+			// somewhere else, and emptying again would only slow the item.
+			self::$guard['at'] = max( self::$guard['floor'], self::memory_share() + self::GUARD_GROWTH_SHARE );
+		}
+
+		return $value;
 	}
 
 	/**
@@ -391,6 +583,9 @@ class TCGiant_Sync_Runtime {
 		self::$watch = array(
 			'job'      => (string) $job,
 			'context'  => '',
+			'stage'    => '',
+			'began_at' => null,
+			'began_mb' => null,
 			'on_death' => $on_death,
 		);
 
@@ -428,11 +623,20 @@ class TCGiant_Sync_Runtime {
 			self::$death = is_array( $error ) ? $error : array();
 		}
 
+		// The request is on its way out: the cache guard must not empty what
+		// the record of a death is about to count.
+		if ( null !== self::$guard ) {
+			self::$guard['frozen'] = true;
+		}
+
 		$error = self::$death;
-		if ( isset( $error['type'], $error['message'] ) && E_ERROR === (int) $error['type'] && false !== strpos( (string) $error['message'], 'Allowed memory size' )
+		if ( null === self::$limit_at_death && isset( $error['type'], $error['message'] ) && E_ERROR === (int) $error['type'] && false !== strpos( (string) $error['message'], 'Allowed memory size' )
 			&& function_exists( 'ini_set' ) && ! self::is_disabled( 'ini_set' ) ) {
 			$limit = self::memory_limit();
 			if ( $limit > 0 ) {
+				// Once: this runs from the shutdown action and again from
+				// on_shutdown(). The record gives the limit that was reached.
+				self::$limit_at_death = (string) ini_get( 'memory_limit' );
 				@ini_set( 'memory_limit', (string) ( $limit + self::AFTER_DEATH_HEADROOM ) ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.PHP.IniSet.Risky
 			}
 		}
@@ -445,8 +649,61 @@ class TCGiant_Sync_Runtime {
 	 */
 	public static function context( $context ) {
 		if ( null !== self::$watch ) {
-			self::$watch['context'] = (string) $context;
+			$named                   = '' !== (string) $context;
+			self::$watch['context']  = (string) $context;
+			self::$watch['stage']    = '';
+			self::$watch['began_at'] = $named ? self::elapsed() : null;
+			self::$watch['began_mb'] = $named ? (int) round( memory_get_usage() / 1048576 ) : null;
 		}
+
+		self::guard_from_here();
+	}
+
+	/**
+	 * Say which step of the current item the job is on: if PHP kills it, the
+	 * record names the step, and what memory and time the item began with.
+	 * A death in one listing used to say only which listing - not whether it
+	 * was eBay's answer, the product save, or something else hooked into it.
+	 *
+	 * @param string $stage E.g. "saving the product".
+	 */
+	public static function stage( $stage ) {
+		if ( null !== self::$watch ) {
+			self::$watch['stage'] = (string) $stage;
+		}
+	}
+
+	/**
+	 * Tell Action Scheduler to claim nothing more in this queue run.
+	 *
+	 * A job that stops for memory hands on to a fresh request by queueing its
+	 * next run; the runner otherwise goes on claiming actions in this same,
+	 * heavy request - that next run among them - until its own, looser limit
+	 * of 90% is reached. Other actions it had claimed wait for the next queue
+	 * run, as they would after any batch the runner ends early.
+	 */
+	public static function end_queue_runs() {
+		if ( ! function_exists( 'add_filter' ) ) {
+			return;
+		}
+
+		add_filter( 'action_scheduler_memory_exceeded', '__return_true' );
+		add_filter( 'action_scheduler_maximum_execution_time_likely_to_be_exceeded', '__return_true' );
+		add_action( 'action_scheduler_after_process_queue', array( __CLASS__, 'resume_queue_runs' ) );
+	}
+
+	/**
+	 * The queue run end_queue_runs() ended is over: a later one in this
+	 * process is not held to it.
+	 */
+	public static function resume_queue_runs() {
+		if ( ! function_exists( 'remove_filter' ) ) {
+			return;
+		}
+
+		remove_filter( 'action_scheduler_memory_exceeded', '__return_true' );
+		remove_filter( 'action_scheduler_maximum_execution_time_likely_to_be_exceeded', '__return_true' );
+		remove_action( 'action_scheduler_after_process_queue', array( __CLASS__, 'resume_queue_runs' ) );
 	}
 
 	/**
@@ -474,6 +731,8 @@ class TCGiant_Sync_Runtime {
 
 		$error       = self::$death;
 		self::$death = null;
+		$limit_was   = null !== self::$limit_at_death ? self::$limit_at_death : (string) ini_get( 'memory_limit' );
+		self::$limit_at_death = null;
 		// No error at all is an empty array, not one with a type in it.
 		$fatal = is_array( $error ) && isset( $error['type'] ) && in_array( (int) $error['type'], array( E_ERROR, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR ), true );
 
@@ -489,14 +748,16 @@ class TCGiant_Sync_Runtime {
 		}
 
 		$message = sprintf(
-			'%s %s%s. %d s into the request; memory peak %d MB of %s; time limit %d s.',
+			'%s %s%s%s. %d s into the request; memory peak %d MB of %s; time limit %d s.%s',
 			$watch['job'],
 			$how,
 			'' !== $watch['context'] ? ' while working on ' . $watch['context'] : '',
+			'' !== $watch['stage'] ? ' - ' . $watch['stage'] : '',
 			(int) self::elapsed(),
 			(int) round( memory_get_peak_usage() / 1048576 ),
-			(string) ini_get( 'memory_limit' ),
-			self::effective_time_limit()
+			$limit_was,
+			self::effective_time_limit(),
+			self::death_detail( $watch )
 		);
 
 		// The line first: an append to a file, and the one thing that must
@@ -512,6 +773,53 @@ class TCGiant_Sync_Runtime {
 		}
 
 		self::record_crash( $message, $watch['job'] );
+	}
+
+	/**
+	 * What else the record of a death needs to say where the memory or time
+	 * went: when the item began, which WordPress hooks were running - another
+	 * plugin's work on a product save shows here - and what the object cache
+	 * was holding. Counting allocates nothing, so this is safe after running
+	 * out of memory.
+	 *
+	 * @param array $watch The watched job.
+	 * @return string '' or a sentence, with a leading space.
+	 */
+	private static function death_detail( array $watch ) {
+		global $wp_current_filter, $wp_object_cache;
+
+		$parts = array();
+
+		if ( null !== $watch['began_at'] ) {
+			$parts[] = sprintf( 'the item began %d s into the request, at %d MB', (int) $watch['began_at'], (int) $watch['began_mb'] );
+		}
+
+		// What WordPress was running when it stopped. The shutdown action has
+		// been and gone by now; what it left is the stack at the time of death.
+		$hooks = is_array( $wp_current_filter ) ? array_values( array_diff( $wp_current_filter, array( 'shutdown' ) ) ) : array();
+		if ( $hooks ) {
+			$parts[] = 'WordPress hooks running: ' . implode( ' > ', array_slice( $hooks, -6 ) );
+		}
+
+		if ( is_object( $wp_object_cache ) ) {
+			$vars  = get_object_vars( $wp_object_cache );
+			$held  = isset( $vars['cache'] ) && is_array( $vars['cache'] ) ? count( $vars['cache'] ) : null;
+			$ops   = 0;
+			$kinds = isset( $vars['group_ops'] ) && is_array( $vars['group_ops'] ) ? $vars['group_ops'] : array();
+			foreach ( $kinds as $list ) {
+				$ops += is_array( $list ) ? count( $list ) : 0;
+			}
+			unset( $vars, $kinds );
+			if ( null !== $held ) {
+				$parts[] = sprintf( 'object cache holding %d keys, %d operations recorded', $held, $ops );
+			}
+		}
+
+		if ( null !== self::$guard && self::$guard['reads'] > 0 && null !== $watch['began_at'] ) {
+			$parts[] = sprintf( '%d object-cache reads during the item, the cache emptied %d time(s)', self::$guard['reads'], self::$guard['releases'] );
+		}
+
+		return $parts ? ' (' . implode( '; ', $parts ) . '.)' : '';
 	}
 
 	/**

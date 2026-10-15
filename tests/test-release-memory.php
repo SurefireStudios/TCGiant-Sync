@@ -239,8 +239,12 @@ echo "\nEVERY LONG JOB RELEASES BETWEEN ITEMS\n" . str_repeat( '=', 124 ) . "\n"
 $importer  = file_get_contents( $ROOT . '/includes/class-tcgiant-sync-importer.php' );
 $localizer = file_get_contents( $ROOT . '/includes/class-tcgiant-sync-image-localizer.php' );
 
-$delta = substr( $importer, strpos( $importer, "'eBay item %s (%d of %d in the changes from %s)'" ), 1200 );
-check( 'the delta, every ten listings', false !== strpos( $delta, "if ( \$handled > 0 && 0 === \$handled % 10 ) {\n\t\t\t\tTCGiant_Sync_Runtime::release_memory();" ), true );
+// Before every listing, the first included: Jon's runs died on the first
+// listing each, so a release every tenth never ran (3.27.3).
+$loop  = substr( $importer, strpos( $importer, 'foreach ( $items as $ebay_item ) {' ), 2600 );
+$first = strpos( $loop, 'TCGiant_Sync_Runtime::release_memory();' );
+check( 'the delta, before every listing', false !== $first && $first < strpos( $loop, 'if ( $handled > 0 ) {' ), true );
+check( '  not only every tenth', false === strpos( $importer, '0 === $handled % 10' ), true );
 check( '  and its old flush-only helper is gone', false === strpos( $importer, 'release_request_cache' ), true );
 
 $scan = substr( $importer, strpos( $importer, 'for ( $current_page = $start_page;' ), 400 );

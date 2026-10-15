@@ -966,11 +966,14 @@ class TCGiant_Sync_Mapper {
 		TCGiant_Sync_Inventory::begin_ebay_origin();
 
 		try {
+			TCGiant_Sync_Runtime::stage( 'WooCommerce saving the product, with everything hooked to that' );
 			$saved_id = $product->save();
 
 			if ( $is_variable && $saved_id ) {
+				TCGiant_Sync_Runtime::stage( 'saving its variations' );
 				$this->save_variations( $saved_id, $product_data['variations'] );
 			}
+			TCGiant_Sync_Runtime::stage( 'after saving the product' );
 		} finally {
 			TCGiant_Sync_Inventory::end_ebay_origin();
 		}

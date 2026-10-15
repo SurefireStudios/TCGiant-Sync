@@ -908,10 +908,12 @@ class TCGiant_Sync_Importer {
 		// it used to leave nothing at all - the lines that would have said so
 		// were still in the log buffer.
 		TCGiant_Sync_Runtime::watch( self::DELTA_JOB, array( __CLASS__, 'on_delta_death' ) );
+		TCGiant_Sync_Runtime::guard_cache();
 
 		try {
 			$this->run_delta_events();
 		} finally {
+			TCGiant_Sync_Runtime::unguard_cache();
 			TCGiant_Sync_Runtime::unwatch();
 			self::$slice_in_flight = false;
 			self::release_lock();
@@ -1511,7 +1513,11 @@ class TCGiant_Sync_Importer {
 		$last_handled = $cursor;
 		$current      = null;
 		$stopped_for  = '';
+		$memory_stop  = false;
 		$read_stop    = null;
+
+		// Reading the window is not the first listing's doing.
+		TCGiant_Sync_Runtime::cache_guard_take();
 
 		foreach ( $items as $ebay_item ) {
 			// The listing before this one is finished, whichever way it went:
@@ -1521,8 +1527,15 @@ class TCGiant_Sync_Importer {
 					$last_handled = $current;
 				}
 				$handled++;
+				self::report_cache_guard( $current );
 				$current = null;
 			}
+
+			// The last listing's answers, and what the object cache kept of
+			// it, are done with - before every listing, not every tenth. A run
+			// that died on its first listing never got to release anything.
+			unset( $full_response, $product_data, $full_for_filter );
+			TCGiant_Sync_Runtime::release_memory();
 
 			// Stop starting listings well short of whatever this host allows,
 			// and hand the rest to a fresh request - rather than run on until
@@ -1531,6 +1544,7 @@ class TCGiant_Sync_Importer {
 			if ( $handled > 0 ) {
 				$stopped_for = TCGiant_Sync_Runtime::over_budget();
 				if ( '' !== $stopped_for ) {
+					$memory_stop = '' === TCGiant_Sync_Runtime::over_time_budget();
 					break;
 				}
 			}
@@ -1553,12 +1567,6 @@ class TCGiant_Sync_Importer {
 				$mod_from
 			) );
 			self::$slice_in_flight = true;
-
-			// The last listing's answers are done with.
-			unset( $full_response, $product_data, $full_for_filter );
-			if ( $handled > 0 && 0 === $handled % 10 ) {
-				TCGiant_Sync_Runtime::release_memory();
-			}
 
 			try {
 				// License check.
@@ -1617,6 +1625,7 @@ class TCGiant_Sync_Importer {
 					// judge by; an item that did arrive with categories is filtered
 					// as before, at no extra cost.
 					if ( '' === (string) $primary_cat && '' === (string) $store_cat1 && '' === (string) $store_cat2 ) {
+						TCGiant_Sync_Runtime::stage( 'asking eBay for its category (GetItem)' );
 						$full_for_filter = TCGiant_Sync_API::instance()->get_item( $item_id );
 						if ( ! is_wp_error( $full_for_filter ) && isset( $full_for_filter['Item'] ) ) {
 							$ebay_item   = $full_for_filter['Item'];
@@ -1707,6 +1716,7 @@ class TCGiant_Sync_Importer {
 				if ( $needs_fallback ) {
 					$fallback_count++;
 					$api = TCGiant_Sync_API::instance();
+					TCGiant_Sync_Runtime::stage( 'asking eBay for the listing (GetItem)' );
 					$full_response = $api->get_item( $item_id );
 					if ( ! is_wp_error( $full_response ) && isset( $full_response['Item'] ) ) {
 						$ebay_item = $full_response['Item'];
@@ -1781,7 +1791,9 @@ class TCGiant_Sync_Importer {
 
 				// Map and save — same flow as process_item_import but without the GetItem call.
 				$title = $ebay_item['Title'] ?? 'Unknown';
+				TCGiant_Sync_Runtime::stage( 'reading eBay\'s answer into a product' );
 				$product_data = $mapper->map_ebay_to_woo( $ebay_item );
+				TCGiant_Sync_Runtime::stage( 'saving the product' );
 				$product_id = $mapper->save_as_product( $product_data );
 
 				if ( $product_id ) {
@@ -1796,8 +1808,10 @@ class TCGiant_Sync_Importer {
 
 					// Set external eBay image URLs — localized in background.
 					if ( ! empty( $product_data['images'] ) ) {
+						TCGiant_Sync_Runtime::stage( 'setting its photos' );
 						TCGiant_Sync_Image_Localizer::set_external_images( $product_id, $product_data['images'] );
 					}
+					TCGiant_Sync_Runtime::stage( 'after the listing' );
 					$processed++;
 
 					$price_display = ! empty( $product_data['price'] ) ? '$' . $product_data['price'] : 'No price';
@@ -1827,6 +1841,7 @@ class TCGiant_Sync_Importer {
 				$last_handled = $current;
 			}
 			$handled++;
+			self::report_cache_guard( $current );
 		}
 
 		self::$slice_in_flight = false;
@@ -1908,6 +1923,14 @@ class TCGiant_Sync_Importer {
 				$handled,
 				$stopped_for
 			) );
+
+			// The next run is queued below. Picked up by the queue runner in
+			// this same request, it would start where this one stopped: short
+			// of memory. A stop for time needs nothing: the runner's own time
+			// limit has ended its batch by now.
+			if ( $memory_stop ) {
+				TCGiant_Sync_Runtime::end_queue_runs();
+			}
 		}
 
 		// More of this window still to go: record where we got to, keep the sync
@@ -2352,6 +2375,28 @@ class TCGiant_Sync_Importer {
 	}
 
 	/**
+	 * Say so when the cache guard had to empty the object cache part way
+	 * through a listing: the memory went into something reading posts by the
+	 * thousand while the product was saved, which the shop can look for.
+	 *
+	 * @param string $item_id The listing just finished.
+	 */
+	private static function report_cache_guard( $item_id, $source = 'Delta' ) {
+		$seen = TCGiant_Sync_Runtime::cache_guard_take();
+		if ( '' === (string) $item_id || $seen['freed'] <= 0 ) {
+			return;
+		}
+
+		TCGiant_Sync_Logger::warning( sprintf(
+			'%s: eBay item %s - memory ran short while this listing was saved, and emptying the object cache\'s copies part way through gave back %d MB (%d cache reads; one listing on its own makes a few hundred). Something on this site reads posts by the thousand when a product is saved - another plugin, usually.',
+			$source,
+			$item_id,
+			(int) round( $seen['freed'] / 1048576 ),
+			$seen['reads']
+		) );
+	}
+
+	/**
 	 * Record where the delta sync has got to and queue its next run - unless
 	 * it has been stopped in the meantime.
 	 *
@@ -2782,10 +2827,13 @@ class TCGiant_Sync_Importer {
 	public function scan_all_pages() {
 		// A batch PHP kills leaves a line saying how, and on which page.
 		TCGiant_Sync_Runtime::watch( 'Full sync scan' );
+		// Its listings are saved here too, as the delta's are.
+		TCGiant_Sync_Runtime::guard_cache();
 
 		try {
 			$this->run_scan_all_pages();
 		} finally {
+			TCGiant_Sync_Runtime::unguard_cache();
 			TCGiant_Sync_Runtime::unwatch();
 		}
 	}
@@ -3022,12 +3070,21 @@ class TCGiant_Sync_Importer {
 		$inline_processed = 0;
 		$inline_errors = 0;
 
+		$scan_last = '';
+
 		foreach ( $items as $item ) {
 			$item_id = $item['ItemID'] ?? '';
 
 			if ( empty( $item_id ) ) {
 				continue;
 			}
+
+			// Each listing its own item: the cache guard measures from its
+			// start, and a death names it and its step.
+			self::report_cache_guard( $scan_last, 'Full sync' );
+			$scan_last = (string) $item_id;
+			TCGiant_Sync_Runtime::release_memory();
+			TCGiant_Sync_Runtime::context( sprintf( 'eBay item %s (page %d of %s)', $item_id, $page_number, $total_pages > 0 ? (string) $total_pages : 'an unknown number' ) );
 
 			$active_ids_batch[] = $item_id;
 
@@ -3135,6 +3192,8 @@ class TCGiant_Sync_Importer {
 				$queued_count++;
 			}
 		}
+		self::report_cache_guard( $scan_last, 'Full sync' );
+		TCGiant_Sync_Runtime::context( sprintf( 'page %d of %s', $page_number, $total_pages > 0 ? (string) $total_pages : 'an unknown number' ) );
 
 		self::append_active_ids( $active_ids_batch );
 
@@ -3280,6 +3339,8 @@ class TCGiant_Sync_Importer {
 	 * @return bool Whether a GetItem call was needed for the figures.
 	 */
 	private static function settle_ended_listing( $existing_id, array $ebay_item, $listing_status, $source ) {
+		TCGiant_Sync_Runtime::stage( 'settling the ended listing\'s stock' );
+
 		$existing_id = (int) $existing_id;
 		$item_id     = (string) ( $ebay_item['ItemID'] ?? '' );
 		$used_get    = false;
@@ -3625,8 +3686,17 @@ class TCGiant_Sync_Importer {
 
 			$mapper = TCGiant_Sync_Mapper::instance();
 			$product_data = $mapper->map_ebay_to_woo( $ebay_item );
-			
-			$product_id = $mapper->save_as_product( $product_data );
+
+			// The same save as the delta's, with the same guard on the object
+			// cache while it runs.
+			TCGiant_Sync_Runtime::release_memory();
+			TCGiant_Sync_Runtime::guard_cache();
+			try {
+				$product_id = $mapper->save_as_product( $product_data );
+			} finally {
+				self::report_cache_guard( (string) $item_id, 'Import' );
+				TCGiant_Sync_Runtime::unguard_cache();
+			}
 
 			if ( $product_id ) {
 				// Append variation images to the download queue

@@ -4,6 +4,7 @@
 # The class and file are deliberately absent: moving a registration between
 # classes must not fail the check, losing one must.
 
+add_action   action_scheduler_after_process_queue => resume_queue_runs
 add_action   added_post_meta => mirror_meta_to_row
 add_action   admin_enqueue_scripts => enqueue_admin_assets
 add_action   admin_footer-edit.php => render_product_list_inline_assets
@@ -103,6 +104,8 @@ add_action   wp_ajax_tcgiant_sync_status => ajax_sync_status
 add_action   wp_ajax_tcgiant_test_connection => ajax_test_connection
 add_action   wp_ajax_tcgiant_unlink_ebay => ajax_unlink_ebay
 add_action   wp_ajax_tcgiant_verify_product => ajax_verify_product
+add_filter   action_scheduler_maximum_execution_time_likely_to_be_exceeded => __return_true
+add_filter   action_scheduler_memory_exceeded => __return_true
 add_filter   bulk_actions-edit-product => register_bulk_push_action
 add_filter   cron_schedules => add_cron_intervals
 add_filter   handle_bulk_actions-edit-product => handle_bulk_push_action
@@ -111,6 +114,7 @@ add_filter   manage_edit-product_columns => add_ebay_column
 add_filter   manage_edit-product_sortable_columns => make_ebay_column_sortable
 add_filter   manage_edit-shop_order_columns => add_order_ebay_column
 add_filter   manage_woocommerce_page_wc-orders_columns => add_order_ebay_column
+add_filter   pre_wp_cache_get => on_cache_read
 add_filter   woocommerce_can_reduce_order_stock => block_double_reduction
 add_filter   woocommerce_duplicate_product_exclude_meta => duplicate_exclude_meta
 add_filter   woocommerce_product_data_tabs => add_sync_log_tab

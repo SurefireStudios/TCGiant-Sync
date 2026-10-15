@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.27.2
+Stable tag: 3.27.3
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,13 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.27.3 - 2026-10-14 =
+**Syncs dying inside a single listing on WordPress.com**
+* FIX: On WordPress.com (and other hosts on Automattic's memcached object cache), every sync run could die inside the first listing it started, at the memory limit. Something on the site read thousands of posts while that listing's product was saved, and the cache kept a copy of each until the request ended. The sync now watches the cache while it imports, and when one listing has taken memory well past where it started and past half the limit, it empties those copies part way through. The values stored in memcached are untouched. The log says when that gave memory back, and on which listing.
+* FIX: Any persistent object cache's copies are now released before every listing, the first included, not every tenth - in Fetch Inventory too.
+* A run that stops because memory is running short no longer has its next run picked up in the same request.
+* The log line written when a run is killed now says which step of the listing it was on, when the listing began and at what memory, which WordPress hooks were running, and what the object cache held.
 
 = 3.27.2 - 2026-10-13 =
 **A sync working through a backlog keeps going, and says so**
