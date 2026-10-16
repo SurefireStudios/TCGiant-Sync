@@ -407,6 +407,7 @@ class TCGiant_Sync_Cron {
 		'tcgiant_sync_poll_ebay_cron',
 		'tcgiant_sync_import_orders',
 		'tcgiant_sync_check_ended_listings',
+		'tcgiant_sync_photo_cleanup',
 	);
 
 	/**
@@ -562,6 +563,7 @@ class TCGiant_Sync_Cron {
 			'tcgiant_sync_poll_ebay_cron'       => __( 'ran the scheduled eBay sync', 'tcgiant-sync' ),
 			'tcgiant_sync_import_orders'        => __( 'imported eBay orders', 'tcgiant-sync' ),
 			'tcgiant_sync_check_ended_listings' => __( 'checked for ended listings', 'tcgiant-sync' ),
+			'tcgiant_sync_photo_cleanup'        => __( 'removed photos of deleted products', 'tcgiant-sync' ),
 		);
 		return $labels[ $hook ] ?? $hook;
 	}
@@ -893,7 +895,7 @@ class TCGiant_Sync_Cron {
 		}
 
 		TCGiant_Sync_Logger::log( sprintf(
-			'Auto-Relist: Complete. %d relisted, %d not relisted (no stock, sold out on eBay, or already live).',
+			'Auto-Relist: Complete. %d relisted, %d not relisted (no stock, sold out on eBay, already live, or its last push is still under way or did not finish).',
 			$relisted, $skipped
 		), $relisted > 0 ? 'success' : 'info' );
 	}
@@ -957,5 +959,6 @@ class TCGiant_Sync_Cron {
 		wp_clear_scheduled_hook( 'tcgiant_sync_import_orders' );
 		wp_clear_scheduled_hook( 'tcgiant_sync_scan_resume' );
 		TCGiant_Sync_Image_Localizer::deactivate();
+		TCGiant_Sync_Photo_Cleanup::deactivate();
 	}
 }

@@ -4,7 +4,7 @@
  * Plugin URI:  https://github.com/SurefireStudios/TCGiant-Sync
  * Update URI:  https://github.com/SurefireStudios/TCGiant-Sync
  * Description: Sync your eBay store to WooCommerce — import listings, images, and inventory with automated stock updates.
- * Version:     3.27.3
+ * Version:     3.27.4
  * Author:      TCGiant Team
  * Author URI:  https://surefirestudios.io
  * Text Domain: tcgiant-sync
@@ -62,7 +62,7 @@ if ( defined( 'TCGIANT_SYNC_VERSION' ) ) {
 }
 
 // Define constants.
-define('TCGIANT_SYNC_VERSION', '3.27.3');
+define('TCGIANT_SYNC_VERSION', '3.27.4');
 define('TCGIANT_SYNC_FILE', __FILE__);
 define('TCGIANT_SYNC_PATH', plugin_dir_path(__FILE__));
 define('TCGIANT_SYNC_URL', plugin_dir_url(__FILE__));
@@ -161,6 +161,12 @@ if ( ! function_exists( 'tcgiant_sync_deactivate' ) ) {
 	function tcgiant_sync_deactivate()
 	{
 		require_once TCGIANT_SYNC_PATH . 'includes/class-tcgiant-sync-cron.php';
+		// The cron's deactivate() clears these two's schedules through their
+		// classes. With WooCommerce inactive, tcgiant_sync_init() stopped
+		// before the autoloader was registered, and naming either was a fatal
+		// error: the plugin stayed active, and both schedules stayed.
+		require_once TCGIANT_SYNC_PATH . 'includes/class-tcgiant-sync-image-localizer.php';
+		require_once TCGIANT_SYNC_PATH . 'includes/class-tcgiant-sync-photo-cleanup.php';
 		TCGiant_Sync_Cron::deactivate();
 	}
 }

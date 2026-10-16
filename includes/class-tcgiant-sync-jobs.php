@@ -356,6 +356,17 @@ class TCGiant_Sync_Jobs {
 
 			switch ( $job['type'] ) {
 				case 'bulk_push':
+					// Not one whose last push is under way or did not finish:
+					// that push may already have made its listing - in place of
+					// an ended one, too - and pushing it again lists it twice.
+					// The products list warns beside each one; this screen shows
+					// nothing, so it is left out here, and the shop told why.
+					if ( '' !== TCGiant_Sync_Exporter::push_progress( $product_id ) ) {
+						$kept++;
+						$errors[] = sprintf( '#%d: not pushed - its last push is still under way or did not finish, and may already have made its listing on eBay. Its eBay tab says what to do.', $product_id );
+						break;
+					}
+
 					// push_product() only enqueues the push and returns true as
 					// soon as the product exists — it does not contact eBay. So
 					// this counter records "queued", not "listed". Reporting it

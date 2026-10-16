@@ -74,11 +74,42 @@ class TCGiant_Sync_Image_Localizer {
 	/**
 	 * Longest one eBay photo download may take, and its largest size.
 	 *
-	 * media_sideload_image() passes a 300 s timeout of its own, which is why
-	 * the http_request_timeout filter this replaced never had any effect.
+	 * media_sideload_image(), which fetched photos until 3.27.4, passed a
+	 * 300 s timeout of its own, which is why the http_request_timeout filter
+	 * used before 3.27.0 never had any effect. Photos are now fetched with
+	 * download_url() and this limit; the http_request_args cap set up in
+	 * run_batch() stays, for the size and for anything else fetched then.
 	 */
 	const DOWNLOAD_TIMEOUT = 30;
 	const DOWNLOAD_MAX_BYTES = 15728640;
+
+	/**
+	 * Most characters of the product's name a photo's file name carries.
+	 *
+	 * Enough to tell a caliper from a headlamp in a folder listing, short
+	 * enough that the photo's address - kept by WordPress in a column 255
+	 * characters wide - has room for the site's own address and the year and
+	 * month folders in front of it.
+	 */
+	const FILE_LABEL_LENGTH = 40;
+
+	/**
+	 * Marks a photo whose record exists but whose smaller sizes may not.
+	 *
+	 * Making the smaller copies is the slowest part of a download, so it is
+	 * where a host ending the request usually lands. A photo still carrying
+	 * this mark is finished, not fetched again, the next time it is needed.
+	 */
+	const UNFINISHED_META = '_tcgiant_download_unfinished';
+
+	/**
+	 * What a photo without our mark must also be to count as the shop's own.
+	 *
+	 * See attachments_by_origin(). Added by someone signed in, with a file,
+	 * and not named the way eBay's photos used to be saved. SQL, with the
+	 * attachment as "a" and its _wp_attached_file row as "att_file".
+	 */
+	const SHOPS_OWN_SQL = 'a.post_author <> 0 AND att_file.post_id IS NOT NULL AND att_file.meta_value NOT REGEXP \'(^|/)(s-l[0-9]+|[0-9]+)(-[0-9]+)*[.](jpe?g|jpe|png|gif|webp)$\'';
 
 	/**
 	 * The photo being downloaded now, so its download is held to the same
@@ -136,6 +167,352 @@ class TCGiant_Sync_Image_Localizer {
 		$rewritten = preg_replace( $pattern, '/s-l' . $width . '$1$2', $url );
 
 		return $rewritten ? $rewritten : $url;
+	}
+
+	/**
+	 * WordPress sizes not made for a photo downloaded from eBay.
+	 *
+	 * WordPress 5.3 added both for very large uploads, and makes every size
+	 * smaller than the photo it is given. eBay serves its photos at 1,600 px
+	 * at most, so 2048x2048 is never made from one, and 1536x1536 is the same
+	 * photo 4% smaller: about a quarter of the disk each downloaded photo
+	 * takes with all its sizes, and the slowest of its resizes, done while
+	 * the host's clock runs. Nothing a shopper sees needs it. WordPress lists
+	 * the photo itself in srcset where it would have listed this copy, and a
+	 * theme that asks for the size by name is given the photo itself.
+	 * WooCommerce never asks for either: it uses its own three sizes, and the
+	 * photo itself for zoom.
+	 *
+	 * The shop's own uploads still get both.
+	 */
+	const SKIPPED_IMPORT_SIZES = array( '1536x1536', '2048x2048' );
+
+	/**
+	 * The sizes WordPress makes for a photo the localizer downloads.
+	 *
+	 * Hooked to intermediate_image_sizes_advanced for the length of one
+	 * download only (see localize_product_images()), so it never sees an image
+	 * the shop uploads, or one another plugin works on later in the request.
+	 *
+	 * The two are skipped only where the photo itself takes their place in
+	 * srcset. A photo larger than 2,048 px keeps both: WordPress leaves anything
+	 * wider than that out of srcset, so without them a large screen would be
+	 * given the 1,024 px copy. No eBay photo is that large; one kept on a
+	 * seller's own server can be. So does a GIF, which srcset never offers
+	 * whole, and any photo wider than a theme's own srcset limit
+	 * (max_srcset_image_width) where a theme has lowered it.
+	 *
+	 * WordPress's "big image" limit (big_image_size_threshold, 2,560 px) is
+	 * left as it is. It never applies to an eBay photo. For a larger one,
+	 * lowering it would add a scaled copy and still keep the original, and
+	 * raising it would hand the whole original to every shopper who zooms.
+	 *
+	 * @param array $sizes         Sizes WordPress is about to make, keyed by name: width, height, crop.
+	 * @param array $image_meta    The photo's metadata so far: its width and height as WordPress will serve it.
+	 * @param int   $attachment_id The photo's attachment ID.
+	 * @return array Sizes to make.
+	 */
+	public static function import_image_sizes( $sizes, $image_meta = array(), $attachment_id = 0 ) {
+		if ( ! is_array( $sizes ) ) {
+			return $sizes;
+		}
+
+		$all     = $sizes;
+		$width   = (int) ( $image_meta['width'] ?? 0 );
+		$height  = (int) ( $image_meta['height'] ?? 0 );
+		$is_gif  = 'gif' === strtolower( pathinfo( (string) ( $image_meta['file'] ?? '' ), PATHINFO_EXTENSION ) );
+		$in_set  = (int) apply_filters( 'max_srcset_image_width', 2048, array( $width, $height ) );
+
+		if ( ! $is_gif && max( $width, $height ) <= 2048 && ( $in_set <= 0 || $width <= $in_set ) ) {
+			foreach ( self::SKIPPED_IMPORT_SIZES as $name ) {
+				unset( $sizes[ $name ] );
+			}
+		}
+
+		/**
+		 * Image sizes made for a photo downloaded from eBay.
+		 *
+		 * Applies only while TCGiant Sync is downloading a listing's photo,
+		 * never to images the shop uploads. Return $all to have every size
+		 * made, as for the shop's own uploads.
+		 *
+		 * @since 3.27.4
+		 *
+		 * @param array $sizes         Sizes to make, keyed by name: WordPress's list without 1536x1536 and 2048x2048.
+		 * @param array $all           Every size WordPress would make for one of the shop's own uploads.
+		 * @param int   $attachment_id The downloaded photo's attachment ID.
+		 */
+		$filtered = apply_filters( 'tcgiant_sync_import_image_sizes', $sizes, $all, (int) $attachment_id );
+
+		// Anything but a list is ignored. false or an empty value would leave
+		// the photo with no sizes at all; anything else stops WordPress part
+		// way through the photo on PHP 8.
+		return is_array( $filtered ) ? $filtered : $sizes;
+	}
+
+	/**
+	 * The file name a photo downloaded for a product is saved under.
+	 *
+	 * eBay's photo addresses all end in the same few names - s-l1600.jpg, or
+	 * $_57.JPG, which WordPress saves as 57.jpg - so every photo was saved as
+	 * s-l1600.jpg, and WordPress told them apart as s-l1600-1.jpg,
+	 * s-l1600-2.jpg and so on by looking at the files already in the folder.
+	 * A media offloader moves those files to its own storage and deletes them
+	 * here, and then there is nothing in the folder to see: the next photo was
+	 * given a name an earlier one still had in the offloader's storage, and
+	 * its copies were sent over the earlier product's. The shop then showed
+	 * one product's photo on another.
+	 *
+	 * The name is now made from what the photo is - the product it was
+	 * fetched for, eBay's own number for the picture and the width asked for:
+	 *
+	 *     honda-civic-front-brake-caliper-4521-ebay-kp4aaosw1zl3x9a-1600.jpg
+	 *
+	 * so two different photos do not start out with the same name, whatever is
+	 * or is not in the folder. A photo kept anywhere but eBay's servers, or
+	 * whose address does not carry eBay's number, is named from a short
+	 * fingerprint of its address instead. The same photo for the same product
+	 * is always given the same name.
+	 *
+	 * Only a-z, 0-9 and hyphens, so nothing WordPress or a storage service does
+	 * to a name changes it, and it never ends in something WordPress takes for
+	 * one of its own resized copies (-300x300, -scaled, -rotated).
+	 *
+	 * @param int    $product_id   Product (or variation) the photo is for.
+	 * @param string $download_url Address being fetched, after the size setting.
+	 * @param string $clean_url    The original address, without its query string.
+	 * @return string|WP_Error File name with its extension, or why it is not a photo.
+	 */
+	public static function photo_file_name( $product_id, $download_url, $clean_url ) {
+		// The test media_sideload_image() made: an address that does not end in
+		// a photo's file type is not one WordPress will save.
+		$types = apply_filters( 'image_sideload_extensions', array( 'jpg', 'jpeg', 'jpe', 'png', 'gif', 'webp' ), $download_url );
+		$types = array_map( 'preg_quote', (array) $types );
+
+		if ( empty( $types ) || ! preg_match( '/[^\?]+\.(' . implode( '|', $types ) . ')\b/i', $download_url, $type ) ) {
+			return new WP_Error( 'tcgiant_not_a_photo', 'Invalid image URL: the address does not end in a photo file type WordPress accepts.' );
+		}
+
+		// eBay's number for the picture: /images/g/<number>/s-l1600.jpg, or
+		// /z/<number>/$_57.JPG in the older form the Trading API still sends.
+		$key = '';
+		if ( self::is_ebay_photo_host( $clean_url ) && preg_match( '#/(?:g|z)/([A-Za-z0-9~_-]{6,40})/#', $clean_url, $number ) ) {
+			$number = substr( strtolower( preg_replace( '/[^A-Za-z0-9]/', '', $number[1] ) ), 0, 24 );
+			if ( strlen( $number ) >= 6 ) {
+				$key = 'ebay-' . $number;
+				if ( preg_match( '#/s-l(\d{2,4})\.[a-z]+(?:\?.*)?$#i', $download_url, $width ) ) {
+					$key .= '-' . $width[1];
+				}
+			}
+		}
+		if ( '' === $key ) {
+			$key = 'photo-' . substr( md5( $clean_url ), 0, 10 );
+		}
+
+		$base = self::file_label( $product_id ) . '-' . (int) $product_id . '-' . $key;
+
+		// WordPress always numbers a name that looks like one of its resized
+		// copies, and a number added there is one this plugin did not check.
+		if ( preg_match( '/-(?:\d+x\d+|scaled|rotated)$/', $base ) ) {
+			$base .= '-photo';
+		}
+
+		return $base . '.' . strtolower( $type[1] );
+	}
+
+	/**
+	 * The start of a photo's file name: the product's name, made safe.
+	 *
+	 * From the title rather than the product's address, which is empty for a
+	 * draft and encoded beyond reading for a name in another alphabet.
+	 *
+	 * @param int $product_id Product (or variation).
+	 * @return string a-z, 0-9 and hyphens; "product" if nothing of the title is left.
+	 */
+	private static function file_label( $product_id ) {
+		$title = (string) get_post_field( 'post_title', $product_id );
+		if ( function_exists( 'remove_accents' ) ) {
+			$title = remove_accents( $title );
+		}
+
+		$label = trim( (string) preg_replace( '/[^a-z0-9]+/', '-', strtolower( $title ) ), '-' );
+
+		if ( strlen( $label ) > self::FILE_LABEL_LENGTH ) {
+			// Stop at the end of a word where there is one: the last hyphen
+			// within the limit, counting one that falls just after it.
+			$cut = strrpos( substr( $label, 0, self::FILE_LABEL_LENGTH + 1 ), '-' );
+			$label = rtrim( substr( $label, 0, ( false !== $cut && $cut >= 10 ) ? $cut : self::FILE_LABEL_LENGTH ), '-' );
+		}
+
+		return '' !== $label ? $label : 'product';
+	}
+
+	/**
+	 * Whether an address is on one of eBay's photo servers.
+	 *
+	 * @param string $url Address.
+	 * @return bool
+	 */
+	private static function is_ebay_photo_host( $url ) {
+		$host = strtolower( (string) wp_parse_url( $url, PHP_URL_HOST ) );
+		return 'ebayimg.com' === $host || '.ebayimg.com' === substr( $host, -12 );
+	}
+
+	/**
+	 * The first name for a photo that no photo on the site holds.
+	 *
+	 * WordPress only looks in the folder, which an offloader empties. This
+	 * also looks in the Media Library's own record of every photo's file -
+	 * which an offloader never empties - so a name another photo still has is
+	 * not handed out again, wherever that photo's files now live. It also
+	 * steps past a file a stopped request left in the folder with no record,
+	 * instead of leaving WordPress to add a number this has not checked.
+	 *
+	 * The name photo_file_name() made is free almost every time. The one thing
+	 * that finds it held is the same eBay picture fetched a second time for
+	 * the same product from a different address, and that photo gets a short
+	 * fingerprint of its own address added.
+	 *
+	 * @param int    $product_id Product the photo is attached to.
+	 * @param string $name       File name from photo_file_name().
+	 * @param string $clean_url  The photo's address, for the fingerprint.
+	 * @return string File name to save it under.
+	 */
+	private static function unclaimed_file_name( $product_id, $name, $clean_url ) {
+		global $wpdb;
+
+		// The folder media_handle_sideload() will use: the month the product
+		// was created in, as WordPress files every photo attached to a post.
+		$post    = get_post( $product_id );
+		$time    = ( $post && substr( (string) $post->post_date, 0, 4 ) > 0 ) ? $post->post_date : current_time( 'mysql' );
+		$uploads = wp_upload_dir( $time );
+		$subdir  = trim( (string) $uploads['subdir'], '/' );
+		$folder  = rtrim( (string) $uploads['path'], '/' ) . '/';
+
+		$type  = pathinfo( $name, PATHINFO_EXTENSION );
+		$base  = pathinfo( $name, PATHINFO_FILENAME );
+		$print = substr( md5( $clean_url ), 0, 8 );
+
+		// WordPress renames a file whose contents are another type of photo
+		// than its name says, so a name is free only if it is free as each.
+		$kinds = array( 'jpg', 'jpeg', 'jpe', 'png', 'gif', 'webp', 'avif', 'heic' );
+
+		for ( $n = 0; $n < 20; $n++ ) {
+			$try     = 0 === $n ? $base : $base . '-' . $print . ( $n > 1 ? '-' . $n : '' );
+			$paths   = array();
+			$on_disk = false;
+
+			// The record of a photo WordPress scaled or rotated names the
+			// copy it serves (-scaled, -rotated); the name it was given is
+			// still held, by the original kept beside it.
+			foreach ( $kinds as $kind ) {
+				foreach ( array( '', '-scaled', '-rotated' ) as $suffix ) {
+					$paths[] = ( '' !== $subdir ? $subdir . '/' : '' ) . $try . $suffix . '.' . $kind;
+					if ( file_exists( $folder . $try . $suffix . '.' . $kind ) ) {
+						$on_disk = true;
+					}
+				}
+			}
+
+			// Exact paths, so the plugin's own index on post meta answers it.
+			$in = implode( ', ', array_fill( 0, count( $paths ), '%s' ) );
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+			$recorded = (bool) $wpdb->get_var( $wpdb->prepare(
+				"SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key = '_wp_attached_file' AND meta_value IN ( {$in} ) LIMIT 1",
+				$paths
+			) );
+
+			if ( ! $on_disk && ! $recorded ) {
+				return $try . '.' . $type;
+			}
+
+			// A file under this name that no photo in the Media Library holds:
+			// left by a request stopped after the download was saved and
+			// before its record was. Stepped past, and said, so support can
+			// find it.
+			if ( $on_disk && ! $recorded ) {
+				TCGiant_Sync_Logger::log( sprintf(
+					'Image localizer: WC #%d - a file left by a stopped request is in the way (%s); this photo is saved under another name.',
+					(int) $product_id,
+					( '' !== $subdir ? $subdir . '/' : '' ) . $try . '.' . $type
+				) );
+			}
+		}
+
+		// Twenty held in a row does not happen. A name with the time in it
+		// cannot have been given out before.
+		return $base . '-' . $print . '-' . time() . '.' . $type;
+	}
+
+	/**
+	 * Download one photo into the Media Library, marked as ours from the start.
+	 *
+	 * media_sideload_image() did this until 3.27.4. It names the file after
+	 * the address, and nothing can be recorded on the photo until it returns -
+	 * and the plugin's mark, the address the photo came from, was written only
+	 * then. A request the host ended while WordPress was making the smaller
+	 * copies left a photo with no mark: fetched all over again next time, and
+	 * taken by Image Cleanup for one the shop had uploaded itself.
+	 *
+	 * The same two steps it took - download_url(), then
+	 * media_handle_sideload() - with the name chosen above, and the mark handed
+	 * to WordPress to write with the photo's record. wp_insert_post() writes
+	 * meta_input before it records the photo's file and before any other
+	 * plugin hears a photo was added, so no photo of ours ever has a file
+	 * without the mark. The unfinished mark comes off once every size is made.
+	 *
+	 * @param int    $product_id   Product (or variation) to attach it to.
+	 * @param string $download_url Address to fetch, after the size setting.
+	 * @param string $clean_url    The original address: what it is recorded as.
+	 * @return int|WP_Error Attachment ID.
+	 */
+	private static function sideload_photo( $product_id, $download_url, $clean_url ) {
+		$name = self::photo_file_name( $product_id, $download_url, $clean_url );
+		if ( is_wp_error( $name ) ) {
+			return $name;
+		}
+		$name = self::unclaimed_file_name( $product_id, $name, $clean_url );
+
+		$tmp = download_url( $download_url, self::DOWNLOAD_TIMEOUT );
+		if ( is_wp_error( $tmp ) ) {
+			return $tmp;
+		}
+
+		$id = media_handle_sideload(
+			array(
+				'name'     => $name,
+				'tmp_name' => $tmp,
+			),
+			$product_id,
+			null,
+			array(
+				// The record's own name too. Every photo used to be called
+				// "s-l1600", and WordPress found a free name for the next one
+				// by trying s-l1600-2, s-l1600-3 and so on, one lookup each,
+				// up to however many the shop already had.
+				'post_name'  => pathinfo( $name, PATHINFO_FILENAME ),
+				// In this order: unfinished, then ours. A request stopped
+				// between the two leaves a record with neither a file nor
+				// our mark, which nothing here will reuse or delete.
+				'meta_input' => array(
+					self::UNFINISHED_META => time(),
+					'_tcgiant_source_url' => $clean_url,
+					'_source_url'         => $download_url, // As media_sideload_image() kept it.
+				),
+			)
+		);
+
+		if ( is_wp_error( $id ) ) {
+			// Whatever WordPress did not move into the library.
+			if ( is_file( $tmp ) ) {
+				@unlink( $tmp ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.unlink_unlink
+			}
+			return $id;
+		}
+
+		delete_post_meta( $id, self::UNFINISHED_META );
+
+		return (int) $id;
 	}
 
 	/**
@@ -495,9 +872,21 @@ class TCGiant_Sync_Image_Localizer {
 	 * alone entirely — they are not files and deleting them fixes nothing.
 	 *
 	 * So an attachment with a source address and no external address is one we
-	 * fetched; an attachment with neither is one the shop uploaded. That is a
-	 * matter of record rather than inference, which is the only basis on which
-	 * anything here is allowed to delete a photograph.
+	 * fetched. That is a matter of record rather than inference, which is the
+	 * only basis on which anything here is allowed to delete a photograph.
+	 *
+	 * The shop's own is the other way round, and asks more than the absence
+	 * of our mark, because until 3.27.4 the mark was written only after a
+	 * download had finished. A request the host stopped part way left a copy
+	 * of ours without it - on a product that also has our finished copies,
+	 * which is exactly what this looks for - and restoring that "original"
+	 * would delete the product's real photos. So a photo only counts as the
+	 * shop's own if it was added by someone signed in (the plugin's downloads
+	 * run in the background, as nobody), it has a file, and its file is not
+	 * named the way eBay's photos were saved (s-l1600.jpg, 57.jpg, and their
+	 * -1, -2 copies). A photo that fails any of those is in neither list: never
+	 * put back, never deleted, never shown here. Leaving one out can only mean
+	 * a product is not offered for cleanup; it cannot mean a deletion.
 	 *
 	 * @param int  $product_id
 	 * @param bool $ours True for images we downloaded, false for the shop's own.
@@ -506,13 +895,14 @@ class TCGiant_Sync_Image_Localizer {
 	public static function attachments_by_origin( $product_id, $ours ) {
 		global $wpdb;
 
-		$having = $ours ? 'src.post_id IS NOT NULL' : 'src.post_id IS NULL';
+		$having = $ours ? 'src.post_id IS NOT NULL' : 'src.post_id IS NULL AND ' . self::SHOPS_OWN_SQL;
 
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 		$ids = $wpdb->get_col( $wpdb->prepare(
 			"SELECT a.ID FROM {$wpdb->posts} a
 			 LEFT JOIN {$wpdb->postmeta} src ON src.post_id = a.ID AND src.meta_key = '_tcgiant_source_url'
 			 LEFT JOIN {$wpdb->postmeta} ext ON ext.post_id = a.ID AND ext.meta_key = '_tcgiant_external_url'
+			 LEFT JOIN {$wpdb->postmeta} att_file ON att_file.post_id = a.ID AND att_file.meta_key = '_wp_attached_file'
 			 WHERE a.post_type = 'attachment'
 			   AND a.post_parent = %d
 			   AND ext.post_id IS NULL
@@ -522,6 +912,36 @@ class TCGiant_Sync_Image_Localizer {
 		) );
 
 		return array_map( 'intval', (array) $ids );
+	}
+
+	/**
+	 * SQL: the product has a photo that is neither marked as ours nor sure
+	 * to be the shop's own.
+	 *
+	 * Such a photo is in neither of attachments_by_origin()'s lists. Restoring
+	 * the rest would drop it from the product - and delete our copies of the
+	 * very photos it stands for - so a product that has one is not offered
+	 * for cleanup, and is refused if asked.
+	 *
+	 * @param string $parent SQL for the product ID.
+	 * @return string An EXISTS clause.
+	 */
+	private static function uncertain_photo_sql( $parent ) {
+		global $wpdb;
+
+		return "EXISTS (
+			SELECT 1 FROM {$wpdb->posts} a
+			LEFT JOIN {$wpdb->postmeta} usrc ON usrc.post_id = a.ID AND usrc.meta_key = '_tcgiant_source_url'
+			LEFT JOIN {$wpdb->postmeta} uext ON uext.post_id = a.ID AND uext.meta_key = '_tcgiant_external_url'
+			LEFT JOIN {$wpdb->postmeta} uunf ON uunf.post_id = a.ID AND uunf.meta_key = '" . self::UNFINISHED_META . "'
+			LEFT JOIN {$wpdb->postmeta} att_file ON att_file.post_id = a.ID AND att_file.meta_key = '_wp_attached_file'
+			WHERE a.post_type = 'attachment'
+			  AND a.post_parent = {$parent}
+			  AND usrc.post_id IS NULL
+			  AND uext.post_id IS NULL
+			  AND uunf.post_id IS NULL
+			  AND NOT ( " . self::SHOPS_OWN_SQL . " )
+		)";
 	}
 
 	/**
@@ -549,14 +969,17 @@ class TCGiant_Sync_Image_Localizer {
 			   AND prod.post_type = 'product'
 			   AND prod.post_status NOT IN ( 'trash', 'auto-draft' )
 			   AND EXISTS (
-				   SELECT 1 FROM {$wpdb->posts} theirs
-				   LEFT JOIN {$wpdb->postmeta} tsrc ON tsrc.post_id = theirs.ID AND tsrc.meta_key = '_tcgiant_source_url'
-				   LEFT JOIN {$wpdb->postmeta} text ON text.post_id = theirs.ID AND text.meta_key = '_tcgiant_external_url'
-				   WHERE theirs.post_type = 'attachment'
-					 AND theirs.post_parent = mine.post_parent
+				   SELECT 1 FROM {$wpdb->posts} a
+				   LEFT JOIN {$wpdb->postmeta} tsrc ON tsrc.post_id = a.ID AND tsrc.meta_key = '_tcgiant_source_url'
+				   LEFT JOIN {$wpdb->postmeta} text ON text.post_id = a.ID AND text.meta_key = '_tcgiant_external_url'
+				   LEFT JOIN {$wpdb->postmeta} att_file ON att_file.post_id = a.ID AND att_file.meta_key = '_wp_attached_file'
+				   WHERE a.post_type = 'attachment'
+					 AND a.post_parent = mine.post_parent
 					 AND tsrc.post_id IS NULL
 					 AND text.post_id IS NULL
+					 AND " . self::SHOPS_OWN_SQL . "
 			   )
+			   AND NOT " . self::uncertain_photo_sql( 'mine.post_parent' ) . "
 			 ORDER BY mine.post_parent DESC"
 		);
 
@@ -594,6 +1017,29 @@ class TCGiant_Sync_Image_Localizer {
 			return 0;
 		}
 
+		// A photo the plugin cannot place - neither marked as its own nor
+		// sure to be the shop's - would drop out of the product. Not offered
+		// for cleanup either; refused here too, because a job's list of
+		// products is made when it starts.
+		global $wpdb;
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared
+		if ( (int) $wpdb->get_var( 'SELECT ' . self::uncertain_photo_sql( (string) $product_id ) ) ) {
+			return new WP_Error(
+				'uncertain_photos',
+				__( 'This product has a photo the plugin cannot tell is yours or one it downloaded, so nothing was changed.', 'tcgiant-sync' )
+			);
+		}
+
+		// Its photos are being fetched right now: what is attached may be
+		// about to become its pictures.
+		if ( get_post_meta( $product_id, '_tcgiant_localize_inflight', true )
+			|| (int) get_post_meta( $product_id, '_tcgiant_localize_retry_after', true ) > time() ) {
+			return new WP_Error(
+				'photos_in_progress',
+				__( 'This product\'s photos are being downloaded right now, so nothing was changed. Try again in a quarter of an hour.', 'tcgiant-sync' )
+			);
+		}
+
 		// Restore first.
 		set_post_thumbnail( $product_id, $theirs[0] );
 		update_post_meta( $product_id, '_product_image_gallery', implode( ',', array_slice( $theirs, 1 ) ) );
@@ -609,6 +1055,13 @@ class TCGiant_Sync_Image_Localizer {
 				continue;
 			}
 			if ( in_array( $attachment_id, $theirs, true ) ) {
+				continue;
+			}
+			// One download serves every product that needs the same eBay
+			// photo, so a copy attached here may be another product's or a
+			// variation's picture - in the trash too, where a relisted item
+			// takes its photos back from.
+			if ( self::used_elsewhere( $attachment_id, $product_id ) ) {
 				continue;
 			}
 
@@ -630,6 +1083,90 @@ class TCGiant_Sync_Image_Localizer {
 		) );
 
 		return $removed;
+	}
+
+	/**
+	 * Whether anything but this product shows a photo.
+	 *
+	 * As a main image (_thumbnail_id, which variations use too), or in any of
+	 * the gallery lists the removal of deleted products' photos counts -
+	 * WooCommerce's, and those of Additional Variation Images and Variation
+	 * Images Gallery for WooCommerce, by the same tcgiant_sync_photo_list_keys
+	 * filter - whatever that post's status, trashed products included. As the
+	 * picture of a category, a brand or any other term. Or through another
+	 * Media Library record pointing at the same file, as the image batch made
+	 * one for each product reusing a photo before 3.1.4: deleting this one
+	 * deletes that one's file with it.
+	 *
+	 * @param int $attachment_id Photo.
+	 * @param int $product_id    Product whose own use of it does not count.
+	 * @return bool
+	 */
+	private static function used_elsewhere( $attachment_id, $product_id ) {
+		global $wpdb;
+
+		$id = (string) (int) $attachment_id;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		if ( $wpdb->get_var( $wpdb->prepare(
+			"SELECT post_id FROM {$wpdb->postmeta} WHERE post_id <> %d AND meta_key = '_thumbnail_id' AND meta_value = %s LIMIT 1",
+			(int) $product_id,
+			$id
+		) ) ) {
+			return true;
+		}
+
+		/** This filter is documented in includes/class-tcgiant-sync-photo-cleanup.php */
+		$keys = (array) apply_filters( 'tcgiant_sync_photo_list_keys', array( '_product_image_gallery', '_wc_additional_variation_images', 'woo_variation_gallery_images' ) );
+
+		// Lists, which no index can search: the rows that mention the number
+		// at all, then each list read exactly, so that 95083 is not 5083.
+		foreach ( array_unique( array_filter( array_map( 'strval', $keys ) ) ) as $key ) {
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			$lists = (array) $wpdb->get_col( $wpdb->prepare(
+				"SELECT meta_value FROM {$wpdb->postmeta} WHERE post_id <> %d AND meta_key = %s AND meta_value LIKE %s",
+				(int) $product_id,
+				$key,
+				'%' . $wpdb->esc_like( $id ) . '%'
+			) );
+			foreach ( $lists as $list ) {
+				// Comma-separated, as WooCommerce keeps them, or a serialized
+				// array, as some gallery plugins do.
+				$list = maybe_unserialize( $list );
+				if ( is_object( $list ) ) {
+					$list = get_object_vars( $list );
+				}
+				if ( is_array( $list ) ) {
+					$flat = array();
+					array_walk_recursive( $list, function ( $item ) use ( &$flat ) {
+						if ( is_scalar( $item ) ) {
+							$flat[] = (string) $item;
+						}
+					} );
+					$list = implode( ',', $flat );
+				}
+				if ( is_scalar( $list ) && in_array( $id, preg_split( '/[\s,]+/', (string) $list, -1, PREG_SPLIT_NO_EMPTY ), true ) ) {
+					return true;
+				}
+			}
+		}
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		if ( $wpdb->get_var( $wpdb->prepare(
+			"SELECT meta_id FROM {$wpdb->termmeta} WHERE meta_key = 'thumbnail_id' AND meta_value = %s LIMIT 1",
+			$id
+		) ) ) {
+			return true;
+		}
+
+		$file = (string) get_post_meta( (int) $attachment_id, '_wp_attached_file', true );
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		return '' !== $file && (bool) $wpdb->get_var( $wpdb->prepare(
+			"SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key = '_wp_attached_file' AND meta_value = %s AND post_id <> %d LIMIT 1",
+			$file,
+			(int) $attachment_id
+		) );
 	}
 
 	public static function set_external_images( $product_id, $image_entries, $force = false ) {
@@ -855,6 +1392,10 @@ class TCGiant_Sync_Image_Localizer {
 		// Create a placeholder attachment with the external URL.
 		$attachment_id = wp_insert_attachment( array(
 			'post_title'     => basename( wp_parse_url( $url, PHP_URL_PATH ) ),
+			// Its own record name. From the title, every stand-in was
+			// "s-l1600-jpg", and WordPress tried s-l1600-jpg-2, -3 and so on,
+			// one lookup each, past every stand-in still waiting for its photo.
+			'post_name'      => sprintf( 'ebay-photo-%d-%s', (int) $product_id, substr( md5( $url ), 0, 10 ) ),
 			'post_mime_type' => 'image/jpeg',
 			'post_status'    => 'inherit',
 			'guid'           => $url,
@@ -1296,9 +1837,23 @@ class TCGiant_Sync_Image_Localizer {
 			// Download the image, honouring the configured maximum width.
 			// $clean_url (the original address) remains the dedup key, so
 			// changing the size setting never orphans existing downloads.
+			//
+			// WordPress's two largest sizes are not made for it (see
+			// SKIPPED_IMPORT_SIZES). For this download only, so nothing the
+			// shop uploads, and nothing else this request does, is touched -
+			// whatever exception the download throws. Late, so a shop's filter
+			// sees the list every other plugin has finished with.
+			//
+			// The photo is marked as the plugin's as it is created - see
+			// sideload_photo() - not afterwards, as it was until 3.27.4.
 			self::$downloading = self::apply_image_size_preference( $image_url );
-			$id                = media_sideload_image( self::$downloading, $product_id, null, 'id' );
-			self::$downloading = '';
+			add_filter( 'intermediate_image_sizes_advanced', array( __CLASS__, 'import_image_sizes' ), 99, 3 );
+			try {
+				$id = self::sideload_photo( $product_id, self::$downloading, $clean_url );
+			} finally {
+				remove_filter( 'intermediate_image_sizes_advanced', array( __CLASS__, 'import_image_sizes' ), 99 );
+				self::$downloading = '';
+			}
 			if ( is_wp_error( $id ) ) {
 				// A 404/403/410 will never succeed, so it must not keep the
 				// product in the retry queue forever. Anything else (timeout,
@@ -1318,9 +1873,6 @@ class TCGiant_Sync_Image_Localizer {
 				}
 				continue;
 			}
-
-			// Store source URL on attachment for future dedup.
-			update_post_meta( $id, '_tcgiant_source_url', $clean_url );
 
 			// Progress, for an attempt the host stops part way through.
 			update_post_meta( $product_id, '_tcgiant_localize_progress', (int) get_post_meta( $product_id, '_tcgiant_localize_progress', true ) + 1 );
@@ -1383,6 +1935,20 @@ class TCGiant_Sync_Image_Localizer {
 			$clean_gallery = array();
 			$placeholders  = array();
 			$main_photo    = (int) get_post_thumbnail_id( $product_id );
+
+			// Each eBay photo once, whichever copy of it: two downloads of one
+			// photo - one fetched again while the other was waiting to be
+			// removed, say - are the same picture shown twice. The first kept
+			// is the one the product already showed. Only the plugin's own
+			// copies are compared; the shop's uploads carry no source.
+			$sources = array();
+			if ( $main_photo > 0 && ! get_post_meta( $main_photo, '_tcgiant_external_url', true ) ) {
+				$main_source = (string) get_post_meta( $main_photo, '_tcgiant_source_url', true );
+				if ( '' !== $main_source ) {
+					$sources[ $main_source ] = true;
+				}
+			}
+
 			foreach ( $gallery_ids as $gid ) {
 				// A copy this plugin made of the main photo is the main photo,
 				// not another gallery entry. One a product already shows twice
@@ -1393,6 +1959,13 @@ class TCGiant_Sync_Image_Localizer {
 				}
 				$is_external = get_post_meta( (int) $gid, '_tcgiant_external_url', true );
 				if ( empty( $is_external ) ) {
+					$source = (string) get_post_meta( (int) $gid, '_tcgiant_source_url', true );
+					if ( '' !== $source ) {
+						if ( isset( $sources[ $source ] ) ) {
+							continue;
+						}
+						$sources[ $source ] = true;
+					}
 					$clean_gallery[] = $gid;
 				} else {
 					$placeholders[] = (int) $gid;
@@ -1469,7 +2042,7 @@ class TCGiant_Sync_Image_Localizer {
 	 * images) and empty/invalid file responses. Transient failures (timeouts,
 	 * 5xx, DNS) are worth retrying.
 	 *
-	 * @param WP_Error $wp_error The error returned by media_sideload_image.
+	 * @param WP_Error $wp_error The error returned by sideload_photo().
 	 * @return bool True if the failure is permanent.
 	 */
 	private static function is_permanent_image_failure( $wp_error ) {
@@ -1537,9 +2110,27 @@ class TCGiant_Sync_Image_Localizer {
 				'key'     => '_tcgiant_external_url',
 				'compare' => 'NOT EXISTS',
 			),
+
+			// Never one whose removal was started and given up on
+			// (TCGiant_Sync_Photo_Cleanup::FAILED_KEY, named here as a string
+			// so this class stands on its own): part of it may already be gone
+			// - an offload plugin's remote copies are removed first - though
+			// its record is still here.
+			array(
+				'key'     => '_tcgiant_delete_failed',
+				'compare' => 'NOT EXISTS',
+			),
 		);
 
 		// First, check attachments belonging to this specific product (fastest).
+		// Newest first - get_posts()'s own order - so a half-saved copy that
+		// could not be finished is passed over once a complete one has been
+		// fetched after it.
+		//
+		// Even one waiting to be removed: another product that showed it was
+		// deleted, but a photo attached to a product that exists is never
+		// removed while it does. Fetching it again here would only give this
+		// product a second copy of what it already has.
 		$attachments = get_posts( array(
 			'post_type'   => 'attachment',
 			'post_parent' => $product_id,
@@ -1548,12 +2139,33 @@ class TCGiant_Sync_Image_Localizer {
 			'numberposts' => 1,
 		) );
 
+		// Then one this product already shows, waiting to be removed or not:
+		// its showing it is what keeps it, so it is no other product's
+		// picture being taken away.
+		if ( empty( $attachments ) ) {
+			$shown = $this->shown_copy( $product_id, $source_url );
+			if ( $shown > 0 ) {
+				$attachments = array( $shown );
+			}
+		}
+
 		// If not found on this product, search globally across all attachments.
 		// This catches images from trashed/re-created products with new SKUs.
+		//
+		// But not a photo waiting to be removed with the product it was
+		// deleted with (TCGiant_Sync_Photo_Cleanup::MARK_KEY). That removal
+		// checks again only once its quarantine is over, so a product that
+		// took the photo in between would be left pointing at nothing. A fresh
+		// copy is downloaded instead.
 		if ( empty( $attachments ) ) {
 			$attachments = get_posts( array(
 				'post_type'   => 'attachment',
-				'meta_query'  => $real_only, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_query
+				'meta_query'  => array_merge( $real_only, array( // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_query
+					array(
+						'key'     => '_tcgiant_delete_after',
+						'compare' => 'NOT EXISTS',
+					),
+				) ),
 				'fields'      => 'ids',
 				'numberposts' => 1,
 			) );
@@ -1570,6 +2182,47 @@ class TCGiant_Sync_Image_Localizer {
 			return false;
 		}
 
+		// A photo still marked unfinished. Either another request is making
+		// it right now - one working on another product with the same eBay
+		// photo - or a request was stopped part way through it.
+		$unfinished = (int) get_post_meta( $att_id, self::UNFINISHED_META, true );
+		if ( $unfinished > 0 && $unfinished < 2 ) {
+			$unfinished = 1; // A mark with no time in it is an old one.
+		}
+
+		// Being made now: shared as it is. The request making it takes the
+		// mark off when it is done, and if it is stopped the mark grows old
+		// and a later run finishes the photo. Fetching it again here would
+		// only have made a second copy.
+		if ( $unfinished > 0 && time() - $unfinished < self::LEASE_SECONDS ) {
+			return $att_id;
+		}
+
+		// Stopped part way: its record and its file are there, some or all of
+		// its smaller sizes may not be. WordPress can make whatever is
+		// missing from the file, which is the work the request did not
+		// finish, so it is finished here rather than fetched again.
+		if ( $unfinished > 0 ) {
+			$finished = self::finish_photo( $att_id );
+
+			if ( is_wp_error( $finished ) ) {
+				TCGiant_Sync_Logger::warning( sprintf(
+					'Image localizer: WC #%d - photo #%d was left half saved by a request that was stopped, and could not be finished (%s). Downloading it again; the half-saved copy stays in the Media Library.',
+					(int) $product_id,
+					$att_id,
+					$finished->get_error_message()
+				) );
+				return false;
+			}
+
+			delete_post_meta( $att_id, self::UNFINISHED_META );
+			TCGiant_Sync_Logger::log( sprintf(
+				'Image localizer: WC #%d - finished photo #%d, which a stopped request had left half saved, instead of downloading it again.',
+				(int) $product_id,
+				$att_id
+			) );
+		}
+
 		// Share the attachment as-is, whatever it is parented to.
 		//
 		// WordPress attachments are referenced by ID from _thumbnail_id and
@@ -1582,6 +2235,87 @@ class TCGiant_Sync_Image_Localizer {
 		// pointing at a file that wp_delete_attachment( $id, true ) on the
 		// original would delete out from under them.
 		return $att_id;
+	}
+
+	/**
+	 * A copy of this eBay photo that the product already shows - as its main
+	 * photo, in its gallery, or as one of its variations' - whoever it is
+	 * attached to.
+	 *
+	 * @param int    $product_id Product ID.
+	 * @param string $source_url Clean source URL (no query params).
+	 * @return int Attachment ID, or 0.
+	 */
+	private function shown_copy( $product_id, $source_url ) {
+		$shown   = array( (int) get_post_thumbnail_id( $product_id ) );
+		$gallery = (string) get_post_meta( $product_id, '_product_image_gallery', true );
+		if ( '' !== $gallery ) {
+			$shown = array_merge( $shown, array_map( 'intval', explode( ',', $gallery ) ) );
+		}
+
+		$variations = get_posts( array(
+			'post_type'   => 'product_variation',
+			'post_parent' => $product_id,
+			'post_status' => 'any',
+			'fields'      => 'ids',
+			'numberposts' => -1,
+		) );
+		foreach ( (array) $variations as $variation_id ) {
+			$shown[] = (int) get_post_thumbnail_id( (int) $variation_id );
+		}
+
+		foreach ( array_unique( array_filter( $shown ) ) as $att_id ) {
+			if ( (string) get_post_meta( $att_id, '_tcgiant_source_url', true ) === (string) $source_url
+				&& ! get_post_meta( $att_id, '_tcgiant_external_url', true )
+				&& ! get_post_meta( $att_id, '_tcgiant_delete_failed', true ) ) {
+				return (int) $att_id;
+			}
+		}
+
+		return 0;
+	}
+
+	/**
+	 * Make the sizes a stopped request did not get to.
+	 *
+	 * wp_update_image_subsizes() reports an error only when the photo has no
+	 * record of a file at all. A file that is missing or cannot be read comes
+	 * back as success with nothing made - so this looks before and after.
+	 * The two largest sizes are skipped, as on download: WordPress asks
+	 * wp_get_missing_image_subsizes here, not intermediate_image_sizes_advanced.
+	 *
+	 * A photo whose file is not on this server is fetched again rather than
+	 * kept: from here a file an offloading plugin moved cannot be told from
+	 * one that never arrived, and a second copy is better than a broken one.
+	 *
+	 * @param int $att_id Photo.
+	 * @return true|WP_Error True when finished; an error to fetch it again.
+	 */
+	private static function finish_photo( $att_id ) {
+		if ( ! function_exists( 'wp_update_image_subsizes' ) ) {
+			return new WP_Error( 'tcgiant_no_subsizes', 'this WordPress cannot finish a photo' );
+		}
+
+		$file = function_exists( 'wp_get_original_image_path' ) ? wp_get_original_image_path( $att_id ) : get_attached_file( $att_id );
+		if ( ! $file || ! file_exists( $file ) ) {
+			return new WP_Error( 'tcgiant_photo_missing', 'its file is not on this server' );
+		}
+
+		add_filter( 'wp_get_missing_image_subsizes', array( __CLASS__, 'import_image_sizes' ), 99, 3 );
+		try {
+			$meta = wp_update_image_subsizes( $att_id );
+		} finally {
+			remove_filter( 'wp_get_missing_image_subsizes', array( __CLASS__, 'import_image_sizes' ), 99 );
+		}
+
+		if ( is_wp_error( $meta ) ) {
+			return $meta;
+		}
+		if ( ! is_array( $meta ) || empty( $meta['width'] ) || empty( $meta['file'] ) ) {
+			return new WP_Error( 'tcgiant_photo_unreadable', 'its file could not be read as a photo' );
+		}
+
+		return true;
 	}
 
 	/**

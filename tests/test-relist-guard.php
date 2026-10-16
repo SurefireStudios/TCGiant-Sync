@@ -516,6 +516,38 @@ coin( 507, array( '_manage_stock' => 'no', '_stock' => '', '_stock_status' => 'o
 check( 'an untracked product marked out of stock is refused', outcome( relist( 507 ) ), 'relist_refused' );
 check( '  and eBay is not asked anything', $ebay->calls, array() );
 
+echo "\nNOR FOR ONE WHOSE LAST PUSH IS STILL UNDER WAY, OR DID NOT FINISH\n" . str_repeat( '=', 126 ) . "\n";
+
+// A push that finds its listing ended makes a new one in its place. One that
+// died once eBay had made it leaves the product linked to the ended listing,
+// still Ended, and relisting that is a second new listing beside the one the
+// push made. test-push-visibility.php has the pushes dying for real, and the
+// daily auto-relist and the Listings screen meeting them.
+foreach ( array(
+	'a coin whose last push did not finish'             => array( '_ebay_export_status' => 'failed' ),
+	'a coin whose push has said pushing for 20 minutes' => array( '_ebay_export_status' => 'pushing', '_ebay_export_pushing_since' => time() - 20 * 60 ),
+	'a coin whose push is under way now'                => array( '_ebay_export_status' => 'pushing', '_ebay_export_pushing_since' => time() - 30 ),
+) as $what => $push ) {
+	$ebay          = fresh_shop();
+	coin( 508, $push );
+	$ebay->item    = ebay_says( 'Completed', 3, 0 );
+	$ebay->relists = relisted_as( '226100009508' );
+	$result        = relist( 508 );
+	check( $what . ' is not relisted', outcome( $result ), 'relist_refused' );
+	check( '  and eBay is not asked anything', $ebay->calls, array() );
+	check( '  and the shop is told why', is_wp_error( $result ) ? $result->get_error_message() : null, 'its last push is still under way or did not finish, and may already have made a new listing in place of this one - its eBay tab says what to do' );
+}
+
+// A push that finished, or one eBay refused - which made nothing - is no
+// reason not to.
+foreach ( array( 'pushed', 'error' ) as $status ) {
+	$ebay          = fresh_shop();
+	coin( 509, array( '_ebay_export_status' => $status ) );
+	$ebay->item    = ebay_says( 'Completed', 3, 0 );
+	$ebay->relists = relisted_as( '226100009509' );
+	check( 'a coin whose last push says ' . $status . ' is relisted', outcome( relist( 509 ) ), 'relisted' );
+}
+
 echo "\nEBAY IS ASKED FIRST, AND BELIEVED\n" . str_repeat( '=', 126 ) . "\n";
 
 // Still live on eBay: relisting would have put a second copy up for sale.

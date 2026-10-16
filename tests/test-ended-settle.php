@@ -158,6 +158,8 @@ function wc_update_product_stock_status( $id, $status ) {
 	}
 }
 
+// Its stock writes turn on the save-loop breaker, which lives in the runtime.
+require dirname( __DIR__ ) . '/includes/class-tcgiant-sync-runtime.php';
 require dirname( __DIR__ ) . '/includes/class-tcgiant-sync-inventory.php';
 
 // The constructor hooks the real WooCommerce -> eBay stock push.

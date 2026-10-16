@@ -132,6 +132,11 @@ class TCGiant_Sync_Entitlements {
 	/**
 	 * Count products pushed from Woo to eBay.
 	 *
+	 * Pushed, or pushed before and now queued for another push, in the middle
+	 * of one, or in one that did not finish: a push says "pushed" only between
+	 * pushes, and only a push that succeeded - or Link, completing one that
+	 * did not finish - writes _ebay_export_last_pushed.
+	 *
 	 * @return int Number of pushed products.
 	 */
 	public function get_pushed_product_count()
@@ -141,15 +146,19 @@ class TCGiant_Sync_Entitlements {
 			"SELECT COUNT(DISTINCT p.ID) FROM {$wpdb->posts} p
 			 INNER JOIN {$wpdb->postmeta} pm1 ON pm1.post_id = p.ID
 			 INNER JOIN {$wpdb->postmeta} pm2 ON pm2.post_id = p.ID
+			 LEFT JOIN {$wpdb->postmeta} pm3 ON pm3.post_id = p.ID AND pm3.meta_key = '_ebay_export_last_pushed'
 			 WHERE p.post_type = 'product'
 			 AND p.post_status IN ('publish','draft')
 			 AND pm1.meta_key = '_ebay_item_id' AND pm1.meta_value != ''
-			 AND pm2.meta_key = '_ebay_export_status' AND pm2.meta_value = 'pushed'"
+			 AND pm2.meta_key = '_ebay_export_status'
+			 AND (pm2.meta_value = 'pushed' OR (pm2.meta_value IN ('queued','pushing','failed') AND pm3.meta_value != ''))"
 		);
 	}
 
 	/**
 	 * Count products pulled from eBay to Woo.
+	 *
+	 * Every linked product the count above leaves out.
 	 *
 	 * @return int Number of pulled products.
 	 */
@@ -160,10 +169,12 @@ class TCGiant_Sync_Entitlements {
 			"SELECT COUNT(DISTINCT p.ID) FROM {$wpdb->posts} p
 			 INNER JOIN {$wpdb->postmeta} pm1 ON pm1.post_id = p.ID
 			 LEFT JOIN {$wpdb->postmeta} pm2 ON pm2.post_id = p.ID AND pm2.meta_key = '_ebay_export_status'
+			 LEFT JOIN {$wpdb->postmeta} pm3 ON pm3.post_id = p.ID AND pm3.meta_key = '_ebay_export_last_pushed'
 			 WHERE p.post_type = 'product'
 			 AND p.post_status IN ('publish','draft')
 			 AND pm1.meta_key = '_ebay_item_id' AND pm1.meta_value != ''
-			 AND (pm2.meta_value IS NULL OR pm2.meta_value != 'pushed')"
+			 AND (pm2.meta_value IS NULL OR (pm2.meta_value != 'pushed'
+			      AND (pm2.meta_value NOT IN ('queued','pushing','failed') OR pm3.meta_value IS NULL OR pm3.meta_value = '')))"
 		);
 	}
 }

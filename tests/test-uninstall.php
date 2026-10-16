@@ -41,11 +41,48 @@ function as_unschedule_all_actions( $hook ) {
 }
 
 class FakeWpdb {
-	public $options = 'wp_options';
-	public $prefix  = 'wp_';
+	public $options    = 'wp_options';
+	public $prefix     = 'wp_';
+	public $last_error = '';
+	/** Post meta, as the key of each row: what the photo cleanup's marks come to. */
+	public $meta       = array();
+	/** A query containing this fails the way wpdb reports one: false or null, and last_error set. */
+	public $refuse     = '';
+	/** Rows another request adds just after the UPDATE - a run of the removal still going. */
+	public $meanwhile  = array();
 	public function query( $sql ) {
 		global $QUERIES;
 		$QUERIES[] = $sql;
+		if ( $this->refused( $sql ) ) {
+			return false;
+		}
+		if ( preg_match( "/UPDATE wp_postmeta SET meta_key = '(\w+)'\s+WHERE meta_key = '(\w+)'/", $sql, $m ) ) {
+			foreach ( $this->meta as $i => $key ) {
+				if ( $key === $m[2] ) {
+					$this->meta[ $i ] = $m[1];
+				}
+			}
+			$this->meta = array_merge( $this->meta, $this->meanwhile );
+		} elseif ( preg_match( '/DELETE FROM wp_postmeta\s+WHERE meta_key IN \(([^)]*)\)/', $sql, $m ) ) {
+			preg_match_all( "/'(\w+)'/", $m[1], $keys );
+			$this->meta = array_values( array_diff( $this->meta, $keys[1] ) );
+		}
+		return 0;
+	}
+	public function get_var( $sql ) {
+		global $QUERIES;
+		$QUERIES[] = $sql;
+		if ( $this->refused( $sql ) ) {
+			return null;
+		}
+		if ( preg_match( "/SELECT COUNT\(\*\) FROM wp_postmeta WHERE meta_key = '(\w+)'/", $sql, $m ) ) {
+			return (string) count( array_keys( $this->meta, $m[1], true ) );
+		}
+		return null;
+	}
+	private function refused( $sql ) {
+		$this->last_error = ( '' !== $this->refuse && false !== strpos( $sql, $this->refuse ) ) ? 'Lock wait timeout exceeded; try restarting transaction' : '';
+		return '' !== $this->last_error;
 	}
 }
 $wpdb = new FakeWpdb();
@@ -82,13 +119,17 @@ function check( $label, $got, $want ) {
 
 // uninstall.php resolves relative to itself; use the real path instead.
 $UNINSTALL = __DIR__ . '/../uninstall.php';
-function run( $settings, $sibling ) {
+function run( $settings, $sibling, array $meta = array(), $refuse = '', array $meanwhile = array() ) {
 	global $OPTIONS, $DELETED, $CLEARED, $UNSCHEDULED, $QUERIES, $UNINSTALL, $wpdb;
 	$OPTIONS = array( 'tcgiant_sync_ebay_settings' => $settings );
 	$DELETED = array();
 	$CLEARED = array();
 	$UNSCHEDULED = array();
 	$QUERIES = array();
+	$wpdb->meta       = $meta;
+	$wpdb->refuse     = $refuse;
+	$wpdb->meanwhile  = $meanwhile;
+	$wpdb->last_error = '';
 
 	plugin_dir( 'tcgiant-sync', true );
 	plugin_dir( 'tcgiant-sync-lite', $sibling );
@@ -129,6 +170,7 @@ check( 'default: hooks cleared', count( $CLEARED ) > 0, true );
 check( 'default: queued jobs cancelled', count( $UNSCHEDULED ) > 0, true );
 check( 'default: settings kept', $DELETED, array() );
 check( 'default: table kept', dropped_table(), false );
+check( 'default: photos waiting to be removed keep their place', count( array_filter( $QUERIES, function ( $q ) { return false !== strpos( $q, '_tcgiant_delete_' ); } ) ), 0 );
 
 echo "\n";
 
@@ -144,6 +186,55 @@ run( array( 'delete_data_on_uninstall' => '1' ), false );
 check( 'answered Yes: connection deleted', in_array( 'tcgiant_sync_ebay_settings', $DELETED, true ), true );
 check( 'answered Yes: table dropped', dropped_table(), true );
 check( 'answered Yes: hooks still cleared', count( $CLEARED ) > 0, true );
+
+// Photos waiting to be removed (3.27.4): unmarked, so they stay where they
+// are - but one WordPress had been asked to delete keeps the mark that stops
+// the image batch reusing it, and that comes first. One that only had an
+// attempt counted, by a run that threw before any deletion began, is whole.
+$tcg_to_failed = null;
+$tcg_unmarked  = null;
+$tcg_counted   = false;
+foreach ( $QUERIES as $tcg_i => $tcg_q ) {
+	if ( false !== strpos( $tcg_q, "SET meta_key = '_tcgiant_delete_failed'" ) && false !== strpos( $tcg_q, "meta_key = '_tcgiant_delete_started'" ) ) {
+		$tcg_to_failed = $tcg_i;
+	}
+	if ( false !== strpos( $tcg_q, "SET meta_key = '_tcgiant_delete_failed'" ) && false !== strpos( $tcg_q, '_tcgiant_delete_attempts' ) ) {
+		$tcg_counted = true;
+	}
+	if ( false !== strpos( $tcg_q, 'DELETE' ) && false !== strpos( $tcg_q, "'_tcgiant_delete_after'" ) && false !== strpos( $tcg_q, "'_tcgiant_delete_attempts'" ) && false !== strpos( $tcg_q, "'_tcgiant_delete_approved'" ) ) {
+		$tcg_unmarked = $tcg_i;
+	}
+}
+check( 'answered Yes: photos waiting to be removed are unmarked, attempts and all', null !== $tcg_unmarked, true );
+check( 'answered Yes: one WordPress was asked to delete is never reused', null !== $tcg_to_failed && $tcg_to_failed < $tcg_unmarked, true );
+check( 'answered Yes: one that only had an attempt counted is not given up on', $tcg_counted, false );
+check( 'answered Yes: a photo given up on keeps its mark', count( array_filter( $QUERIES, function ( $q ) { return false !== strpos( $q, 'DELETE' ) && false !== strpos( $q, '_tcgiant_delete_failed' ); } ) ), 0 );
+
+// The same on a site with photos in every state of the queue: waiting, an
+// attempt counted, a deletion begun, queued by the button, and one given up
+// on before.
+$tcg_marks = array( '_tcgiant_delete_after', '_tcgiant_delete_attempts', '_tcgiant_delete_started', '_tcgiant_delete_approved', '_tcgiant_delete_after', '_tcgiant_delete_failed' );
+run( array( 'delete_data_on_uninstall' => '1' ), false, $tcg_marks );
+check( 'answered Yes: the queue goes; the one whose deletion began is given up on', $wpdb->meta, array( '_tcgiant_delete_failed', '_tcgiant_delete_failed' ) );
+
+// The database refuses the change to given up on - a lock waited on too long,
+// a full disk. Taking the other marks off would leave that photo unmarked,
+// for the image batch to hand to a new product with part of it gone.
+run( array( 'delete_data_on_uninstall' => '1' ), false, $tcg_marks, "SET meta_key = '_tcgiant_delete_failed'" );
+check( 'answered Yes, the change to given up on refused: every mark stays', $wpdb->meta, $tcg_marks );
+run( array( 'delete_data_on_uninstall' => '1' ), false, $tcg_marks, "SELECT COUNT(*) FROM wp_postmeta WHERE meta_key = '_tcgiant_delete_started'" );
+check( '  and when it cannot say whether the change went in', $wpdb->meta, array( '_tcgiant_delete_after', '_tcgiant_delete_attempts', '_tcgiant_delete_failed', '_tcgiant_delete_approved', '_tcgiant_delete_after', '_tcgiant_delete_failed' ) );
+// A deletion still going in another request writes its mark just after the
+// change: that photo is not left with no mark either.
+run( array( 'delete_data_on_uninstall' => '1' ), false, $tcg_marks, '', array( '_tcgiant_delete_started' ) );
+check( '  and when a deletion begins just after it', $wpdb->meta, array( '_tcgiant_delete_after', '_tcgiant_delete_attempts', '_tcgiant_delete_failed', '_tcgiant_delete_approved', '_tcgiant_delete_after', '_tcgiant_delete_failed', '_tcgiant_delete_started' ) );
+check( '  the rest of the clean slate goes on all the same', array( dropped_table(), in_array( 'tcgiant_sync_ebay_settings', $DELETED, true ) ), array( true, true ) );
+
+// Every option the photo cleanup keeps goes - the notes of a reading or a
+// deletion in progress among them - read from the class, so that one added
+// later and forgotten here fails.
+preg_match_all( "/const \w+_OPTION = '(tcgiant_[a-z_]+)'/", file_get_contents( __DIR__ . '/../includes/class-tcgiant-sync-photo-cleanup.php' ), $tcg_opts );
+check( 'answered Yes: every option of the photo cleanup is deleted', array( count( $tcg_opts[1] ) >= 8, array_values( array_diff( $tcg_opts[1], $DELETED ) ) ), array( true, array() ) );
 
 echo "\n  " . str_repeat( '-', 88 ) . "\n";
 

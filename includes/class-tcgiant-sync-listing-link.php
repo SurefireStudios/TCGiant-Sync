@@ -79,6 +79,7 @@ class TCGiant_Sync_Listing_Link {
 			'_ebay_export_status',
 			'_ebay_export_error',
 			'_ebay_export_last_pushed',
+			'_ebay_export_pushing_since',
 			// History belonging to the original.
 			'_tcgiant_sync_log',
 			'_tcgiant_sync_pushed',
@@ -208,5 +209,45 @@ class TCGiant_Sync_Listing_Link {
 		) );
 
 		return array_map( 'intval', (array) $ids );
+	}
+
+	/**
+	 * A product whose push did not finish is now linked to a listing: that
+	 * push is complete.
+	 *
+	 * Linking is what such a push asks the shop to do, and the sync does the
+	 * same by itself when it finds the listing that push made, by the SKU the
+	 * push sent. Once the product is linked, what it said about that push is
+	 * over - and the listing is the one that push made, so the product is the
+	 * shop's own, pushed from here. Left saying the push did not finish, it
+	 * told the shop to use a Link a linked product is not offered, Clear was
+	 * refused, and Auto-Relist, Relist and the bulk pushes left it out for
+	 * good. Left blank, it read as imported, and "Remove sold products"
+	 * trashed it when that listing sold out.
+	 *
+	 * A product whose first push died has no last-pushed date - only a push
+	 * that finishes writes one - and that date is what keeps it through the
+	 * pushes after this: without it, one whose listing sold out while a
+	 * re-push was queued, or after eBay refused one, was trashed all the same.
+	 * So it is dated now.
+	 *
+	 * On the product, for its own save to write.
+	 *
+	 * @param WC_Product $product The product, before it is saved.
+	 * @return bool Whether it said its push was under way or did not finish.
+	 */
+	public static function complete_unfinished_push( $product ) {
+		if ( ! in_array( (string) $product->get_meta( '_ebay_export_status' ), array( 'failed', 'pushing' ), true ) ) {
+			return false;
+		}
+
+		$product->update_meta_data( '_ebay_export_status', 'pushed' );
+		$product->update_meta_data( '_ebay_export_error', '' );
+		if ( '' === (string) $product->get_meta( '_ebay_export_last_pushed' ) ) {
+			$product->update_meta_data( '_ebay_export_last_pushed', current_time( 'mysql' ) );
+		}
+		$product->delete_meta_data( '_ebay_export_pushing_since' );
+
+		return true;
 	}
 }

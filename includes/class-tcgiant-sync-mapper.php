@@ -515,6 +515,8 @@ class TCGiant_Sync_Mapper {
 
 		$item_id = $product_data['meta']['_ebay_item_id'];
 		$product_id = false;
+		// Whether step 2 below gives a product this listing by its SKU.
+		$linked_by_sku = false;
 
 		// 1. Check by exact eBay Item ID first.
 		//
@@ -590,6 +592,7 @@ class TCGiant_Sync_Mapper {
 					if ( empty( $existing_item_id ) || $existing_item_id === $item_id ) {
 						// No eBay link or same item → safe to link.
 						$product_id = $sku_product_id;
+						$linked_by_sku = true;
 					} elseif ( 'seller' !== ( $product_data['sku_source'] ?? '' ) ) {
 						// Same SKU, different listing — but this SKU is not something
 						// that identifies a listing, so the match proves nothing.
@@ -621,6 +624,7 @@ class TCGiant_Sync_Mapper {
 							$product_data['sku'], $sku_product_id, $existing_item_id, $item_id
 						) );
 						$product_id = $sku_product_id;
+						$linked_by_sku = true;
 						// Clear the old item ID so it gets replaced with the new one.
 						update_post_meta( $sku_product_id, '_ebay_item_id', $item_id );
 					} else {
@@ -930,6 +934,14 @@ class TCGiant_Sync_Mapper {
 			$sync_decisions[] = 'Attributes skipped (WooCommerce won)';
 		}
 
+		// A push of this product that did not finish sent its SKU to eBay, and
+		// this may well be the listing it made: linked to it now, as Link
+		// would have, that push is complete. Left saying it did not finish,
+		// the product told the shop to Link (a linked product is not offered
+		// Link) or to Unlink a listing it had just left, Clear was refused,
+		// and Auto-Relist, Relist and the bulk pushes left it out for good.
+		$completed_push = $linked_by_sku && TCGiant_Sync_Listing_Link::complete_unfinished_push( $product );
+
 		// Set Custom Meta (including _ebay_item_id for tracking).
 		foreach ( $product_data['meta'] as $key => $val ) {
 			$product->update_meta_data( $key, $val );
@@ -976,6 +988,14 @@ class TCGiant_Sync_Mapper {
 			TCGiant_Sync_Runtime::stage( 'after saving the product' );
 		} finally {
 			TCGiant_Sync_Inventory::end_ebay_origin();
+		}
+
+		if ( $completed_push && $saved_id ) {
+			TCGiant_Sync_Logger::log( sprintf(
+				'WC #%1$d was linked by the sync to eBay listing %2$s, by its SKU, while its last push said it had not finished: that push is taken as complete, and its warning is cleared.',
+				$saved_id,
+				$item_id
+			) );
 		}
 
 		// When a brand new product is created and it doesn't have images yet,

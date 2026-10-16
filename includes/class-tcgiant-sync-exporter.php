@@ -34,6 +34,39 @@ class TCGiant_Sync_Exporter {
 	 */
 	const PUSH_ACTION = 'tcgiant_export_push_product';
 
+	/**
+	 * What a push is called in the record PHP leaves when it kills one -
+	 * "Push stopped by a PHP fatal error ..." - and in the option that record
+	 * is kept under.
+	 */
+	const PUSH_JOB = 'Push';
+
+	/**
+	 * Seconds a push may say it is still pushing before the screens stop
+	 * believing it.
+	 *
+	 * One push is one eBay call and a product save: well under a minute, even
+	 * with eBay slow to answer. A push the host killed outright says "pushing"
+	 * for ever, because nothing in the request lived to say otherwise, and
+	 * Action Scheduler only notices five minutes later at the soonest - on a
+	 * site with little traffic, much later than that. Fifteen minutes is well
+	 * past any push that is really still going.
+	 */
+	const PUSH_STALE_AFTER = 900;
+
+	/**
+	 * The push this request is working on, while it is: which product, what
+	 * it is called, the listing it was linked to when it began and whether
+	 * that listing had ended, and the listing eBay created for it once that
+	 * is known.
+	 *
+	 * Kept here, ready, so that if PHP kills the push the record of it can be
+	 * written from what is already in memory.
+	 *
+	 * @var array|null
+	 */
+	private static $in_flight = null;
+
 	/*
 	 * Kept for anyone outside the plugin who reached for these here.
 	 *
@@ -227,6 +260,38 @@ class TCGiant_Sync_Exporter {
 	 */
 	public function __construct() {
 		add_action( self::PUSH_ACTION, array( $this, 'process_single_push' ), 10, 1 );
+
+		// A push the host kills writes nothing at all. A shop pushed three
+		// products, the first was killed after eBay had created its listing but
+		// before the product was given the item number, and the log said
+		// nothing about it - the product simply sat there unlinked, and the
+		// batch reported itself complete.
+		//
+		// Action Scheduler is the one thing that does notice, and these are its
+		// hooks for it (woocommerce/action-scheduler):
+		//
+		// - action_scheduler_failed_action ( $action_id, $timeout ): from the
+		//   queue cleaner, in a later request, for an action still marked as
+		//   running five minutes on. A request killed outright - by the host's
+		//   own time limit or a process reaper - is only ever found this way.
+		// - action_scheduler_unexpected_shutdown ( $action_id, $error ): from
+		//   its fatal error monitor, in the dying request, after a PHP fatal.
+		// - action_scheduler_failed_execution ( $action_id, $e, $context ): the
+		//   action threw.
+		//
+		// It has no action_scheduler_failed_old_action. The cleaner's only other
+		// failure hook, action_scheduler_failed_old_action_deletion, is about
+		// deleting old actions, not running them.
+		add_action( 'action_scheduler_failed_action', array( $this, 'on_push_action_failed' ), 10, 2 );
+		add_action( 'action_scheduler_unexpected_shutdown', array( $this, 'on_push_action_shutdown' ), 10, 2 );
+		add_action( 'action_scheduler_failed_execution', array( $this, 'on_push_action_threw' ), 10, 2 );
+
+		// Each push asks whether its batch is over while Action Scheduler still
+		// counts it as running - and so is any push running beside it. Two queue
+		// runners finishing a batch's last two pushes at once each saw the
+		// other's still running and left it, and nothing ever asked again. Once
+		// a queue run is over, its own pushes are marked done.
+		add_action( 'action_scheduler_after_process_queue', array( $this, 'recheck_export_completion' ) );
 	}
 
 	// -------------------------------------------------------------------------
@@ -240,7 +305,7 @@ class TCGiant_Sync_Exporter {
 	 */
 	public static function get_export_state() {
 		return get_option( self::EXPORT_STATE_OPTION, array(
-			'status'          => 'idle',   // idle, queued, pushing, complete, error
+			'status'          => 'idle',   // idle, scheduling, queued, pushing, complete, incomplete, error
 			'total_queued'    => 0,
 			'total_pushed'    => 0,
 			'total_errors'    => 0,
@@ -261,6 +326,23 @@ class TCGiant_Sync_Exporter {
 		$state = array_merge( $state, $updates );
 		$state['last_activity'] = current_time( 'mysql' );
 		update_option( self::EXPORT_STATE_OPTION, $state );
+	}
+
+	/**
+	 * Forget this request's copy of the export state, so the next read is the
+	 * database's.
+	 *
+	 * WordPress keeps an autoloaded option for the length of a request. A
+	 * request that has been at work for a while - scheduling a thousand
+	 * pushes, or running a queue - holds the state as it was when it began,
+	 * and writing that back would undo what the pushes in other requests have
+	 * counted since.
+	 */
+	private static function forget_cached_export_state() {
+		if ( function_exists( 'wp_cache_delete' ) ) {
+			wp_cache_delete( 'alloptions', 'options' );
+			wp_cache_delete( self::EXPORT_STATE_OPTION, 'options' );
+		}
 	}
 
 	// -------------------------------------------------------------------------
@@ -287,9 +369,27 @@ class TCGiant_Sync_Exporter {
 		);
 
 		// Clear any previous error so it doesn't linger during the new attempt.
-		$product->update_meta_data( '_ebay_export_status', 'queued' );
-		$product->update_meta_data( '_ebay_export_error', '' );
-		$product->save();
+		//
+		// Not one saying an earlier push did not finish. That push may have
+		// made a listing nothing here points to, and the product must go on
+		// saying so until a push of it finishes or Link gives it that listing:
+		// what it says is what keeps it out of Clear, Auto-Relist, Relist, the
+		// bulk pushes and "Remove sold products". Written over at once, it was
+		// gone for good when the push queued here never finished - cancelled
+		// by any later bulk push, which cancels every push still waiting, or
+		// refused before it reached eBay.
+		if ( 'failed' !== (string) $product->get_meta( '_ebay_export_status' ) ) {
+			$product->update_meta_data( '_ebay_export_status', 'queued' );
+			$product->update_meta_data( '_ebay_export_error', '' );
+		}
+		// Each save here fires other plugins' save hooks: see
+		// TCGiant_Sync_Runtime::guard_loops().
+		TCGiant_Sync_Runtime::guard_loops();
+		try {
+			$product->save();
+		} finally {
+			TCGiant_Sync_Runtime::unguard_loops();
+		}
 
 		TCGiant_Sync_Logger::log( sprintf( 'Export: Queued "%s" (WC #%d) for push to eBay.', $product->get_name(), $product_id ) );
 		return true;
@@ -311,32 +411,88 @@ class TCGiant_Sync_Exporter {
 			as_unschedule_all_actions( self::PUSH_ACTION, null, 'tcgiant_sync_group' );
 		}
 
-		$queued = 0;
-		foreach ( $product_ids as $index => $product_id ) {
+		$batch = array();
+		foreach ( $product_ids as $product_id ) {
 			$product_id = (int) $product_id;
-			if ( $product_id <= 0 ) {
+			if ( $product_id > 0 ) {
+				$batch[] = $product_id;
+			}
+		}
+
+		$queued = count( $batch );
+		if ( 0 === $queued ) {
+			return 0;
+		}
+
+		// The batch's figures go in before any of its pushes exist. Written
+		// after them, as they were, a push that ran at once - the first is due
+		// immediately, and a thousand take seconds to schedule - counted itself
+		// in figures this then reset, so a batch that had pushed everything
+		// came up one short; and a request killed while scheduling left the
+		// pushes it had scheduled with no batch to count them into.
+		//
+		// Scheduling, until every push is: the batch's pushes count themselves
+		// in, but nothing ends it yet. A push still running from before, for
+		// one of these products, could finish while the rest were being
+		// marked - and finding nothing waiting to run and every other product
+		// saying queued, it closed the batch then and there, with all of them
+		// as pushes that did not finish.
+		self::update_export_state( array(
+			'status'       => 'scheduling',
+			'total_queued' => $queued,
+			'total_pushed' => 0,
+			'total_errors' => 0,
+			'started_at'   => current_time( 'mysql' ),
+			// Which products are this batch's, so its figures count only them,
+			// and its end is judged from what they say.
+			'product_ids'  => $batch,
+		) );
+
+		// Say so on each product, as a push from its own screen does. A bulk
+		// push wrote nothing here, so a product whose push never ran, or never
+		// finished, looked exactly like one nobody had pushed - and the end of
+		// the batch had no way to tell which ones those were.
+		//
+		// All of them before any push is scheduled: so that this cannot land on
+		// top of a push that has already begun, and so that a request killed
+		// while scheduling leaves the products it never scheduled saying
+		// queued - a push that never ran, which the end of the batch reports
+		// as one - rather than what they said before, which reads as pushed.
+		//
+		// Straight to the database: a full product save for each one would run
+		// every other plugin's save hooks once per product, before a single
+		// push has started.
+		//
+		// Except one whose earlier push did not finish: see push_product().
+		foreach ( $batch as $product_id ) {
+			if ( 'failed' === (string) get_post_meta( $product_id, '_ebay_export_status', true ) ) {
 				continue;
 			}
+			update_post_meta( $product_id, '_ebay_export_status', 'queued' );
+			update_post_meta( $product_id, '_ebay_export_error', '' );
+		}
+
+		foreach ( $batch as $index => $product_id ) {
 			// Stagger jobs by 3 seconds each to avoid rate limiting.
-			$delay = 3 * $queued;
 			as_schedule_single_action(
-				time() + $delay,
+				time() + 3 * $index,
 				self::PUSH_ACTION,
 				array( 'product_id' => $product_id ),
 				'tcgiant_sync_group'
 			);
-			$queued++;
 		}
 
-		if ( $queued > 0 ) {
-			self::update_export_state( array(
-				'status'       => 'queued',
-				'total_queued' => $queued,
-				'total_pushed' => 0,
-				'total_errors' => 0,
-				'started_at'   => current_time( 'mysql' ),
-			) );
-			TCGiant_Sync_Logger::log( sprintf( 'Export: Queued %d products for bulk push to eBay.', $queued ) );
+		TCGiant_Sync_Logger::log( sprintf( 'Export: Queued %d products for bulk push to eBay.', $queued ) );
+
+		// Every push is scheduled: the batch can end now. Read afresh, for what
+		// its pushes have counted while this request was busy - and asked at
+		// once, because they may all have run already. Unless another bulk
+		// push has begun meanwhile: the state is that one's, still scheduling.
+		self::forget_cached_export_state();
+		$state = self::get_export_state();
+		if ( 'scheduling' === ( $state['status'] ?? '' ) && ( $state['product_ids'] ?? null ) === $batch ) {
+			self::update_export_state( array( 'status' => 'queued' ) );
+			$this->check_export_completion( 0 );
 		}
 
 		return $queued;
@@ -356,32 +512,95 @@ class TCGiant_Sync_Exporter {
 		$product    = wc_get_product( $product_id );
 
 		if ( ! $product ) {
-			self::update_export_state( array(
-				'total_errors' => self::get_export_state()['total_errors'] + 1,
-			) );
+			self::count_outcome( $product_id, 'total_errors' );
 			TCGiant_Sync_Logger::error( sprintf( 'Export: Product ID %d not found during async push.', $product_id ) );
-			$this->check_export_completion();
+			$this->check_export_completion( $product_id );
 			return;
 		}
 
 		$title = $product->get_name();
 
+		// Watched, so that a push PHP kills says so - which product, and
+		// whether it died waiting for eBay or saving what eBay said. The item
+		// number is only written to the product at the save below; until then
+		// it is in memory, and a request killed in between left a live eBay
+		// listing that nothing in WooCommerce pointed to, and no line at all.
+		self::$in_flight = array(
+			'product_id' => $product_id,
+			'title'      => (string) $title,
+			'linked'     => (string) $product->get_meta( '_ebay_item_id' ),
+			// A linked listing that has ended is not revised: eBay refuses, and
+			// the push makes a new listing in its place.
+			'ended'      => self::linked_listing_ended( $product_id ),
+			'created'    => '',
+			// What an earlier push that did not finish said, when this one
+			// follows it. It stands unless this one finishes: see push_product().
+			'unfinished' => 'failed' === (string) $product->get_meta( '_ebay_export_status' )
+				? (string) $product->get_meta( '_ebay_export_error' )
+				: null,
+		);
+		TCGiant_Sync_Runtime::watch( self::PUSH_JOB, array( __CLASS__, 'on_push_death' ) );
+		TCGiant_Sync_Runtime::context( sprintf( 'WC #%d "%s"', $product_id, $title ) );
+
 		try {
+			// On the product, in the database, before eBay is asked. Written
+			// straight to the table rather than with the product's own save,
+			// which would hold it in memory with everything else - a request
+			// killed while waiting for eBay must still leave this behind, so the
+			// product shows a push that began and never came back.
+			update_post_meta( $product_id, '_ebay_export_status', 'pushing' );
+			update_post_meta( $product_id, '_ebay_export_pushing_since', time() );
+
+			// The product read its meta before those two writes. Read it again,
+			// so its own save below updates those rows instead of adding a
+			// second row of each beside them.
+			$product->read_meta_data( true );
+
+			TCGiant_Sync_Runtime::stage( 'sending to eBay' );
 			$result = $this->do_push( $product );
 
 			if ( is_wp_error( $result ) ) {
 				$error_msg = self::explain_ebay_error( $result->get_error_message() );
-				$product->update_meta_data( '_ebay_export_status', 'error' );
-				$product->update_meta_data( '_ebay_export_error', $error_msg );
-				$product->save();
+				$earlier   = self::$in_flight['unfinished'];
 
-				self::update_export_state( array(
-					'total_errors' => self::get_export_state()['total_errors'] + 1,
+				// Refused: this push made nothing, but the one before it may
+				// have. Marked error, the product read as one eBay had refused:
+				// Clear was offered, Link left it as it was, and it was trashed
+				// as an imported product when the listing that push made sold out.
+				$product->update_meta_data( '_ebay_export_status', null === $earlier ? 'error' : 'failed' );
+				$product->update_meta_data( '_ebay_export_error', null === $earlier ? $error_msg : $earlier );
+				$product->delete_meta_data( '_ebay_export_pushing_since' );
+				TCGiant_Sync_Runtime::guard_loops();
+				try {
+					$product->save();
+				} finally {
+					TCGiant_Sync_Runtime::unguard_loops();
+				}
+
+				// Still a push that did not finish, which the end of the batch
+				// names as one: counted as an error too, it would be counted twice.
+				if ( null === $earlier ) {
+					self::count_outcome( $product_id, 'total_errors' );
+				}
+				TCGiant_Sync_Logger::error( sprintf(
+					'Export failed for "%s" (WC #%d): %s%s',
+					$title,
+					$product_id,
+					$error_msg,
+					null === $earlier ? '' : ' Its earlier push did not finish, and it still says so: use Link if that push made a listing.'
 				) );
-				TCGiant_Sync_Logger::error( sprintf( 'Export failed for "%s" (WC #%d): %s', $title, $product_id, $error_msg ) );
 			} else {
 				$item_id = $result['item_id'];
 				$action  = $result['action']; // 'created', 'updated' or 'relisted'
+
+				// eBay has made a listing that, until the save below, only this
+				// request knows the number of. If it dies now, the record of it
+				// gives the number, so the shop can link it instead of pushing
+				// again and listing the product twice.
+				if ( 'updated' !== $action ) {
+					self::$in_flight['created'] = (string) $item_id;
+				}
+				TCGiant_Sync_Runtime::stage( 'saving the link' );
 
 				$product->update_meta_data( '_ebay_item_id', $item_id );
 				$product->update_meta_data( '_ebay_export_status', 'pushed' );
@@ -426,7 +645,13 @@ class TCGiant_Sync_Exporter {
 					), 'success' );
 				}
 
-				$product->save();
+				$product->delete_meta_data( '_ebay_export_pushing_since' );
+				TCGiant_Sync_Runtime::guard_loops();
+				try {
+					$product->save();
+				} finally {
+					TCGiant_Sync_Runtime::unguard_loops();
+				}
 
 				// Put it on the Listings screen.
 				//
@@ -478,11 +703,7 @@ class TCGiant_Sync_Exporter {
 
 				TCGiant_Sync_DB::upsert( $row );
 
-				$state = self::get_export_state();
-				self::update_export_state( array(
-					'total_pushed'    => $state['total_pushed'] + 1,
-					'last_item_title' => $title,
-				) );
+				self::count_outcome( $product_id, 'total_pushed', array( 'last_item_title' => $title ) );
 
 				TCGiant_Sync_Logger::log(
 					sprintf(
@@ -493,18 +714,415 @@ class TCGiant_Sync_Exporter {
 				);
 			}
 		} catch ( Exception $e ) {
-			self::update_export_state( array(
-				'total_errors' => self::get_export_state()['total_errors'] + 1,
-			) );
-			TCGiant_Sync_Logger::error( sprintf( 'Export exception for "%s" (WC #%d): %s', $title, $product_id, $e->getMessage() ) );
+			// One that threw after eBay had made a listing did not finish, and
+			// the end of the batch names it as one: counted as an error too,
+			// it would be counted twice.
+			if ( ! self::record_push_exception( sprintf( 'Export exception for "%s" (WC #%d): %s', $title, $product_id, $e->getMessage() ) ) ) {
+				self::count_outcome( $product_id, 'total_errors' );
+			}
 		} catch ( Error $e ) {
-			self::update_export_state( array(
-				'total_errors' => self::get_export_state()['total_errors'] + 1,
-			) );
-			TCGiant_Sync_Logger::error( sprintf( 'Export fatal error for "%s" (WC #%d): %s', $title, $product_id, $e->getMessage() ) );
+			if ( ! self::record_push_exception( sprintf( 'Export fatal error for "%s" (WC #%d): %s', $title, $product_id, $e->getMessage() ) ) ) {
+				self::count_outcome( $product_id, 'total_errors' );
+			}
+		} finally {
+			TCGiant_Sync_Runtime::unwatch();
+			self::$in_flight = null;
 		}
 
-		$this->check_export_completion();
+		$this->check_export_completion( $product_id );
+	}
+
+	// -------------------------------------------------------------------------
+	// A Push That Did Not Finish
+	// -------------------------------------------------------------------------
+
+	/**
+	 * Count one push's outcome in the export figures.
+	 *
+	 * While a bulk push is running its figures are its own. A product pushed
+	 * from its own screen meanwhile used to be counted into them, so a batch of
+	 * three in which one push died could still add up to three and call itself
+	 * complete. Outside a bulk push every push counts, as it always has: the
+	 * export screen's total is made of them.
+	 *
+	 * Counted from the state as the database has it, not this request's
+	 * copy. The count writes the whole state back, and a queue runner that
+	 * began while a bulk push was still being scheduled holds it as
+	 * "scheduling": written back, the batch said so again, and nothing ended
+	 * it until it was fifteen minutes old.
+	 *
+	 * @param int    $product_id The product pushed.
+	 * @param string $field      total_pushed or total_errors.
+	 * @param array  $also       Other state to write with it.
+	 */
+	private static function count_outcome( $product_id, $field, array $also = array() ) {
+		self::forget_cached_export_state();
+		$state = self::get_export_state();
+		$batch = isset( $state['product_ids'] ) && is_array( $state['product_ids'] ) ? array_map( 'intval', $state['product_ids'] ) : null;
+
+		if ( null !== $batch && in_array( $state['status'] ?? '', array( 'scheduling', 'queued', 'pushing' ), true ) && ! in_array( (int) $product_id, $batch, true ) ) {
+			return;
+		}
+
+		self::update_export_state( array_merge( $also, array( $field => (int) ( $state[ $field ] ?? 0 ) + 1 ) ) );
+	}
+
+	/**
+	 * A push that threw: logged, and said on the product.
+	 *
+	 * The product's status used to be left as it was, so it went on saying
+	 * "queued" for a push whose error was right there in the log - and from
+	 * this version it would go on saying "pushing", and then that the push
+	 * never finished.
+	 *
+	 * One that threw after eBay had made a listing the product does not hold
+	 * is a push that did not finish, as one the host killed is, and the
+	 * product is marked failed, not error. Marked error, it read as a push
+	 * eBay had refused - Unlink dropped it, Link left it, and Clear was
+	 * offered on it - so doing as it said, Unlink then Link, or Link, left a
+	 * product whose push had made the listing looking imported, and "Remove
+	 * sold products" trashed it when that listing sold out.
+	 *
+	 * One that threw with nothing made, after an earlier push that did not
+	 * finish, leaves the product saying that one did not, in its words.
+	 *
+	 * @param string $line What happened, as it is logged.
+	 * @return bool Whether the product is left saying a push did not finish:
+	 *              eBay had made a listing the product does not hold, or an
+	 *              earlier push did not finish.
+	 */
+	private static function record_push_exception( $line ) {
+		$push       = self::$in_flight;
+		$product_id = is_array( $push ) ? (int) $push['product_id'] : 0;
+
+		// eBay may already have made the listing, and the number is known only
+		// here, in this request. Still linked to the listing it replaced, the
+		// product has no Link to use until it is unlinked from that one.
+		$made = $product_id && '' !== $push['created'] && (string) get_post_meta( $product_id, '_ebay_item_id', true ) !== $push['created'];
+		if ( $made ) {
+			$line .= '' !== $push['linked']
+				? sprintf( ' eBay had already created listing %1$s for it in place of ended listing %2$s: Unlink it from listing %2$s, then use Link with item number %1$s; pushing it again would list it twice.', $push['created'], $push['linked'] )
+				: sprintf( ' eBay had already created listing %s for it: use Link on the product with that item number; pushing it again would list it twice.', $push['created'] );
+		}
+
+		TCGiant_Sync_Logger::error( $line );
+
+		// One that made nothing, after an earlier push that did not finish,
+		// leaves the product saying that one did not: see push_product().
+		$earlier = ( ! $made && $product_id && isset( $push['unfinished'] ) ) ? (string) $push['unfinished'] : null;
+
+		if ( $product_id ) {
+			update_post_meta( $product_id, '_ebay_export_status', ( $made || null !== $earlier ) ? 'failed' : 'error' );
+			update_post_meta( $product_id, '_ebay_export_error', null !== $earlier ? $earlier : $line );
+			delete_post_meta( $product_id, '_ebay_export_pushing_since' );
+		}
+
+		return $made || null !== $earlier;
+	}
+
+	/**
+	 * PHP has killed a push.
+	 *
+	 * Runs on shutdown, after the record of the death is written, so it must
+	 * allocate little. What it says is built from what the push already held,
+	 * and goes straight to the log file and the product's meta.
+	 *
+	 * @param string $message What the record of the death said.
+	 */
+	public static function on_push_death( $message ) {
+		$push            = self::$in_flight;
+		self::$in_flight = null;
+
+		if ( ! is_array( $push ) ) {
+			return;
+		}
+
+		self::report_unfinished_push( $push['product_id'], $push['title'], $push['linked'], $push['ended'], $push['created'], 'your server stopped it', true );
+	}
+
+	/**
+	 * Action Scheduler found a push still running five minutes on, and has
+	 * marked it failed.
+	 *
+	 * Time is all its queue cleaner goes by: an action still marked as running
+	 * that long after it began. Nearly always the request running it was
+	 * killed outright, but a push that was only slow looks just the same, so
+	 * this says what was seen. A death PHP itself saw, reported from the
+	 * dying request, is the one that can say the server stopped it.
+	 *
+	 * @param int $action_id The action.
+	 * @param int $timeout   Seconds it waited.
+	 */
+	public function on_push_action_failed( $action_id, $timeout = 0 ) {
+		$timeout = (int) $timeout;
+
+		if ( $timeout >= 60 ) {
+			$minutes = (int) round( $timeout / 60 );
+			$waited  = $minutes . ( 1 === $minutes ? ' minute' : ' minutes' );
+		} else {
+			$waited = $timeout > 0 ? $timeout . ( 1 === $timeout ? ' second' : ' seconds' ) : '';
+		}
+
+		$why = '' !== $waited
+			? sprintf( 'Action Scheduler found it still running %s on and gave up on it, so your server most likely stopped it', $waited )
+			: 'Action Scheduler found it still running and gave up on it, so your server most likely stopped it';
+
+		$this->push_action_ended( $action_id, $why, false );
+	}
+
+	/**
+	 * Action Scheduler saw a PHP fatal error end the request running a push.
+	 * Runs on shutdown, in the dying request.
+	 *
+	 * @param int   $action_id The action.
+	 * @param array $error     error_get_last().
+	 */
+	public function on_push_action_shutdown( $action_id, $error = array() ) {
+		$this->push_action_ended( $action_id, 'your server stopped it', true );
+	}
+
+	/**
+	 * A push threw past everything that catches it inside the push.
+	 *
+	 * @param int            $action_id The action.
+	 * @param Throwable|null $exception What was thrown.
+	 */
+	public function on_push_action_threw( $action_id, $exception = null ) {
+		$why = $exception instanceof Throwable
+			? sprintf( 'it stopped with an error (%s)', $exception->getMessage() )
+			: 'it stopped with an error';
+
+		$this->push_action_ended( $action_id, $why, false );
+	}
+
+	/**
+	 * One of Action Scheduler's actions ended without finishing. If it was a
+	 * push, say so on the product and in the log, and see whether the batch
+	 * it belonged to was waiting on anything else.
+	 *
+	 * @param int    $action_id The action.
+	 * @param string $why       How it ended, for the log line.
+	 * @param bool   $dying     Whether this request is on its way out.
+	 */
+	private function push_action_ended( $action_id, $why, $dying ) {
+		$product_id = self::push_action_product( $action_id );
+		if ( ! $product_id ) {
+			return;
+		}
+
+		$push = self::$in_flight;
+		$ours = is_array( $push ) && (int) $push['product_id'] === $product_id;
+
+		// This request's own push, dying now, is left to on_push_death(): the
+		// record of the death is still to be written, and saying what to do
+		// about it belongs after it.
+		if ( ! ( $dying && $ours ) ) {
+			self::report_unfinished_push(
+				$product_id,
+				$ours ? $push['title'] : (string) get_post_field( 'post_title', $product_id ),
+				$ours ? $push['linked'] : (string) get_post_meta( $product_id, '_ebay_item_id', true ),
+				// The push died before it wrote anything back, so what the product
+				// says of its listing is what the push began with.
+				$ours ? $push['ended'] : self::linked_listing_ended( $product_id ),
+				$ours ? $push['created'] : '',
+				$why,
+				$dying
+			);
+		}
+
+		if ( $dying ) {
+			// Last of all on the way out, after the record of the death: this
+			// reads and writes the export state, which takes memory a request
+			// that has just run out of it may not have.
+			register_shutdown_function( array( $this, 'complete_export_after_death' ), $product_id );
+			return;
+		}
+
+		$this->check_export_completion( $product_id );
+	}
+
+	/**
+	 * The batch a dead push belonged to may have been waiting on nothing
+	 * else, and no other push is left to say it has finished. Runs on
+	 * shutdown, last.
+	 *
+	 * @param int $product_id The product whose push died.
+	 */
+	public function complete_export_after_death( $product_id ) {
+		try {
+			$this->check_export_completion( (int) $product_id );
+		} catch ( Throwable $e ) {
+			// The push's own line is written; this was only the summary.
+			unset( $e );
+		}
+	}
+
+	/**
+	 * The product an Action Scheduler action pushes, or 0 if it is not a push.
+	 *
+	 * @param int $action_id The action.
+	 * @return int
+	 */
+	private static function push_action_product( $action_id ) {
+		// is_callable() rather than method_exists(): the same answer for
+		// ActionScheduler::store(), which is public and static, and one PHPStan
+		// can follow without stubs for Action Scheduler.
+		if ( ! class_exists( 'ActionScheduler' ) || ! is_callable( array( 'ActionScheduler', 'store' ) ) ) {
+			return 0;
+		}
+
+		try {
+			$action = ActionScheduler::store()->fetch_action( $action_id );
+		} catch ( Exception $e ) {
+			return 0;
+		}
+
+		if ( ! is_object( $action ) || ! method_exists( $action, 'get_hook' ) || self::PUSH_ACTION !== $action->get_hook() ) {
+			return 0;
+		}
+
+		$args = $action->get_args();
+		if ( ! is_array( $args ) || ! $args ) {
+			return 0;
+		}
+
+		return (int) ( isset( $args['product_id'] ) ? $args['product_id'] : reset( $args ) );
+	}
+
+	/**
+	 * Say in the log and on the product that a push did not finish.
+	 *
+	 * Once only. Action Scheduler and the record of the death can each report
+	 * the same push, and a push that has finished since - or never began - is
+	 * left alone.
+	 *
+	 * @param int    $product_id The product.
+	 * @param string $title      Its name.
+	 * @param string $linked     The eBay listing it was linked to, or ''.
+	 * @param bool   $ended      Whether that listing had ended.
+	 * @param string $created    The listing eBay created for it, if known.
+	 * @param string $why        How it ended.
+	 * @param bool   $dying      Whether this request is on its way out.
+	 * @return bool Whether anything was said.
+	 */
+	private static function report_unfinished_push( $product_id, $title, $linked, $ended, $created, $why, $dying ) {
+		$product_id = (int) $product_id;
+		$status     = (string) get_post_meta( $product_id, '_ebay_export_status', true );
+
+		if ( 'pushing' !== $status && 'queued' !== $status ) {
+			return false;
+		}
+
+		$message = self::unfinished_push_message( $product_id, $title, $linked, $ended, $created, $why );
+
+		// The line first: an append to the file, and what the shop reads.
+		if ( $dying ) {
+			TCGiant_Sync_Logger::write_now( $message, 'error' );
+		} else {
+			TCGiant_Sync_Logger::error( $message );
+		}
+
+		update_post_meta( $product_id, '_ebay_export_status', 'failed' );
+		update_post_meta( $product_id, '_ebay_export_error', $message );
+
+		return true;
+	}
+
+	/**
+	 * What to tell the shop about a push that did not finish.
+	 *
+	 * The danger is a second listing. eBay may well have created the first
+	 * before the request was stopped, and the product, holding no item
+	 * number, looks as if it was never pushed - so the obvious thing to do,
+	 * pushing it again, lists it twice. Link is the way out.
+	 *
+	 * A linked product has no Link to use: the product screen offers it only
+	 * to a product with no listing. Its push was revising that listing - or,
+	 * if the listing had ended, making a new one in its place. The old one
+	 * then looks exactly as it should, and checking it before pushing again
+	 * is how the second new listing got made. Unlink, then Link, is the way
+	 * out there.
+	 *
+	 * @param int    $product_id The product.
+	 * @param string $title      Its name.
+	 * @param string $linked     The eBay listing it was linked to, or ''.
+	 * @param bool   $ended      Whether that listing had ended.
+	 * @param string $created    The listing eBay created for it, if known.
+	 * @param string $why        How it ended.
+	 * @return string
+	 */
+	private static function unfinished_push_message( $product_id, $title, $linked, $ended, $created, $why ) {
+		$head = sprintf( 'The push of "%s" (WC #%d) did not finish - %s', $title, (int) $product_id, $why );
+
+		// Linked, and given a new listing: the old one had ended, and this was
+		// its replacement.
+		if ( '' !== (string) $created && '' !== (string) $linked ) {
+			return $head . sprintf( ' after eBay created listing %1$s in place of ended listing %2$s. Unlink it from listing %2$s, then use Link with item number %1$s; pushing it again would list it twice.', $created, $linked );
+		}
+
+		if ( '' !== (string) $created ) {
+			return $head . sprintf( ' after eBay created listing %s. Use Link on the product with that item number; pushing it again would list it twice.', $created );
+		}
+
+		if ( '' !== (string) $linked ) {
+			return $head . ( $ended
+				? sprintf( '. It is linked to eBay listing %s, which had ended, so this push was making a new one in its place: look on eBay for it, and if it is there, Unlink this product and Link it to the new item number - pushing it again would list it twice.', $linked )
+				: sprintf( '. It is linked to eBay listing %s. If that listing had ended, this push was making a new one in its place: look on eBay for it, and if it is there, Unlink this product and Link it to the new item number - pushing it again would list it twice.', $linked ) );
+		}
+
+		return $head . '. If the listing is on eBay, use Link on the product with its item number; pushing it again would list it twice.';
+	}
+
+	/**
+	 * Whether the listing a product is linked to is over, as far as the
+	 * product knows: a sync marked it ended, or its end time has passed. The
+	 * same judgement as TCGiant_Sync_Admin::listing_has_ended(), which the
+	 * product screens make - here because the push runs where the admin
+	 * class is not loaded.
+	 *
+	 * @param int $product_id The product.
+	 * @return bool
+	 */
+	public static function linked_listing_ended( $product_id ) {
+		$product_id = (int) $product_id;
+
+		if ( '' === (string) get_post_meta( $product_id, '_ebay_item_id', true ) ) {
+			return false;
+		}
+
+		if ( 'Ended' === (string) get_post_meta( $product_id, '_ebay_listing_status', true ) ) {
+			return true;
+		}
+
+		$end_time = (string) get_post_meta( $product_id, '_ebay_end_time', true );
+		$ends_at  = '' !== $end_time ? strtotime( $end_time ) : false;
+
+		return $ends_at && $ends_at < time();
+	}
+
+	/**
+	 * Where a product's last push stands, for the product screens.
+	 *
+	 * @param int      $product_id The product.
+	 * @param int|null $now        Unix time, for the harness; now if null.
+	 * @return string 'pushing', 'stale' (said it was pushing for too long to
+	 *                believe), 'failed' (did not finish), or ''.
+	 */
+	public static function push_progress( $product_id, $now = null ) {
+		$status = (string) get_post_meta( $product_id, '_ebay_export_status', true );
+
+		if ( 'failed' === $status ) {
+			return 'failed';
+		}
+
+		if ( 'pushing' !== $status ) {
+			return '';
+		}
+
+		$since = (int) get_post_meta( $product_id, '_ebay_export_pushing_since', true );
+		$now   = null === $now ? time() : (int) $now;
+
+		return ( $since > 0 && $now - $since > self::PUSH_STALE_AFTER ) ? 'stale' : 'pushing';
 	}
 
 	// -------------------------------------------------------------------------
@@ -902,11 +1520,12 @@ class TCGiant_Sync_Exporter {
 	 * WooCommerce's stock but not eBay's, and sent no quantity, so eBay relisted
 	 * at whatever it had left.
 	 *
-	 * Refuses unless the product is published and has stock to sell; makes
-	 * sure that stock is real (ended_listing_check()); relists through the
-	 * call eBay says the listing's format needs, at the shop's quantity; and
-	 * records the new listing's times, so the hourly check does not mark a
-	 * fresh relist ended because the old end date passed.
+	 * Refuses unless the product is published, has stock to sell, and has no
+	 * push under way or unfinished; makes sure that stock is real
+	 * (ended_listing_check()); relists through the call eBay says the
+	 * listing's format needs, at the shop's quantity; and records the new
+	 * listing's times, so the hourly check does not mark a fresh relist ended
+	 * because the old end date passed.
 	 *
 	 * @param int    $product_id Product.
 	 * @param string $source     For the log, e.g. "Bulk relist".
@@ -924,6 +1543,16 @@ class TCGiant_Sync_Exporter {
 		$ebay_item_id = (string) $product->get_meta( '_ebay_item_id' );
 		if ( '' === $ebay_item_id ) {
 			return new WP_Error( 'relist_refused', __( 'it has no eBay listing', 'tcgiant-sync' ) );
+		}
+
+		// Not while a push of it is under way, or did not finish. A push that
+		// finds this listing ended makes a new one in its place, and one that
+		// died after eBay made it leaves the product linked here, still Ended.
+		// Auto-relist and bulk Relist then relisted this one too: the product
+		// was live on eBay twice, and its notice - Unlink this listing, Link
+		// the new one - pointed away from the listing it was now linked to.
+		if ( '' !== self::push_progress( $product_id ) ) {
+			return new WP_Error( 'relist_refused', __( 'its last push is still under way or did not finish, and may already have made a new listing in place of this one - its eBay tab says what to do', 'tcgiant-sync' ) );
 		}
 
 		if ( ! $product->is_in_stock() || ( $product->managing_stock() && (int) $product->get_stock_quantity() < 1 ) ) {
@@ -2147,14 +2776,22 @@ class TCGiant_Sync_Exporter {
 	public static function find_coin_listings_needing_refresh( $limit = 500 ) {
 		global $wpdb;
 
+		// Pushed, or pushed before and now queued for a push, under way, or in
+		// a push that did not finish - which is what a bulk refresh of these
+		// very listings leaves them saying until each one is done. Only a push
+		// that succeeded writes _ebay_export_last_pushed, or Link completing
+		// one that did not finish. The banner counts only those still saying
+		// pushed: the rest are on their way, or carry their own notice.
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		$candidates = $wpdb->get_col( $wpdb->prepare(
-			"SELECT p.ID
+			"SELECT DISTINCT p.ID
 			 FROM {$wpdb->posts} p
 			 INNER JOIN {$wpdb->postmeta} st ON p.ID = st.post_id AND st.meta_key = '_ebay_export_status'
+			 LEFT JOIN {$wpdb->postmeta} lp ON p.ID = lp.post_id AND lp.meta_key = '_ebay_export_last_pushed'
 			 WHERE p.post_type = 'product'
 			   AND p.post_status = 'publish'
-			   AND st.meta_value = 'pushed'
+			   AND ( st.meta_value = 'pushed'
+			         OR ( st.meta_value IN ( 'queued', 'pushing', 'failed' ) AND lp.meta_value != '' ) )
 			 LIMIT %d",
 			(int) $limit
 		) );
@@ -2788,44 +3425,232 @@ class TCGiant_Sync_Exporter {
 	// -------------------------------------------------------------------------
 
 	/**
-	 * Check if the bulk export is complete and update state accordingly.
+	 * A queue run is over: ask again whether the bulk push is.
+	 *
+	 * Every push asks as it ends, while Action Scheduler still counts it as
+	 * running, along with any push running beside it in another queue
+	 * runner. Two runners finishing the batch's last two pushes together
+	 * each saw the other's still running, and the batch never ended. By the
+	 * time a runner's queue run is over, the pushes it ran are marked done.
+	 *
+	 * Asked only while a batch is open, and then of the database, not of
+	 * this request's copy: the other runner may have ended it since.
 	 */
-	private function check_export_completion() {
+	public function recheck_export_completion() {
+		if ( ! in_array( self::get_export_state()['status'] ?? '', array( 'scheduling', 'queued', 'pushing' ), true ) ) {
+			return;
+		}
+
+		self::forget_cached_export_state();
 		$state = self::get_export_state();
 
+		// Still being scheduled. Long after it began, the request scheduling it
+		// was stopped part way, and what it scheduled is all there will be:
+		// the batch ends when those have run, and names the products it never
+		// got to - still saying queued - as pushes that did not finish.
+		if ( 'scheduling' === ( $state['status'] ?? '' ) ) {
+			$began = strtotime( (string) ( $state['started_at'] ?? '' ) );
+			if ( ! $began || strtotime( current_time( 'mysql' ) ) - $began <= self::PUSH_STALE_AFTER ) {
+				return;
+			}
+			self::update_export_state( array( 'status' => 'queued' ) );
+		}
+
+		$this->check_export_completion( 0 );
+	}
+
+	/**
+	 * Check if the bulk export is complete and update state accordingly.
+	 *
+	 * Every push that reports back - pushed, or refused by eBay - is counted,
+	 * and the batch is over when they add up. When they do not, it is over
+	 * once Action Scheduler has nothing left to run for it. That used to be
+	 * the end of it too, and it was reported exactly like a clean batch:
+	 * "Export complete!", with one added to the pushed figure "for the
+	 * current item", which had already been counted. A clean batch of three
+	 * said four, and a batch of three whose first push the host had killed
+	 * said three, as if nothing had happened.
+	 *
+	 * Which pushes did not finish is read from the batch's products, not the
+	 * figures. Each push reads the figures, adds one and writes them all
+	 * back, so two queue runners at once - each with its own copy - write
+	 * over each other's, and a batch that pushed every product said one had
+	 * not finished. Each product's status is written by its own push alone.
+	 *
+	 * @param int $current_id The product whose push is calling, if one is.
+	 *                        Action Scheduler still counts it as running.
+	 */
+	private function check_export_completion( $current_id = 0 ) {
+		$state = self::get_export_state();
+
+		// Not while the batch is still being scheduled: bulk_push_products()
+		// asks itself once every push is.
 		if ( ! in_array( $state['status'], array( 'queued', 'pushing' ), true ) ) {
 			return;
 		}
 
-		self::update_export_state( array( 'status' => 'pushing' ) );
+		// Kept by every batch since 3.27.4. One started before that has only
+		// its figures to go by.
+		$batch = isset( $state['product_ids'] ) && is_array( $state['product_ids'] ) ? array_map( 'intval', $state['product_ids'] ) : null;
 
-		$completed = $state['total_pushed'] + $state['total_errors'];
-		$is_done   = ( $completed >= $state['total_queued'] && $state['total_queued'] > 0 );
+		// Any push may end the batch, one of its own or not. A push from a
+		// product's own screen, or left over from the batch before, is not
+		// counted into it, but it may be the last push Action Scheduler runs:
+		// the queue cleaner fails a batch's dead push five minutes on, and if
+		// another push is waiting just then, ending the batch is left to that
+		// one.
 
-		// Fallback: check Action Scheduler for any remaining pending jobs.
-		if ( ! $is_done && function_exists( 'as_get_scheduled_actions' ) ) {
-			$pending = as_get_scheduled_actions( array(
-				'hook'     => self::PUSH_ACTION,
-				'group'    => TCGiant_Sync_Importer::GROUP_SCAN,
-				'status'   => ActionScheduler_Store::STATUS_PENDING,
-				'per_page' => 1,
-			) );
-			if ( empty( $pending ) ) {
-				$is_done = true;
+		// Written once, not by every push: each write is the whole state, from
+		// this request's copy of it.
+		if ( 'pushing' !== $state['status'] ) {
+			self::update_export_state( array( 'status' => 'pushing' ) );
+		}
+
+		$queued = (int) $state['total_queued'];
+		$pushed = (int) $state['total_pushed'];
+		$errors = (int) $state['total_errors'];
+		$asked  = false;
+
+		if ( $pushed + $errors < $queued || $queued <= 0 ) {
+			// Not every push has said how it went. Not over while one is still
+			// waiting to run - or still running: a push the host killed goes
+			// on looking like that until Action Scheduler gives up on it, and
+			// calling the batch done before then would leave it out unsaid.
+			if ( ! function_exists( 'as_get_scheduled_actions' ) || self::push_still_running( $current_id ) ) {
+				return;
+			}
+			$asked = true;
+		}
+
+		if ( null === $batch ) {
+			$names      = array();
+			$unfinished = max( 0, $queued - $pushed - $errors );
+		} else {
+			$names = self::unfinished_in_batch( $batch );
+
+			// The figures can add up with one of the batch's pushes still to
+			// run: a product of the batch pushed again from its own screen
+			// meanwhile is counted twice.
+			if ( $names && ! $asked && ( ! function_exists( 'as_get_scheduled_actions' ) || self::push_still_running( $current_id ) ) ) {
+				return;
+			}
+
+			$unfinished = count( $names );
+			$pushed     = max( 0, $queued - $errors - $unfinished );
+		}
+
+		self::update_export_state( array(
+			'status'         => $unfinished > 0 ? 'incomplete' : 'complete',
+			'last_completed' => current_time( 'mysql' ),
+			// What the products say, so the Export screen agrees with the line.
+			'total_pushed'   => $pushed,
+			// Nothing reads the batch's list once it is over, and the state is
+			// an autoloaded option: up to a whole products page of IDs, loaded
+			// on every request, and sent with every answer to the Export
+			// screen, until the next bulk push.
+			'product_ids'    => null,
+		) );
+
+		if ( 0 === $unfinished ) {
+			TCGiant_Sync_Logger::log( sprintf(
+				'Export complete! %d pushed, %d errors out of %d total.',
+				$pushed,
+				$errors,
+				$queued
+			), 'success' );
+			return;
+		}
+
+		$shown = array_slice( $names, 0, 20 );
+		$which = $shown ? ' (WC #' . implode( ', #', $shown ) . ( count( $names ) > count( $shown ) ? sprintf( ' and %d more', count( $names ) - count( $shown ) ) : '' ) . ')' : '';
+
+		TCGiant_Sync_Logger::warning( sprintf(
+			'Export finished: %1$d of %2$d pushed, %3$d errors, %4$d did not finish%5$s. A push that did not finish may still have reached eBay: check eBay, and where the listing is there, use Link on the product with its item number - pushing it again would list it twice.',
+			$pushed,
+			$queued,
+			$errors,
+			$unfinished,
+			$which
+		) );
+	}
+
+	/**
+	 * Whether Action Scheduler still has a push to run, or is running one,
+	 * other than the one calling.
+	 *
+	 * @param int $current_id The product whose push is calling, or 0.
+	 * @return bool
+	 */
+	private static function push_still_running( $current_id ) {
+		$pending = as_get_scheduled_actions( array(
+			'hook'     => self::PUSH_ACTION,
+			'group'    => TCGiant_Sync_Importer::GROUP_SCAN,
+			'status'   => ActionScheduler_Store::STATUS_PENDING,
+			'per_page' => 1,
+		) );
+		if ( ! empty( $pending ) ) {
+			return true;
+		}
+
+		// Two are enough to know: the caller's own is one of them at most.
+		$running = as_get_scheduled_actions( array(
+			'hook'     => self::PUSH_ACTION,
+			'group'    => TCGiant_Sync_Importer::GROUP_SCAN,
+			'status'   => ActionScheduler_Store::STATUS_RUNNING,
+			'per_page' => 2,
+		) );
+		foreach ( (array) $running as $action ) {
+			$args = is_object( $action ) && method_exists( $action, 'get_args' ) ? $action->get_args() : array();
+			if ( (int) ( $args['product_id'] ?? 0 ) !== (int) $current_id ) {
+				return true;
 			}
 		}
 
-		if ( $is_done ) {
-			self::update_export_state( array(
-				'status'        => 'complete',
-				'last_completed' => current_time( 'mysql' ),
-			) );
-			TCGiant_Sync_Logger::log( sprintf(
-				'Export complete! %d pushed, %d errors out of %d total.',
-				$state['total_pushed'] + 1, // +1 for the current item
-				$state['total_errors'],
-				$state['total_queued']
-			), 'success' );
+		return false;
+	}
+
+	/**
+	 * The batch's products whose push did not finish: still queued, still
+	 * saying they are pushing, or reported as not having finished.
+	 *
+	 * Read at the end of every batch, and in a request a push has just died
+	 * in, so asked of the database in one query per 500 products rather than
+	 * through get_post_meta(), which loads every meta row of each product -
+	 * of a thousand products - to read one.
+	 *
+	 * @param int[] $batch The batch's products.
+	 * @return int[] In the batch's order.
+	 */
+	private static function unfinished_in_batch( array $batch ) {
+		global $wpdb;
+
+		$batch = array_values( array_unique( array_filter( array_map( 'intval', $batch ) ) ) );
+		$found = array();
+
+		foreach ( array_chunk( $batch, 500 ) as $chunk ) {
+			// Safe to interpolate: every id has been through intval().
+			$in = implode( ',', $chunk );
+
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+			$ids = $wpdb->get_col(
+				"SELECT DISTINCT post_id FROM {$wpdb->postmeta}
+				 WHERE meta_key = '_ebay_export_status'
+				   AND meta_value IN ( 'queued', 'pushing', 'failed' )
+				   AND post_id IN ( {$in} )"
+			);
+
+			foreach ( (array) $ids as $id ) {
+				$found[ (int) $id ] = true;
+			}
 		}
+
+		$names = array();
+		foreach ( $batch as $product_id ) {
+			if ( isset( $found[ $product_id ] ) ) {
+				$names[] = $product_id;
+			}
+		}
+
+		return $names;
 	}
 }

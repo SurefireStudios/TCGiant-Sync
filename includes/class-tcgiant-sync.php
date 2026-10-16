@@ -121,6 +121,11 @@ final class TCGiant_Sync {
 		// Initialize Image Localizer (background image download).
 		TCGiant_Sync_Image_Localizer::instance();
 
+		// Removes the downloaded photos of products deleted for good. On every
+		// request: products are deleted by WP-Cron emptying the Trash, by the
+		// REST API and by WP-CLI, not only from the admin.
+		TCGiant_Sync_Photo_Cleanup::instance();
+
 		// Initialize Exporter.
 		TCGiant_Sync_Exporter::instance();
 		// Initialize listing-identity protection (every edition; the importer relies on it).

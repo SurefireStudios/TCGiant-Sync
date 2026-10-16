@@ -145,16 +145,21 @@ $export_state = TCGiant_Sync_Exporter::get_export_state();
 			$export_status = $export_state['status'] ?? 'idle';
 			$status_labels = array(
 				'idle'      => array( 'label' => 'Idle', 'color' => '#888' ),
+				// A bulk push still scheduling its pushes, which takes a moment
+				// for a large one.
+				'scheduling' => array( 'label' => 'Queued', 'color' => 'var(--tc-warning)' ),
 				'queued'    => array( 'label' => 'Queued', 'color' => 'var(--tc-warning)' ),
 				'pushing'   => array( 'label' => 'Pushing…', 'color' => 'var(--tc-primary)' ),
 				'complete'  => array( 'label' => 'Complete', 'color' => 'var(--tc-success)' ),
+				// Every push ran, but not every one finished: see the log.
+				'incomplete' => array( 'label' => 'Finished - some pushes did not finish', 'color' => '#d63638' ),
 				'error'     => array( 'label' => 'Error', 'color' => '#d63638' ),
 			);
 			$st = $status_labels[ $export_status ] ?? $status_labels['idle'];
 			?>
 
 			<div class="tc-sync-indicator">
-				<div class="tc-sync-dot <?php echo esc_attr( 'complete' === $export_status ? 'complete' : ( 'error' === $export_status ? 'error' : ( 'idle' === $export_status ? 'stopped' : 'importing' ) ) ); ?>"></div>
+				<div class="tc-sync-dot <?php echo esc_attr( 'complete' === $export_status ? 'complete' : ( in_array( $export_status, array( 'error', 'incomplete' ), true ) ? 'error' : ( 'idle' === $export_status ? 'stopped' : 'importing' ) ) ); ?>"></div>
 				<div>
 					<div class="tc-sync-status" style="color:<?php echo esc_attr( $st['color'] ); ?>;" id="tc-export-status"><?php echo esc_html( $st['label'] ); ?></div>
 					<div class="tc-sync-detail" id="tc-export-detail">

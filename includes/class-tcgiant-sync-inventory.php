@@ -175,6 +175,12 @@ class TCGiant_Sync_Inventory {
 		// eBay has already accounted for its own sales, so nothing written here
 		// may travel back to eBay as a stock change of ours.
 		self::begin_ebay_origin();
+		// And each write here saves the product. Another plugin's work on a
+		// save that saves it again, round and round, is stopped after a few
+		// rounds rather than taking the request down - see guard_loops(). For
+		// every caller: the delta, the per-sale stock check, the ended-listing
+		// check and the Stock Review buttons.
+		TCGiant_Sync_Runtime::guard_loops();
 
 		try {
 			if ( $product->managing_stock() ) {
@@ -231,6 +237,7 @@ class TCGiant_Sync_Inventory {
 				$held  = ( $after && 'outofstock' === $after->get_stock_status() ) ? 0 : $ebay_remaining;
 			}
 		} finally {
+			TCGiant_Sync_Runtime::unguard_loops();
 			self::end_ebay_origin();
 		}
 
@@ -287,6 +294,7 @@ class TCGiant_Sync_Inventory {
 		}
 
 		self::begin_ebay_origin();
+		TCGiant_Sync_Runtime::guard_loops();
 
 		try {
 			wc_update_product_stock( (int) $product_id, $available, 'set' );
@@ -301,6 +309,7 @@ class TCGiant_Sync_Inventory {
 				wc_update_product_stock_status( (int) $product_id, 'outofstock' );
 			}
 		} finally {
+			TCGiant_Sync_Runtime::unguard_loops();
 			self::end_ebay_origin();
 		}
 
@@ -840,7 +849,20 @@ class TCGiant_Sync_Inventory {
 		// rather than importing one has this on every product, and would
 		// otherwise never learn why "Remove sold products" appears to do
 		// nothing at all.
-		if ( 'pushed' === get_post_meta( $product_id, '_ebay_export_status', true ) ) {
+		//
+		// Whatever its latest push is doing. A push says "pushed" only between
+		// pushes: a bulk push marks each product queued, a push marks it
+		// pushing before it asks eBay, and one that dies leaves it failed - so
+		// a product pushed months ago, selling out while queued for a re-push,
+		// was trashed. _ebay_export_last_pushed is written only by a push that
+		// succeeded, or by Link completing one that did not, so it holds
+		// through all of that. A push still pushing, or one that did not
+		// finish, may well have made the listing that sold, even on its first
+		// push. Queued alone is left out: an imported product queued from its
+		// own screen has always been removable.
+		$export_status = (string) get_post_meta( $product_id, '_ebay_export_status', true );
+		if ( in_array( $export_status, array( 'pushed', 'pushing', 'failed' ), true )
+			|| '' !== (string) get_post_meta( $product_id, '_ebay_export_last_pushed', true ) ) {
 			self::log_removal_refused( $product_id, 'this product was pushed to eBay from WooCommerce, so it is the shop\'s own catalogue entry and is kept' );
 
 			return false;
@@ -858,7 +880,14 @@ class TCGiant_Sync_Inventory {
 			return false;
 		}
 
-		wp_trash_post( $product_id );
+		// Trashing goes through wp_update_post(), and its save_post as well.
+		TCGiant_Sync_Runtime::guard_loops();
+
+		try {
+			wp_trash_post( $product_id );
+		} finally {
+			TCGiant_Sync_Runtime::unguard_loops();
+		}
 
 		return true;
 	}
@@ -1136,6 +1165,7 @@ class TCGiant_Sync_Inventory {
 		) );
 
 		self::begin_ebay_origin();
+		TCGiant_Sync_Runtime::guard_loops();
 
 		try {
 			if ( $product->managing_stock() ) {
@@ -1143,6 +1173,7 @@ class TCGiant_Sync_Inventory {
 			}
 			wc_update_product_stock_status( (int) $product_id, 'outofstock' );
 		} finally {
+			TCGiant_Sync_Runtime::unguard_loops();
 			self::end_ebay_origin();
 		}
 
@@ -1189,6 +1220,7 @@ class TCGiant_Sync_Inventory {
 		$figure = max( 0, (int) $figure );
 
 		self::begin_ebay_origin();
+		TCGiant_Sync_Runtime::guard_loops();
 
 		try {
 			if ( $product->managing_stock() ) {
@@ -1196,6 +1228,7 @@ class TCGiant_Sync_Inventory {
 			}
 			wc_update_product_stock_status( (int) $product_id, $figure > 0 ? 'instock' : 'outofstock' );
 		} finally {
+			TCGiant_Sync_Runtime::unguard_loops();
 			self::end_ebay_origin();
 		}
 

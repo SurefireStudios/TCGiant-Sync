@@ -188,19 +188,51 @@ function download_args( $timeout ) {
 	return array( 'method' => 'GET', 'timeout' => $timeout, 'redirection' => 5, 'stream' => true, 'filename' => '/tmp/s-l1600-AbC1.tmp', 'limit_response_size' => null, 'reject_unsafe_urls' => true );
 }
 
-/** media_sideload_image(), with eBay's photo server played by $PHOTO. */
-function media_sideload_image( $file, $post_id, $desc = null, $return = 'html' ) {
-	$GLOBALS['DOWNLOADS'][] = array( (int) $post_id, $file );
+/** The product a photo address was queued for. */
+function owner_of( $url ) {
+	foreach ( $GLOBALS['PRODUCTS'] as $id ) {
+		foreach ( (array) ( $GLOBALS['META'][ $id ]['_tcgiant_external_image_urls'] ?? array() ) as $entry ) {
+			if ( ( is_array( $entry ) ? ( $entry[0] ?? '' ) : $entry ) === $url ) {
+				return (int) $id;
+			}
+		}
+	}
+	return 0;
+}
+
+/**
+ * download_url(), with eBay's photo server played by $PHOTO. Since 3.27.4 the
+ * localiser fetches with this and media_handle_sideload(), not
+ * media_sideload_image(), so that it can name the file and mark the photo.
+ */
+function download_url( $url, $timeout = 300 ) {
+	$id = owner_of( $url );
+	$GLOBALS['DOWNLOADS'][] = array( $id, $url );
 	persist();
 
-	$GLOBALS['ARGS_SEEN'][] = array( $file, apply_filters( 'http_request_args', download_args( 300 ), $file ) );
+	$GLOBALS['ARGS_SEEN'][] = array( $url, apply_filters( 'http_request_args', download_args( $timeout ), $url ) );
 
-	$outcome = call_user_func( $GLOBALS['PHOTO'], $file, (int) $post_id );
+	$outcome = call_user_func( $GLOBALS['PHOTO'], $url, $id );
 	if ( is_wp_error( $outcome ) ) {
 		return $outcome;
 	}
-	return wp_insert_attachment( array(), false, $post_id );
+	return $GLOBALS['WORLD'] . '/no-such-download.tmp';
 }
+
+/** media_handle_sideload(): the photo's record, with what it was asked to write on it. */
+function media_handle_sideload( $file, $post_id, $desc = null, $post_data = array() ) {
+	$id = wp_insert_attachment( $post_data, false, $post_id );
+	foreach ( $post_data['meta_input'] ?? array() as $key => $value ) {
+		update_post_meta( $id, $key, $value );
+	}
+	return $id;
+}
+
+// What the localiser looks up to name a photo and find its folder.
+function get_post( $id ) { return (object) array( 'ID' => (int) $id, 'post_date' => '2026-10-01 12:00:00' ); }
+function get_post_field( $field, $id ) { return 'post_title' === $field ? 'Product ' . (int) $id : ''; }
+function current_time( $type ) { return gmdate( 'Y-m-d H:i:s' ); }
+function wp_upload_dir( $time = null ) { return array( 'path' => $GLOBALS['WORLD'] . '/uploads/2026/10', 'subdir' => '/2026/10', 'basedir' => $GLOBALS['WORLD'] . '/uploads', 'error' => false ); }
 
 class TCGiant_Sync_Logger {
 	public static function log( $message, $level = 'info' ) {
@@ -242,7 +274,12 @@ function due_products( $now ) {
 class Harness_Wpdb {
 	public $posts    = 'wp_posts';
 	public $postmeta = 'wp_postmeta';
-	public function prepare( $query, ...$args ) { return vsprintf( $query, $args ); }
+	public function prepare( $query, ...$args ) {
+		if ( 1 === count( $args ) && is_array( $args[0] ) ) {
+			$args = $args[0];
+		}
+		return vsprintf( $query, $args );
+	}
 	public function get_col( $sql ) {
 		preg_match( '/<= (\d+)/', $sql, $now );
 		preg_match( '/LIMIT (\d+)/', $sql, $limit );
@@ -314,7 +351,7 @@ function fresh_site() {
 	$GLOBALS['KILLS']     = array();
 	$GLOBALS['PHOTO']     = function () { return 'ok'; };
 	// Whatever an earlier batch left behind does not carry over to this one.
-	unset( $GLOBALS['HOOKS']['http_request_args'], $GLOBALS['HOOKS']['http_request_timeout'], $GLOBALS['HOOKS']['wp_editor_set_quality'] );
+	unset( $GLOBALS['HOOKS']['http_request_args'], $GLOBALS['HOOKS']['http_request_timeout'], $GLOBALS['HOOKS']['wp_editor_set_quality'], $GLOBALS['HOOKS']['intermediate_image_sizes_advanced'] );
 	@unlink( $GLOBALS['WORLD'] . '/activity.log' );
 }
 
@@ -516,6 +553,7 @@ check( '  the log names it', log_has( '[error] Image localizer: WC #202 failed: 
 check( '  and the batch line counts it', log_has( 'Batch complete. 2 downloaded, 0 skipped, 1 failed.' ), true );
 check( 'the JPEG quality setting does not outlive the batch', filters_on( 'wp_editor_set_quality' ), 0 );
 check( '  nor does the download cap', filters_on( 'http_request_args' ), 0 );
+check( '  nor does skipping the two largest photo sizes, though WC #202 threw in its download', filters_on( 'intermediate_image_sizes_advanced' ), 0 );
 
 $SCHEDULED = array();
 batch();
@@ -839,6 +877,97 @@ check( '  the shop\'s own photo stays', in_array( (string) $own, gallery( 691 ),
 // Back to the frozen clock the earlier sections use.
 TCGiant_Sync_Runtime::$clock = function () { return (float) $_SERVER['REQUEST_TIME_FLOAT']; };
 $OPTIONS = array();
+
+echo "\nA PHOTO WAITING TO BE REMOVED IS STILL THE PHOTO OF THE PRODUCT THAT SHOWS IT\n" . str_repeat( '=', 122 ) . "\n";
+
+// 3.27.4 removes the photos of a product deleted for good, fifteen minutes
+// on, and while a photo waits the batch reuses it for no other product: it
+// downloads a fresh copy instead, so that nothing is left pointing at a photo
+// about to go. A product that already shows the photo, or that the photo is
+// attached to, is no other product - the removal keeps a photo either shows.
+// Before this was put right such a product, fetched again inside those
+// fifteen minutes, downloaded every photo it showed again, showed each twice,
+// and kept both copies for good.
+
+/** What a product shows: its main photo, then its gallery. */
+function shown( $id ) { return array_merge( array( (string) get_post_thumbnail_id( $id ) ), gallery( $id ) ); }
+function sources_of( array $ids ) { return array_map( function ( $g ) { return meta( (int) $g, '_tcgiant_source_url' ); }, $ids ); }
+/** A product deleted for good: its photos attached to nothing, and every photo it showed waiting to be removed. */
+function deleted_for_good( $id ) {
+	$showed = shown( $id );
+	unset( $GLOBALS['META'][ $id ] );
+	$GLOBALS['PRODUCTS'] = array_values( array_diff( $GLOBALS['PRODUCTS'], array( $id ) ) );
+	foreach ( $GLOBALS['META'] as $att => $m ) {
+		if ( isset( $m['_parent'] ) && (int) $m['_parent'] === $id ) {
+			$GLOBALS['META'][ $att ]['_parent'] = 0;
+		}
+	}
+	foreach ( $showed as $att ) {
+		$GLOBALS['META'][ (int) $att ]['_tcgiant_delete_after'] = (string) ( time() + 900 );
+	}
+}
+
+// D, the listing that sold, downloaded its photos. X, its relist, shows them.
+fresh_site();
+$urls = array( photo( 201 ), photo( 202 ), photo( 203 ) );
+product( 400, $urls );
+localize( 400 );
+$d = shown( 400 );
+product( 500, $urls );
+localize( 500 );
+check( 'the relist shows the sold listing\'s downloads', array( shown( 500 ), count( $DOWNLOADS ) ), array( $d, 3 ) );
+
+deleted_for_good( 400 );
+// Inside the fifteen minutes the seller adds a photo on eBay; X is fetched again.
+TCGiant_Sync_Image_Localizer::set_external_images( 500, array_merge( $urls, array( photo( 204 ) ) ) );
+localize( 500 );
+$x = shown( 500 );
+check( 'X fetched again while the photos it shows wait: it keeps them, downloading only the new one', array( array_slice( $x, 0, 3 ), count( $x ), count( $DOWNLOADS ) ), array( $d, 4, 4 ) );
+check( '  each eBay photo shown once', count( array_unique( sources_of( $x ) ) ), 4 );
+product( 700, array( photo( 201 ) ) );
+localize( 700 );
+check( 'another product gets a fresh copy, never a photo waiting to be removed', array( count( $DOWNLOADS ), in_array( (string) get_post_thumbnail_id( 700 ), $d, true ) ), array( 5, false ) );
+
+// X downloaded its photos itself; D, another listing showing them, is deleted.
+fresh_site();
+$urls = array( photo( 211 ), photo( 212 ) );
+product( 600, $urls );
+localize( 600 );
+$own = shown( 600 );
+product( 601, $urls );
+localize( 601 );
+check( 'a second listing reuses X\'s downloads', array( shown( 601 ), count( $DOWNLOADS ) ), array( $own, 2 ) );
+deleted_for_good( 601 ); // which leaves X's own photos waiting
+TCGiant_Sync_Image_Localizer::set_external_images( 600, $urls, true ); // an images-only sync
+localize( 600 );
+check( 'X\'s own photos, waiting because a product showing them was deleted: reused, not fetched again', array( count( $DOWNLOADS ), shown( 600 ) ), array( 2, $own ) );
+
+// One given up on is never reused, by anyone: part of it may already be gone.
+$META[ (int) $own[1] ]['_tcgiant_delete_failed'] = (string) time();
+TCGiant_Sync_Image_Localizer::set_external_images( 600, $urls, true );
+localize( 600 );
+check( 'one whose removal was given up on: fetched again, even for its own product', count( $DOWNLOADS ), 3 );
+
+// A product left showing two copies of one eBay photo - by the version before
+// this was put right, say - shows it once the next time its photos are
+// fetched. The copy it showed first stays; the shop's own photos, which carry
+// no record of where they came from, are not compared.
+fresh_site();
+$urls = array( photo( 221 ), photo( 222 ) );
+product( 610, $urls );
+localize( 610 );
+$first = shown( 610 );
+$twice = array();
+foreach ( array( 222, 221 ) as $n ) {
+	$copy = wp_insert_attachment( array(), false, 0 );
+	update_post_meta( $copy, '_tcgiant_source_url', photo( $n ) );
+	$twice[] = (string) $copy;
+}
+$mine = array( (string) wp_insert_attachment( array(), false, 610 ), (string) wp_insert_attachment( array(), false, 610 ) );
+update_post_meta( 610, '_product_image_gallery', implode( ',', array_merge( array( $first[1] ), $twice, $mine ) ) );
+TCGiant_Sync_Image_Localizer::set_external_images( 610, $urls, true );
+localize( 610 );
+check( 'two copies of one eBay photo shown: shown once, the first kept; the shop\'s own left alone', shown( 610 ), array_merge( $first, $mine ) );
 
 foreach ( array( 'site.json', 'activity.log', 'wp-admin/includes/media.php', 'wp-admin/includes/file.php', 'wp-admin/includes/image.php' ) as $f ) {
 	@unlink( "$WORLD/$f" );

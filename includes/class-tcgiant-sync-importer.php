@@ -908,12 +908,17 @@ class TCGiant_Sync_Importer {
 		// it used to leave nothing at all - the lines that would have said so
 		// were still in the log buffer.
 		TCGiant_Sync_Runtime::watch( self::DELTA_JOB, array( __CLASS__, 'on_delta_death' ) );
+		// Another plugin whose work on a product save saves the product again,
+		// round and round, is stopped after a few rounds - rather than taking
+		// this run down with it in the first listing it saves.
+		TCGiant_Sync_Runtime::guard_loops();
 		TCGiant_Sync_Runtime::guard_cache();
 
 		try {
 			$this->run_delta_events();
 		} finally {
 			TCGiant_Sync_Runtime::unguard_cache();
+			TCGiant_Sync_Runtime::unguard_loops();
 			TCGiant_Sync_Runtime::unwatch();
 			self::$slice_in_flight = false;
 			self::release_lock();
@@ -2828,12 +2833,14 @@ class TCGiant_Sync_Importer {
 		// A batch PHP kills leaves a line saying how, and on which page.
 		TCGiant_Sync_Runtime::watch( 'Full sync scan' );
 		// Its listings are saved here too, as the delta's are.
+		TCGiant_Sync_Runtime::guard_loops();
 		TCGiant_Sync_Runtime::guard_cache();
 
 		try {
 			$this->run_scan_all_pages();
 		} finally {
 			TCGiant_Sync_Runtime::unguard_cache();
+			TCGiant_Sync_Runtime::unguard_loops();
 			TCGiant_Sync_Runtime::unwatch();
 		}
 	}
@@ -3596,9 +3603,12 @@ class TCGiant_Sync_Importer {
 				// eBay already decremented its own quantity when the order was
 				// placed — suppress the WC → eBay push so we don't echo it back.
 				TCGiant_Sync_Inventory::begin_ebay_origin();
+				// The write saves the product: see guard_loops().
+				TCGiant_Sync_Runtime::guard_loops();
 				try {
 					$stock_reduced = wc_update_product_stock( $product_id, $quantity, 'decrease' );
 				} finally {
+					TCGiant_Sync_Runtime::unguard_loops();
 					TCGiant_Sync_Inventory::end_ebay_origin();
 				}
 
@@ -3687,8 +3697,9 @@ class TCGiant_Sync_Importer {
 			$mapper = TCGiant_Sync_Mapper::instance();
 			$product_data = $mapper->map_ebay_to_woo( $ebay_item );
 
-			// The same save as the delta's, with the same guard on the object
-			// cache while it runs.
+			// The same save as the delta's, with the same guards on the object
+			// cache and on save loops while it runs.
+			TCGiant_Sync_Runtime::guard_loops();
 			TCGiant_Sync_Runtime::release_memory();
 			TCGiant_Sync_Runtime::guard_cache();
 			try {
@@ -3696,6 +3707,7 @@ class TCGiant_Sync_Importer {
 			} finally {
 				self::report_cache_guard( (string) $item_id, 'Import' );
 				TCGiant_Sync_Runtime::unguard_cache();
+				TCGiant_Sync_Runtime::unguard_loops();
 			}
 
 			if ( $product_id ) {
@@ -3903,28 +3915,35 @@ class TCGiant_Sync_Importer {
 		$trashed_count   = 0;
 		$preserved_count = 0;
 
-		foreach ( $prune_rows as $row ) {
-			$product_id = (int) $row->post_id;
+		// Zeroing stock and trashing both save the product: see guard_loops().
+		TCGiant_Sync_Runtime::guard_loops();
 
-			$is_preserved = ! empty( $preserve_cats ) && has_term( $preserve_cats, 'product_cat', $product_id );
+		try {
+			foreach ( $prune_rows as $row ) {
+				$product_id = (int) $row->post_id;
 
-			if ( $is_preserved ) {
-				// The listing is already gone from eBay; zeroing WC stock must
-				// not trigger a push (which would try to end an already-ended
-				// listing and burn an API call per product).
-				TCGiant_Sync_Inventory::begin_ebay_origin();
-				try {
-					wc_update_product_stock( $product_id, 0, 'set' );
-					wc_update_product_stock_status( $product_id, 'outofstock' );
-				} finally {
-					TCGiant_Sync_Inventory::end_ebay_origin();
+				$is_preserved = ! empty( $preserve_cats ) && has_term( $preserve_cats, 'product_cat', $product_id );
+
+				if ( $is_preserved ) {
+					// The listing is already gone from eBay; zeroing WC stock must
+					// not trigger a push (which would try to end an already-ended
+					// listing and burn an API call per product).
+					TCGiant_Sync_Inventory::begin_ebay_origin();
+					try {
+						wc_update_product_stock( $product_id, 0, 'set' );
+						wc_update_product_stock_status( $product_id, 'outofstock' );
+					} finally {
+						TCGiant_Sync_Inventory::end_ebay_origin();
+					}
+					delete_post_meta( $product_id, '_ebay_item_id' );
+					$preserved_count++;
+				} else {
+					wp_trash_post( $product_id );
+					$trashed_count++;
 				}
-				delete_post_meta( $product_id, '_ebay_item_id' );
-				$preserved_count++;
-			} else {
-				wp_trash_post( $product_id );
-				$trashed_count++;
 			}
+		} finally {
+			TCGiant_Sync_Runtime::unguard_loops();
 		}
 
 		TCGiant_Sync_Logger::log( sprintf(

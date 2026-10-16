@@ -150,6 +150,8 @@ TCGiant_Sync_Runtime::on_shutdown();
 $line = $LOGGED[0] ?? '';
 
 check( 'one line is written', count( $LOGGED ), 1 );
+check( '  the memory peak PHP held, and how much of it was in use', 1 === preg_match( '/memory peak \d+ MB of 512M \(\d+ MB in use\); time limit/', $line ), true );
+check( 'releasing memory hands emptied pages back to the system', 1 === preg_match( "/function release_memory\(\) \{\s*self::drop_copies\(\);.*?gc_mem_caches\(\);/s", file_get_contents( $ROOT . '/includes/class-tcgiant-sync-runtime.php' ) ), true );
 check( '  the listing is named', false !== strpos( $line, 'while working on eBay item 267177202114 (52 of 357' ), true );
 check( '  and the step it was on', false !== strpos( $line, ' - WooCommerce saving the product, with everything hooked to that. 105 s into the request' ), true );
 check( '  when the listing began, and at what memory', false !== strpos( $line, '(the item began 2 s into the request, at ' . $BEGAN_MB . ' MB;' ), true );
@@ -188,7 +190,8 @@ $child = (string) shell_exec( escapeshellarg( PHP_BINARY ) . ' -d display_errors
 preg_match( '/^LOGGED: (.*)$/m', $child, $m );
 $line = $m[1] ?? '';
 check( 'the death is recorded', false !== strpos( $line, 'Delta sync stopped by a PHP fatal error: Allowed memory size of 67108864 bytes exhausted' ), true );
-check( '  with the limit that was reached, not the one raised to write the record', false !== strpos( $line, 'MB of 64M;' ), true );
+check( '  with the limit that was reached, not the one raised to write the record', 1 === preg_match( '/memory peak (\d+) MB of 64M \((\d+) MB in use\);/', $line, $pk ), true );
+check( '  the peak the limit is held against: what PHP had taken, at the limit', (int) ( $pk[1] ?? 0 ) >= 60, true );
 preg_match( '/^LIMIT: (.*)$/m', $child, $lm );
 check( '  raised once to write it, though make_room() ran twice', trim( $lm[1] ?? '' ), (string) ( 67108864 + TCGiant_Sync_Runtime::AFTER_DEATH_HEADROOM ) );
 check( '  the cache still holding what it held when the request died', false !== strpos( $line, 'object cache holding 400 keys' ), true );

@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.27.3
+Stable tag: 3.27.4
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,28 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.27.4 - 2026-10-16 =
+**Photos of deleted products no longer fill the disk**
+* NEW: When a product is deleted for good (the Trash emptied by you, or by WordPress after 30 days), the photos the plugin downloaded for it are removed about 15 minutes later, with every resized copy. Photos you uploaded, eBay stand-ins and any photo still in use are kept: by a product or variation, a category or brand, a post, page or description (Flatsome's UX Builder pages included), a theme's or page builder's layout, one of WordPress's own widgets, or the site's logo, icon or header.
+* NEW: Image Cleanup can check for photos left behind by products deleted before this version, and how much space they take. Nothing is deleted by checking; they are removed in the background when you press the button. Products already in the Trash when you update keep their photos until then.
+* Not seen: a photo another plugin keeps only by its number in a place of its own (a slider's or swatch plugin's settings, say), or one shown from an address outside /uploads/. Such a photo is removed about 15 minutes after its product is deleted for good, as well as by Image Cleanup's button: if you use such a plugin, ask your developer to keep them (see changelog.txt), and check before removing leftovers.
+* FIX: Deactivating the plugin while WooCommerce is inactive no longer stops with a critical error, leaving the plugin active and its background jobs scheduled.
+
+**Photos downloaded from eBay**
+* FIX: Photos are now named after their product and eBay's number for the picture instead of s-l1600-12.jpg, and a name your Media Library still uses is never given to another photo, so a media offloader such as bunny.net's can no longer put one product's photo on another.
+* FIX: Each photo is marked as the plugin's the moment it is created. One your host stopped part way through is finished next time instead of downloaded again, and Image Cleanup no longer takes it for one of your own.
+* Photos from 1,537 to 2,048 px (eBay's Original size is 1,600 px) no longer get WordPress's 1536 px copy, which only repeated the photo itself: about a quarter less disk for each. Shoppers see the same photos. Your own uploads are unchanged, and a downloaded photo over 2,048 px, or a GIF, keeps the copy.
+
+**A push your host stops part way is no longer lost**
+* FIX: A push your host killed after eBay had created the listing left no trace, so pushing again would list it twice. It is now logged, the product is marked as not finished, and both say to use Link with the item number instead - or, for a product linked to a listing that had ended, to Unlink it and Link the new one. A push that stops with an error once eBay has made the listing is treated the same way. The warning stays until the product is linked - by you, or by the sync when it finds that listing by the product's SKU - or a push of it finishes.
+* FIX: The end of a bulk push counted one push too many, and said "complete" even when a push had died. It now says how many did not finish, and which.
+* FIX: "Remove sold products" could trash a product you had pushed from WooCommerce when it sold out while a re-push was queued, or after eBay refused one. A product your pushes have listed is now kept.
+* FIX: Auto-Relist, Relist and Push on the Listings screen, and the coin-listing notice's button, now leave out a product whose last push is under way or did not finish, which they could list twice.
+
+**Another plugin's save loop no longer takes the sync down**
+* FIX: Another plugin that saves a product again each time it is saved made every save start another, until the sync ran out of memory. While TCGiant saves a product, such a loop is now stopped after five rounds by skipping the callback that saved again; the product is still saved, and the log names the plugin.
+* FIX: Memory the sync lets go of between listings is now handed back instead of still counting against PHP's limit, and the line logged when a run is killed gives the memory PHP had really taken.
 
 = 3.27.3 - 2026-10-14 =
 **Syncs dying inside a single listing on WordPress.com**

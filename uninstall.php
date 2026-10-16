@@ -49,6 +49,7 @@ $tcgiant_hooks = array(
 	'tcgiant_sync_scan_resume',
 	'tcgiant_sync_localize_images',
 	'tcgiant_sync_weekly_full',         // Added in 3.12.0; was never cleared.
+	'tcgiant_sync_photo_cleanup',       // Photos of deleted products, 3.27.4.
 );
 
 foreach ( $tcgiant_hooks as $tcgiant_hook ) {
@@ -186,6 +187,17 @@ $tcgiant_options = array(
 	'tcgiant_sync_last_crash_delta_sync',      // The same, per job, 3.27.2.
 	'tcgiant_sync_last_crash_full_sync_scan',
 	'tcgiant_sync_last_crash_image_localiser',
+	'tcgiant_sync_last_crash_push',            // A push PHP killed, 3.27.4.
+	'tcgiant_sync_last_crash_photo_cleanup',   // Photos of deleted products, 3.27.4.
+	'tcgiant_sync_last_crash_photo_check',
+	'tcgiant_sync_photo_scan',                 // Image Cleanup's check for leftover photos.
+	'tcgiant_sync_photo_cleanup_stats',
+	'tcgiant_sync_photo_cleanup_pause',
+	'tcgiant_sync_photo_cleanup_since',
+	'tcgiant_sync_photo_cleanup_deleting',
+	'tcgiant_sync_photo_cleanup_reading',
+	'tcgiant_sync_photo_check_reading',
+	'tcgiant_sync_photo_cleanup_check',
 	'tcgiant_sync_jobs',               // Bulk job progress records.
 	'tcgiant_export_state',            // Export state machine.
 	'tcgiant_listings_table_version',
@@ -200,13 +212,42 @@ foreach ( $tcgiant_options as $tcgiant_option ) {
 	delete_option( $tcgiant_option );
 }
 
-// Per-job item lists and cached eBay business policies use dynamic names.
+// Per-job item lists, cached eBay business policies, the leftover-photo
+// check's findings and its holds use dynamic names.
 // phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 $wpdb->query(
 	"DELETE FROM {$wpdb->options}
 	 WHERE option_name LIKE 'tcgiant_sync_job_items_%'
-	    OR option_name LIKE 'tcgiant_export_policies_%'"
+	    OR option_name LIKE 'tcgiant_export_policies_%'
+	    OR option_name LIKE 'tcgiant_sync_photo_scan_ids_%'
+	    OR option_name LIKE 'tcgiant_sync_photo_cleanup_lock_%'"
 );
+
+// Photos waiting to be removed with the products they belonged to. Taking
+// the mark off leaves each photo exactly where it is - the safe direction for
+// anything the plugin can no longer finish - except for one WordPress had
+// already been asked to delete (_tcgiant_delete_started): part of it may be
+// gone, so it keeps a mark that stops the image batch reusing it if the
+// plugin is ever installed again, as a photo given up on
+// (_tcgiant_delete_failed) does. A run that only counted an attempt, and
+// threw before any deletion began, touched nothing.
+//
+// The change is confirmed before the other marks come off - no such photo
+// left unchanged - since until it is in they are what keeps one from being
+// reused. If the database refused it (a lock it waited too long for, a full
+// disk), or cannot say, every mark stays where it is, and a reinstalled
+// plugin judges each photo again before anything is deleted.
+$wpdb->query(
+	"UPDATE {$wpdb->prefix}postmeta SET meta_key = '_tcgiant_delete_failed'
+	 WHERE meta_key = '_tcgiant_delete_started'"
+);
+$tcgiant_started_left = $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->prefix}postmeta WHERE meta_key = '_tcgiant_delete_started'" );
+if ( '0' === (string) $tcgiant_started_left ) {
+	$wpdb->query(
+		"DELETE FROM {$wpdb->prefix}postmeta
+		 WHERE meta_key IN ( '_tcgiant_delete_after', '_tcgiant_delete_attempts', '_tcgiant_delete_approved' )"
+	);
+}
 
 // Delete all plugin transients (and their timeout rows).
 $wpdb->query(

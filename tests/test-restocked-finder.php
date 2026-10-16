@@ -113,6 +113,8 @@ function wc_get_product( $id ) { return isset( $GLOBALS['META'][ (int) $id ] ) ?
 function wc_update_product_stock( $id, $qty, $op = 'set' ) { $GLOBALS['META'][ (int) $id ]['_stock'] = (int) $qty; return (int) $qty; }
 function wc_update_product_stock_status( $id, $status ) { $GLOBALS['META'][ (int) $id ]['_stock_status'] = $status; }
 
+// Its stock writes turn on the save-loop breaker, which lives in the runtime.
+require dirname( __DIR__ ) . '/includes/class-tcgiant-sync-runtime.php';
 require dirname( __DIR__ ) . '/includes/class-tcgiant-sync-inventory.php';
 
 function fresh() {

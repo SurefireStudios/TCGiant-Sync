@@ -873,7 +873,30 @@ class TCGiant_Sync_Admin {
 		}
 
 		$was = get_post_meta( $product_id, '_ebay_item_id', true );
+
+		// A push that did not finish, on a product still linked to the listing
+		// it was replacing, tells the shop to Unlink it and Link the new one.
+		// Unlink took what the push said with the rest of the link, so the Link
+		// that followed found nothing to say the listing was that push's, left
+		// the product looking imported, and "Remove sold products" trashed it
+		// when the listing sold out. Kept across the unlink, for that Link:
+		// that the push did not finish, what it said, and when the product was
+		// last pushed. Failed rather than pushing, because the push's start
+		// time goes with the link, and a push with no start time to judge it by
+		// would look as if it were under way for good.
+		$unfinished  = in_array( (string) get_post_meta( $product_id, '_ebay_export_status', true ), array( 'failed', 'pushing' ), true );
+		$error       = (string) get_post_meta( $product_id, '_ebay_export_error', true );
+		$last_pushed = (string) get_post_meta( $product_id, '_ebay_export_last_pushed', true );
+
 		TCGiant_Sync_Listing_Link::unlink_product_from_ebay( $product_id, 'unlinked by admin' );
+
+		if ( $unfinished ) {
+			update_post_meta( $product_id, '_ebay_export_status', 'failed' );
+			update_post_meta( $product_id, '_ebay_export_error', $error );
+			if ( '' !== $last_pushed ) {
+				update_post_meta( $product_id, '_ebay_export_last_pushed', $last_pushed );
+			}
+		}
 
 		wp_send_json_success( array(
 			'message' => $was
@@ -1529,12 +1552,22 @@ class TCGiant_Sync_Admin {
 
 		// Pre-push validation: check all requirements BEFORE queuing.
 		// This gives the user instant feedback instead of async error discovery.
+		//
+		// A refusal here is saved on the product - but not over a push that is
+		// under way or did not finish. That one may have made a listing, and
+		// what the product says of it is what Link, Clear, Auto-Relist and
+		// "Remove sold products" go by; and a dead push still saying pushing is
+		// reported only while it does. The refusal is answered all the same.
+		$keep_status = in_array( (string) get_post_meta( $product_id, '_ebay_export_status', true ), array( 'failed', 'pushing' ), true );
+
 		$settings = $exporter->get_export_settings( $product_id );
 		$valid    = $exporter->validate_export_settings( $settings );
 		if ( is_wp_error( $valid ) ) {
 			// Save error to product meta so it shows on page reload too.
-			update_post_meta( $product_id, '_ebay_export_status', 'error' );
-			update_post_meta( $product_id, '_ebay_export_error', $valid->get_error_message() );
+			if ( ! $keep_status ) {
+				update_post_meta( $product_id, '_ebay_export_status', 'error' );
+				update_post_meta( $product_id, '_ebay_export_error', $valid->get_error_message() );
+			}
 			wp_send_json_error( array( 'message' => $valid->get_error_message() ) );
 		}
 
@@ -1545,8 +1578,10 @@ class TCGiant_Sync_Admin {
 			$gallery   = $product->get_gallery_image_ids();
 			if ( empty( $image_id ) && empty( $gallery ) ) {
 				$msg = __( 'Product has no images. eBay requires at least 1 photo.', 'tcgiant-sync' );
-				update_post_meta( $product_id, '_ebay_export_status', 'error' );
-				update_post_meta( $product_id, '_ebay_export_error', $msg );
+				if ( ! $keep_status ) {
+					update_post_meta( $product_id, '_ebay_export_status', 'error' );
+					update_post_meta( $product_id, '_ebay_export_error', $msg );
+				}
 				wp_send_json_error( array( 'message' => $msg ) );
 			}
 		}
@@ -1580,9 +1615,26 @@ class TCGiant_Sync_Admin {
 			wp_send_json_error( array( 'message' => 'Product not found.' ) );
 		}
 
+		// A push that did not finish is not an error to clear away. What the
+		// product says about it is what tells the Link that follows to mark it
+		// pushed, and "Remove sold products" to keep it: cleared to nothing, a
+		// product whose push had made the listing that sold was trashed. It
+		// clears when the product is linked, or when a push of it finishes.
+		if ( in_array( (string) $product->get_meta( '_ebay_export_status' ), array( 'failed', 'pushing' ), true ) ) {
+			wp_send_json_error( array( 'message' => 'This push did not finish, so its notice stays until the product is linked to its listing or a push of it finishes.' ) );
+		}
+
 		$product->update_meta_data( '_ebay_export_status', '' );
 		$product->update_meta_data( '_ebay_export_error', '' );
-		$product->save();
+		$product->delete_meta_data( '_ebay_export_pushing_since' );
+		// A save fires other plugins' save hooks: see
+		// TCGiant_Sync_Runtime::guard_loops().
+		TCGiant_Sync_Runtime::guard_loops();
+		try {
+			$product->save();
+		} finally {
+			TCGiant_Sync_Runtime::unguard_loops();
+		}
 
 		wp_send_json_success( array( 'message' => 'Error cleared.' ) );
 	}
@@ -2145,9 +2197,21 @@ class TCGiant_Sync_Admin {
 		}
 
 		// Cached: this runs on every admin page load on those screens.
+		//
+		// Only the listings that still say pushed. The finder also returns one
+		// queued, under way, or whose push did not finish, for the button,
+		// which sends again any an earlier press queued - but counted here,
+		// they brought the banner straight back after a press, with the same
+		// count, inviting another; and one whose push did not finish, which the
+		// button leaves out, kept it up for good. That one has its own notice.
 		$count = get_transient( 'tcgiant_stale_coin_count' );
 		if ( false === $count ) {
-			$count = count( TCGiant_Sync_Exporter::find_coin_listings_needing_refresh() );
+			$count = 0;
+			foreach ( TCGiant_Sync_Exporter::find_coin_listings_needing_refresh() as $product_id ) {
+				if ( 'pushed' === (string) get_post_meta( $product_id, '_ebay_export_status', true ) ) {
+					$count++;
+				}
+			}
 			set_transient( 'tcgiant_stale_coin_count', $count, 15 * MINUTE_IN_SECONDS );
 		}
 
@@ -2195,8 +2259,27 @@ class TCGiant_Sync_Admin {
 			wp_die( esc_html__( 'Unauthorized.', 'tcgiant-sync' ) );
 		}
 
-		$product_ids = TCGiant_Sync_Exporter::find_coin_listings_needing_refresh();
-		$queued      = TCGiant_Sync_Exporter::instance()->bulk_push_products( $product_ids );
+		// The finder returns a coin listing while its refresh is queued, under
+		// way, or did not finish. Queued is sent again: a bulk push cancels
+		// every push still waiting, so a second press would otherwise drop
+		// those the first had queued. A push that did not finish has been told
+		// that pushing it again would list it twice, and sending it again from
+		// here did exactly that: one linked to a listing that had ended, whose
+		// relist died after eBay made the new one, was relisted a second time.
+		// Its own notice says what to do. One still pushing is left be as
+		// well: that push is sending what this would send, and if it dies it
+		// is one of those.
+		$product_ids = array();
+		$unfinished  = array();
+		foreach ( TCGiant_Sync_Exporter::find_coin_listings_needing_refresh() as $product_id ) {
+			if ( '' === TCGiant_Sync_Exporter::push_progress( $product_id ) ) {
+				$product_ids[] = (int) $product_id;
+			} else {
+				$unfinished[] = (int) $product_id;
+			}
+		}
+
+		$queued = TCGiant_Sync_Exporter::instance()->bulk_push_products( $product_ids );
 
 		delete_transient( 'tcgiant_stale_coin_count' );
 
@@ -2204,6 +2287,16 @@ class TCGiant_Sync_Admin {
 			'Queued %d coin listing(s) to be sent to eBay again with their coin item specifics.',
 			$queued
 		) );
+
+		if ( $unfinished ) {
+			$shown = array_slice( $unfinished, 0, 20 );
+			TCGiant_Sync_Logger::warning( sprintf(
+				'Left out %1$d coin listing(s) whose last push is still under way or did not finish (WC #%2$s%3$s): pushing one of those again could list it twice. Each product\'s eBay tab says what to do.',
+				count( $unfinished ),
+				implode( ', #', $shown ),
+				count( $unfinished ) > count( $shown ) ? sprintf( ' and %d more', count( $unfinished ) - count( $shown ) ) : ''
+			) );
+		}
 
 		wp_safe_redirect( add_query_arg(
 			array( 'tcgiant_pushed' => $queued, 'post_type' => 'product' ),
@@ -2545,7 +2638,18 @@ class TCGiant_Sync_Admin {
 			$product->update_meta_data( '_ebay_start_time', $start_time );
 		}
 
-		$product->save();
+		// Linking is what a push that did not finish asks the shop to do, and
+		// the link completes that push: marked pushed, and dated. See
+		// TCGiant_Sync_Listing_Link::complete_unfinished_push().
+		TCGiant_Sync_Listing_Link::complete_unfinished_push( $product );
+		$product->delete_meta_data( '_ebay_export_pushing_since' );
+
+		TCGiant_Sync_Runtime::guard_loops();
+		try {
+			$product->save();
+		} finally {
+			TCGiant_Sync_Runtime::unguard_loops();
+		}
 
 		TCGiant_Sync_DB::upsert( array(
 			'product_id'     => $product_id,
@@ -2693,6 +2797,88 @@ class TCGiant_Sync_Admin {
 		return $ends_at && $ends_at < time();
 	}
 
+	/**
+	 * What the product screens say about a push that is under way, or that
+	 * did not finish.
+	 *
+	 * A push the host killed used to leave nothing to see: the product sat
+	 * there unlinked, looking exactly like one nobody had pushed, while its
+	 * listing was live on eBay - and the obvious thing to do then, pushing it
+	 * again, lists it twice. A push that says it is still pushing long after
+	 * any push could take is one of those, whether or not anything has been
+	 * round to notice yet.
+	 *
+	 * Shared, so the product screen and the products list cannot disagree.
+	 *
+	 * @param int      $product_id   The product.
+	 * @param string   $ebay_item_id The listing it is linked to, or ''.
+	 * @param string   $where        'panel' for its edit screen, 'column' for the products list.
+	 * @param int|null $now          Unix time, for the harness; now if null.
+	 * @return string HTML, escaped, or '' when there is nothing to say.
+	 */
+	public static function push_state_notice( $product_id, $ebay_item_id, $where = 'panel', $now = null ) {
+		$progress = TCGiant_Sync_Exporter::push_progress( $product_id, $now );
+
+		if ( '' === $progress ) {
+			return '';
+		}
+
+		$now   = null === $now ? time() : (int) $now;
+		$since = (int) get_post_meta( $product_id, '_ebay_export_pushing_since', true );
+		$ago   = $since > 0 ? human_time_diff( $since, $now ) : '';
+
+		if ( 'pushing' === $progress ) {
+			if ( 'column' === $where ) {
+				return '<div class="tc-ebay-pushing">&#8987; ' . esc_html__( 'Pushing to eBay...', 'tcgiant-sync' ) . '</div>';
+			}
+
+			$text = '' !== $ago
+				/* translators: %s: how long ago, e.g. "2 mins" */
+				? sprintf( __( 'Pushing to eBay now - it started %s ago. Let it finish before pushing again.', 'tcgiant-sync' ), $ago )
+				: __( 'Pushing to eBay now. Let it finish before pushing again.', 'tcgiant-sync' );
+
+			return '<div id="tcgiant-export-pushing-notice" style="background:#f0f6fc;border:1px solid #b8d4f0;border-radius:4px;padding:8px 10px;margin:0 15px 10px;">'
+				. '<p style="color:#1d4f7c;font-size:12px;margin:0;line-height:1.4;">' . esc_html( $text ) . '</p></div>';
+		}
+
+		// Unlinked, the listing it may have made is reached by Link. Linked,
+		// there is no Link - it is offered only to a product with no listing -
+		// and the push was revising that listing, or, if it had ended, making
+		// a new one in its place. The old listing then looks just as it should,
+		// so "check it before pushing again" led straight to a second new one.
+		// The new one is reached by Unlink, then Link.
+		$headline = '' === (string) $ebay_item_id
+			? __( 'Push did not finish - check eBay, then use Link.', 'tcgiant-sync' )
+			: __( 'Push did not finish - check eBay for a new listing.', 'tcgiant-sync' );
+
+		if ( 'failed' === $progress ) {
+			$detail = (string) get_post_meta( $product_id, '_ebay_export_error', true );
+		} elseif ( '' === (string) $ebay_item_id ) {
+			/* translators: %s: how long ago, e.g. "40 mins" */
+			$detail = sprintf( __( 'It started %s ago and never reported back, so your server most likely stopped it. If the listing is on eBay, give this product its item number with Link below; pushing it again would list it twice.', 'tcgiant-sync' ), $ago );
+		} elseif ( TCGiant_Sync_Exporter::linked_listing_ended( $product_id ) ) {
+			/* translators: 1: how long ago, e.g. "40 mins", 2: eBay item number */
+			$detail = sprintf( __( 'It started %1$s ago and never reported back, so your server most likely stopped it. It is linked to eBay listing %2$s, which had ended, so this push was making a new one in its place: look on eBay for it, and if it is there, Unlink this product and Link it to the new item number - pushing it again would list it twice.', 'tcgiant-sync' ), $ago, $ebay_item_id );
+		} else {
+			/* translators: 1: how long ago, e.g. "40 mins", 2: eBay item number */
+			$detail = sprintf( __( 'It started %1$s ago and never reported back, so your server most likely stopped it. It is linked to eBay listing %2$s. If that listing had ended, this push was making a new one in its place: look on eBay for it, and if it is there, Unlink this product and Link it to the new item number - pushing it again would list it twice.', 'tcgiant-sync' ), $ago, $ebay_item_id );
+		}
+
+		if ( 'column' === $where ) {
+			return '<div class="tc-ebay-error" title="' . esc_attr( $detail ) . '">&#9888; ' . esc_html( $headline ) . '</div>';
+		}
+
+		// The same notice as a push eBay refused, without its Clear. Clearing
+		// this one blanked the product's push status, which is what tells Link
+		// to mark it pushed and "Remove sold products" to keep it - so Clear,
+		// then Link, had a product whose push made the listing trashed when it
+		// sold. Link clears it, and so does a push of it that finishes.
+		return '<div id="tcgiant-export-error-notice" style="background:#fff0f0;border:1px solid #fcc;border-radius:4px;padding:8px 10px;margin:0 15px 10px;">'
+			. '<p style="color:#cc1818;font-size:12px;margin:0 0 4px;line-height:1.4;font-weight:600;">' . esc_html( $headline ) . '</p>'
+			. ( '' !== $detail ? '<p style="color:#cc1818;font-size:12px;margin:0;line-height:1.4;">' . esc_html( $detail ) . '</p>' : '' )
+			. '</div>';
+	}
+
 	public function render_ebay_listing_panel() {
 		global $post;
 		$product_id = $post->ID;
@@ -2760,6 +2946,13 @@ class TCGiant_Sync_Admin {
 				<a href="#" id="tcgiant-dismiss-export-error" data-product-id="<?php echo esc_attr( $product_id ); ?>" style="display:inline-block;background:#cc1818;color:#fff;font-size:11px;font-weight:600;padding:3px 10px;border-radius:3px;text-decoration:none;cursor:pointer;"><?php esc_html_e( 'Clear Error', 'tcgiant-sync' ); ?></a>
 			</div>
 		<?php endif; ?>
+
+		<?php
+		// A push under way, or one that never came back. Up here with the error
+		// a refused push leaves, the first thing on the tab, rather than down by
+		// the Link box it points to.
+		echo self::push_state_notice( $product_id, $ebay_item_id, 'panel' ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped where it is built.
+		?>
 
 		<?php // ---- eBay Listing Status ---- ?>
 		<?php if ( ! empty( $ebay_item_id ) ) : ?>
@@ -3571,6 +3764,9 @@ class TCGiant_Sync_Admin {
 			}
 		}
 
+		// A push under way, or one that did not finish.
+		echo self::push_state_notice( $post_id, $ebay_item_id, 'column' ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped where it is built.
+
 		// Error notice — show actual error message and link to logs.
 		if ( 'error' === $export_status && ! empty( $export_error ) ) {
 			$log_url = admin_url( 'admin.php?page=tcgiant-export' );
@@ -3673,6 +3869,11 @@ class TCGiant_Sync_Admin {
 			}
 			.tc-ebay-error a { cursor: pointer; }
 			.tc-ebay-error a:hover { text-decoration: underline !important; }
+			.tc-ebay-pushing {
+				color: #2271b1;
+				font-size: 11px;
+				margin-bottom: 2px;
+			}
 			.tc-ebay-pushed {
 				color: #00a32a;
 				font-size: 11px;
