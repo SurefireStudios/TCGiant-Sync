@@ -310,6 +310,8 @@ require $root . '/includes/class-tcgiant-sync-catalog.php';
 // save-loop breaker, which lives in the runtime.
 require $root . '/includes/class-tcgiant-sync-runtime.php';
 require $root . '/includes/class-tcgiant-sync-inventory.php';
+// The push and Link read the listing's eBay site through it.
+require $root . '/includes/class-tcgiant-sync-sites.php';
 require $root . '/includes/class-tcgiant-sync-exporter.php';
 require $root . '/admin/class-tcgiant-sync-admin.php';
 require $root . '/includes/class-tcgiant-sync-listing-link.php';
@@ -573,7 +575,7 @@ $exporter->push_product( 5051 );
 check( 'queued again from its screen: still says so while queued', array( status( 5051 ), get_post_meta( 5051, '_ebay_export_error', true ) === $said, TCGiant_Sync_Exporter::push_progress( 5051 ) ), array( 'failed', true, 'failed' ) );
 TCGiant_Sync_Logger::$lines = array();
 $exporter->process_single_push( 5051 );
-check( '  that push refused before eBay: still says so, in the same words', array( status( 5051 ), get_post_meta( 5051, '_ebay_export_error', true ) === $said ), array( 'failed', true ) );
+check( '  that push refused before eBay: still says so, in the same words, then why it was refused', array( status( 5051 ), 0 === strpos( get_post_meta( 5051, '_ebay_export_error', true ), $said . ' The push after it was refused: Cannot push to eBay ' ) ), array( 'failed', true ) );
 check( '  and the log says why it was refused, and that it still says so', count( preg_grep( '/^Export failed for "Product 5051" \(WC #5051\): Cannot push to eBay .* Its earlier push did not finish, and it still says so/', TCGiant_Sync_Logger::$lines ) ), 1 );
 sold_out_ajax( $admin, 'ajax_link_ebay', array( 'product_id' => '5051', 'ebay_item_id' => '960070000251' ) );
 check( '  Link then completes it: kept when that listing sells out', array( status( 5051 ), sells_out( 5051 ) ), array( 'pushed', 'kept' ) );
@@ -595,7 +597,7 @@ died_after_listing( 5055, '960070000255' );
 $said = get_post_meta( 5055, '_ebay_export_error', true );
 $in_flight->setValue( null, array( 'product_id' => 5055, 'title' => 'Product 5055', 'linked' => '', 'ended' => false, 'created' => '', 'unfinished' => $said ) );
 update_post_meta( 5055, '_ebay_export_status', 'pushing' );
-check( 'a push that throws before eBay, after one that did not finish: still says so', array( $record_throw->invoke( null, 'Export exception for "Product 5055" (WC #5055): Deadlock found when trying to get lock' ), status( 5055 ), get_post_meta( 5055, '_ebay_export_error', true ) === $said ), array( true, 'failed', true ) );
+check( 'a push that throws before eBay, after one that did not finish: still says so, then why it stopped', array( $record_throw->invoke( null, 'Export exception for "Product 5055" (WC #5055): Deadlock found when trying to get lock' ), status( 5055 ), get_post_meta( 5055, '_ebay_export_error', true ) ), array( true, 'failed', $said . ' The push after it was refused: Export exception for "Product 5055" (WC #5055): Deadlock found when trying to get lock' ) );
 $in_flight->setValue( null, null );
 
 // A push that finishes is what ends it, as before: test-push-visibility.php

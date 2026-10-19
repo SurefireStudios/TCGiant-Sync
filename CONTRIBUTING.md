@@ -81,7 +81,7 @@ This is a public repository. In April 2026 a copy of the OAuth relay was committ
 
 Maintainers only. The full procedure is in [`tools/README.md`](tools/README.md#releasing); the short version:
 
-1. Bump the version in `tcgiant-sync.php` (header **and** constant) and `readme.txt`; add entries to `changelog.txt` and the readme changelog. `check-version.php` will refuse anything that disagrees.
+1. Bump the version in `tcgiant-sync.php` (header **and** constant) and `readme.txt`; add entries to `changelog.txt` and the readme changelog, dated with the release day. `check-version.php` will refuse anything that disagrees, and an entry that is missing or not dated.
 2. `composer check`, commit, then `composer check-release`.
 3. Tag `vX.Y.Z`, push the tag, publish the GitHub release with notes written for merchants.
 4. Download the published archive and verify it — the version constant, the fixes present, no dev tooling. Not the local build; the archive.

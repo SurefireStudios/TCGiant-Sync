@@ -179,6 +179,9 @@ if ( ! empty( $tcgiant_settings['relay_secret'] ) && function_exists( 'wp_remote
 $tcgiant_options = array(
 	'tcgiant_sync_ebay_settings',      // Settings + OAuth tokens + relay secret.
 	'tcgiant_sync_state',              // Import state machine.
+	'tcgiant_sync_sites_seen',         // eBay sites listings were seen on, 3.27.5.
+	'tcgiant_sync_sites_mismatch',     // A full sync found none on the primary site.
+	'tcgiant_sync_sites_notice_dismissed',
 	'tcgiant_sync_active_ids',         // Scan bookkeeping.
 	'tcgiant_sync_delta_progress',     // Delta's place in its window, 3.27.0.
 	'tcgiant_sync_delta_window',       // Delta's window kept in brief, 3.27.0.

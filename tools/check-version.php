@@ -20,6 +20,14 @@
  * as the version that pushed a listing, so a wrong value misattributes a
  * merchant's data to a release that never touched it.
  *
+ * Then the changelogs: the newest entry in readme.txt's == Changelog == and in
+ * changelog.txt must be that version, with a real date. A candidate is staged
+ * with the date as the literal YYYY-MM-DD until the day it goes out, and
+ * nothing else the release workflow runs before it builds the zip reads the
+ * changelogs - so a release tagged before the date went in shipped the
+ * placeholder in both files, and one tagged without an entry at all shipped
+ * the last version's notes as this one's.
+ *
  * @package TCGiant_Sync
  */
 
@@ -92,5 +100,65 @@ if ( count( $distinct ) > 1 ) {
 	exit( 1 );
 }
 
-printf( "OK - version %s, and all %d places agree.\n", reset( $distinct ), count( $found ) );
+$version = (string) reset( $distinct );
+
+/**
+ * The newest changelog entry in a file, as array( version, date ), or record
+ * why there is none.
+ *
+ * @param string $path    Absolute path to read.
+ * @param string $pattern Regex capturing the version and the date, by name.
+ * @param string $after   Read only after this line, '' for the whole file.
+ * @param array  $errors  Collected failures, appended to.
+ * @return array|null
+ */
+function tcg_newest_entry( $path, $pattern, $after, array &$errors ) {
+	$src = is_readable( $path ) ? (string) file_get_contents( $path ) : '';
+
+	// readme.txt's own sections come first; its changelog starts at its header
+	// and runs to the next one.
+	if ( '' !== $after ) {
+		$at  = strpos( $src, $after );
+		$src = false === $at ? '' : substr( $src, $at + strlen( $after ) );
+		$end = preg_match( '/^==[^=].*==\s*$/m', $src, $m, PREG_OFFSET_CAPTURE ) ? $m[0][1] : strlen( $src );
+		$src = substr( $src, 0, $end );
+	}
+
+	if ( ! preg_match( $pattern, $src, $m ) ) {
+		$errors[] = sprintf( '%s: no changelog entry found', basename( $path ) );
+		return null;
+	}
+
+	return array( trim( $m['version'] ), trim( $m['date'] ) );
+}
+
+$entries = array(
+	'readme.txt'    => tcg_newest_entry( $root . '/readme.txt', '/^=\s*(?<version>\S+)\s+-\s+(?<date>\S+)\s*=\s*$/m', '== Changelog ==', $errors ),
+	'changelog.txt' => tcg_newest_entry( $root . '/changelog.txt', '/^(?<date>\S+)\s+-\s+version\s+(?<version>\S+)\s*$/m', '', $errors ),
+);
+
+foreach ( $entries as $file => $entry ) {
+	if ( null === $entry ) {
+		continue;
+	}
+
+	list( $entry_version, $date ) = $entry;
+
+	if ( $entry_version !== $version ) {
+		$errors[] = sprintf( '%s: the newest changelog entry is for %s, not %s', $file, $entry_version, $version );
+	} elseif ( ! preg_match( '/^(\d{4})-(\d{2})-(\d{2})$/', $date, $d ) || ! checkdate( (int) $d[2], (int) $d[3], (int) $d[1] ) ) {
+		$errors[] = sprintf( '%s: the %s entry is dated "%s", not a real date', $file, $version, $date );
+	}
+}
+
+if ( $errors ) {
+	fwrite( STDERR, sprintf( "check-version: the changelogs are not ready for %s.\n", $version ) );
+	foreach ( $errors as $error ) {
+		fwrite( STDERR, '  - ' . $error . "\n" );
+	}
+	fwrite( STDERR, "  Each needs an entry for this version, dated with the release day (YYYY-MM-DD), before tagging a release.\n" );
+	exit( 1 );
+}
+
+printf( "OK - version %s, and all %d places agree. Both changelogs have a dated entry for it.\n", $version, count( $found ) );
 exit( 0 );

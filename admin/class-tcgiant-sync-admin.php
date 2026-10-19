@@ -96,6 +96,8 @@ class TCGiant_Sync_Admin {
 		add_action( 'admin_notices', array( $this, 'unsettled_stock_notice' ) );
 		add_action( 'admin_notices', array( $this, 'sync_health_notice' ) );
 		add_action( 'admin_notices', array( $this, 'connect_failed_notice' ) );
+		add_action( 'admin_notices', array( $this, 'other_sites_notice' ) );
+		add_action( 'admin_post_tcgiant_dismiss_sites_notice', array( $this, 'handle_dismiss_sites_notice' ) );
 		add_action( 'admin_post_tcgiant_refresh_coin_listings', array( $this, 'handle_refresh_coin_listings' ) );
 
 		// Save per-product export overrides.
@@ -1155,10 +1157,19 @@ class TCGiant_Sync_Admin {
 					$sanitized[ $clean_key ] = map_deep( $value, 'sanitize_text_field' );
 				} elseif ( 'custom_saved_categories' === $clean_key ) {
 					$sanitized[ $clean_key ] = sanitize_textarea_field( $value );
+				} elseif ( TCGiant_Sync_Sites::SETTING === $clean_key ) {
+					// A closed set: anything but "only my Primary eBay
+					// Marketplace" is all sites, which is what a shop that
+					// never chose gets.
+					$sanitized[ $clean_key ] = TCGiant_Sync_Sites::PRIMARY === $value ? TCGiant_Sync_Sites::PRIMARY : TCGiant_Sync_Sites::ALL;
 				} else {
 					$sanitized[ $clean_key ] = sanitize_text_field( $value );
 				}
 			}
+
+			// A new marketplace, or a new choice of sites, answers the warning
+			// that the last full sync found nothing on the old one.
+			TCGiant_Sync_Sites::settings_changed( get_option( 'tcgiant_sync_ebay_settings', array() ), $sanitized );
 		}
 		return $sanitized;
 	}
@@ -1186,7 +1197,17 @@ class TCGiant_Sync_Admin {
 				'status'   => ActionScheduler_Store::STATUS_PENDING,
 				'per_page' => 1,
 			) );
-			if ( empty( $pending ) ) {
+			// Nor while one is running. The last import is no longer pending
+			// while it runs, and completed here, the sync was complete before
+			// that import's own check, which is what moves the delta sync's
+			// position and queues the pruner - so neither happened.
+			$running = as_get_scheduled_actions( array(
+				'hook'     => 'tcgiant_sync_process_item_import',
+				'group'    => TCGiant_Sync_Importer::GROUP_IMPORTS,
+				'status'   => ActionScheduler_Store::STATUS_RUNNING,
+				'per_page' => 1,
+			) );
+			if ( empty( $pending ) && empty( $running ) ) {
 				TCGiant_Sync_Importer::update_sync_state( array(
 					'status'         => 'complete',
 					'last_completed' => current_time( 'mysql' ),
@@ -1990,6 +2011,93 @@ class TCGiant_Sync_Admin {
 	}
 
 	/**
+	 * Listings on more than one eBay site, and what "Import listings from" does.
+	 *
+	 * Two notices, on the plugin's own pages only:
+	 * - while every site is imported, a shop seen selling on two or more is told
+	 *   the setting exists - once, until it dismisses it or a new site appears.
+	 *   Nothing else would ever tell it: the products simply arrive;
+	 * - while only the Primary eBay Marketplace is imported, a full sync that
+	 *   found nothing on it says the marketplace looks wrong, since nothing new
+	 *   is being imported at all. That one stays until the shop changes either
+	 *   setting or a full sync finds listings on the marketplace.
+	 */
+	public function other_sites_notice() {
+		$screen = get_current_screen();
+		if ( ! $screen || false === strpos( (string) $screen->id, 'tcgiant' ) || ! current_user_can( 'manage_options' ) ) {
+			return;
+		}
+
+		$settings_url = admin_url( 'admin.php?page=tcgiant-settings' );
+		$mismatch     = TCGiant_Sync_Sites::mismatch();
+
+		if ( null !== $mismatch ) {
+			?>
+			<div class="notice notice-error">
+				<p>
+					<strong><?php esc_html_e( 'TCGiant Sync — no listings on your Primary eBay Marketplace', 'tcgiant-sync' ); ?></strong><br>
+					<?php
+					printf(
+						/* translators: 1: the shop's eBay site, e.g. "eBay United States", 2: the sites found, e.g. "eBay Germany, eBay United Kingdom" */
+						esc_html__( 'The last full sync found no listings on %1$s, your Primary eBay Marketplace, so nothing new was imported. Your listings are on %2$s. Change Primary eBay Marketplace, or set Import listings from to All eBay sites, in Settings.', 'tcgiant-sync' ),
+						esc_html( TCGiant_Sync_Sites::primary_label() ),
+						esc_html( implode( ', ', array_map( 'strval', (array) ( $mismatch['sites'] ?? array() ) ) ) )
+					);
+					?>
+				</p>
+				<p><a href="<?php echo esc_url( $settings_url ); ?>" class="button button-primary"><?php esc_html_e( 'Settings', 'tcgiant-sync' ); ?></a></p>
+			</div>
+			<?php
+			return;
+		}
+
+		if ( TCGiant_Sync_Sites::primary_only() ) {
+			return;
+		}
+
+		$sites = TCGiant_Sync_Sites::seen_labels();
+		if ( count( $sites ) < 2 || TCGiant_Sync_Sites::notice_dismissed( $sites ) ) {
+			return;
+		}
+
+		$dismiss_url = wp_nonce_url( admin_url( 'admin-post.php?action=tcgiant_dismiss_sites_notice' ), 'tcgiant_dismiss_sites_notice' );
+		?>
+		<div class="notice notice-info">
+			<p>
+				<strong><?php esc_html_e( 'TCGiant Sync — listings on more than one eBay site', 'tcgiant-sync' ); ?></strong><br>
+				<?php
+				printf(
+					/* translators: %s: the eBay sites seen, e.g. "eBay Germany, eBay United States" */
+					esc_html__( 'Your eBay account has listings on more than one eBay site (%s). All eBay sites are imported. To import only one site\'s listings, go to TCGiant Sync, Settings, Import listings from.', 'tcgiant-sync' ),
+					esc_html( implode( ', ', $sites ) )
+				);
+				?>
+			</p>
+			<p>
+				<a href="<?php echo esc_url( $settings_url ); ?>" class="button"><?php esc_html_e( 'Settings', 'tcgiant-sync' ); ?></a>
+				<a href="<?php echo esc_url( $dismiss_url ); ?>" style="margin-left:8px;"><?php esc_html_e( 'Do not show this again', 'tcgiant-sync' ); ?></a>
+			</p>
+		</div>
+		<?php
+	}
+
+	/**
+	 * The "more than one eBay site" notice's dismiss link.
+	 */
+	public function handle_dismiss_sites_notice() {
+		check_admin_referer( 'tcgiant_dismiss_sites_notice' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'Unauthorized.', 'tcgiant-sync' ) );
+		}
+
+		TCGiant_Sync_Sites::dismiss_notice();
+
+		$back = wp_get_referer();
+		wp_safe_redirect( $back ? $back : admin_url( 'admin.php?page=tcgiant-sync' ) );
+		exit;
+	}
+
+	/**
 	 * The delta has fallen a day behind, or had to step over listings.
 	 *
 	 * Two shops ran for days with a sync that restarted the same window every
@@ -2629,6 +2737,18 @@ class TCGiant_Sync_Admin {
 		$product->update_meta_data( '_ebay_item_id', $item_id );
 		$product->update_meta_data( '_ebay_listing_type', $type );
 		$product->update_meta_data( '_ebay_listing_status', $local_status );
+
+		// The eBay site this listing is on, from the answer in hand, or none
+		// when eBay gave none (TCGiant_Sync_Sites). A product linked by hand
+		// is often one the pruner kept when its old listing went, and that
+		// listing's site must not stay behind on it: Stock Review would list
+		// the shop's own as another site's, and Relist go by the wrong site.
+		$linked_site = TCGiant_Sync_Sites::site_of( $item );
+		if ( '' !== $linked_site ) {
+			$product->update_meta_data( '_ebay_site', $linked_site );
+		} else {
+			$product->delete_meta_data( '_ebay_site' );
+		}
 
 		if ( '' !== $end_time ) {
 			$product->update_meta_data( '_ebay_end_time', $end_time );
@@ -4269,7 +4389,7 @@ class TCGiant_Sync_Admin {
 		if ( ! empty( $result['fees'] ) ) {
 			foreach ( $result['fees'] as $name => $amount ) {
 				if ( $amount > 0 ) {
-					$fees[] = $name . ': $' . number_format( $amount, 2 );
+					$fees[] = $name . ': ' . self::fee_amount( $amount );
 				}
 			}
 		}
@@ -4280,6 +4400,31 @@ class TCGiant_Sync_Admin {
 		}
 
 		wp_send_json_success( array( 'message' => $msg, 'fees' => $fees ) );
+	}
+
+	/**
+	 * A fee Verify reports, in the currency of the shop's eBay site.
+	 *
+	 * Every fee was shown with "$", whatever the site, so a shop on eBay.co.uk
+	 * or eBay.de read its fees as dollars. eBay quotes them in the site's own
+	 * currency. One this does not know is written after the amount by its
+	 * code, and with no currency at all the amount is left bare rather than
+	 * given a guess.
+	 *
+	 * @param float $amount The fee.
+	 * @return string
+	 */
+	private static function fee_amount( $amount ) {
+		$config   = TCGiant_Sync_API::instance()->get_marketplace_config();
+		$currency = is_array( $config ) ? strtoupper( (string) ( $config['currency'] ?? '' ) ) : '';
+		$symbols  = array( 'USD' => '$', 'GBP' => '£', 'EUR' => '€', 'CAD' => 'C$', 'AUD' => 'A$' );
+		$number   = number_format( (float) $amount, 2 );
+
+		if ( isset( $symbols[ $currency ] ) ) {
+			return $symbols[ $currency ] . $number;
+		}
+
+		return 1 === preg_match( '/^[A-Z]{3}$/', $currency ) ? $number . ' ' . $currency : $number;
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────

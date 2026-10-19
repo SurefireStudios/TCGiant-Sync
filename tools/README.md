@@ -80,7 +80,10 @@ php tools/check-hooks.php --update
 `check-version.php` compares the `Version:` header, the `TCGIANT_SYNC_VERSION`
 constant and `Stable tag` in `readme.txt`. All three are set by hand and nothing
 previously made them agree, so a zip could be named one version, report a second
-to every site running it, and advertise a third in the readme.
+to every site running it, and advertise a third in the readme. It also
+requires the newest entry in `readme.txt`'s `== Changelog ==` and in
+`changelog.txt` to be that version, with a real date: a candidate staged with
+`YYYY-MM-DD` fails until the release day's date is in both.
 
 `check-archive-parity.php` is not part of the routine run, because it needs a
 committed tree. There are two ways a customer receives this plugin — the
@@ -106,7 +109,8 @@ php composer.phar install
 1. Bump the version in `tcgiant-sync.php` (header **and** the
    `TCGIANT_SYNC_VERSION` constant) and `Stable tag` in `readme.txt`.
 2. Add entries to `changelog.txt` and the `== Changelog ==` section of
-   `readme.txt`.
+   `readme.txt`, dated with the release day. `check-version.php` refuses an
+   entry still dated `YYYY-MM-DD`.
 3. Run `tools\check.bat`.
 4. Commit, then run `composer check-release` — it repeats the checks and
    compares what auto-updating sites will receive against the uploaded zip.

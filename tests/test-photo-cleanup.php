@@ -545,12 +545,13 @@ function wp_delete_post( $id, $force = false ) {
 	return $post;
 }
 
-/** wp_trash_post(), in WordPress's order: the action first, then the record of when. */
+/** wp_trash_post(), in WordPress's order: the action first, then the record of when. It hands back the post, as WordPress does. */
 function wp_trash_post( $id ) {
 	do_action( 'wp_trash_post', $id );
 	update_post_meta( $id, '_wp_trash_meta_status', 'publish' );
 	update_post_meta( $id, '_wp_trash_meta_time', time() );
 	q( "UPDATE wp_posts SET post_status = 'trash' WHERE ID = " . (int) $id );
+	return get_post( $id );
 }
 
 /** wp_scheduled_delete(): the daily emptying of the Trash - every trashed post on its own record. */
@@ -3636,6 +3637,72 @@ $CLOCK_OFFSET = TCGiant_Sync_Runtime::time_budget() + 10;
 run_queue();
 $CLOCK_OFFSET = 0.0;
 check( 'begun late with nothing due yet: the next run is when the photo is due', wp_next_scheduled( TCGiant_Sync_Photo_Cleanup::CLEANUP_HOOK ) >= (int) get_post_meta( $A, TCGiant_Sync_Photo_Cleanup::MARK_KEY, true ), true );
+
+echo "\nA COPY FROM ANOTHER EBAY SITE, MOVED TO THE TRASH BY STOCK REVIEW, THEN THE TRASH EMPTIED (3.27.5)\n" . str_repeat( '=', 124 ) . "\n";
+
+// A Web Interpret shop: every eBay.com listing has copies on other eBay sites
+// showing the same photos from the same eBay addresses, and the copies came in
+// as products of their own before "Import listings from" was set. The image
+// batch downloads each photo once and hands it to every product showing it,
+// so the eBay.com product and its eBay.co.uk copy share downloads both ways;
+// the copy also has one of its own. Stock Review moves the copy to the trash,
+// and thirty days on WordPress empties it. The copy's own photo is for the
+// removal; what the shop's own product shows is not.
+require $ROOT . '/includes/class-tcgiant-sync-api.php';
+require $ROOT . '/includes/class-tcgiant-sync-sites.php';
+function get_post_status( $id ) { $p = get_post( $id ); return $p ? $p->post_status : false; }
+
+fresh_db();
+boot();
+installed_days_ago( 40 );
+update_option( 'tcgiant_sync_ebay_settings', array( 'import_sites' => 'primary', 'marketplace' => 'EBAY_US' ) );
+$US = product( 'publish' );
+$UK = product( 'publish' );
+$WIP = product( 'publish' );
+foreach ( array( $US => array( '110000000001', 'US' ), $UK => array( '220000000001', 'UK' ), $WIP => array( '220000000002', 'UK' ) ) as $id => $listing ) {
+	update_post_meta( $id, '_ebay_item_id', $listing[0] );
+	update_post_meta( $id, '_ebay_site', $listing[1] );
+	update_post_meta( $id, '_ebay_listing_status', 'Active' );
+}
+// Another copy, whose first push from WooCommerce did not finish: eBay may
+// hold a listing that only this product knows of (3.27.4).
+update_post_meta( $WIP, '_ebay_export_status', 'failed' );
+
+$A  = photo( $US );  // the eBay.com product's download, which the copy shows too
+$S  = photo( $UK );  // the copy's download, which the eBay.com product shows too
+$X  = photo( $UK );  // the copy's own: nothing else shows it
+$W  = photo( $WIP );
+$url_a = get_post_meta( $A, '_tcgiant_source_url', true );
+$url_s = get_post_meta( $S, '_tcgiant_source_url', true );
+check( 'the image batch hands each product the other\'s download of the same eBay photo', array( reused_for( $UK, $url_a ), reused_for( $US, $url_s ) ), array( $A, $S ) );
+set_post_thumbnail( $US, $A );
+update_post_meta( $US, '_product_image_gallery', (string) $S );
+set_post_thumbnail( $UK, $S );
+update_post_meta( $UK, '_product_image_gallery', "{$A},{$X}" );
+set_post_thumbnail( $WIP, $W );
+$paths = array();
+foreach ( array( $A, $S, $X, $W ) as $id ) {
+	$paths[ $id ] = paths_of( $id );
+}
+
+check( 'Stock Review lists the copy, not the shop\'s own product, nor the copy whose push did not finish', TCGiant_Sync_Sites::find_other_site_products(), array( $UK ) );
+check( '  its button moves the copy to the trash, and leaves the other two', array( TCGiant_Sync_Sites::trash_other_site_product( $UK ), TCGiant_Sync_Sites::trash_other_site_product( $US ), TCGiant_Sync_Sites::trash_other_site_product( $WIP ) ), array( 'trashed', 'kept', 'kept' ) );
+check( '  in the Trash, nothing is marked yet', array( get_post_status( $UK ), TCGiant_Sync_Photo_Cleanup::waiting() ), array( 'trash', 0 ) );
+
+trashed_days_ago( 31 );
+$DENIED = array( 'delete_posts' );
+wp_scheduled_delete();
+$DENIED = array();
+do_action( 'shutdown' );
+check( 'Trash emptied: the copy is gone, and every downloaded photo it showed or held is marked', array( exists( $UK ), marked( $A ), marked( $S ), marked( $X ), marked( $W ) ), array( false, true, true, true, false ) );
+
+time_passes();
+run_queue();
+check( 'after the quarantine: the copy\'s own photo is removed, with its files', array( exists( $X ), files_intact( $paths[ $X ] ) ), array( false, false ) );
+check( '  the eBay.com product\'s photos are kept, with their files: one attached to it, one it shows', array( exists( $A ), files_intact( $paths[ $A ] ), exists( $S ), files_intact( $paths[ $S ] ) ), array( true, true, true, true ) );
+check( '  and it still shows them', array( get_post_thumbnail_id( $US ), get_post_meta( $US, '_product_image_gallery', true ) ), array( $A, (string) $S ) );
+check( '  no longer waiting, so the image batch may hand them out again', array( marked( $A ), marked( $S ), reused_for( $US, $url_s ) ), array( false, false, $S ) );
+check( '  the copy whose push did not finish keeps its photo', array( exists( $WIP ), exists( $W ), files_intact( $paths[ $W ] ) ), array( true, true, true ) );
 
 printf( "\n  %d passed, %d failed\n\n", $pass, $fail );
 exit( $fail > 0 ? 1 : 0 );

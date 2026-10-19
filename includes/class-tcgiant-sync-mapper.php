@@ -270,6 +270,16 @@ class TCGiant_Sync_Mapper {
 			'_ebay_listing_status'   => $ebay_item['SellingStatus']['ListingStatus'] ?? 'Active',
 		);
 
+		// The eBay site the listing is on, which "Import listings from" decides
+		// by (TCGiant_Sync_Sites) and Stock Review finds other sites' products by.
+		// Recorded only when eBay said: an answer without it must not wipe the
+		// site an earlier answer recorded.
+		$product_data['site'] = TCGiant_Sync_Sites::site_of( $ebay_item );
+		TCGiant_Sync_Sites::note( $product_data['site'] );
+		if ( '' !== $product_data['site'] ) {
+			$product_data['meta']['_ebay_site'] = $product_data['site'];
+		}
+
 		// Map Variations.
 		$product_data['variations'] = array();
 		if ( isset( $ebay_item['Variations']['Variation'] ) ) {
@@ -517,6 +527,8 @@ class TCGiant_Sync_Mapper {
 		$product_id = false;
 		// Whether step 2 below gives a product this listing by its SKU.
 		$linked_by_sku = false;
+		// Whether step 2 completed, in the table, a push that did not finish.
+		$completed_push = false;
 
 		// 1. Check by exact eBay Item ID first.
 		//
@@ -565,6 +577,37 @@ class TCGiant_Sync_Mapper {
 
 		if ( $found && 'trash' !== $found->post_status ) {
 			$product_id = (int) $found->post_id;
+		}
+
+		// 1a. A listing on another eBay site, when the shop imports only the
+		//     listings on its Primary eBay Marketplace (TCGiant_Sync_Sites).
+		//
+		// Here, after the exact-listing match and before the SKU match, so that
+		// one check covers every way a listing reaches a product - the delta,
+		// the full scan inline and queued, and Sync Specific Items - and so that
+		// a product already linked to this exact listing carries on syncing, as
+		// it must until the shop removes it. What it stops is everything below:
+		// a new product, an unlinked product being taken over because it has
+		// the same SKU, and a product whose own listing ended being re-linked to
+		// this one. A seller whose copies on other sites keep the eBay.com SKU
+		// would otherwise have its United States products moved onto a copy on
+		// eBay.de the moment the United States listing ended.
+		if ( ! $product_id ) {
+			$listing_site = (string) ( $product_data['site'] ?? '' );
+
+			if ( TCGiant_Sync_Sites::leaves_out( $listing_site ) ) {
+				return $this->skip_other_site( $product_data, $item_id, $listing_site );
+			}
+
+			if ( '' === $listing_site && TCGiant_Sync_Sites::primary_only() ) {
+				// Let through rather than dropped: a product that should not be
+				// here can be removed, a listing dropped by mistake never comes
+				// back. eBay's GetItem always says, so this is rare.
+				TCGiant_Sync_Logger::warning( sprintf(
+					'eBay did not say which site item %s is listed on; importing it.',
+					$item_id
+				) );
+			}
 		}
 
 		// 2. If not found by Item ID, check by SKU to link to existing WC product.
@@ -627,6 +670,11 @@ class TCGiant_Sync_Mapper {
 						$linked_by_sku = true;
 						// Clear the old item ID so it gets replaced with the new one.
 						update_post_meta( $sku_product_id, '_ebay_item_id', $item_id );
+						// Its push completed in the table with it. Left to the save
+						// below, a save that died left the product linked here and
+						// still saying its push did not finish, and the next sync
+						// found it by this item number, not by its SKU.
+						$completed_push = TCGiant_Sync_Listing_Link::complete_unfinished_push_now( $sku_product_id );
 					} else {
 						// Two live listings that merely share an identifier. This is
 						// ordinary whenever the WooCommerce SKU comes from a UPC or EAN
@@ -940,7 +988,8 @@ class TCGiant_Sync_Mapper {
 		// the product told the shop to Link (a linked product is not offered
 		// Link) or to Unlink a listing it had just left, Clear was refused,
 		// and Auto-Relist, Relist and the bulk pushes left it out for good.
-		$completed_push = $linked_by_sku && TCGiant_Sync_Listing_Link::complete_unfinished_push( $product );
+		// A re-link over an ended listing has already completed it, above.
+		$completed_push = ( $linked_by_sku && TCGiant_Sync_Listing_Link::complete_unfinished_push( $product ) ) || $completed_push;
 
 		// Set Custom Meta (including _ebay_item_id for tracking).
 		foreach ( $product_data['meta'] as $key => $val ) {
@@ -1033,6 +1082,56 @@ class TCGiant_Sync_Mapper {
 		}
 
 		return $saved_id;
+	}
+
+	/**
+	 * Leave out a listing on another eBay site, and say so - once.
+	 *
+	 * A deliberate skip, so not counted as an error. Said once per listing per
+	 * TCGiant_Sync_Sites::SKIP_LOG_DAYS: a seller whose every listing has seven
+	 * copies on other sites would otherwise get thousands of these lines on
+	 * every weekly full sync. Sync Specific Items clears the note first, so an
+	 * item asked for by hand always says why it did not arrive.
+	 *
+	 * @param array  $product_data Mapped listing.
+	 * @param string $item_id      eBay ItemID.
+	 * @param string $site         Its Item.Site.
+	 * @return false
+	 */
+	private function skip_other_site( array $product_data, $item_id, $site ) {
+		self::$last_skipped = true;
+
+		$key = TCGiant_Sync_Sites::SKIP_TRANSIENT . $item_id;
+		if ( false !== get_transient( $key ) ) {
+			return false;
+		}
+		set_transient( $key, 1, TCGiant_Sync_Sites::SKIP_LOG_DAYS * DAY_IN_SECONDS );
+
+		// The case a shop most needs told: a product of its own, on the website
+		// and not linked to eBay, that this listing would have taken over.
+		$sku  = (string) ( $product_data['sku'] ?? '' );
+		$held = '' !== $sku ? (int) $this->find_matchable_product_id_by_sku( $sku ) : 0;
+
+		if ( $held && 'trash' !== get_post_status( $held ) && '' === (string) get_post_meta( $held, '_ebay_item_id', true ) ) {
+			TCGiant_Sync_Logger::log( sprintf(
+				'eBay item %1$s on %2$s has the same SKU as WC #%3$d, which is not linked to eBay. Import listings from is set to %4$s only, so WC #%3$d was left alone.',
+				$item_id,
+				TCGiant_Sync_Sites::label( $site ),
+				$held,
+				TCGiant_Sync_Sites::primary_label()
+			) );
+			return false;
+		}
+
+		TCGiant_Sync_Logger::log( sprintf(
+			'Skipped eBay item %s ("%s"): it is listed on %s, and Import listings from is set to %s only (Settings, Import Filters). Products already linked to a listing there keep syncing.',
+			$item_id,
+			(string) ( $product_data['title'] ?? '' ),
+			TCGiant_Sync_Sites::label( $site ),
+			TCGiant_Sync_Sites::primary_label()
+		) );
+
+		return false;
 	}
 
 	/**
@@ -1657,6 +1756,16 @@ class TCGiant_Sync_Mapper {
 		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
 
 		if ( ! empty( $settings['marketplace'] ) ) {
+			return;
+		}
+
+		// Not while the shop imports only its Primary eBay Marketplace's
+		// listings. That keys on the marketplace, so taking it from the first
+		// listing seen would make that listing's site the one kept for the rest
+		// of the run: a United Kingdom listing mapped first would leave out every
+		// United States one after it. Until a marketplace is saved the filter is
+		// not in force, everything is imported, and Settings says to save one.
+		if ( TCGiant_Sync_Sites::PRIMARY === ( $settings[ TCGiant_Sync_Sites::SETTING ] ?? '' ) ) {
 			return;
 		}
 

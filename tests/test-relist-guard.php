@@ -77,14 +77,50 @@ class WP_Error {
 // The Listings table's ended rows, as the daily auto-relist reads them.
 define( 'ARRAY_A', 'ARRAY_A' );
 $ENDED_ROWS = array();
+$QUERIES    = array(); // every list the database was asked for
 
 class Harness_Wpdb {
 	public $options  = 'wp_options';
 	public $postmeta = 'wp_postmeta';
 	public $posts    = 'wp_posts';
-	public function prepare( $query ) { return $query; }
+	public function prepare( $query, ...$args ) {
+		if ( isset( $args[0] ) && is_array( $args[0] ) ) {
+			$args = $args[0];
+		}
+		$i = 0;
+		return preg_replace_callback( '/%[sd]/', function ( $m ) use ( $args, &$i ) {
+			$value = $args[ $i++ ] ?? '';
+			return '%d' === $m[0] ? (string) (int) $value : "'" . addslashes( (string) $value ) . "'";
+		}, $query );
+	}
 	public function query( $query ) { return 0; }
-	public function get_results( $query, $output = null ) { return $GLOBALS['ENDED_ROWS']; }
+	/**
+	 * The ended rows, as the database would return them for the query asked:
+	 * with its LIMIT, and without products recorded on another eBay site when
+	 * the query keeps those out (3.27.5).
+	 */
+	public function get_results( $query, $output = null ) {
+		$GLOBALS['QUERIES'][] = $query;
+		$rows = $GLOBALS['ENDED_ROWS'];
+		if ( preg_match( "/(NOT )?EXISTS \( SELECT 1 FROM \S+ tcg_site.*?tcg_site\.meta_value NOT IN \( ([^)]*) \)/s", $query, $m ) ) {
+			$keep    = array_map( function ( $s ) { return trim( $s, " '" ); }, explode( ',', $m[2] ) );
+			$without = 'NOT ' === $m[1];
+			// ... unless it is the shop's own, when the query says so (tcg_own).
+			$own_in  = false !== strpos( $query, 'OR EXISTS ( SELECT 1 FROM wp_postmeta tcg_own' );
+			$rows    = array_values( array_filter( $rows, function ( $row ) use ( $keep, $without, $own_in ) {
+				$meta  = $GLOBALS['META'][ (int) ( $row['product_id'] ?? $row['post_id'] ?? 0 ) ] ?? array();
+				$site  = (string) ( $meta['_ebay_site'] ?? '' );
+				$other = '' !== $site && ! in_array( $site, $keep, true );
+				$own   = '' !== (string) ( $meta['_ebay_export_last_pushed'] ?? '' ) || '' !== (string) ( $meta['_ebay_export_pushed_version'] ?? '' )
+					|| 'pushed' === ( $meta['_ebay_export_status'] ?? null );
+				return $without ? ( ! $other || ( $own_in && $own ) ) : $other;
+			} ) );
+		}
+		if ( preg_match( '/LIMIT (\d+)/', $query, $limit ) ) {
+			$rows = array_slice( $rows, 0, (int) $limit[1] );
+		}
+		return $rows;
+	}
 }
 $wpdb = new Harness_Wpdb();
 
@@ -179,7 +215,8 @@ class TCGiant_Sync_Logger {
 class TCGiant_Sync_DB {
 	public static function upsert( $data ) { $GLOBALS['ROWS'][] = $data; return true; }
 	public static function table_name() { return 'wp_tcgiant_sync_listings'; }
-	public static function table_exists() { return true; }
+	// A site whose listings table was never created reads from post meta.
+	public static function table_exists() { return $GLOBALS['TABLE_EXISTS'] ?? true; }
 }
 
 // The settle is tested on its own elsewhere; here only whether it is asked.
@@ -255,6 +292,7 @@ function wp_remote_retrieve_body( $response ) { return $response['body'] ?? ''; 
 
 require $ROOT . '/includes/class-tcgiant-sync-catalog.php';
 require $ROOT . '/includes/class-tcgiant-sync-api.php';
+require $ROOT . '/includes/class-tcgiant-sync-sites.php';
 require $ROOT . '/includes/class-tcgiant-sync-exporter.php';
 require $ROOT . '/includes/class-tcgiant-sync-jobs.php';
 require $ROOT . '/includes/class-tcgiant-sync-cron.php';
@@ -980,6 +1018,257 @@ $GLOBALS['SETTLE_FAILS'] = true;
 check( 'it is not relisted', outcome( relist( 571 ) ), 'relist_unchecked' );
 check( '  nothing sent to eBay', $ebay->relists_of( $item ), array() );
 $GLOBALS['SETTLE_FAILS'] = false;
+
+echo "\nA LISTING ON ANOTHER EBAY SITE IS NEVER PUT BACK UP (3.27.5)\n" . str_repeat( '=', 126 ) . "\n";
+
+// Rabbi Ent lists on eBay.com, and Web Interpret copies every listing onto
+// eBay.co.uk, eBay.de and the rest. With "Import listings from" set to eBay
+// United States only, a product imported from one of those copies before the
+// setting was chosen keeps syncing until the shop removes it - but relisting
+// it would put a listing back up on a site the shop has said to leave alone.
+$only_us = array( 'auto_relist_enabled' => 1, 'import_sites' => 'primary', 'marketplace' => 'EBAY_US' );
+
+/** GetItem's answer for a listing on the given eBay site. */
+function ebay_says_on( $site, $status, $listed, $sold ) {
+	$answer                 = ebay_says( $status, $listed, $sold );
+	$answer['Item']['Site'] = $site;
+	return $answer;
+}
+
+// The site already recorded on the product: refused before eBay is asked.
+$ebay = fresh_shop();
+$OPTIONS['tcgiant_sync_ebay_settings'] = $only_us;
+$uk_item = coin( 701, array( '_ebay_site' => 'UK' ) );
+$ebay->item    = ebay_says_on( 'UK', 'Completed', 3, 0 );
+$ebay->relists = relisted_as( '226100009701' );
+$result = relist( 701 );
+check( 'recorded on eBay United Kingdom: refused', outcome( $result ), 'relist_refused' );
+check( '  saying where it is listed and what the setting is', is_wp_error( $result ) ? $result->get_error_message() : '', 'its eBay listing is on eBay United Kingdom, and Import listings from is set to eBay United States only' );
+check( '  before eBay is asked anything - not even GetItem', $ebay->calls, array() );
+check( '  still pointing at its own listing', meta( 701, '_ebay_item_id' ), $uk_item );
+
+// Not recorded yet (imported before 3.27.5): eBay's answer says, and the
+// sale it reports is still brought into the stock from that same answer.
+$ebay = fresh_shop();
+$OPTIONS['tcgiant_sync_ebay_settings'] = $only_us;
+$de_item = coin( 702 );
+$ebay->item    = ebay_says_on( 'Germany', 'Completed', 3, 1 );
+$ebay->relists = relisted_as( '226100009702' );
+$result = relist( 702 );
+check( 'no site recorded, eBay says Germany: refused', outcome( $result ), 'relist_refused' );
+check( '  naming eBay Germany', is_wp_error( $result ) && false !== strpos( $result->get_error_message(), 'is on eBay Germany' ), true );
+check( '  after one GetItem and no relist', $ebay->calls, array( array( 'GetItem', $de_item ) ) );
+check( '  the sale eBay reported is still settled from that answer', $GLOBALS['SETTLED'][0] ?? null, array( 'apply_ended_listing_stock', 702, 3, 1 ) );
+check( '  and the site is recorded, so next time nothing is asked', meta( 702, '_ebay_site' ), 'Germany' );
+$ebay->calls = array();
+check( '  asked again: refused at once', array( outcome( relist( 702 ) ), $ebay->calls ), array( 'relist_refused', array() ) );
+
+// The shop's own site, and eBay Motors, which is part of it, are relisted.
+foreach ( array( 'US' => 703, 'eBayMotors' => 704 ) as $site => $id ) {
+	$ebay = fresh_shop();
+	$OPTIONS['tcgiant_sync_ebay_settings'] = $only_us;
+	$item = coin( $id, array( '_ebay_site' => $site ) );
+	$ebay->item    = ebay_says_on( $site, 'Completed', 3, 0 );
+	$ebay->relists = relisted_as( '22610000' . $id );
+	check( sprintf( 'recorded on %s: relisted', $site ), outcome( relist( $id ) ), 'relisted' );
+	check( '  through the relist call, at its quantity', $ebay->relists_of( $item ), array( array( 'RelistFixedPriceItem', $item, 3 ) ) );
+}
+
+// Recorded as the shop's own site, wrongly - a product linked by hand to a
+// different listing, say: eBay's answer, already asked for, still decides. The
+// first build read it only when nothing was recorded, and relisted the copy.
+$ebay = fresh_shop();
+$OPTIONS['tcgiant_sync_ebay_settings'] = $only_us;
+$uk_item = coin( 708, array( '_ebay_site' => 'US' ) );
+$ebay->item    = ebay_says_on( 'UK', 'Completed', 3, 0 );
+$ebay->relists = relisted_as( '226100009708' );
+$result = relist( 708 );
+check( 'recorded as eBay United States, eBay says eBay United Kingdom: refused', is_wp_error( $result ) ? $result->get_error_message() : outcome( $result ), 'its eBay listing is on eBay United Kingdom, and Import listings from is set to eBay United States only' );
+check( '  after the one GetItem, and no relist', $ebay->calls, array( array( 'GetItem', $uk_item ) ) );
+check( '  and the site eBay gave is recorded', meta( 708, '_ebay_site' ), 'UK' );
+
+// Pushed before makes no difference. A copy revised once by Push - select all
+// on the Listings screen, Push - carries the same marks as a product the shop
+// pushed itself, and the second build spared both: the copy went back up on
+// eBay.co.uk beside the one Web Interpret makes. A shop that moved from eBay US
+// to eBay UK is told why its eBay.com listings are not relisted instead.
+$pushed = array( '_ebay_export_last_pushed' => '2025-01-01 10:00:00', '_ebay_export_status' => 'pushed', '_ebay_export_pushed_version' => '3.27.5' );
+$ebay = fresh_shop();
+$OPTIONS['tcgiant_sync_ebay_settings'] = $only_us;
+$own_item = coin( 709, array_merge( $pushed, array( '_ebay_site' => 'UK' ) ) );
+$ebay->item    = ebay_says_on( 'UK', 'Completed', 3, 0 );
+$ebay->relists = relisted_as( '226100009709' );
+$result = relist( 709 );
+check( 'pushed before (revised once by Push), recorded on eBay United Kingdom: refused', is_wp_error( $result ) ? $result->get_error_message() : outcome( $result ), 'its eBay listing is on eBay United Kingdom, and Import listings from is set to eBay United States only' );
+check( '  before eBay is asked anything', $ebay->calls, array() );
+$ebay = fresh_shop();
+$OPTIONS['tcgiant_sync_ebay_settings'] = $only_us;
+coin( 710, array( '_ebay_site' => 'UK', '_ebay_export_status' => 'error' ) );
+$ebay->relists = relisted_as( '226100009710' );
+check( 'imported from another site, its push failed: refused', array( outcome( relist( 710 ) ), $ebay->calls ), array( 'relist_refused', array() ) );
+$ebay = fresh_shop();
+$OPTIONS['tcgiant_sync_ebay_settings'] = $only_us;
+$own_item = coin( 711, array( '_ebay_export_pushed_version' => '3.20.0' ) );
+$ebay->item    = ebay_says_on( 'Germany', 'Completed', 3, 0 );
+$ebay->relists = relisted_as( '226100009711' );
+check( 'pushed before, no site recorded, eBay says eBay Germany: refused', outcome( relist( 711 ) ), 'relist_refused' );
+check( '  after the one GetItem, and no relist', $ebay->calls, array( array( 'GetItem', $own_item ) ) );
+check( '  and the site recorded from the answer', meta( 711, '_ebay_site' ), 'Germany' );
+$ebay = fresh_shop();
+$OPTIONS['tcgiant_sync_ebay_settings'] = array( 'auto_relist_enabled' => 1, 'import_sites' => 'primary', 'marketplace' => 'EBAY_GB' );
+coin( 712, array_merge( $pushed, array( '_ebay_site' => 'US' ) ) );
+$ebay->relists = relisted_as( '226100009712' );
+$result = relist( 712 );
+check( 'the shop moved to eBay United Kingdom only: its own eBay.com listing is refused, saying why', is_wp_error( $result ) ? $result->get_error_message() : outcome( $result ), 'its eBay listing is on eBay United States, and Import listings from is set to eBay United Kingdom only' );
+
+// eBay says nothing about the site: let through, as everywhere else.
+$ebay = fresh_shop();
+$OPTIONS['tcgiant_sync_ebay_settings'] = $only_us;
+coin( 705 );
+$ebay->item    = ebay_says( 'Completed', 3, 0 );
+$ebay->relists = relisted_as( '226100009705' );
+check( 'no site anywhere: relisted, not refused on a guess', outcome( relist( 705 ) ), 'relisted' );
+check( '  and no site recorded', meta( 705, '_ebay_site' ), null );
+
+// All eBay sites, the default for every shop: nothing changes.
+foreach ( array(
+	'never chosen'   => array( 'auto_relist_enabled' => 1, 'marketplace' => 'EBAY_US' ),
+	'All eBay sites' => array( 'auto_relist_enabled' => 1, 'marketplace' => 'EBAY_US', 'import_sites' => 'all' ),
+) as $how => $settings ) {
+	$ebay = fresh_shop();
+	$OPTIONS['tcgiant_sync_ebay_settings'] = $settings;
+	coin( 706, array( '_ebay_site' => 'UK' ) );
+	$ebay->item    = ebay_says_on( 'UK', 'Completed', 3, 0 );
+	$ebay->relists = relisted_as( '226100009706' );
+	check( sprintf( 'import listings from: %s - the eBay United Kingdom listing is relisted as before', $how ), outcome( relist( 706 ) ), 'relisted' );
+}
+
+// Bulk Relist, through the real job handler: kept, with the reason shown.
+$ebay = fresh_shop();
+$OPTIONS['tcgiant_sync_ebay_settings'] = $only_us;
+coin( 707, array( '_ebay_site' => 'UK' ) );
+$ebay->relists = relisted_as( '226100009707' );
+$job  = TCGiant_Sync_Jobs::create_job( 'bulk_relist', array( 707 ) );
+$sent = run_batch( $job );
+check( 'bulk Relist of it: kept, not failed', array( $sent['data']['kept'] ?? null, $sent['data']['failed'] ?? null, $sent['data']['succeeded'] ?? null ), array( 1, 0, 0 ) );
+check( '  the shop is told why', false !== strpos( implode( ' ', (array) ( $sent['data']['errors'] ?? array() ) ), '#707: not relisted - its eBay listing is on eBay United Kingdom' ), true );
+check( '  and eBay is not asked', $ebay->calls, array() );
+
+echo "\nAUTO-RELIST LEAVES OTHER SITES' PRODUCTS OUT OF ITS FIFTY (3.27.5)\n" . str_repeat( '=', 126 ) . "\n";
+
+// Sixty products from eBay United Kingdom copies have ended and still have
+// stock; one coin on the shop's own eBay.com listing has too, and comes
+// sixty-first. Fifty a day are taken. Refused one by one, the sixty would take
+// every place, every day, at a GetItem each, and the coin would never be
+// relisted.
+$ebay = fresh_shop();
+$GLOBALS['QUERIES'] = array();
+$OPTIONS['tcgiant_sync_ebay_settings'] = $only_us;
+$ENDED_ROWS = array();
+for ( $i = 0; $i < 60; $i++ ) {
+	$uk           = coin( 800 + $i, array( '_ebay_site' => 'UK' ) );
+	$ENDED_ROWS[] = array( 'product_id' => (string) ( 800 + $i ), 'ebay_item_id' => $uk );
+}
+$us_coin      = coin( 899, array( '_ebay_site' => 'US' ) );
+$ENDED_ROWS[] = array( 'product_id' => '899', 'ebay_item_id' => $us_coin );
+$ebay->items   = array( $us_coin => ebay_says_on( 'US', 'Completed', 3, 0 ) );
+$ebay->relists = function ( $item_id ) { return relisted_as( '9' . substr( $item_id, 1 ) ); };
+TCGiant_Sync_Cron::instance()->auto_relist_ended_items();
+check( 'the coin on the shop\'s own site is relisted', $ebay->relists_of( $us_coin ), array( array( 'RelistFixedPriceItem', $us_coin, 3 ) ) );
+check( '  and eBay asked about nothing else', array_values( array_unique( array_column( $ebay->calls, 1 ) ) ), array( $us_coin ) );
+check( '  because the query itself leaves them out', false !== strpos( (string) end( $GLOBALS['QUERIES'] ), "tcg_site.meta_value NOT IN ( 'US', 'eBayMotors' )" ), true );
+check( '  by each product\'s recorded site, in the listings table\'s query', false !== strpos( (string) end( $GLOBALS['QUERIES'] ), 'tcg_site.post_id = l.product_id' ), true );
+check( 'the run says what it did', logged( 'Auto-Relist: Complete. 1 relisted, 0 not relisted' ), true );
+
+// The same shop without the listings table: auto-relist reads post meta
+// instead, and leaves the same products out by that query's own product column.
+$ebay = fresh_shop();
+$GLOBALS['QUERIES']      = array();
+$GLOBALS['TABLE_EXISTS'] = false;
+$OPTIONS['tcgiant_sync_ebay_settings'] = $only_us;
+$ENDED_ROWS = array();
+for ( $i = 0; $i < 60; $i++ ) {
+	$uk           = coin( 800 + $i, array( '_ebay_site' => 'UK' ) );
+	$ENDED_ROWS[] = array( 'post_id' => (string) ( 800 + $i ), 'ebay_item_id' => $uk );
+}
+$us_coin      = coin( 899, array( '_ebay_site' => 'US' ) );
+$ENDED_ROWS[] = array( 'post_id' => '899', 'ebay_item_id' => $us_coin );
+$ebay->items   = array( $us_coin => ebay_says_on( 'US', 'Completed', 3, 0 ) );
+$ebay->relists = function ( $item_id ) { return relisted_as( '9' . substr( $item_id, 1 ) ); };
+TCGiant_Sync_Cron::instance()->auto_relist_ended_items();
+$auto_query              = (string) end( $GLOBALS['QUERIES'] );
+$GLOBALS['TABLE_EXISTS'] = true;
+check( 'no listings table: the coin on the shop\'s own site is still relisted', $ebay->relists_of( $us_coin ), array( array( 'RelistFixedPriceItem', $us_coin, 3 ) ) );
+check( '  and eBay asked about nothing else', array_values( array_unique( array_column( $ebay->calls, 1 ) ) ), array( $us_coin ) );
+check( '  the post meta query leaves the others out, by its own product column', array( false !== strpos( $auto_query, 'FROM wp_postmeta pm1' ), false !== strpos( $auto_query, 'tcg_site.post_id = pm1.post_id' ) ), array( true, true ) );
+
+// A product pushed before, recorded on another site, is left out with the
+// copies: Relist would refuse it, so it would only take a place. The second
+// build let it through, and Relist put it back up.
+$ebay = fresh_shop();
+$GLOBALS['QUERIES'] = array();
+$OPTIONS['tcgiant_sync_ebay_settings'] = $only_us;
+$ENDED_ROWS = array();
+for ( $i = 0; $i < 60; $i++ ) {
+	$uk           = coin( 800 + $i, array( '_ebay_site' => 'UK' ) );
+	$ENDED_ROWS[] = array( 'product_id' => (string) ( 800 + $i ), 'ebay_item_id' => $uk );
+}
+$pushed_coin  = coin( 898, array( '_ebay_site' => 'UK', '_ebay_export_last_pushed' => '2025-01-01 10:00:00', '_ebay_export_status' => 'pushed' ) );
+$ENDED_ROWS[] = array( 'product_id' => '898', 'ebay_item_id' => $pushed_coin );
+$us_coin      = coin( 899, array( '_ebay_site' => 'US' ) );
+$ENDED_ROWS[] = array( 'product_id' => '899', 'ebay_item_id' => $us_coin );
+$ebay->items   = array(
+	$pushed_coin => ebay_says_on( 'UK', 'Completed', 3, 0 ),
+	$us_coin     => ebay_says_on( 'US', 'Completed', 3, 0 ),
+);
+$ebay->relists = function ( $item_id ) { return relisted_as( '9' . substr( $item_id, 1 ) ); };
+TCGiant_Sync_Cron::instance()->auto_relist_ended_items();
+check( 'pushed before, recorded on eBay United Kingdom: not relisted by auto-relist', $ebay->relists_of( $pushed_coin ), array() );
+check( '  nor asked about: only the coin on the shop\'s own site is', array_values( array_unique( array_column( $ebay->calls, 1 ) ) ), array( $us_coin ) );
+check( '  because the query lets nothing on another site through', false === strpos( (string) end( $GLOBALS['QUERIES'] ), 'tcg_own' ), true );
+check( 'the summary names other sites among the reasons a product is passed over', logged( 'Auto-Relist: Complete. 1 relisted, 0 not relisted (no stock, sold out on eBay, already live, on another eBay site, or its last push is still under way or did not finish).' ), true );
+
+echo "\nTHE HOURLY ENDED CHECK RECORDS THE SITE EBAY GIVES (3.27.5)\n" . str_repeat( '=', 126 ) . "\n";
+
+// The hourly check settles a listing it finds ended from a GetItem, and an
+// ended listing is never read by a sync again: the full sync reads live ones
+// only. Its site is recorded from that answer, at no cost, so Relist, Push and
+// auto-relist refuse an ended copy before asking eBay, and Stock Review lists it.
+$ebay = fresh_shop();
+$OPTIONS['tcgiant_sync_ebay_settings'] = $only_us;
+$fixed_uk = coin( 720, array( '_ebay_listing_status' => 'Active', '_ebay_end_time' => '2026-01-01T00:00:00.000Z', '_ebay_listing_duration' => 'Days_7' ) );
+$gtc_de   = coin( 721, array( '_ebay_listing_status' => 'Active', '_ebay_end_time' => '2026-01-01T00:00:00.000Z', '_ebay_listing_duration' => 'GTC' ) );
+$gtc_us   = coin( 722, array( '_ebay_listing_status' => 'Active', '_ebay_end_time' => '2026-01-01T00:00:00.000Z', '_ebay_listing_duration' => 'GTC' ) );
+$ENDED_ROWS = array(
+	(object) array( 'ID' => '720', 'duration' => 'Days_7' ),
+	(object) array( 'ID' => '721', 'duration' => 'GTC' ),
+	(object) array( 'ID' => '722', 'duration' => 'GTC' ),
+);
+$ebay->items = array(
+	$fixed_uk => ebay_says_on( 'UK', 'Completed', 3, 0 ),
+	$gtc_de   => ebay_says_on( 'Germany', 'Completed', 3, 0 ),
+	$gtc_us   => ebay_says_on( 'US', 'Active', 3, 0 ),
+);
+TCGiant_Sync_Cron::instance()->check_ended_listings();
+check( 'a fixed-length listing settled: recorded on eBay United Kingdom', array( meta( 720, '_ebay_listing_status' ), meta( 720, '_ebay_site' ) ), array( 'Ended', 'UK' ) );
+check( 'a GTC listing found ended: recorded on eBay Germany', array( meta( 721, '_ebay_listing_status' ), meta( 721, '_ebay_site' ) ), array( 'Ended', 'Germany' ) );
+check( 'a GTC listing still live: recorded on eBay United States', array( meta( 722, '_ebay_listing_status' ), meta( 722, '_ebay_site' ) ), array( 'Active', 'US' ) );
+$ebay->calls = array();
+check( '  then Relist refuses the ended copy before eBay is asked', array( outcome( relist( 720 ) ), $ebay->calls ), array( 'relist_refused', array() ) );
+$ebay = fresh_shop();
+$OPTIONS['tcgiant_sync_ebay_settings'] = $only_us;
+$no_site = coin( 723, array( '_ebay_listing_status' => 'Active', '_ebay_end_time' => '2026-01-01T00:00:00.000Z', '_ebay_listing_duration' => 'GTC', '_ebay_site' => 'UK' ) );
+$ENDED_ROWS  = array( (object) array( 'ID' => '723', 'duration' => 'GTC' ) );
+$ebay->items = array( $no_site => ebay_says( 'Completed', 3, 0 ) );
+TCGiant_Sync_Cron::instance()->check_ended_listings();
+check( 'an answer with no site leaves the recorded one alone', array( meta( 723, '_ebay_listing_status' ), meta( 723, '_ebay_site' ) ), array( 'Ended', 'UK' ) );
+
+$ebay = fresh_shop();
+$GLOBALS['QUERIES'] = array();
+$OPTIONS['tcgiant_sync_ebay_settings'] = array( 'auto_relist_enabled' => 1, 'marketplace' => 'EBAY_US' );
+$ENDED_ROWS = array( array( 'product_id' => '899', 'ebay_item_id' => '226100000899' ) );
+TCGiant_Sync_Cron::instance()->auto_relist_ended_items();
+check( 'all eBay sites: auto-relist\'s query is as it was', false === strpos( (string) end( $GLOBALS['QUERIES'] ), 'tcg_site' ), true );
 
 printf( "\n  %d passed, %d failed\n\n", $pass, $fail );
 exit( $fail > 0 ? 1 : 0 );

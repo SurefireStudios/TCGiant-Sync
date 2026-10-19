@@ -154,7 +154,7 @@ $base_url = admin_url( 'admin.php?page=tcgiant-listings' );
 				<option value=""><?php esc_html_e( 'Bulk Actions', 'tcgiant-sync' ); ?></option>
 				<option value="bulk_push"><?php esc_html_e( 'Push to eBay', 'tcgiant-sync' ); ?></option>
 				<?php // Already implemented in the job runner and, until now, offered nowhere. ?>
-				<option value="bulk_verify"><?php esc_html_e( 'Check before pushing', 'tcgiant-sync' ); ?></option>
+				<option value="bulk_verify"><?php esc_html_e( 'Check push settings only (eBay is not asked)', 'tcgiant-sync' ); ?></option>
 				<option value="bulk_end"><?php esc_html_e( 'End Listing', 'tcgiant-sync' ); ?></option>
 				<option value="bulk_relist"><?php esc_html_e( 'Relist', 'tcgiant-sync' ); ?></option>
 				<option value="bulk_set_format"><?php esc_html_e( 'Change listing format', 'tcgiant-sync' ); ?></option>
@@ -416,7 +416,7 @@ $base_url = admin_url( 'admin.php?page=tcgiant-listings' );
 		$('.tc-listing-cb:checked').each(function(){ ids.push(parseInt($(this).val())); });
 		if (!all && !ids.length) { alert('Select at least one listing, or tick the box to apply to everything matching.'); return; }
 
-		var labels = { bulk_push:'Push to eBay', bulk_verify:'Check before pushing', bulk_end:'End Listing', bulk_relist:'Relist', bulk_set_format:'Change listing format' };
+		var labels = { bulk_push:'Push to eBay', bulk_verify:'Check push settings only (eBay is not asked)', bulk_end:'End Listing', bulk_relist:'Relist', bulk_set_format:'Change listing format' };
 		var payload = { action:'tcgiant_job_start', type:action, product_ids:ids, _ajax_nonce:nonce };
 
 		if (action === 'bulk_set_format') {

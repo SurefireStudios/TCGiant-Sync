@@ -55,6 +55,14 @@ class TCGiant_Sync_Exporter {
 	const PUSH_STALE_AFTER = 900;
 
 	/**
+	 * What a product whose push did not finish says, after that push's own
+	 * words, of a push after it that made nothing: refused by eBay, or
+	 * stopped by an error before eBay made anything. Each such push replaces
+	 * what the one before it said here, rather than adding to it.
+	 */
+	const REFUSED_AFTER_UNFINISHED = ' The push after it was refused: ';
+
+	/**
 	 * The push this request is working on, while it is: which product, what
 	 * it is called, the listing it was linked to when it began and whether
 	 * that listing had ended, and the listing eBay created for it once that
@@ -520,6 +528,15 @@ class TCGiant_Sync_Exporter {
 
 		$title = $product->get_name();
 
+		// What an earlier push that did not finish said, when this one follows
+		// it: its own words, without what they say of a push since that made
+		// nothing. It stands unless this one finishes: see push_product().
+		$unfinished = null;
+		if ( 'failed' === (string) $product->get_meta( '_ebay_export_status' ) ) {
+			$unfinished = (string) $product->get_meta( '_ebay_export_error' );
+			$unfinished = strstr( $unfinished, self::REFUSED_AFTER_UNFINISHED, true ) ?: $unfinished;
+		}
+
 		// Watched, so that a push PHP kills says so - which product, and
 		// whether it died waiting for eBay or saving what eBay said. The item
 		// number is only written to the product at the save below; until then
@@ -533,11 +550,7 @@ class TCGiant_Sync_Exporter {
 			// the push makes a new listing in its place.
 			'ended'      => self::linked_listing_ended( $product_id ),
 			'created'    => '',
-			// What an earlier push that did not finish said, when this one
-			// follows it. It stands unless this one finishes: see push_product().
-			'unfinished' => 'failed' === (string) $product->get_meta( '_ebay_export_status' )
-				? (string) $product->get_meta( '_ebay_export_error' )
-				: null,
+			'unfinished' => $unfinished,
 		);
 		TCGiant_Sync_Runtime::watch( self::PUSH_JOB, array( __CLASS__, 'on_push_death' ) );
 		TCGiant_Sync_Runtime::context( sprintf( 'WC #%d "%s"', $product_id, $title ) );
@@ -567,8 +580,11 @@ class TCGiant_Sync_Exporter {
 				// have. Marked error, the product read as one eBay had refused:
 				// Clear was offered, Link left it as it was, and it was trashed
 				// as an imported product when the listing that push made sold out.
+				// It says what that one said, then why this one was refused: with
+				// that one's words alone, the product looked just as it had before
+				// it was pushed again, and only the log said why.
 				$product->update_meta_data( '_ebay_export_status', null === $earlier ? 'error' : 'failed' );
-				$product->update_meta_data( '_ebay_export_error', null === $earlier ? $error_msg : $earlier );
+				$product->update_meta_data( '_ebay_export_error', null === $earlier ? $error_msg : $earlier . self::REFUSED_AFTER_UNFINISHED . $error_msg );
 				$product->delete_meta_data( '_ebay_export_pushing_since' );
 				TCGiant_Sync_Runtime::guard_loops();
 				try {
@@ -619,6 +635,13 @@ class TCGiant_Sync_Exporter {
 				if ( 'updated' !== $action ) {
 					$product->update_meta_data( '_ebay_listing_status', 'Active' );
 					$product->delete_meta_data( '_ebay_end_time' );
+
+					// The new listing is on the shop's own site - build_item_xml()
+					// sends <Site> from the same setting - whatever site the one it
+					// replaced was on. Left as the old one's, the next push to find
+					// this listing ended would be refused for a site it is not on,
+					// for want of a sync that saves it again.
+					$product->update_meta_data( '_ebay_site', TCGiant_Sync_API::instance()->get_marketplace_config()['site'] );
 
 					// What was settled about the listing this replaces is spent.
 					foreach ( TCGiant_Sync_Inventory::SETTLE_KEYS as $settle_key ) {
@@ -784,7 +807,8 @@ class TCGiant_Sync_Exporter {
 	 * sold products" trashed it when that listing sold out.
 	 *
 	 * One that threw with nothing made, after an earlier push that did not
-	 * finish, leaves the product saying that one did not, in its words.
+	 * finish, leaves the product saying that one did not, in its words, and
+	 * then what stopped this one.
 	 *
 	 * @param string $line What happened, as it is logged.
 	 * @return bool Whether the product is left saying a push did not finish:
@@ -813,7 +837,7 @@ class TCGiant_Sync_Exporter {
 
 		if ( $product_id ) {
 			update_post_meta( $product_id, '_ebay_export_status', ( $made || null !== $earlier ) ? 'failed' : 'error' );
-			update_post_meta( $product_id, '_ebay_export_error', null !== $earlier ? $earlier : $line );
+			update_post_meta( $product_id, '_ebay_export_error', null !== $earlier ? $earlier . self::REFUSED_AFTER_UNFINISHED . $line : $line );
 			delete_post_meta( $product_id, '_ebay_export_pushing_since' );
 		}
 
@@ -1238,6 +1262,7 @@ class TCGiant_Sync_Exporter {
 		}
 
 		$previous_item_id = '';
+		$ended_on         = ''; // The ended listing's site, when eBay's answer said it below.
 		$fixed_price      = $this->uses_fixed_price_calls( $product, $settings, $ebay_item_id );
 
 		if ( ! empty( $ebay_item_id ) ) {
@@ -1266,11 +1291,59 @@ class TCGiant_Sync_Exporter {
 				return $response;
 			}
 
+			// A relist in all but name: never a new listing for an ended one on
+			// another eBay site, when the shop imports only its own
+			// (TCGiant_Sync_Sites). It would go up on the shop's own site at the
+			// copy's figures, in the copy's currency. As for Relist, no product
+			// is spared for having been pushed before: a copy revised once by
+			// Push carries the same marks as the shop's own. From the site
+			// recorded on the product first, before eBay is asked anything.
+			$ended_site = (string) $product->get_meta( '_ebay_site' );
+			if ( TCGiant_Sync_Sites::leaves_out( $ended_site ) ) {
+				return $this->other_site_relist_refusal( $ended_site );
+			}
+
 			// Before creating a new listing for an ended one, make sure the stock
 			// it would be created with is real - see ended_listing_check().
-			$check = $this->ended_listing_check( $product, (string) $ebay_item_id );
+			$ended_answer = null;
+			$check        = $this->ended_listing_check( $product, (string) $ebay_item_id, null, $ended_answer );
 			if ( is_wp_error( $check ) ) {
 				return $check;
+			}
+
+			// Then from eBay's own answer, when the check read one: it covers a
+			// product with no site recorded, or one recorded wrongly. After the
+			// check, so the listing's own sales are still brought into the stock
+			// from that answer, and recorded, so the next refusal comes first.
+			//
+			// The check asks nothing for a variable product, or for a listing
+			// whose sales are already in the stock - the usual state of a copy
+			// that ended before 3.27.5, since the full sync reads live listings
+			// only and the settle never recorded a site. With no site recorded
+			// either, eBay is asked here, once, as Relist always asks. Going
+			// ahead without an answer would put the copy back up on the shop's
+			// own site, at its figures, and mark the product pushed - the shop's
+			// own from then on, off Stock Review for good.
+			if ( ! is_array( $ended_answer ) && '' === $ended_site && TCGiant_Sync_Sites::primary_only() ) {
+				$ended_detail = $api->get_item( (string) $ebay_item_id );
+				if ( is_wp_error( $ended_detail ) || empty( $ended_detail['Item'] ) ) {
+					return new WP_Error( 'relist_unchecked', sprintf(
+						/* translators: 1: eBay item ID, 2: error */
+						__( 'could not ask eBay which site listing %1$s is on (%2$s), so it was not listed again', 'tcgiant-sync' ),
+						$ebay_item_id,
+						is_wp_error( $ended_detail ) ? $ended_detail->get_error_message() : __( 'no answer', 'tcgiant-sync' )
+					) );
+				}
+				$ended_answer = $ended_detail['Item'];
+			}
+
+			if ( is_array( $ended_answer ) ) {
+				$listed_on = TCGiant_Sync_Sites::site_of( $ended_answer );
+				if ( TCGiant_Sync_Sites::leaves_out( $listed_on ) ) {
+					TCGiant_Sync_Sites::record_site( $product->get_id(), $listed_on );
+					return $this->other_site_relist_refusal( $listed_on );
+				}
+				$ended_on = $listed_on;
 			}
 
 			// The stock may have come down to what is really left, and the item
@@ -1306,6 +1379,17 @@ class TCGiant_Sync_Exporter {
 			$response = $fixed_price
 				? $api->add_fixed_price_item( $full_xml )
 				: $api->add_item( $full_xml );
+
+			// eBay listed nothing, so the product stays on its ended listing,
+			// and keeps that listing's site from the answer read above, as
+			// Relist keeps it. Not kept, every push after eBay refused one - a
+			// category it no longer takes, say - asked eBay the same question
+			// again. Only here: once a listing is made, the push records the new
+			// listing's site on the product itself, and a write of its own first
+			// would leave a second row beside that one.
+			if ( is_wp_error( $response ) || empty( $response['ItemID'] ) ) {
+				TCGiant_Sync_Sites::record_site( $product->get_id(), $ended_on );
+			}
 
 			if ( is_wp_error( $response ) ) {
 				return $response;
@@ -1430,10 +1514,13 @@ class TCGiant_Sync_Exporter {
 	 * @param WC_Product $product      Product.
 	 * @param string     $ebay_item_id The ended listing.
 	 * @param array|null $item         eBay's GetItem answer for it, if in hand.
+	 * @param array|null $answer       Set to that answer, or the one asked for
+	 *                                 here, when there was one - so a push can
+	 *                                 judge the listing's site from it.
 	 * @return bool|WP_Error True if the stock was brought down and should be
 	 *                       read again, false if untouched, or why not.
 	 */
-	private function ended_listing_check( WC_Product $product, $ebay_item_id, $item = null ) {
+	private function ended_listing_check( WC_Product $product, $ebay_item_id, $item = null, &$answer = null ) {
 		$product_id = $product->get_id();
 
 		$order_id = TCGiant_Sync_Inventory::restocked_after_website_sale( $product_id );
@@ -1462,6 +1549,8 @@ class TCGiant_Sync_Exporter {
 			}
 			$item = $detail['Item'];
 		}
+
+		$answer = $item;
 
 		$listed = $item['Quantity'] ?? null;
 		$sold   = $item['SellingStatus']['QuantitySold'] ?? null;
@@ -1559,6 +1648,24 @@ class TCGiant_Sync_Exporter {
 			return new WP_Error( 'relist_refused', __( 'it has no stock to sell', 'tcgiant-sync' ) );
 		}
 
+		// Never put a listing back up on another eBay site, when the shop imports
+		// only its own (TCGiant_Sync_Sites). Refused from the site recorded on the
+		// product, before eBay is asked anything: auto-relist goes through its
+		// ended products every day, and a GetItem for each other-site product,
+		// every day, would spend calls every shop shares for an answer already
+		// known. Then on eBay's answer below, whatever was recorded.
+		//
+		// Whoever's product it is, as for a push. A copy revised once by Push -
+		// a select-all on the Listings screen is enough - carries the same marks
+		// as a product the shop pushed itself (is_shops_own()), and sparing
+		// those put the copy back up on its own site, beside the one Web
+		// Interpret makes. A shop that has changed its Primary eBay Marketplace
+		// is told why its old site's listings are not relisted instead.
+		$recorded_site = (string) $product->get_meta( '_ebay_site' );
+		if ( TCGiant_Sync_Sites::leaves_out( $recorded_site ) ) {
+			return $this->other_site_relist_refusal( $recorded_site );
+		}
+
 		$api    = TCGiant_Sync_API::instance();
 		$detail = $api->get_item( $ebay_item_id );
 
@@ -1591,6 +1698,18 @@ class TCGiant_Sync_Exporter {
 		}
 		if ( $check ) {
 			$product = wc_get_product( $product_id );
+		}
+
+		// The site, from eBay's answer, every time: it covers a product with no
+		// site recorded, and one recorded wrongly - a product linked by hand to
+		// another listing, say. No extra call; the answer is in hand. After the
+		// check above, so the listing's own sales are still brought into the
+		// stock from the answer already paid for, and recorded, so the next
+		// refusal comes before any call and auto-relist no longer picks it.
+		$listed_on = TCGiant_Sync_Sites::site_of( $item );
+		TCGiant_Sync_Sites::record_site( $product_id, $listed_on );
+		if ( TCGiant_Sync_Sites::leaves_out( $listed_on ) ) {
+			return $this->other_site_relist_refusal( $listed_on );
 		}
 
 		// The call the listing's own format needs, as eBay reports it. Local
@@ -1658,6 +1777,24 @@ class TCGiant_Sync_Exporter {
 			'item_id'          => $new_id,
 			'previous_item_id' => $ebay_item_id,
 		);
+	}
+
+	/**
+	 * Why a listing on another eBay site is not relisted.
+	 *
+	 * 'relist_refused', so auto-relist counts it as passed over and bulk Relist
+	 * shows the reason beside the product, as for every other right refusal.
+	 *
+	 * @param string $site The listing's Item.Site.
+	 * @return WP_Error
+	 */
+	private function other_site_relist_refusal( $site ) {
+		return new WP_Error( 'relist_refused', sprintf(
+			/* translators: 1: an eBay site, e.g. "eBay United Kingdom", 2: the shop's own, e.g. "eBay United States" */
+			__( 'its eBay listing is on %1$s, and Import listings from is set to %2$s only', 'tcgiant-sync' ),
+			TCGiant_Sync_Sites::label( $site ),
+			TCGiant_Sync_Sites::primary_label()
+		) );
 	}
 
 	/**
@@ -2854,7 +2991,13 @@ class TCGiant_Sync_Exporter {
 		//
 		// The category browser already records the full path it was chosen from,
 		// so the answer is on the product. No extra eBay call needed.
-		if ( '' !== $category_name && false !== stripos( (string) $category_name, 'Coins & Paper Money' ) ) {
+		//
+		// But not for a product set to All Other, as is_descriptor_category()
+		// already has it. The path covers the whole of Coins & Paper Money, so
+		// share certificates, bonds and banknotes counted as coins and were
+		// sent the coin defaults - Certification, Grade, Year and
+		// Circulated/Uncirculated - although the shop had said they were not.
+		if ( 'other' !== $item_type && '' !== $category_name && false !== stripos( (string) $category_name, 'Coins & Paper Money' ) ) {
 			return true;
 		}
 

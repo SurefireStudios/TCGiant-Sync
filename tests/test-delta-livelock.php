@@ -186,6 +186,7 @@ class TCGiant_Sync_Mapper {
 // pictures - so every listing costs a GetItem, as in the shops' logs.
 class TCGiant_Sync_API {
 	const DAILY_CALL_LIMIT = 50000; const DAILY_CALL_SOFT_CEILING = 0.80;
+	public static function scalar_value( $raw ) { return is_scalar( $raw ) ? (string) $raw : ''; }
 	public static function instance() { static $i; return $i ?: ( $i = new self() ); }
 	public static function get_events_byte_limit() { return 26843545; }
 	public function get_last_body_bytes() { return 4000 * (int) scenario( 'listings' ); }
@@ -210,6 +211,7 @@ class TCGiant_Sync_API {
 }
 
 require '__ROOT__/includes/class-tcgiant-sync-runtime.php';
+require '__ROOT__/includes/class-tcgiant-sync-sites.php';
 require '__ROOT__/includes/class-tcgiant-sync-importer.php';
 
 if ( null !== $GLOBALS['FAKE_NOW'] ) {

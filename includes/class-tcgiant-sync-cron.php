@@ -214,6 +214,12 @@ class TCGiant_Sync_Cron {
 						$expired = TCGiant_Sync_API::instance()->get_item( $expired_id );
 
 						if ( ! is_wp_error( $expired ) && isset( $expired['Item'] ) ) {
+							// The listing's eBay site, from the answer in hand
+							// (TCGiant_Sync_Sites). Settled here, an ended listing is
+							// never read by a sync again, so this is the one chance
+							// to note a copy from another site.
+							TCGiant_Sync_Sites::record_site( $pid, TCGiant_Sync_Sites::site_of( $expired['Item'] ) );
+
 							$settled = TCGiant_Sync_Inventory::apply_ended_listing_stock(
 								$pid,
 								isset( $expired['Item']['Quantity'] ) ? $expired['Item']['Quantity'] : null,
@@ -308,6 +314,10 @@ class TCGiant_Sync_Cron {
 			if ( ! empty( $item['ListingDuration'] ) ) {
 				update_post_meta( $pid, '_ebay_listing_duration', $item['ListingDuration'] );
 			}
+
+			// And its eBay site, from the same answer: a listing found ended
+			// here is not read by a sync again either.
+			TCGiant_Sync_Sites::record_site( $pid, TCGiant_Sync_Sites::site_of( $item ) );
 
 			if ( 'Active' === $status ) {
 				update_post_meta( $pid, '_ebay_listing_status', 'Active' );
@@ -824,6 +834,12 @@ class TCGiant_Sync_Cron {
 		global $wpdb;
 		$table = TCGiant_Sync_DB::table_name();
 
+		// Products recorded on another eBay site never come up, when the shop
+		// imports only its own (TCGiant_Sync_Sites). Each would be refused, every
+		// day, and fifty of them would take every place below - so no listing on
+		// the shop's own site would ever be relisted again.
+		$other_sites_out = TCGiant_Sync_Sites::sql_keeps_out_other_sites( TCGiant_Sync_DB::table_exists() ? 'l.product_id' : 'pm1.post_id' );
+
 		// Check if custom table exists.
 		if ( ! TCGiant_Sync_DB::table_exists() ) {
 			// Fall back to post meta query.
@@ -834,7 +850,7 @@ class TCGiant_Sync_Cron {
 				 INNER JOIN {$wpdb->posts} p ON pm1.post_id = p.ID
 				 WHERE pm1.meta_key = '_ebay_item_id'
 				   AND pm2.meta_value = 'Ended'
-				   AND p.post_status = 'publish'
+				   AND p.post_status = 'publish'{$other_sites_out}
 				 LIMIT 50",
 				ARRAY_A
 			);
@@ -849,7 +865,7 @@ class TCGiant_Sync_Cron {
 				 FROM {$table} l
 				 INNER JOIN {$wpdb->posts} p ON p.ID = l.product_id
 				 WHERE l.listing_status = 'Ended'
-				   AND p.post_status = 'publish'
+				   AND p.post_status = 'publish'{$other_sites_out}
 				 LIMIT 50",
 				ARRAY_A
 			);
@@ -895,7 +911,7 @@ class TCGiant_Sync_Cron {
 		}
 
 		TCGiant_Sync_Logger::log( sprintf(
-			'Auto-Relist: Complete. %d relisted, %d not relisted (no stock, sold out on eBay, already live, or its last push is still under way or did not finish).',
+			'Auto-Relist: Complete. %d relisted, %d not relisted (no stock, sold out on eBay, already live, on another eBay site, or its last push is still under way or did not finish).',
 			$relisted, $skipped
 		), $relisted > 0 ? 'success' : 'info' );
 	}

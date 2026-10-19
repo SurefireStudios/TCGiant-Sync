@@ -93,8 +93,9 @@ class TCGiant_Sync_Orders {
 			return;
 		}
 
-		$created = 0;
-		$skipped = 0;
+		$created    = 0;
+		$skipped    = 0;
+		$other_site = 0;
 
 		foreach ( $orders as $ebay_order ) {
 			$order_id = $ebay_order['OrderID'] ?? '';
@@ -102,6 +103,17 @@ class TCGiant_Sync_Orders {
 			// Deduplication: check if this eBay order was already imported.
 			if ( $this->order_exists( $order_id ) ) {
 				$skipped++;
+				continue;
+			}
+
+			// An order for listings on other eBay sites only, when the shop
+			// imports only its own (TCGiant_Sync_Sites): it would arrive in that
+			// site's currency, as though it were the shop's. An order that also
+			// holds a listing on the shop's own site is imported whole, since
+			// half an order is worse than an order with a line the shop did not
+			// expect.
+			if ( $this->only_other_sites( $ebay_order ) ) {
+				$other_site++;
 				continue;
 			}
 
@@ -116,9 +128,41 @@ class TCGiant_Sync_Orders {
 		update_option( 'tcgiant_sync_ebay_settings', $settings );
 
 		TCGiant_Sync_Logger::log( sprintf(
-			'Order Import: Complete. %d created, %d skipped (already imported).',
-			$created, $skipped
+			'Order Import: Complete. %d created, %d skipped (already imported)%s.',
+			$created, $skipped,
+			$other_site > 0 ? sprintf( ', %d left out (listed on other eBay sites)', $other_site ) : ''
 		), 'success' );
+	}
+
+	/**
+	 * Whether every line of an eBay order is a listing on another eBay site.
+	 *
+	 * Decided by each transaction's Item.Site - the site the listing is on - and
+	 * never TransactionSiteID, the site the buyer used, which would leave out a
+	 * buyer abroad who bought from the shop's own site. A line whose site eBay
+	 * did not give is not another site's, so the order is imported.
+	 *
+	 * @param array $ebay_order Order from GetOrders.
+	 * @return bool
+	 */
+	private function only_other_sites( $ebay_order ) {
+		if ( ! TCGiant_Sync_Sites::primary_only() ) {
+			return false;
+		}
+
+		$transactions = $this->get_transactions( $ebay_order );
+		if ( empty( $transactions ) || ! is_array( $transactions ) ) {
+			return false;
+		}
+
+		foreach ( $transactions as $transaction ) {
+			$site = TCGiant_Sync_Sites::site_of( is_array( $transaction ) ? ( $transaction['Item'] ?? null ) : null );
+			if ( ! TCGiant_Sync_Sites::leaves_out( $site ) ) {
+				return false;
+			}
+		}
+
+		return true;
 	}
 
 	/**

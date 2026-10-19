@@ -129,6 +129,12 @@ class WC_Product {
 	public function managing_stock() { return true; }
 	public function get_stock_quantity() { return 1; }
 	public function save() {
+		// The request dies in this save, once: memory, the host, or a hook that throws.
+		if ( ! empty( $GLOBALS['SAVE_DIES'] ) ) {
+			$GLOBALS['SAVE_DIES'] = false;
+			$this->changed        = array();
+			throw new RuntimeException( 'Allowed memory size exhausted (the request dies in the save)' );
+		}
 		foreach ( array_keys( $this->changed ) as $key ) {
 			if ( null === $this->meta[ $key ] ) {
 				unset( $GLOBALS['META'][ $this->id ][ $key ], $this->meta[ $key ] );
@@ -192,6 +198,8 @@ class TCGiant_Sync_Logger {
 
 require $ROOT . '/includes/class-tcgiant-sync-runtime.php';
 require $ROOT . '/includes/class-tcgiant-sync-catalog.php';
+// The mapper's save and the push read the listing's eBay site through it.
+require $ROOT . '/includes/class-tcgiant-sync-sites.php';
 require $ROOT . '/includes/class-tcgiant-sync-exporter.php';
 require $ROOT . '/includes/class-tcgiant-sync-listing-link.php';
 require $ROOT . '/includes/class-tcgiant-sync-mapper.php';
@@ -304,6 +312,29 @@ check( 'then the replacement: the product is re-linked to it, by its SKU', array
 check( '  and that push is complete: pushed, its warning gone', array( meta( 4718, '_ebay_export_status' ), meta( 4718, '_ebay_export_error' ), TCGiant_Sync_Exporter::push_progress( 4718 ) ), array( 'pushed', '', '' ) );
 check( '  its first push\'s date kept', meta( 4718, '_ebay_export_last_pushed' ), '2026-06-01 10:00:00' );
 check( '  and the log says so', logged( 'WC #4718 was linked by the sync to eBay listing 297600000002' ), 1 );
+
+// The re-link writes the new item number straight to the table, ahead of the
+// product's save. Completed only by that save, a save that died left the
+// product linked to the replacement and still saying its push did not finish;
+// the next sync found it by that item number, not by its SKU, so nothing
+// completed the push, and when that listing ended Auto-Relist refused it.
+//
+// An imported product, relisted by a push: it has no last-pushed date.
+shop_product( 4722, 'GC-4722', array( '_ebay_item_id' => '297500000012', '_ebay_listing_status' => 'Ended' ) );
+push_died( 4722, '297500000012', '297600000012' );
+$SAVE_DIES = true;
+try {
+	sync_saves( '297600000012', 'GC-4722' );
+	$died = '';
+} catch ( RuntimeException $e ) {
+	$died = $e->getMessage();
+}
+check( 'the re-link to the replacement dies in the product\'s save', array( '' !== $died, meta( 4722, '_ebay_item_id' ) ), array( true, '297600000012' ) );
+check( '  the push is complete all the same: pushed, its warning gone, not pushing', array( meta( 4722, '_ebay_export_status' ), meta( 4722, '_ebay_export_error' ), meta( 4722, '_ebay_export_pushing_since' ), TCGiant_Sync_Exporter::push_progress( 4722 ) ), array( 'pushed', '', null, '' ) );
+check( '  dated as pushed, so "Remove sold products" keeps it', '' !== (string) meta( 4722, '_ebay_export_last_pushed' ), true );
+check( 'the next sync finds it by that item number: still pushed', array( sync_saves( '297600000012', 'GC-4722' ), meta( 4722, '_ebay_export_status' ), TCGiant_Sync_Exporter::push_progress( 4722 ) ), array( 4722, 'pushed', '' ) );
+update_post_meta( 4722, '_ebay_listing_status', 'Ended' );
+check( '  and when that listing ends, Auto-Relist does not refuse it as a push that did not finish', relist( 4722 ), 'relist_unchecked: could not ask eBay whether listing 297600000012 sold (eBay is not asked here), so it was not relisted' );
 
 // ─────────────────────────────────────────────────────────────────────────────
 echo "\nKILLED OUTRIGHT: THE SYNC LINKS IT BEFORE ACTION SCHEDULER GIVES UP ON THE PUSH\n" . str_repeat( '=', 124 ) . "\n";

@@ -180,6 +180,7 @@ function wc_create_order() {
 }
 
 require $ROOT . '/includes/class-tcgiant-sync-api.php';
+require $ROOT . '/includes/class-tcgiant-sync-sites.php';
 require $ROOT . '/includes/class-tcgiant-sync-orders.php';
 
 set_error_handler( function ( $no, $message ) {
@@ -568,6 +569,97 @@ list( , $threw ) = attempt( function () use ( $ORDERS ) { $ORDERS->import_recent
 check( 'an import run whose first order fails is not killed', $threw, 'nothing' );
 check( '  the orders after it are imported', saved_orders(), array( '11-00003-00003', '11-00004-00004' ) );
 check( '  and the failure is logged, not fatal', logged( 'Order Import: Exception — Call to a member function' ), true );
+
+echo "\nORDERS FOR LISTINGS ON OTHER EBAY SITES (3.27.5)\n" . str_repeat( '=', 124 ) . "\n";
+
+// Rabbi Ent lists on eBay.com and has every listing copied onto eBay.co.uk,
+// eBay.de and the rest. With "Import listings from" set to eBay United States
+// only, an order for copies alone is left out: it would arrive in pounds or
+// euros as though they were the shop's own currency. Each transaction's
+// Item.Site - where the listing is - decides; TransactionSiteID, where the
+// buyer was, does not.
+//
+//   E  two eBay.co.uk copies, nothing else            left out
+//   F  an eBay.com listing and an eBay.co.uk copy     imported whole
+//   G  an eBay.com listing bought from eBay.co.uk     imported
+//   H  a line eBay gave no site for                   imported
+//   I  a line with no <Item> at all, and an empty <Item/>, beside an eBay.de copy
+//                                                     imported, and nothing breaks
+//   J  an eBay Motors listing, part of eBay.com       imported
+$SITES_ANSWER = <<<'XML'
+<?xml version="1.0" encoding="UTF-8"?>
+<GetOrdersResponse xmlns="urn:ebay:apis:eBLBaseComponents">
+  <Ack>Success</Ack>
+  <PaginationResult><TotalNumberOfPages>1</TotalNumberOfPages></PaginationResult>
+  <OrderArray>
+    <Order>
+      <OrderID>21-00005-00005</OrderID><OrderStatus>Completed</OrderStatus><Total currencyID="GBP">20.00</Total><BuyerUserID>buyer_e</BuyerUserID>
+      <TransactionArray>
+        <Transaction><Item><ItemID>310000000001</ItemID><Site>UK</Site><Title>Robot arm (UK copy)</Title></Item><QuantityPurchased>1</QuantityPurchased><TransactionID>1</TransactionID><TransactionSiteID>UK</TransactionSiteID><TransactionPrice currencyID="GBP">10.00</TransactionPrice></Transaction>
+        <Transaction><Item><ItemID>310000000002</ItemID><Site>UK</Site><Title>Gripper (UK copy)</Title></Item><QuantityPurchased>1</QuantityPurchased><TransactionID>2</TransactionID><TransactionSiteID>UK</TransactionSiteID><TransactionPrice currencyID="GBP">10.00</TransactionPrice></Transaction>
+      </TransactionArray>
+    </Order>
+    <Order>
+      <OrderID>21-00006-00006</OrderID><OrderStatus>Completed</OrderStatus><Total currencyID="USD">30.00</Total><BuyerUserID>buyer_f</BuyerUserID>
+      <TransactionArray>
+        <Transaction><Item><ItemID>320000000001</ItemID><Site>US</Site><Title>Robot arm</Title></Item><QuantityPurchased>1</QuantityPurchased><TransactionID>3</TransactionID><TransactionPrice currencyID="USD">15.00</TransactionPrice></Transaction>
+        <Transaction><Item><ItemID>310000000003</ItemID><Site>UK</Site><Title>Gripper (UK copy)</Title></Item><QuantityPurchased>1</QuantityPurchased><TransactionID>4</TransactionID><TransactionPrice currencyID="USD">15.00</TransactionPrice></Transaction>
+      </TransactionArray>
+    </Order>
+    <Order>
+      <OrderID>21-00007-00007</OrderID><OrderStatus>Completed</OrderStatus><Total currencyID="USD">15.00</Total><BuyerUserID>buyer_g</BuyerUserID>
+      <TransactionArray>
+        <Transaction><Item><ItemID>320000000002</ItemID><Site>US</Site><Title>Servo</Title></Item><QuantityPurchased>1</QuantityPurchased><TransactionID>5</TransactionID><TransactionSiteID>UK</TransactionSiteID><TransactionPrice currencyID="USD">15.00</TransactionPrice></Transaction>
+      </TransactionArray>
+    </Order>
+    <Order>
+      <OrderID>21-00008-00008</OrderID><OrderStatus>Completed</OrderStatus><Total currencyID="USD">5.00</Total><BuyerUserID>buyer_h</BuyerUserID>
+      <TransactionArray>
+        <Transaction><Item><ItemID>320000000003</ItemID><Title>Cable</Title></Item><QuantityPurchased>1</QuantityPurchased><TransactionID>6</TransactionID><TransactionPrice currencyID="USD">5.00</TransactionPrice></Transaction>
+      </TransactionArray>
+    </Order>
+    <Order>
+      <OrderID>21-00009-00009</OrderID><OrderStatus>Completed</OrderStatus><Total currencyID="EUR">9.00</Total><BuyerUserID>buyer_i</BuyerUserID>
+      <TransactionArray>
+        <Transaction><QuantityPurchased>1</QuantityPurchased><TransactionID>10</TransactionID><TransactionPrice currencyID="EUR">0.00</TransactionPrice></Transaction>
+        <Transaction><Item/><QuantityPurchased>1</QuantityPurchased><TransactionID>7</TransactionID><TransactionPrice currencyID="EUR">4.00</TransactionPrice></Transaction>
+        <Transaction><Item><ItemID>330000000001</ItemID><Site>Germany</Site><Title>Motor (DE copy)</Title></Item><QuantityPurchased>1</QuantityPurchased><TransactionID>8</TransactionID><TransactionPrice currencyID="EUR">5.00</TransactionPrice></Transaction>
+      </TransactionArray>
+    </Order>
+    <Order>
+      <OrderID>21-00010-00010</OrderID><OrderStatus>Completed</OrderStatus><Total currencyID="USD">40.00</Total><BuyerUserID>buyer_j</BuyerUserID>
+      <TransactionArray>
+        <Transaction><Item><ItemID>340000000001</ItemID><Site>eBayMotors</Site><Title>Wiper motor</Title></Item><QuantityPurchased>1</QuantityPurchased><TransactionID>9</TransactionID><TransactionPrice currencyID="USD">40.00</TransactionPrice></Transaction>
+      </TransactionArray>
+    </Order>
+  </OrderArray>
+</GetOrdersResponse>
+XML;
+
+$ANSWER = $SITES_ANSWER;
+fresh_run();
+$OPTIONS['tcgiant_sync_ebay_settings'] = array( 'enable_order_import' => 1, 'import_sites' => 'primary', 'marketplace' => 'EBAY_US' );
+list( , $threw ) = attempt( function () use ( $ORDERS ) { $ORDERS->import_recent_orders(); } );
+check( 'eBay United States only: the run completes', $threw, 'nothing' );
+check( '  the order for two eBay.co.uk copies alone is left out', in_array( '21-00005-00005', saved_orders(), true ), false );
+check( '  not even half built', half_built_orders(), 0 );
+check( '  every other order is imported', saved_orders(), array( '21-00006-00006', '21-00007-00007', '21-00008-00008', '21-00009-00009', '21-00010-00010' ) );
+$mixed = null;
+foreach ( $WC_ORDERS as $o ) {
+	if ( '21-00006-00006' === ( $o->meta['_ebay_order_id'] ?? '' ) ) {
+		$mixed = $o;
+	}
+}
+check( '  the mixed order whole, both its lines', $mixed ? count( $mixed->items ) >= 2 : false, true );
+check( '  the summary counts the one left out', logged( 'Order Import: Complete. 5 created, 0 skipped (already imported), 1 left out (listed on other eBay sites).' ), true );
+
+foreach ( array( 'never chosen' => array( 'enable_order_import' => 1, 'marketplace' => 'EBAY_US' ), 'All eBay sites' => array( 'enable_order_import' => 1, 'marketplace' => 'EBAY_US', 'import_sites' => 'all' ) ) as $how => $settings ) {
+	fresh_run();
+	$OPTIONS['tcgiant_sync_ebay_settings'] = $settings;
+	attempt( function () use ( $ORDERS ) { $ORDERS->import_recent_orders(); } );
+	check( sprintf( 'import listings from: %s - all six orders are imported, as in 3.27.4', $how ), count( saved_orders() ), 6 );
+	check( '  and nothing is said about other sites', logged( 'left out' ), false );
+}
 
 restore_error_handler();
 check( 'nothing above raised a PHP warning or notice', $WARNINGS, array() );

@@ -44,6 +44,13 @@ $unsold_at_end = TCGiant_Sync_Inventory::find_unsold_at_end();
 // Listings the delta sync had to step over.
 $held_back = TCGiant_Sync_Importer::held_back_listings();
 
+// Products from listings on other eBay sites, while only the Primary eBay
+// Marketplace's are imported - see TCGiant_Sync_Sites. Never offered while
+// every site is imported: then they are what the shop asked for.
+$tc_sites_on        = TCGiant_Sync_Sites::primary_only();
+$tc_other_ids       = $tc_sites_on ? TCGiant_Sync_Sites::find_other_site_products() : array();
+$tc_other_unchecked = $tc_sites_on ? TCGiant_Sync_Sites::count_unchecked_products() : 0;
+
 $tc_ajax_url = admin_url( 'admin-ajax.php' );
 $tc_nonce    = wp_create_nonce( 'tcgiant_sync_ajax' );
 ?>
@@ -122,6 +129,187 @@ $tc_nonce    = wp_create_nonce( 'tcgiant_sync_ajax' );
 				}
 			}( jQuery ) );
 		</script>
+	<?php endif; ?>
+
+	<?php if ( ! empty( $tc_other_ids ) || $tc_other_unchecked > 0 ) : ?>
+		<?php
+		$tc_other_total = count( $tc_other_ids );
+		$tc_other_paged = isset( $_GET['other_paged'] ) ? max( 1, (int) $_GET['other_paged'] ) : 1; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		$tc_other_pages = (int) ceil( $tc_other_total / $per_page );
+		$tc_other_rows  = array_slice( $tc_other_ids, ( $tc_other_paged - 1 ) * $per_page, $per_page );
+		$tc_other_sites = array();
+		foreach ( TCGiant_Sync_Sites::count_other_site_products_by_site() as $tc_site_label => $tc_site_n ) {
+			$tc_other_sites[] = sprintf( '%s: %s', $tc_site_label, number_format_i18n( $tc_site_n ) );
+		}
+		$tc_settings = get_option( 'tcgiant_sync_ebay_settings', array() );
+		$tc_preserve = is_array( $tc_settings ) && isset( $tc_settings['preserve_woo_category_ids'] ) && is_array( $tc_settings['preserve_woo_category_ids'] ) ? $tc_settings['preserve_woo_category_ids'] : array();
+
+		// What the button would move: the list less what Preserve Categories
+		// keep, so its question gives the number that would go. With the trash
+		// switched off WordPress deletes instead, so there is no button at all.
+		// Nor while the last full sync found nothing on the Primary eBay
+		// Marketplace: it is almost certainly set wrongly, and this list is then
+		// the shop's own catalogue. The cleanup refuses as well.
+		$tc_trash_off = TCGiant_Sync_Sites::trash_is_off();
+		$tc_mismatch  = null !== TCGiant_Sync_Sites::mismatch();
+		$tc_to_move   = $tc_other_total > 0 ? max( 0, $tc_other_total - TCGiant_Sync_Sites::count_preserved_other_site_products( $tc_preserve ) ) : 0;
+		$tc_can_move  = ! $tc_trash_off && ! $tc_mismatch && $tc_to_move > 0;
+
+		// The button acts on this list as drawn now - see remember_shown_list().
+		$tc_list_token = $tc_can_move ? TCGiant_Sync_Sites::remember_shown_list( $tc_other_ids ) : '';
+		?>
+		<div class="notice notice-warning" id="tc-other-sites" style="margin-top:16px;padding:12px 14px;">
+			<?php if ( $tc_other_total > 0 ) : ?>
+				<p style="margin:0 0 6px;">
+					<strong>
+						<?php
+						printf(
+							/* translators: 1: number of products, 2: per site, e.g. "eBay United Kingdom: 30, eBay Germany: 7" */
+							esc_html( _n( '%1$s product on your website came from a listing on another eBay site (%2$s).', '%1$s products on your website came from listings on other eBay sites (%2$s).', $tc_other_total, 'tcgiant-sync' ) ),
+							esc_html( number_format_i18n( $tc_other_total ) ),
+							esc_html( implode( ', ', $tc_other_sites ) )
+						);
+						?>
+					</strong>
+				</p>
+				<p style="margin:0 0 10px;">
+					<?php
+					printf(
+						/* translators: %s: the shop's eBay site, e.g. "eBay United States" */
+						esc_html__( 'Import listings from is set to %s only, so no more will be imported, but these keep syncing until you remove them. Their prices were copied from eBay without currency conversion.', 'tcgiant-sync' ),
+						esc_html( TCGiant_Sync_Sites::primary_label() )
+					);
+					?>
+				</p>
+				<?php if ( $tc_trash_off ) : ?>
+					<p style="margin:0 0 10px;"><?php esc_html_e( 'The trash is switched off on this website (EMPTY_TRASH_DAYS is 0), so WordPress would delete these products for good instead of moving them to the trash. This page therefore does not remove them. To remove them, switch the trash back on, or delete them yourself.', 'tcgiant-sync' ); ?></p>
+				<?php elseif ( $tc_mismatch ) : ?>
+					<p style="margin:0 0 10px;">
+						<?php
+						printf(
+							/* translators: %s: the shop's eBay site, e.g. "eBay United States" */
+							esc_html__( 'The last full sync found no listings on %s, your Primary eBay Marketplace, so it is almost certainly set wrongly, and these are most likely your own products. This page does not remove them until you correct Primary eBay Marketplace in Settings, or a full sync finds listings on it.', 'tcgiant-sync' ),
+							esc_html( TCGiant_Sync_Sites::primary_label() )
+						);
+						?>
+					</p>
+				<?php else : ?>
+					<p style="margin:0 0 10px;"><?php esc_html_e( 'They go to the trash, not away for good. Their eBay listings are not changed. Anything your Preserve Categories protect is left alone, with the reason written to the log. Nothing changes until you press the button; this list is what it would do.', 'tcgiant-sync' ); ?></p>
+				<?php endif; ?>
+				<table class="widefat striped" style="margin-bottom:10px;">
+					<thead><tr><th><?php esc_html_e( 'Product', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'eBay item', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'Site', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'Price', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'Stock', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'Status', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'Would be', 'tcgiant-sync' ); ?></th></tr></thead>
+					<tbody>
+					<?php foreach ( $tc_other_rows as $tc_pid ) : ?>
+						<?php $tc_p = wc_get_product( $tc_pid ); ?>
+						<?php if ( ! $tc_p ) { continue; } ?>
+						<tr>
+							<td><a href="<?php echo esc_url( (string) get_edit_post_link( $tc_pid ) ); ?>"><?php echo esc_html( $tc_p->get_name() ); ?></a> <span style="color:#777;">#<?php echo esc_html( $tc_pid ); ?></span></td>
+							<td><?php echo esc_html( (string) get_post_meta( $tc_pid, '_ebay_item_id', true ) ); ?></td>
+							<td><?php echo esc_html( TCGiant_Sync_Sites::label( (string) get_post_meta( $tc_pid, '_ebay_site', true ) ) ); ?></td>
+							<td><?php echo esc_html( (string) $tc_p->get_price() ); ?></td>
+							<td><?php echo $tc_p->managing_stock() ? esc_html( (string) (int) $tc_p->get_stock_quantity() ) : esc_html( $tc_p->get_stock_status() ); ?></td>
+							<td><?php echo esc_html( (string) get_post_status( $tc_pid ) ); ?></td>
+							<td>
+								<?php if ( $tc_trash_off ) : ?>
+									<?php esc_html_e( 'Left here - the trash is switched off', 'tcgiant-sync' ); ?>
+								<?php elseif ( $tc_mismatch ) : ?>
+									<?php esc_html_e( 'Left here - check Primary eBay Marketplace first', 'tcgiant-sync' ); ?>
+								<?php elseif ( ! empty( $tc_preserve ) && has_term( $tc_preserve, 'product_cat', $tc_pid ) ) : ?>
+									<?php esc_html_e( 'Kept - in a preserved category', 'tcgiant-sync' ); ?>
+								<?php else : ?>
+									<?php esc_html_e( 'Moved to the trash', 'tcgiant-sync' ); ?>
+								<?php endif; ?>
+							</td>
+						</tr>
+					<?php endforeach; ?>
+					</tbody>
+				</table>
+				<?php if ( $tc_other_pages > 1 ) : ?>
+					<p style="margin:0 0 10px;">
+						<?php
+						echo wp_kses_post( paginate_links( array(
+							'base'      => $base_url . '%_%',
+							'format'    => '&other_paged=%#%',
+							'current'   => $tc_other_paged,
+							'total'     => $tc_other_pages,
+							'prev_text' => '‹',
+							'next_text' => '›',
+						) ) );
+						?>
+					</p>
+				<?php endif; ?>
+				<?php if ( $tc_can_move ) : ?>
+					<p style="margin:0;">
+						<button type="button" id="tc-trash-other-sites" class="button button-primary"><?php esc_html_e( 'Move them to the trash', 'tcgiant-sync' ); ?></button>
+						<span id="tc-trash-other-sites-status" style="margin-left:10px;color:#555;"></span>
+					</p>
+				<?php elseif ( ! $tc_trash_off && ! $tc_mismatch ) : ?>
+					<p style="margin:0;"><?php esc_html_e( 'Every one of them is in a category your Preserve Categories protect, so there is nothing to move to the trash.', 'tcgiant-sync' ); ?></p>
+				<?php endif; ?>
+			<?php endif; ?>
+			<?php if ( $tc_other_unchecked > 0 ) : ?>
+				<p style="margin:<?php echo $tc_other_total > 0 ? '10px' : '0'; ?> 0 0;">
+					<?php
+					printf(
+						/* translators: %s: number of products */
+						esc_html( _n( '%s linked product has not been checked yet. Run Import from eBay, Fetch Inventory to check it.', '%s linked products have not been checked yet. Run Import from eBay, Fetch Inventory to check them.', $tc_other_unchecked, 'tcgiant-sync' ) ),
+						esc_html( number_format_i18n( $tc_other_unchecked ) )
+					);
+					?>
+				</p>
+			<?php endif; ?>
+		</div>
+
+		<?php if ( $tc_can_move ) : ?>
+			<script>
+				( function ( $ ) {
+					var ajaxUrl = '<?php echo esc_url( $tc_ajax_url ); ?>';
+					var nonce   = '<?php echo esc_js( $tc_nonce ); ?>';
+					var list    = '<?php echo esc_js( $tc_list_token ); ?>';
+					var $btn    = $( '#tc-trash-other-sites' );
+					var $say    = $( '#tc-trash-other-sites-status' );
+
+					$btn.on( 'click', function () {
+						if ( ! confirm( '<?php echo esc_js( sprintf( /* translators: %s: number of products */ _n( 'Move %s product from another eBay site to the trash? Its eBay listing is not changed.', 'Move %s products from other eBay sites to the trash? Their eBay listings are not changed.', $tc_to_move, 'tcgiant-sync' ), number_format_i18n( $tc_to_move ) ) ); ?>' ) ) { return; }
+
+						$btn.prop( 'disabled', true );
+						$say.text( '<?php echo esc_js( __( 'Starting...', 'tcgiant-sync' ) ); ?>' );
+
+						// The list this page shows, by its token: the server kept it.
+						$.post( ajaxUrl, { action: 'tcgiant_job_start', type: 'bulk_trash_other_sites', select_all: 1, list: list, _ajax_nonce: nonce }, function ( r ) {
+							if ( ! r.success ) {
+								$btn.prop( 'disabled', false );
+								$say.text( r.data && r.data.message ? r.data.message : 'Could not start.' );
+								return;
+							}
+							next( r.data.job_id, r.data.total );
+						} );
+					} );
+
+					function next( jobId, total ) {
+						$.post( ajaxUrl, { action: 'tcgiant_job_process', job_id: jobId, _ajax_nonce: nonce }, function ( r ) {
+							if ( ! r.success ) {
+								$say.text( r.data && r.data.message ? r.data.message : 'Stopped.' );
+								$btn.prop( 'disabled', false );
+								return;
+							}
+
+							var done = r.data.processed || 0;
+							var kept = r.data.kept || 0;
+							$say.text( done + ' / ' + total + ( kept ? ' (' + kept + ' kept — see the log)' : '' ) );
+
+							if ( 'completed' === r.data.status || done >= total ) {
+								$say.text( '<?php echo esc_js( __( 'Done. Reloading...', 'tcgiant-sync' ) ); ?>' );
+								location.reload();
+								return;
+							}
+
+							next( jobId, total );
+						} );
+					}
+				}( jQuery ) );
+			</script>
+		<?php endif; ?>
 	<?php endif; ?>
 
 	<?php if ( ! empty( $restocked ) || ! empty( $unsold_at_end ) ) : ?>

@@ -86,6 +86,7 @@ function __( $text ) { return $text; }
 function add_action() {}
 function update_post_meta() {}
 function wp_clear_scheduled_hook() {}
+function delete_transient( $name ) { return true; }
 function get_option( $name, $default = false ) {
 	global $OPTIONS;
 	return array_key_exists( $name, $OPTIONS ) ? $OPTIONS[ $name ] : $default;
@@ -210,6 +211,12 @@ class TCGiant_Sync_Image_Localizer {
  * without one that weighs more than the host can survive kills the request.
  */
 class TCGiant_Sync_API {
+	// The two eBay sites these listings are on, as TCGiant_Sync_Sites reads them.
+	const MARKETPLACES = array(
+		'EBAY_US' => array( 'label' => 'United States', 'site' => 'US' ),
+		'EBAY_GB' => array( 'label' => 'United Kingdom', 'site' => 'UK' ),
+	);
+	public static function scalar_value( $raw ) { return is_scalar( $raw ) ? (string) $raw : ''; }
 	const DAILY_CALL_LIMIT        = 50000;
 	const DAILY_CALL_SOFT_CEILING = 0.80;
 	private $last_bytes = 0;
@@ -332,6 +339,7 @@ class TCGiant_Sync_API {
 }
 
 require dirname( __DIR__ ) . '/includes/class-tcgiant-sync-runtime.php';
+require dirname( __DIR__ ) . '/includes/class-tcgiant-sync-sites.php';
 require dirname( __DIR__ ) . '/includes/class-tcgiant-sync-importer.php';
 
 $IMP = TCGiant_Sync_Importer::instance();

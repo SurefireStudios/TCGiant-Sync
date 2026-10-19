@@ -1421,6 +1421,9 @@ foreach ( array( 'apply_ended_listing_stock', 'lower_stock_to', 'zero_stock', 'u
 	check( 'the stock write ' . $writer . '(), for every caller', 1 === preg_match( '/self::begin_ebay_origin\(\);\s*(?:\/\/[^\n]*\s*)*TCGiant_Sync_Runtime::guard_loops\(\);\s*try \{.*?\} finally \{\s*TCGiant_Sync_Runtime::unguard_loops\(\);\s*self::end_ebay_origin\(\);/s', method_body( $inventory, $writer ) ), true );
 }
 check( 'removing a sold-out product', 1 === preg_match( '/Runtime::guard_loops\(\);\s*try \{\s*wp_trash_post\( \$product_id \);\s*\} finally \{\s*TCGiant_Sync_Runtime::unguard_loops\(\);/', method_body( $inventory, 'remove_if_allowed' ) ), true );
+// Stock Review moving another eBay site's product to the trash (3.27.5).
+$sites = file_get_contents( $ROOT . '/includes/class-tcgiant-sync-sites.php' );
+check( 'moving another site\'s product to the trash', array( preg_match( '/Runtime::guard_loops\(\);\s*try \{\s*\$trashed = wp_trash_post\( \$product_id \);\s*\} finally \{\s*TCGiant_Sync_Runtime::unguard_loops\(\);/', method_body( $sites, 'trash_other_site_product' ) ), substr_count( $sites, 'wp_trash_post( $' ) ), array( 1, 1 ) );
 // A push to eBay, and the product screen's own saves.
 $exporter = file_get_contents( $ROOT . '/includes/class-tcgiant-sync-exporter.php' );
 $admin    = file_get_contents( $ROOT . '/admin/class-tcgiant-sync-admin.php' );

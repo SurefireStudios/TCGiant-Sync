@@ -504,6 +504,8 @@ class TCGiant_Sync_Importer {
 require $ROOT . '/includes/class-tcgiant-sync-runtime.php';
 require $ROOT . '/includes/class-tcgiant-sync-catalog.php';
 require $ROOT . '/includes/class-tcgiant-sync-api.php';
+// The push, Link and Relist read the listing's eBay site through it.
+require $ROOT . '/includes/class-tcgiant-sync-sites.php';
 require $ROOT . '/includes/class-tcgiant-sync-exporter.php';
 // Link completes a push that did not finish through it.
 require $ROOT . '/includes/class-tcgiant-sync-listing-link.php';
@@ -1537,7 +1539,7 @@ update_option( 'tcgiant_sync_ebay_settings', array( 'auto_relist_enabled' => 1 )
 check( 'the daily auto-relist does not relist its ended listing as well', array( live_on_ebay( 7201 ), meta( 7201, '_ebay_item_id' ) ), array( array( '960072010002' ), '960072010001' ) );
 check( '  so what it was told still holds: Unlink the ended listing, Link the new one', array( meta( 7201, '_ebay_export_status' ), false !== strpos( (string) meta( 7201, '_ebay_export_error' ), 'Unlink it from listing 960072010001, then use Link with item number 960072010002;' ) ), array( 'failed', true ) );
 check( 'the one whose last push finished is relisted, as before', array( live_on_ebay( 7202 ), meta( 7202, '_ebay_item_id' ) ), array( array( '960072020002' ), '960072020002' ) );
-check( '  and the run says why the other may not have been', array_column( said( 'Auto-Relist: Complete' ), 1 ), array( 'Auto-Relist: Complete. 1 relisted, 1 not relisted (no stock, sold out on eBay, already live, or its last push is still under way or did not finish).' ) );
+check( '  and the run says why the other may not have been', array_column( said( 'Auto-Relist: Complete' ), 1 ), array( 'Auto-Relist: Complete. 1 relisted, 1 not relisted (no stock, sold out on eBay, already live, on another eBay site, or its last push is still under way or did not finish).' ) );
 
 // Relist, then Push, on the Listings screen: one whose relist the host killed
 // once eBay had made the new listing, beside one whose last push finished.
@@ -1634,10 +1636,28 @@ while ( run_next() ) {
 	continue;
 }
 $EBAY_REFUSES = array();
-check( 'its relist died, a bulk push again is refused by eBay: it still says its relist did not finish', array( meta( 7209, '_ebay_export_status' ), meta( 7209, '_ebay_export_error' ) === $told ), array( 'failed', true ) );
+check( 'its relist died, a bulk push again is refused by eBay: it still says its relist did not finish', array( meta( 7209, '_ebay_export_status' ), 0 === strpos( (string) meta( 7209, '_ebay_export_error' ), $told ) ), array( 'failed', true ) );
+// Said in the log alone, the product looked just as it had before it was
+// pushed again, and nothing on it said why.
+check( '  and then why eBay refused the push after it', false !== strpos( (string) meta( 7209, '_ebay_export_error' ), $told . ' The push after it was refused: The item specific Type is missing.' ), true );
+check( '  which its eBay tab and the products list both show', array( false !== strpos( notice( 7209, 'panel' ), 'The item specific Type is missing.' ), false !== strpos( notice( 7209, 'column' ), 'The item specific Type is missing.' ) ), array( true, true ) );
 $ended = said( 'Export finished' );
 check( '  and the batch ends naming it as not finished, not as an error as well', strtok( (string) ( end( $ended )[1] ?? '' ), '.' ), 'Export finished: 0 of 1 pushed, 0 errors, 1 did not finish (WC #7209)' );
 check( '  the log says why that push was refused', count( said( 'Export failed for "1884-CC Morgan Dollar MS65" (WC #7209): The item specific Type is missing. Its earlier push did not finish, and it still says so' ) ), 1 );
+$EBAY_REFUSES = array( 7209 => 'The item specific Year is missing.' );
+$exporter->bulk_push_products( array( 7209 ) );
+while ( run_next() ) {
+	continue;
+}
+$EBAY_REFUSES = array();
+check( 'refused again: its relist\'s words, then this refusal in place of the last, not added to it', array( meta( 7209, '_ebay_export_status' ), meta( 7209, '_ebay_export_error' ) ), array( 'failed', $told . ' The push after it was refused: The item specific Year is missing.' ) );
+$EBAY_THROWS = array( 7209 => 'cURL error 28: Operation timed out' );
+$exporter->bulk_push_products( array( 7209 ) );
+while ( run_next() ) {
+	continue;
+}
+$EBAY_THROWS = array();
+check( '  then a push that throws before eBay makes anything: the same, with what stopped it', array( meta( 7209, '_ebay_export_status' ), meta( 7209, '_ebay_export_error' ) ), array( 'failed', $told . ' The push after it was refused: Export exception for "1884-CC Morgan Dollar MS65" (WC #7209): cURL error 28: Operation timed out' ) );
 
 printf( "\n  %d passed, %d failed\n\n", $pass, $fail );
 exit( $fail > 0 ? 1 : 0 );

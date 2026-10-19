@@ -235,6 +235,12 @@ class TCGiant_Sync_OAuth {
 
 /** eBay: the last day's orders, and GetItem for each listing it is asked about. */
 class TCGiant_Sync_API {
+	// The two eBay sites this shop's listings are on, as TCGiant_Sync_Sites reads them.
+	const MARKETPLACES = array(
+		'EBAY_US' => array( 'label' => 'United States', 'site' => 'US' ),
+		'EBAY_GB' => array( 'label' => 'United Kingdom', 'site' => 'UK' ),
+	);
+	public static function scalar_value( $raw ) { return is_scalar( $raw ) ? (string) $raw : ''; }
 	public static function instance() { static $i; return $i ? $i : ( $i = new self() ); }
 	public function get_orders( $limit = 50, $offset = 0 ) {
 		return $GLOBALS['EBAY']['orders'];
@@ -247,6 +253,7 @@ class TCGiant_Sync_API {
 
 require $ROOT . '/includes/class-tcgiant-sync-runtime.php';
 require $ROOT . '/includes/class-tcgiant-sync-inventory.php';
+require $ROOT . '/includes/class-tcgiant-sync-sites.php';
 require $ROOT . '/includes/class-tcgiant-sync-importer.php';
 
 $IMP = TCGiant_Sync_Importer::instance();
@@ -652,6 +659,116 @@ $from     = strpos( $cron_src, 'public function sync_orders()' );
 $body     = false !== $from ? substr( $cron_src, $from, 600 ) : '';
 check( 'order sync runs for every connected shop', false !== strpos( $body, 'is_authenticated()' ), true );
 check( '  and no longer stops at the old setting', false === strpos( $body, "enable_order_sync" ), true );
+
+echo "\nSALES OF LISTINGS ON OTHER EBAY SITES LEAVE THE WEBSITE'S STOCK ALONE (3.27.5)\n" . str_repeat( '=', 124 ) . "\n";
+
+// Rabbi Ent lists on eBay.com, and Web Interpret copies every listing onto
+// eBay.co.uk, eBay.de and the rest with the same SKUs, keeping the copies'
+// quantities in step with the eBay.com listing. With "Import listings from"
+// set to eBay United States only, a sale on a copy must not change the
+// website's stock itself: it shows up as a quantity change on the eBay.com
+// listing, which is what the website follows.
+$only_us = array( 'enable_order_sync' => '1', 'import_sites' => 'primary', 'marketplace' => 'EBAY_US' );
+
+/** A line of an order, listed on one eBay marketplace and bought on another. */
+function sale_on( $listed_on, $line_item_id, $item_id, $sku, $quantity = 1, $bought_on = null ) {
+	$line = sale( $line_item_id, $item_id, $sku, $quantity );
+	if ( null !== $listed_on ) {
+		$line['listingMarketplaceId'] = $listed_on;
+	}
+	$line['purchaseMarketplaceId'] = null !== $bought_on ? $bought_on : $listed_on;
+	return $line;
+}
+
+// The shop's own product, not linked to eBay, and a variation of its eBay.com
+// listing (variations carry no link of their own), both sharing SKUs with
+// eBay.co.uk copies.
+fresh_shop( $only_us );
+product( 601, 'WEB-601', 5 );
+product( 610, 'SET-610', null, '160000000610' );
+product( 611, 'SET-610-RED', 4, '', array( 'parent' => 610 ) );
+orders( array(
+	sale_on( 'EBAY_GB', '60001', '170000000601', 'WEB-601', 2 ),
+	sale_on( 'EBAY_GB', '60002', '170000000610', 'SET-610-RED' ),
+) );
+order_sync();
+check( 'an eBay.co.uk sale with an unlinked product\'s SKU: stock unchanged', stock( 601 ), 5 );
+check( '  nothing written to it', stock_writes( 601 ), array() );
+check( '  and left unmarked, so going back to all sites still reduces it', (string) meta( 601, '_ebay_order_processed_60001' ), '' );
+check( 'an eBay.co.uk sale with a variation\'s SKU: stock unchanged', stock( 611 ), 4 );
+check( '  and left unmarked', (string) meta( 611, '_ebay_order_processed_60002' ), '' );
+check( '  nothing queued', $QUEUE, array() );
+check( 'the log counts them', logged( '; 2 sales of listings on other eBay sites left alone' ), true );
+
+// The shop's own marketplace, eBay Motors (part of it), a line eBay gave no
+// marketplace for, and an eBay.com listing a buyer on eBay.co.uk bought
+// through international visibility: all reduced, as before.
+fresh_shop( $only_us );
+product( 621, 'WEB-621', 5 );
+product( 622, 'WEB-622', 5 );
+product( 623, 'WEB-623', 5 );
+product( 624, 'WEB-624', 5 );
+orders( array(
+	sale_on( 'EBAY_US', '62001', '180000000621', 'WEB-621' ),
+	sale_on( 'EBAY_MOTORS_US', '62002', '180000000622', 'WEB-622' ),
+	sale_on( null, '62003', '180000000623', 'WEB-623' ),
+	sale_on( 'EBAY_US', '62004', '180000000624', 'WEB-624', 1, 'EBAY_GB' ),
+) );
+order_sync();
+check( 'eBay United States: reduced', stock( 621 ), 4 );
+check( 'eBay Motors, part of eBay United States: reduced', stock( 622 ), 4 );
+check( 'no listingMarketplaceId on the line: reduced, as before', stock( 623 ), 4 );
+check( 'listed on eBay.com, bought from eBay.co.uk: reduced - the listing\'s site decides', stock( 624 ), 4 );
+check( '  and no line says anything was left alone', logged( 'left alone' ), false );
+
+// A product imported from an eBay.co.uk listing before the setting was chosen
+// keeps syncing: its own listing's sale is still checked against eBay.
+fresh_shop( $only_us );
+product( 631, 'COIN-631', 2, '190000000631' );
+listing( '190000000631', 'Active', 2, 1 );
+orders( array( sale_on( 'EBAY_GB', '63001', '190000000631', 'COIN-631' ) ) );
+order_sync();
+check( 'a sale of a linked eBay.co.uk listing still queues its stock check', checks_queued(), array( array( '190000000631' ) ) );
+run_queued();
+check( '  which brings that product down to eBay\'s figure', stock( 631 ), 1 );
+
+// Web Interpret: the eBay.com listing and seven copies, one SKU. The copies
+// sell; the eBay.com product is linked to the eBay.com listing only.
+fresh_shop( $only_us );
+product( 641, 'ROBOT-ARM', 10, '200000000641' );
+$copies = array( 'EBAY_GB', 'EBAY_DE', 'EBAY_FR', 'EBAY_IT', 'EBAY_AU', 'EBAY_CA', 'EBAY_ES' );
+$lines  = array();
+foreach ( $copies as $n => $mp ) {
+	$lines[] = sale_on( $mp, (string) ( 64100 + $n ), (string) ( 200000000700 + $n ), 'ROBOT-ARM' );
+}
+orders( $lines );
+order_sync();
+run_queued();
+check( 'seven sales on the seven copies: the eBay.com product\'s stock is unchanged', stock( 641 ), 10 );
+check( '  nothing written to its stock', stock_writes( 641 ), array() );
+check( '  and eBay asked nothing: no product follows any copy', $EBAY['get_items'], array() );
+
+// All eBay sites, the default: an eBay.co.uk sale of an unlinked product's
+// SKU is reduced exactly as in 3.27.4.
+foreach ( array( 'never chosen' => array( 'enable_order_sync' => '1', 'marketplace' => 'EBAY_US' ), 'All eBay sites' => array( 'enable_order_sync' => '1', 'marketplace' => 'EBAY_US', 'import_sites' => 'all' ) ) as $how => $settings ) {
+	fresh_shop( $settings );
+	product( 651, 'WEB-651', 5 );
+	orders( array( sale_on( 'EBAY_GB', '65001', '170000000651', 'WEB-651', 2 ) ) );
+	order_sync();
+	check( sprintf( 'import listings from: %s - an eBay.co.uk sale is reduced as before', $how ), stock( 651 ), 3 );
+	check( '  and marked handled', '' !== (string) meta( 651, '_ebay_order_processed_65001' ), true );
+}
+
+// The line left unmarked is reduced once the shop goes back to all sites.
+fresh_shop( $only_us );
+product( 661, 'WEB-661', 5 );
+orders( array( sale_on( 'EBAY_GB', '66001', '170000000661', 'WEB-661' ) ) );
+order_sync();
+$OPTIONS['tcgiant_sync_ebay_settings']['import_sites'] = 'all';
+order_sync();
+check( 'set back to All eBay sites: the sale left alone is reduced, once', stock( 661 ), 4 );
+order_sync();
+check( '  and not again', stock( 661 ), 4 );
 
 printf( "\n  %d passed, %d failed\n\n", $pass, $fail );
 exit( $fail > 0 ? 1 : 0 );

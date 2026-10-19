@@ -236,6 +236,44 @@ check( '  the rest of the clean slate goes on all the same', array( dropped_tabl
 preg_match_all( "/const \w+_OPTION = '(tcgiant_[a-z_]+)'/", file_get_contents( __DIR__ . '/../includes/class-tcgiant-sync-photo-cleanup.php' ), $tcg_opts );
 check( 'answered Yes: every option of the photo cleanup is deleted', array( count( $tcg_opts[1] ) >= 8, array_values( array_diff( $tcg_opts[1], $DELETED ) ) ), array( true, array() ) );
 
+// The same for the site filter's three options (3.27.5), written out by hand
+// in uninstall.php: all three could go from its list and nothing failed. Its
+// transients have no list of their own - they go because their names fall
+// under the plugin's transient sweep, so each is matched against the sweep's
+// own LIKE patterns, both the value and its timeout.
+$tcg_sites = file_get_contents( __DIR__ . '/../includes/class-tcgiant-sync-sites.php' );
+preg_match_all( "/const \w+_OPTION = '(tcgiant_[a-z_]+)'/", $tcg_sites, $tcg_opts );
+check( 'answered Yes: every option of the site filter is deleted', array( count( $tcg_opts[1] ), array_values( array_diff( $tcg_opts[1], $DELETED ) ) ), array( 3, array() ) );
+preg_match_all( "/const \w+_TRANSIENT = '([a-z_]+)'/", $tcg_sites, $tcg_prefixes );
+$tcg_likes = array();
+foreach ( $QUERIES as $tcg_q ) {
+	if ( false !== strpos( $tcg_q, '_transient' ) && preg_match_all( "/LIKE '([^']+)'/", $tcg_q, $tcg_m ) ) {
+		$tcg_likes = array_merge( $tcg_likes, $tcg_m[1] );
+	}
+}
+$tcg_swept = function ( $option_name ) use ( $tcg_likes ) {
+	foreach ( $tcg_likes as $tcg_like ) {
+		// LIKE to a pattern: \_ is a literal underscore, _ any one character, % anything.
+		$tcg_re = '';
+		foreach ( preg_split( '/(\\\\_|_|%)/', $tcg_like, -1, PREG_SPLIT_DELIM_CAPTURE ) as $tcg_part ) {
+			$tcg_re .= '\\_' === $tcg_part ? '_' : ( '_' === $tcg_part ? '.' : ( '%' === $tcg_part ? '.*' : preg_quote( $tcg_part, '/' ) ) );
+		}
+		if ( preg_match( '/^' . $tcg_re . '$/s', $option_name ) ) {
+			return true;
+		}
+	}
+	return false;
+};
+$tcg_left = array();
+foreach ( $tcg_prefixes[1] as $tcg_prefix ) {
+	foreach ( array( '_transient_', '_transient_timeout_' ) as $tcg_kind ) {
+		if ( ! $tcg_swept( $tcg_kind . $tcg_prefix . '110000000001' ) ) {
+			$tcg_left[] = $tcg_kind . $tcg_prefix;
+		}
+	}
+}
+check( '  and its transients, by the plugin\'s transient sweep', array( count( $tcg_prefixes[1] ), $tcg_left ), array( 3, array() ) );
+
 echo "\n  " . str_repeat( '-', 88 ) . "\n";
 
 // --- the hooks it clears must be the hooks the plugin schedules ---------------

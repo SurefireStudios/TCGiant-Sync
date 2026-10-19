@@ -232,6 +232,31 @@ class TCGiant_Sync_Jobs {
 			$product_ids = TCGiant_Sync_Image_Localizer::find_products_with_duplicate_images();
 		}
 
+		// Stock Review's products from listings on other eBay sites.
+		if ( 'bulk_trash_other_sites' === $type ) {
+			// With the trash switched off WordPress deletes instead, and the
+			// page promises the trash. Refused whatever was asked for.
+			if ( TCGiant_Sync_Sites::trash_is_off() ) {
+				wp_send_json_error( array( 'message' => 'The trash is switched off on this website (EMPTY_TRASH_DAYS is 0), so WordPress would delete these products for good instead of moving them to the trash. Nothing was moved.' ) );
+			}
+
+			// Nor while the last full sync says the Primary eBay Marketplace is
+			// almost certainly set wrongly: the list is then the shop's own.
+			if ( null !== TCGiant_Sync_Sites::mismatch() ) {
+				wp_send_json_error( array( 'message' => sprintf( 'The last full sync found no listings on %s, your Primary eBay Marketplace, so it is almost certainly set wrongly. Nothing was moved. Correct it in Settings, then reload Stock Review.', TCGiant_Sync_Sites::primary_label() ) ) );
+			}
+
+			// The list the page showed, kept when it was drawn - not the query
+			// run again, which would take in every product recorded on another
+			// site since, unseen. Each is still checked again as it is reached.
+			if ( ! empty( $_POST['select_all'] ) ) {
+				$product_ids = TCGiant_Sync_Sites::take_shown_list( sanitize_key( wp_unslash( $_POST['list'] ?? '' ) ) );
+				if ( null === $product_ids ) {
+					wp_send_json_error( array( 'message' => 'This list is out of date. Reload Stock Review to see it as it is now.' ) );
+				}
+			}
+		}
+
 		// The Listings screen asking for everything it is currently showing.
 		//
 		// Its checkboxes only exist for the twenty rows it has drawn, so a
@@ -250,7 +275,7 @@ class TCGiant_Sync_Jobs {
 			wp_send_json_error( array( 'message' => 'Missing type or product_ids.' ) );
 		}
 
-		$valid_types = array( 'bulk_push', 'bulk_end', 'bulk_verify', 'bulk_relist', 'bulk_settle', 'bulk_restore_images', 'bulk_set_format', 'bulk_remove_sold', 'bulk_zero_stock', 'bulk_use_ebay_figure', 'bulk_keep_stock' );
+		$valid_types = array( 'bulk_push', 'bulk_end', 'bulk_verify', 'bulk_relist', 'bulk_settle', 'bulk_restore_images', 'bulk_set_format', 'bulk_remove_sold', 'bulk_zero_stock', 'bulk_use_ebay_figure', 'bulk_keep_stock', 'bulk_trash_other_sites' );
 		if ( ! in_array( $type, $valid_types, true ) ) {
 			wp_send_json_error( array( 'message' => 'Invalid job type.' ) );
 		}
@@ -328,8 +353,10 @@ class TCGiant_Sync_Jobs {
 			) );
 		}
 
-		// Process up to 5 items per batch.
-		$batch_size  = 5;
+		// Process up to 5 items per batch. The cleanup of other sites' products
+		// asks eBay nothing, so it takes more: at five a request, 35,000 copies
+		// were 7,000 requests with the tab left open.
+		$batch_size  = 'bulk_trash_other_sites' === $job['type'] ? TCGiant_Sync_Sites::CLEANUP_BATCH : 5;
 		$start_index = $job['processed'];
 		$batch       = array_slice( self::get_job_items( $job_id ), $start_index, $batch_size );
 		$succeeded   = $job['succeeded'];
@@ -430,6 +457,20 @@ class TCGiant_Sync_Jobs {
 						// point, and each has already said in the log why this
 						// product is being kept. Counted as neither rather than
 						// inflating either figure.
+						$kept++;
+					}
+					break;
+
+				case 'bulk_trash_other_sites':
+					// Checked again as each product is reached - the filter still
+					// on, the product not already gone and still recorded on
+					// another site - and Preserve Categories honoured. The trash
+					// only, never a permanent delete, and nothing sent to eBay.
+					if ( 'trashed' === TCGiant_Sync_Sites::trash_other_site_product( $product_id ) ) {
+						$succeeded++;
+					} else {
+						// Left alone on purpose, and the log says why where it
+						// matters; neither a success nor a failure.
 						$kept++;
 					}
 					break;

@@ -71,6 +71,10 @@ class TCGiant_Sync_Listing_Link {
 			'_ebay_item_id',
 			'_ebay_sku',
 			'_ebay_listing_status',
+			// The eBay site that listing is on (3.27.5). A copy, or a product
+			// unlinked from its listing, has no listing and so no site, and must
+			// not be listed on Stock Review among other sites' products.
+			'_ebay_site',
 			'_ebay_listing_type',
 			'_ebay_listing_duration',
 			'_ebay_end_time',
@@ -247,6 +251,35 @@ class TCGiant_Sync_Listing_Link {
 			$product->update_meta_data( '_ebay_export_last_pushed', current_time( 'mysql' ) );
 		}
 		$product->delete_meta_data( '_ebay_export_pushing_since' );
+
+		return true;
+	}
+
+	/**
+	 * complete_unfinished_push(), straight to the table.
+	 *
+	 * For a link written straight to the table ahead of the product's save,
+	 * as the sync's re-link over an ended listing is. Completed only by that
+	 * save, the push stayed unfinished when the save died: the product was
+	 * linked to the listing its push made and still said the push did not
+	 * finish, and the next sync found it by that item number rather than by
+	 * its SKU, so nothing completed it.
+	 *
+	 * @param int $product_id The product.
+	 * @return bool Whether it said its push was under way or did not finish.
+	 */
+	public static function complete_unfinished_push_now( $product_id ) {
+		$product_id = (int) $product_id;
+		if ( ! in_array( (string) get_post_meta( $product_id, '_ebay_export_status', true ), array( 'failed', 'pushing' ), true ) ) {
+			return false;
+		}
+
+		update_post_meta( $product_id, '_ebay_export_status', 'pushed' );
+		update_post_meta( $product_id, '_ebay_export_error', '' );
+		if ( '' === (string) get_post_meta( $product_id, '_ebay_export_last_pushed', true ) ) {
+			update_post_meta( $product_id, '_ebay_export_last_pushed', current_time( 'mysql' ) );
+		}
+		delete_post_meta( $product_id, '_ebay_export_pushing_since' );
 
 		return true;
 	}

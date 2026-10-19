@@ -262,7 +262,9 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 					}
 				}
 				// Preserve export settings too so they aren't wiped by this form.
-				$export_preserve = array( 'export_category_id', 'export_category_name', 'export_condition_id', 'export_condition_type', 'export_grader_id', 'export_grade_value', 'export_cert_number', 'export_ungraded_condition', 'export_location', 'export_postal_code', 'export_fulfillment_policy', 'export_return_policy', 'export_payment_policy', 'export_listing_type', 'export_listing_duration', 'export_default_quantity', 'export_send_package_details' );
+				// All of them: Best Offer and the GPSR fields were missing, so
+				// saving the import settings switched both off for every push.
+				$export_preserve = array( 'best_offer_enabled', 'best_offer_auto_accept', 'best_offer_auto_decline', 'gpsr_enabled', 'gpsr_manufacturer_name', 'gpsr_manufacturer_address', 'gpsr_eu_responsible', 'export_category_id', 'export_category_name', 'export_condition_id', 'export_condition_type', 'export_grader_id', 'export_grade_value', 'export_cert_number', 'export_ungraded_condition', 'export_location', 'export_postal_code', 'export_fulfillment_policy', 'export_return_policy', 'export_payment_policy', 'export_listing_type', 'export_listing_duration', 'export_default_quantity', 'export_send_package_details' );
 				foreach ( $export_preserve as $key ) {
 					if ( ! empty( $settings[ $key ] ) ) {
 						echo '<input type="hidden" name="tcgiant_sync_ebay_settings[' . esc_attr( $key ) . ']" value="' . esc_attr( $settings[ $key ] ) . '">';
@@ -300,6 +302,70 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 				<!-- Category Filter -->
 				<div class="tc-section">
 					<h3 class="tc-section-title"><?php esc_html_e( 'Import Filters', 'tcgiant-sync' ); ?></h3>
+
+					<?php
+					// Import listings from: every eBay site, or only the Primary eBay
+					// Marketplace's - see TCGiant_Sync_Sites. Named by the marketplace
+					// saved, since that is what it keys on; the script below follows
+					// the select above until the form is saved.
+					$tc_saved_mp    = is_string( $settings['marketplace'] ?? null ) ? $settings['marketplace'] : '';
+					$tc_mp_label    = isset( TCGiant_Sync_API::MARKETPLACES[ $tc_saved_mp ] ) ? TCGiant_Sync_API::MARKETPLACES[ $tc_saved_mp ]['label'] : '';
+					$tc_sites_value = TCGiant_Sync_Sites::PRIMARY === ( $settings[ TCGiant_Sync_Sites::SETTING ] ?? '' ) ? TCGiant_Sync_Sites::PRIMARY : TCGiant_Sync_Sites::ALL;
+					$tc_sites_seen  = TCGiant_Sync_Sites::seen_labels();
+					$tc_other_count = count( TCGiant_Sync_Sites::find_other_site_products() );
+					?>
+					<div class="tc-field" style="margin-bottom:16px;">
+						<label class="tc-label"><?php esc_html_e( 'Import listings from', 'tcgiant-sync' ); ?></label>
+						<div class="tc-radio-group">
+							<label><input type="radio" name="tcgiant_sync_ebay_settings[import_sites]" value="all" <?php checked( $tc_sites_value, TCGiant_Sync_Sites::ALL ); ?>> <?php esc_html_e( 'All eBay sites', 'tcgiant-sync' ); ?></label>
+							<label><input type="radio" name="tcgiant_sync_ebay_settings[import_sites]" value="primary" <?php checked( $tc_sites_value, TCGiant_Sync_Sites::PRIMARY ); ?>>
+								<?php
+								printf(
+									/* translators: %s: an eBay marketplace, e.g. "United States" */
+									esc_html__( 'Only eBay %s, my Primary eBay Marketplace', 'tcgiant-sync' ),
+									'<span id="tc-import-sites-label">' . esc_html( '' !== $tc_mp_label ? $tc_mp_label : __( '(not saved yet)', 'tcgiant-sync' ) ) . '</span>'
+								);
+								?>
+							</label>
+						</div>
+						<p class="tc-hint"><?php esc_html_e( 'If you sell on more than one eBay site, choose the second option to import only the listings on your Primary eBay Marketplace. Listings, sales and orders from other eBay sites are then left alone. Listings on your own site that buyers in other countries can see are still imported. Products already imported from other sites are not removed: they keep syncing until you move them to the trash on Stock Review.', 'tcgiant-sync' ); ?></p>
+						<?php if ( '' === $tc_mp_label ) : ?>
+							<p class="tc-hint" style="color:var(--tc-warning);"><?php esc_html_e( 'Save your Primary eBay Marketplace first; until then all sites are imported.', 'tcgiant-sync' ); ?></p>
+						<?php endif; ?>
+						<?php if ( ! empty( $tc_sites_seen ) ) : ?>
+							<p class="tc-hint">
+								<?php
+								printf(
+									/* translators: %s: eBay sites, e.g. "eBay United Kingdom, eBay United States" */
+									esc_html__( 'Seen on your eBay account in the last 30 days: %s.', 'tcgiant-sync' ),
+									esc_html( implode( ', ', $tc_sites_seen ) )
+								);
+								?>
+							</p>
+						<?php endif; ?>
+						<?php if ( $tc_other_count > 0 ) : ?>
+							<p class="tc-hint">
+								<?php
+								printf(
+									/* translators: 1: number of products, 2: link to Stock Review */
+									esc_html( _n( '%1$s product on your website came from another eBay site. Review it on %2$s.', '%1$s products on your website came from other eBay sites. Review them on %2$s.', $tc_other_count, 'tcgiant-sync' ) ),
+									esc_html( number_format_i18n( $tc_other_count ) ),
+									'<a href="' . esc_url( admin_url( 'admin.php?page=tcgiant-stock-review' ) ) . '">' . esc_html__( 'Stock Review', 'tcgiant-sync' ) . '</a>'
+								);
+								?>
+							</p>
+						<?php endif; ?>
+						<script>
+							( function () {
+								var select = document.getElementById( 'ebay_marketplace' );
+								var label  = document.getElementById( 'tc-import-sites-label' );
+								if ( ! select || ! label ) { return; }
+								select.addEventListener( 'change', function () {
+									label.textContent = select.options[ select.selectedIndex ].text;
+								} );
+							}() );
+						</script>
+					</div>
 
 					<?php
 					// Determine if "import all" mode is active (no filters selected).
@@ -624,7 +690,16 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 				<?php settings_fields( 'tcgiant_sync_ebay_group' ); ?>
 				<?php
 				// Preserve all non-export fields.
-				$all_preserve = array_merge( $preserve_keys, array( 'custom_saved_categories', 'category_ids', 'woo_category_ids', 'preserve_woo_category_ids', 'import_specs_as_tags', 'bake_shipping_into_price', 'sku_maps_to', 'sku_prefix', 'sync_interval', 'enable_order_sync', 'enable_order_import', 'enable_reconciliation', 'remove_sold_products', 'auto_end_zero_stock', 'disable_image_localization', 'auto_relist_enabled', 'overwrite_title', 'overwrite_desc', 'overwrite_price', 'overwrite_images', 'overwrite_taxonomy', 'overwrite_attributes', 'overwrite_weight_dims', 'delete_data_on_uninstall' ) );
+				//
+				// Every Import Settings field must be here: this form replaces the
+				// whole settings option, and one left out is quietly reset. Saving
+				// export settings used to drop the Standard Categories import
+				// filter this way, so every listing began importing again without
+				// anyone having touched the import settings - and image hosting,
+				// image size and log detail went back to their defaults with it.
+				// import_sites likewise, or saving this form would go back to
+				// importing every eBay site.
+				$all_preserve = array_merge( $preserve_keys, array( 'import_standard_category_ids', 'import_sites', 'host_images_on_ebay', 'import_image_width', 'log_level', 'custom_saved_categories', 'category_ids', 'woo_category_ids', 'preserve_woo_category_ids', 'import_specs_as_tags', 'bake_shipping_into_price', 'sku_maps_to', 'sku_prefix', 'sync_interval', 'enable_order_sync', 'enable_order_import', 'enable_reconciliation', 'remove_sold_products', 'auto_end_zero_stock', 'disable_image_localization', 'auto_relist_enabled', 'overwrite_title', 'overwrite_desc', 'overwrite_price', 'overwrite_images', 'overwrite_taxonomy', 'overwrite_attributes', 'overwrite_weight_dims', 'delete_data_on_uninstall' ) );
 				// Note: export condition descriptor fields are handled by the export form itself.
 				foreach ( $all_preserve as $key ) {
 					$val = $settings[ $key ] ?? null;
@@ -924,7 +999,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 
 				<!-- Best Offer -->
 				<div class="tc-field">
-					<label class="tc-label"><?php esc_html_e( 'Best Offer', 'tcgiant-sync' ); ?></label>
+					<label class="tc-label"><?php esc_html_e( 'Best Offer (not sent to eBay yet)', 'tcgiant-sync' ); ?></label>
 					<div class="tc-radio-group">
 						<label><input type="radio" name="tcgiant_sync_ebay_settings[best_offer_enabled]" value="1" <?php checked( $settings['best_offer_enabled'] ?? '0', '1' ); ?>> <?php esc_html_e( 'Enable Best Offer on new listings', 'tcgiant-sync' ); ?></label>
 						<label><input type="radio" name="tcgiant_sync_ebay_settings[best_offer_enabled]" value="0" <?php checked( $settings['best_offer_enabled'] ?? '0', '0' ); ?>> <?php esc_html_e( 'Disabled', 'tcgiant-sync' ); ?></label>
@@ -939,12 +1014,13 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 							<input type="text" class="tc-input" name="tcgiant_sync_ebay_settings[best_offer_auto_decline]" value="<?php echo esc_attr( $settings['best_offer_auto_decline'] ?? '' ); ?>" placeholder="e.g. 0.70 or 25.00" style="width:100%;" />
 						</div>
 					</div>
-					<p class="tc-hint"><?php esc_html_e( 'Use a decimal (0.95) for percentage of price, or a dollar amount (49.99) for a fixed threshold. Per-product overrides available.', 'tcgiant-sync' ); ?></p>
+					<p class="tc-hint" style="color:var(--tc-warning);"><?php esc_html_e( 'Not sent to eBay yet: pushing a product does not turn Best Offer on, whatever is chosen here. What you enter is kept.', 'tcgiant-sync' ); ?></p>
+					<p class="tc-hint"><?php esc_html_e( 'Use a decimal (0.95) for percentage of price, or a dollar amount (49.99) for a fixed threshold.', 'tcgiant-sync' ); ?></p>
 				</div>
 
 				<!-- GPSR (EU Product Safety) -->
 				<div class="tc-field">
-					<label class="tc-label"><?php esc_html_e( 'GPSR Compliance (EU Product Safety)', 'tcgiant-sync' ); ?></label>
+					<label class="tc-label"><?php esc_html_e( 'GPSR Compliance, EU Product Safety (not sent to eBay yet)', 'tcgiant-sync' ); ?></label>
 					<div class="tc-radio-group">
 						<label><input type="radio" name="tcgiant_sync_ebay_settings[gpsr_enabled]" value="1" <?php checked( $settings['gpsr_enabled'] ?? '0', '1' ); ?>> <?php esc_html_e( 'Include GPSR fields on listings', 'tcgiant-sync' ); ?></label>
 						<label><input type="radio" name="tcgiant_sync_ebay_settings[gpsr_enabled]" value="0" <?php checked( $settings['gpsr_enabled'] ?? '0', '0' ); ?>> <?php esc_html_e( 'Disabled', 'tcgiant-sync' ); ?></label>
@@ -957,7 +1033,8 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						<label style="font-size:12px;color:#555;display:block;margin-bottom:3px;"><?php esc_html_e( 'EU Responsible Person (if different)', 'tcgiant-sync' ); ?></label>
 						<input type="text" class="tc-input" name="tcgiant_sync_ebay_settings[gpsr_eu_responsible]" value="<?php echo esc_attr( $settings['gpsr_eu_responsible'] ?? '' ); ?>" style="width:100%;" />
 					</div>
-					<p class="tc-hint"><?php esc_html_e( 'Required for EU sellers. Includes manufacturer info in eBay listing ProductSafety XML block.', 'tcgiant-sync' ); ?></p>
+					<p class="tc-hint" style="color:var(--tc-warning);"><?php esc_html_e( 'Not sent to eBay yet: pushing a product does not add this manufacturer information to its listing. What you enter is kept.', 'tcgiant-sync' ); ?></p>
+					<p class="tc-hint"><?php esc_html_e( 'Required for EU sellers.', 'tcgiant-sync' ); ?></p>
 				</div>
 
 				<div class="tc-form-footer" style="padding-top:16px;margin-top:16px;border-top:1px solid var(--tc-border);">

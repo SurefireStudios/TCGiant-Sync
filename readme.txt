@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.27.4
+Stable tag: 3.27.5
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,26 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.27.5 - 2026-10-19 =
+**Import only the listings on your own eBay site**
+* NEW: "Import listings from" (Settings, Import Filters). If you sell on more than one eBay site, with copies of your listings on eBay.co.uk, eBay.de and others (by hand, or through a service such as Web Interpret), you can now import only the listings on your Primary eBay Marketplace. Listings on other sites then never become products or take over yours. Their sales no longer change the stock of products not linked to them, and an order made up only of them is not imported. It starts on All eBay sites, so nothing changes until you choose it.
+* Products already imported from other sites keep syncing until you remove them. Stock Review lists them. When you press the button, it moves every product on the list the page drew, on all its pages, to the trash. Their eBay listings are not changed, and anything in your Preserve Categories is kept. A product you have pushed to eBay is never listed, and that includes a copy you pushed once to update it, so remove copies on Stock Review before you push them. Nor is a product whose last push is queued, under way or did not finish. Stock Review removes nothing while the trash is switched off on your website, or while the last full sync found no listings on your Primary eBay Marketplace, which almost certainly means it is set wrongly. Once the trash is emptied, their photos are removed too, but not those your own products also show.
+* While only your own site is imported, Relist and Auto-relist no longer relist a listing on another eBay site, even one you listed yourself before you changed your Primary eBay Marketplace. Pushing a product whose listing on another site has ended no longer creates a new listing for it on yours.
+* While all eBay sites are imported, a notice on the plugin's pages tells you when your eBay account has listings on more than one site. Settings lists the sites seen in the last 30 days. While only your own site is imported, a full sync that finds no listings at all on your Primary eBay Marketplace says so.
+* FIX: Saving Export Settings switched off the eBay Standard Categories import filter, so every listing began importing again. It also reset Host listing images on eBay, Imported Image Size and Log Detail. Saving Import Settings cleared what was entered for Best Offer and GPSR. Each form now keeps the other's settings. Best Offer and GPSR are not sent to eBay yet, and Settings now says so.
+
+**After a push that did not finish**
+* FIX: A product whose push did not finish, re-linked by the sync to the new listing that push made in place of its ended one, could go on saying the push did not finish if the sync stopped while saving it, and Auto-Relist and Relist left it out. The push is now completed as the product is re-linked.
+* FIX: When eBay refused a push that followed one that did not finish, the product's eBay tab and the products list showed only the old warning, and only the log said why. They now show eBay's reason after it. The warning stays until the product is linked or a push of it finishes.
+
+**Full syncs of large catalogues**
+* FIX: A full sync said it was complete when the first listing it had queued for import finished, and the next hourly sync then cancelled the rest, as Resume Import did, so the listings still waiting were left out until the next full sync. A full sync is now complete only once every listing it queued has been imported. Products you push, relist or link while it runs are no longer moved to the trash by the clean-up that follows it.
+* FIX: Fetch Inventory pressed while a full sync was still reading your eBay listings started it again from page 1, and pressed while the listings it had queued were still importing, it cancelled them. Both are now refused with a notice, and Process Queue runs what is waiting. A scan that has read no page for 30 minutes, or a sync with no progress for that long, can still be started again.
+
+**Pushing to eBay**
+* FIX: Verify showed every eBay fee in dollars, whatever your eBay site. It now shows them in the currency of your Primary eBay Marketplace.
+* FIX: A product with Item Type "All Other" in a Coins & Paper Money category, such as a share certificate, bond or banknote, was pushed with coin item specifics (Certification, Grade, Year, Circulated/Uncirculated). It no longer is. Products with any other Item Type are unchanged.
 
 = 3.27.4 - 2026-10-16 =
 **Photos of deleted products no longer fill the disk**

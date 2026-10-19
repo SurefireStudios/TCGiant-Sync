@@ -540,6 +540,19 @@ class TCGiant_Sync_Importer {
 	}
 
 	/**
+	 * Keep the sync lock fresh, while the sync holding it is still working.
+	 *
+	 * Only a lock that is there: one Emergency Stop has released is not
+	 * taken back by a batch that was still running.
+	 */
+	private static function refresh_lock() {
+		$lock_file = self::get_lock_file_path();
+		if ( file_exists( $lock_file ) ) {
+			@file_put_contents( $lock_file, (string) time() );
+		}
+	}
+
+	/**
 	 * Release the sync lock.
 	 */
 	private static function release_lock() {
@@ -588,6 +601,58 @@ class TCGiant_Sync_Importer {
 				return new WP_Error(
 					'already_running',
 					__( 'A sync is already running.', 'tcgiant-sync' )
+				);
+			}
+		}
+
+		// Forced, as Fetch Inventory and Prune Inventory are, but not over a
+		// sync that is still working. Pressed once the lock looked stale, ten
+		// minutes into a full sync's scan, it started that scan again from
+		// page 1 and cancelled the imports it had queued, so a large
+		// catalogue fetched again every half hour never got past its first
+		// pages; pressed once the scan was done, it cancelled the imports
+		// still waiting all the same. A sync that has recorded nothing for as
+		// long as the hourly sync waits before presuming it dead can still be
+		// started again, and so can one with no import left waiting.
+		//
+		// A scan is judged by the page it last began, scan_page_at, which only
+		// the scan writes. The imports it queued keep last_activity_ts fresh
+		// long after the host has killed the scan itself, and judged by that,
+		// a scan dead for hours could not be started again.
+		if ( $force ) {
+			$current   = self::get_sync_state();
+			$status    = (string) ( $current['status'] ?? '' );
+			$scan_idle = time() - (int) ( $current['scan_page_at'] ?? 0 );
+			$stall     = self::SYNC_STALL_MINUTES * MINUTE_IN_SECONDS;
+			if ( 'scanning' === $status && 'full' === ( $current['sync_mode'] ?? 'full' ) && $scan_idle <= $stall ) {
+				TCGiant_Sync_Logger::log( sprintf(
+					'Full sync not started again: the one running is still scanning (page %d, its last page begun %d seconds ago).',
+					(int) ( $current['current_page'] ?? 0 ),
+					$scan_idle
+				) );
+				return new WP_Error(
+					'scan_running',
+					sprintf(
+						/* translators: 1: the page the scan has reached, 2: minutes */
+						__( 'A full sync is still reading your eBay listings (page %1$d so far), so it was not started again from page 1. Press Process Queue to run what it has waiting. If it shows no progress for %2$d minutes, you can start it again.', 'tcgiant-sync' ),
+						(int) ( $current['current_page'] ?? 0 ),
+						self::SYNC_STALL_MINUTES
+					)
+				);
+			}
+
+			if ( 'importing' === $status && ! self::sync_has_stalled( $current ) && self::item_imports_pending() ) {
+				TCGiant_Sync_Logger::log( sprintf(
+					'Full sync not started again: the last sync is still importing the listings it queued (last progress %d seconds ago), and starting again would cancel them.',
+					(int) self::sync_idle_seconds( $current )
+				) );
+				return new WP_Error(
+					'imports_running',
+					sprintf(
+						/* translators: %d: minutes */
+						__( 'The last sync is still importing the listings it queued, so a new one was not started: that would cancel them. Press Process Queue to run what it has waiting. If it shows no progress for %d minutes, you can start it again.', 'tcgiant-sync' ),
+						self::SYNC_STALL_MINUTES
+					)
 				);
 			}
 		}
@@ -643,6 +708,13 @@ class TCGiant_Sync_Importer {
 			'delta_paused_for'    => '',
 			'delta_paused_code'   => '',
 			'delta_paused_until'  => 0,
+			// Listings seen on the primary eBay site and on others, for the
+			// warning finalize_scan() gives when the marketplace looks wrong.
+			'site_primary_seen'   => 0,
+			'site_other_seen'     => 0,
+			'site_other_sites'    => array(),
+			// The scan's own heartbeat: see the refusal above.
+			'scan_page_at'        => time(),
 		) );
 
 		// Clear active IDs list for pruning orphaned items.
@@ -685,8 +757,17 @@ class TCGiant_Sync_Importer {
 		// visits, or behind a long queue of image downloads, a live sync can
 		// go well past thirty minutes between runs - and tearing it down then
 		// begins its window again from the top, so a large one never finished.
+		//
+		// Nor if it is a full sync whose scan is done and an import of which is
+		// still queued - one eBay's rate limit put off for up to two hours, say.
+		// It records nothing meanwhile, but that import is what completes it,
+		// moving the delta sync's position and queuing the pruner. The delta is
+		// an Action Scheduler job too, so this waits on nothing it would not.
 		if ( in_array( $state['status'], array( 'scanning', 'importing' ), true ) ) {
-			if ( ! self::sync_has_stalled( $state ) || self::delta_run_queued() ) {
+			$imports_waiting = 'importing' === $state['status']
+				&& 'full' === ( $state['sync_mode'] ?? 'full' )
+				&& self::item_imports_pending();
+			if ( ! self::sync_has_stalled( $state ) || self::delta_run_queued() || $imports_waiting ) {
 				TCGiant_Sync_Logger::log( 'Sync already in progress — skipping delta sync request.' );
 				return;
 			}
@@ -704,12 +785,24 @@ class TCGiant_Sync_Importer {
 		}
 
 		// Clear any previous pending sync jobs.
+		//
+		// But not the item imports a full sync queued. Each is a listing eBay's
+		// list gave too little detail for, a new product or an update to one
+		// already here (see process_item_import()), and a delta sync reads
+		// only what changed since its last window: one cancelled here was not
+		// imported until the next full sync. Left queued, an import and this
+		// delta can reach the same listing, and both save it the same way:
+		// save_as_product(), which finds its product by item number, from
+		// eBay's own figures, with its photos handed to the same image batch,
+		// which takes one product at a time under its lease and does not
+		// fetch again photos it already has. Both are Action Scheduler jobs,
+		// run one after the other, so the second finds the product the first
+		// saved, and leaves what eBay said when it read the listing.
 		if ( function_exists( 'as_unschedule_all_actions' ) ) {
 			as_unschedule_all_actions( 'tcgiant_sync_fetch_listings', null, 'tcgiant_sync_group' );
 			as_unschedule_all_actions( 'tcgiant_sync_scan_all_pages', null, 'tcgiant_sync_group' );
 			wp_clear_scheduled_hook( 'tcgiant_sync_scan_resume' );
 			as_unschedule_all_actions( 'tcgiant_sync_fetch_delta_events', null, 'tcgiant_sync_group' );
-			as_unschedule_all_actions( 'tcgiant_sync_process_item_import', null, 'tcgiant_sync_imports' );
 			as_unschedule_all_actions( 'tcgiant_sync_download_images', null, 'tcgiant_sync_images' );
 		}
 
@@ -800,6 +893,9 @@ class TCGiant_Sync_Importer {
 		self::update_sync_state( $update );
 
 		foreach ( $item_ids as $item_id ) {
+			// Asked for by hand, so a listing on another eBay site says why it
+			// is not imported, even if it said so in the last few days.
+			delete_transient( TCGiant_Sync_Sites::SKIP_TRANSIENT . $item_id );
 			as_enqueue_async_action( 'tcgiant_sync_process_item_import', array( 'item_id' => $item_id ), 'tcgiant_sync_imports' );
 		}
 
@@ -1482,6 +1578,8 @@ class TCGiant_Sync_Importer {
 		$errors = 0;
 		$skipped = 0;
 		$fallback_count = 0;
+		$other_site = 0; // Listings on other eBay sites left out - see TCGiant_Sync_Sites.
+		$sites_on   = TCGiant_Sync_Sites::primary_only();
 
 		// The whole window, not this run's slice of it: "40 found" on every run
 		// of a 2,000 item window made it impossible to see how far along it was.
@@ -1574,6 +1672,38 @@ class TCGiant_Sync_Importer {
 			self::$slice_in_flight = true;
 
 			try {
+				// A listing on another eBay site, when the shop imports only its
+				// own (TCGiant_Sync_Sites). First, before any GetItem - so these
+				// cost nothing, which matters to a seller with seven copies of
+				// every listing - and before the licence check, so a shop at the
+				// free limit is not told it reached it by a listing it would never
+				// have imported. One with a product already linked to it goes on
+				// as before: that product keeps syncing, and an ended one is still
+				// settled.
+				//
+				// Every product a row is linked to has its site recorded here,
+				// whichever site it is on, since the category filter below may yet
+				// keep it from being saved: Stock Review finds other sites'
+				// products, and counts those not checked yet, by what is recorded.
+				// A row without a site takes the one eBay gave before, if any.
+				$row_site    = TCGiant_Sync_Sites::site_of( $ebay_item );
+				$row_product = 0;
+				if ( $sites_on && '' === $row_site ) {
+					$row_site = TCGiant_Sync_Sites::remembered_site( $current );
+					if ( '' !== $row_site ) {
+						$ebay_item['Site'] = $row_site;
+					}
+				}
+				TCGiant_Sync_Sites::note( $row_site );
+				if ( $sites_on && '' !== $row_site && '' !== $current ) {
+					$row_product = self::find_live_product_for_item( $current );
+					if ( ! $row_product && TCGiant_Sync_Sites::leaves_out( $row_site ) ) {
+						$other_site++;
+						continue;
+					}
+					TCGiant_Sync_Sites::record_site( $row_product, $row_site );
+				}
+
 				// License check.
 				//
 				// The free limit caps how many products a store may hold, not
@@ -1590,8 +1720,8 @@ class TCGiant_Sync_Importer {
 				// have no product yet, and only until it has said no once, takes
 				// that from thousands of counts a sync down to at most one. Once a
 				// store is over the limit it stays over, because nothing further
-				// is imported.
-				if ( ! self::product_exists_for_item( isset( $ebay_item['ItemID'] ) ? $ebay_item['ItemID'] : '' )
+				// is imported. A product found above is not looked up again.
+				if ( ! $row_product && ! self::product_exists_for_item( isset( $ebay_item['ItemID'] ) ? $ebay_item['ItemID'] : '' )
 					&& ( self::$limit_reported || ! $license->can_import() ) ) {
 					if ( ! self::$limit_reported ) {
 						self::$limit_reported = true;
@@ -1635,6 +1765,9 @@ class TCGiant_Sync_Importer {
 						if ( ! is_wp_error( $full_for_filter ) && isset( $full_for_filter['Item'] ) ) {
 							$ebay_item   = $full_for_filter['Item'];
 							$fallback_count++;
+							if ( $sites_on && '' === $row_site ) {
+								TCGiant_Sync_Sites::remember_site( $item_id, TCGiant_Sync_Sites::site_of( $ebay_item ) );
+							}
 							$primary_cat = $ebay_item['PrimaryCategory']['CategoryID'] ?? '';
 							$store_cat1  = $ebay_item['Storefront']['StoreCategoryID'] ?? '';
 							$store_cat2  = $ebay_item['Storefront']['StoreCategory2ID'] ?? '';
@@ -1717,6 +1850,16 @@ class TCGiant_Sync_Importer {
 				if ( isset( $ebay_item['Variations'] ) && empty( $ebay_item['Variations']['Variation'] ) ) {
 					$needs_fallback = true;
 				}
+				// No site to judge it by, while other sites' listings are being
+				// left out, and nothing on the website from it yet: GetItem always
+				// says. Rows a window kept in brief before 3.27.5 carry no site, and
+				// they lack a title and item specifics anyway, so this costs next to
+				// nothing. What it says is remembered, so a listing is asked about
+				// once, not every time it changes.
+				if ( $sites_on && '' === TCGiant_Sync_Sites::site_of( $ebay_item )
+					&& ! self::product_exists_for_item( $item_id ) ) {
+					$needs_fallback = true;
+				}
 
 				if ( $needs_fallback ) {
 					$fallback_count++;
@@ -1725,6 +1868,9 @@ class TCGiant_Sync_Importer {
 					$full_response = $api->get_item( $item_id );
 					if ( ! is_wp_error( $full_response ) && isset( $full_response['Item'] ) ) {
 						$ebay_item = $full_response['Item'];
+						if ( $sites_on && '' === $row_site ) {
+							TCGiant_Sync_Sites::remember_site( $item_id, TCGiant_Sync_Sites::site_of( $ebay_item ) );
+						}
 						TCGiant_Sync_Logger::log( sprintf( 'Delta fallback: Used GetItem for %s (missing data in events response).', $item_id ) );
 					} else {
 						// eBay, or the way to it, was out of action - which says
@@ -1792,6 +1938,14 @@ class TCGiant_Sync_Importer {
 						$skipped++;
 						continue;
 					}
+				}
+
+				// Judged again on eBay's own answer, when one was asked for above:
+				// a row that arrived without a site now has one.
+				if ( TCGiant_Sync_Sites::leaves_out( TCGiant_Sync_Sites::site_of( $ebay_item ) )
+					&& ! $row_product && ! self::find_live_product_for_item( $item_id ) ) {
+					$other_site++;
+					continue;
 				}
 
 				// Map and save — same flow as process_item_import but without the GetItem call.
@@ -1867,12 +2021,13 @@ class TCGiant_Sync_Importer {
 		// Log summary. "Complete" only when the window is: it was said after
 		// every batch of forty, so a sync two weeks behind read as finished.
 		$filter_label = $skipped > 0 ? sprintf( ', %d skipped (category filter)', $skipped ) : '';
+		$site_label = $other_site > 0 ? sprintf( ', %d left out (on other eBay sites)', $other_site ) : '';
 		$fallback_label = $fallback_count > 0 ? sprintf( ', %d GetItem fallbacks', $fallback_count ) : '';
 		TCGiant_Sync_Logger::log( sprintf(
 			$more || null !== $read_stop
-				? 'Delta batch done: %d imported, %d errors out of %d modified items%s%s.'
-				: 'Delta sync complete! %d imported, %d errors out of %d modified items%s%s.',
-			$processed, $errors, $handled, $filter_label, $fallback_label
+				? 'Delta batch done: %d imported, %d errors out of %d modified items%s%s%s.'
+				: 'Delta sync complete! %d imported, %d errors out of %d modified items%s%s%s.',
+			$processed, $errors, $handled, $filter_label, $site_label, $fallback_label
 		), 'success' );
 
 		// eBay could not be read. Keep the window and the place, stay running
@@ -2296,6 +2451,13 @@ class TCGiant_Sync_Importer {
 		// Marks it as a variation listing, which makes the loop fetch it whole.
 		if ( ! empty( $item['Variations'] ) ) {
 			$row['Variations'] = array( 'Variation' => array() );
+		}
+
+		// The listing's site, so a window carried on from here can still leave
+		// out other sites' listings without asking eBay about each one.
+		$site = TCGiant_Sync_Sites::site_of( $item );
+		if ( '' !== $site ) {
+			$row['Site'] = $site;
 		}
 
 		return $row;
@@ -2769,11 +2931,14 @@ class TCGiant_Sync_Importer {
 		// stranded with no way to finish.
 
 		// Clear any stale scheduled actions.
+		//
+		// Not the item imports the scan has queued: this carries on with them.
+		// Cancelled here, they were gone - including the ones eBay's rate
+		// limit had put off - while the sync went on to say they were pending.
 		if ( function_exists( 'as_unschedule_all_actions' ) ) {
 			as_unschedule_all_actions( 'tcgiant_sync_fetch_listings', null, 'tcgiant_sync_group' );
 			as_unschedule_all_actions( 'tcgiant_sync_scan_all_pages', null, 'tcgiant_sync_group' );
 			wp_clear_scheduled_hook( 'tcgiant_sync_scan_resume' );
-			as_unschedule_all_actions( 'tcgiant_sync_process_item_import', null, 'tcgiant_sync_imports' );
 		}
 
 		$resume_page = max( 1, (int) $state['current_page'] );
@@ -2784,7 +2949,10 @@ class TCGiant_Sync_Importer {
 
 		// If we still have pages to scan, resume scanning.
 		if ( $total_pages === 0 || $resume_page <= $total_pages ) {
-			self::update_sync_state( array( 'status' => 'scanning' ) );
+			self::update_sync_state( array(
+				'status'       => 'scanning',
+				'scan_page_at' => time(),
+			) );
 			TCGiant_Sync_Logger::log( sprintf(
 				'Resuming sync from page %d%s. Progress so far: %d found, %d queued, %d imported.',
 				$resume_page,
@@ -2881,7 +3049,12 @@ class TCGiant_Sync_Importer {
 				'status'              => 'scanning',
 				'current_page'        => $current_page,
 				'rate_limit_retries'  => 0,
+				'scan_page_at'        => time(),
 			) );
+			// Written once, when the sync began, the lock read as stale ten
+			// minutes into a healthy scan, and Fetch Inventory broke it and
+			// started the scan again from page 1.
+			self::refresh_lock();
 
 			$response = $api->get_active_listings( $current_page, 200, $mod_time_from );
 
@@ -3030,6 +3203,18 @@ class TCGiant_Sync_Importer {
 			}
 		}
 
+		// A full sync that read the whole account and found nothing on the
+		// Primary eBay Marketplace, while listings from other sites are being
+		// left out, has almost certainly been given the wrong marketplace - and
+		// is importing nothing new. Said here, where every page has been read.
+		if ( $clean && 'full' === ( $state['sync_mode'] ?? 'full' ) ) {
+			TCGiant_Sync_Sites::after_full_scan(
+				(int) ( $state['site_primary_seen'] ?? 0 ),
+				(int) ( $state['site_other_seen'] ?? 0 ),
+				(array) ( $state['site_other_sites'] ?? array() )
+			);
+		}
+
 		// Release the concurrent execution lock.
 		self::release_lock();
 	}
@@ -3077,6 +3262,13 @@ class TCGiant_Sync_Importer {
 		$inline_processed = 0;
 		$inline_errors = 0;
 
+		// Listings on other eBay sites - see TCGiant_Sync_Sites.
+		$sites_on     = TCGiant_Sync_Sites::primary_only();
+		$other_left   = 0;
+		$primary_seen = 0;
+		$other_seen   = 0;
+		$other_sites  = array();
+
 		$scan_last = '';
 
 		foreach ( $items as $item ) {
@@ -3094,6 +3286,38 @@ class TCGiant_Sync_Importer {
 			TCGiant_Sync_Runtime::context( sprintf( 'eBay item %s (page %d of %s)', $item_id, $page_number, $total_pages > 0 ? (string) $total_pages : 'an unknown number' ) );
 
 			$active_ids_batch[] = $item_id;
+
+			// A listing on another eBay site, when the shop imports only its own.
+			//
+			// After the line above on purpose. The ID is already on the active
+			// list, so the pruner still counts the listing as live and never
+			// trashes a product imported from it before the shop chose this -
+			// those keep syncing until the shop removes them, from Stock Review.
+			// One whose product exists goes on for the same reason.
+			//
+			// Every product a listing here is linked to has its site recorded
+			// now, whichever site it is on: the category filter below may yet
+			// keep it from being saved, and Stock Review finds other sites'
+			// products, and counts those not checked yet, by what is recorded.
+			// Recorded only on the other sites, a product on the shop's own site
+			// outside the filter stayed "not checked yet" for good.
+			$item_site    = TCGiant_Sync_Sites::site_of( $item );
+			$item_product = 0;
+			TCGiant_Sync_Sites::note( $item_site );
+			if ( $sites_on && '' !== $item_site ) {
+				$item_product = self::find_live_product_for_item( $item_id );
+				if ( TCGiant_Sync_Sites::leaves_out( $item_site ) ) {
+					$other_seen++;
+					$other_sites[ $item_site ] = true;
+					if ( ! $item_product ) {
+						$other_left++;
+						continue;
+					}
+				} else {
+					$primary_seen++;
+				}
+				TCGiant_Sync_Sites::record_site( $item_product, $item_site );
+			}
 
 			// Category pre-filter.
 			if ( $is_filtering ) {
@@ -3126,8 +3350,8 @@ class TCGiant_Sync_Importer {
 			// syncing altogether — no stock, no prices, no ended listings
 			// — while the seller carried on trading from figures that were
 			// no longer true. Only listings that would create a new product
-			// are held back now.
-			if ( ! self::product_exists_for_item( isset( $item['ItemID'] ) ? $item['ItemID'] : '' )
+			// are held back now. A product found above is not looked up again.
+			if ( ! $item_product && ! self::product_exists_for_item( isset( $item['ItemID'] ) ? $item['ItemID'] : '' )
 				&& ( self::$limit_reported || ! $license->can_import() ) ) {
 				if ( ! self::$limit_reported ) {
 					self::$limit_reported = true;
@@ -3194,6 +3418,14 @@ class TCGiant_Sync_Importer {
 				}
 			} else {
 				// Queue for GetItem fallback.
+				//
+				// Unless its import is already waiting. Resume Import reads again
+				// the page it stopped on, and leaves the imports the scan had
+				// queued to run, so that page's were queued a second time.
+				if ( function_exists( 'as_next_scheduled_action' )
+					&& false !== as_next_scheduled_action( 'tcgiant_sync_process_item_import', array( 'item_id' => $item_id ), 'tcgiant_sync_imports' ) ) {
+					continue;
+				}
 				$delay = min( $queued_count, 60 );
 				as_schedule_single_action( time() + $delay, 'tcgiant_sync_process_item_import', array( 'item_id' => $item_id ), 'tcgiant_sync_imports' );
 				$queued_count++;
@@ -3224,6 +3456,9 @@ class TCGiant_Sync_Importer {
 			'total_processed' => $new_total_processed,
 			'total_errors'    => $new_total_errors,
 			'last_item_title' => $last_title,
+			'site_primary_seen' => (int) ( $state['site_primary_seen'] ?? 0 ) + $primary_seen,
+			'site_other_seen'   => (int) ( $state['site_other_seen'] ?? 0 ) + $other_seen,
+			'site_other_sites'  => array_values( array_unique( array_merge( (array) ( $state['site_other_sites'] ?? array() ), array_keys( $other_sites ) ) ) ),
 		) );
 
 		// Log summary.
@@ -3231,7 +3466,7 @@ class TCGiant_Sync_Importer {
 			$matched_label = $is_filtering ? sprintf( ', %d matched filter', $inline_processed + $queued_count ) : '';
 			$inline_label = $inline_processed > 0 ? sprintf( ', %d imported inline', $inline_processed ) : '';
 			$queued_label = $queued_count > 0 ? sprintf( ', %d queued for GetItem', $queued_count ) : '';
-			$filter_label = '';
+			$filter_label = $other_left > 0 ? sprintf( ', %d on other eBay sites left out', $other_left ) : '';
 			TCGiant_Sync_Logger::log( sprintf(
 				'Page %d/%d: Scanned %d items%s%s%s%s.',
 				$page_number, $total_pages, count( $items ), $matched_label, $inline_label, $queued_label, $filter_label
@@ -3356,6 +3591,12 @@ class TCGiant_Sync_Importer {
 		if ( ! empty( $ebay_item['ListingDetails']['EndTime'] ) ) {
 			update_post_meta( $existing_id, '_ebay_end_time', $ebay_item['ListingDetails']['EndTime'] );
 		}
+
+		// Its site too, when eBay said. An ended listing is settled here and
+		// never saved again, so this is the only place a product whose listing
+		// ended before 3.27.5 learns where it was listed - and Stock Review's
+		// list of other sites' products is drawn from that.
+		TCGiant_Sync_Sites::record_site( $existing_id, TCGiant_Sync_Sites::site_of( $ebay_item ) );
 
 		// Recorded on the way past even though the listing is over: a seller
 		// rotating unsold stock wants to know how long the last attempt ran.
@@ -3527,6 +3768,7 @@ class TCGiant_Sync_Importer {
 
 		$order_count  = 0;
 		$settle_count = 0;
+		$other_sales  = 0; // Sales of listings on other eBay sites left alone - see below.
 
 		// "Reduce WooCommerce stock on eBay sale?" - for products NOT linked to
 		// a listing. Linked products get a stock check whatever it says.
@@ -3600,6 +3842,23 @@ class TCGiant_Sync_Importer {
 					continue;
 				}
 
+				// A sale of a listing on another eBay site, when the shop imports
+				// only its own (TCGiant_Sync_Sites), is left alone, as the shop
+				// asked. A copy on eBay.de keeps the eBay.com listing's SKUs, so its
+				// sale would otherwise come off whatever on the website has that
+				// SKU: a variation of the eBay.com listing - which the delta sets
+				// from eBay's own figures, where a service keeping the copies in
+				// step has already put the sale - or a product of the shop's own
+				// that has nothing to do with eBay.de at all. The listing's
+				// marketplace decides, never purchaseMarketplaceId: a buyer abroad
+				// who found an eBay.com listing is buying an eBay.com listing. Left
+				// unmarked, like the line above, so going back to all sites still
+				// reduces it.
+				if ( TCGiant_Sync_Sites::leaves_out_marketplace( $line['listingMarketplaceId'] ?? '' ) ) {
+					$other_sales++;
+					continue;
+				}
+
 				// eBay already decremented its own quantity when the order was
 				// placed — suppress the WC → eBay push so we don't echo it back.
 				TCGiant_Sync_Inventory::begin_ebay_origin();
@@ -3621,9 +3880,10 @@ class TCGiant_Sync_Importer {
 		}
 
 		TCGiant_Sync_Logger::log( sprintf(
-			'Order sync complete. Processed %d new line items; %d eBay sales of linked products queued for a stock check.',
+			'Order sync complete. Processed %d new line items; %d eBay sales of linked products queued for a stock check%s.',
 			$order_count,
-			$settle_count
+			$settle_count,
+			$other_sales > 0 ? sprintf( '; %d sales of listings on other eBay sites left alone', $other_sales ) : ''
 		) );
 	}
 
@@ -3763,7 +4023,34 @@ class TCGiant_Sync_Importer {
 	}
 
 	/**
-	 * Check if the sync is complete (all items processed or no jobs remain).
+	 * Whether an item import is still waiting for Action Scheduler to run it.
+	 *
+	 * @return bool
+	 */
+	private static function item_imports_pending() {
+		if ( ! function_exists( 'as_get_scheduled_actions' ) ) {
+			return false;
+		}
+
+		$pending = as_get_scheduled_actions( array(
+			'hook'     => 'tcgiant_sync_process_item_import',
+			'group'    => self::GROUP_IMPORTS,
+			'status'   => ActionScheduler_Store::STATUS_PENDING,
+			'per_page' => 1,
+		) );
+
+		return ! empty( $pending );
+	}
+
+	/**
+	 * Check if the sync is complete: its scan has read every page (it says
+	 * importing), and no item import is still waiting to run.
+	 *
+	 * Not from the counters. total_processed counts the listings the scan
+	 * imported inline as well as the GetItem imports, and total_queued only
+	 * the GetItem imports, so the first import to finish after the scan found
+	 * the count met: the sync said complete with the rest still queued, and
+	 * the next hourly run started a delta sync, which cancelled them.
 	 */
 	private function check_sync_completion() {
 		$state = self::get_sync_state();
@@ -3771,23 +4058,7 @@ class TCGiant_Sync_Importer {
 			return;
 		}
 
-		$completed = $state['total_processed'] + $state['total_errors'];
-
-		// Primary check: all items accounted for.
-		$is_done = ( $completed >= $state['total_queued'] && $state['total_queued'] > 0 );
-
-		// Fallback: if Action Scheduler has no remaining jobs, we're done regardless of counters.
-		if ( ! $is_done && function_exists( 'as_get_scheduled_actions' ) ) {
-			$pending = as_get_scheduled_actions( array(
-				'hook'   => 'tcgiant_sync_process_item_import',
-				'group'  => self::GROUP_IMPORTS,
-				'status' => ActionScheduler_Store::STATUS_PENDING,
-				'per_page' => 1,
-			) );
-			if ( empty( $pending ) ) {
-				$is_done = true;
-			}
-		}
+		$is_done = ! self::item_imports_pending();
 
 		if ( $is_done ) {
 			$mode       = $state['sync_mode'] ?? 'full';
@@ -3912,6 +4183,33 @@ class TCGiant_Sync_Importer {
 			return;
 		}
 
+		// Not a product given its listing since this full sync began. The
+		// pruner runs once the last import the sync queued has run, hours after
+		// the scan on a large catalogue, and the active list holds only what
+		// the scan's pages held: a product pushed, relisted by hand or by
+		// Auto-Relist, or linked to a new listing in the meantime - or during
+		// the scan, after its page was read - has an item number that list
+		// never saw, and was trashed with its new listing live.
+		//
+		// Kept by when it was listed, _ebay_start_time against the sync's
+		// start in UTC (full_started_at), or pushed, _ebay_export_last_pushed
+		// against started_at - both the site's local time, as WordPress writes
+		// them - from an hour before, for the hour a clock going back repeats.
+		// A product with neither date is judged as before.
+		$listed_since = strtotime( (string) ( $state['full_started_at'] ?? '' ) );
+		$local_start  = date_create( (string) ( $state['started_at'] ?? '' ), new DateTimeZone( 'UTC' ) );
+		$pushed_since = ( '' !== (string) ( $state['started_at'] ?? '' ) && $local_start ) ? $local_start->modify( '-1 hour' )->format( 'Y-m-d H:i:s' ) : '';
+		$kept_new     = 0;
+		foreach ( $prune_rows as $key => $row ) {
+			$listed = strtotime( (string) get_post_meta( (int) $row->post_id, '_ebay_start_time', true ) );
+			$pushed = (string) get_post_meta( (int) $row->post_id, '_ebay_export_last_pushed', true );
+			if ( ( false !== $listed_since && false !== $listed && $listed >= $listed_since )
+				|| ( '' !== $pushed_since && '' !== $pushed && $pushed >= $pushed_since ) ) {
+				unset( $prune_rows[ $key ] );
+				$kept_new++;
+			}
+		}
+
 		$trashed_count   = 0;
 		$preserved_count = 0;
 
@@ -3936,6 +4234,10 @@ class TCGiant_Sync_Importer {
 						TCGiant_Sync_Inventory::end_ebay_origin();
 					}
 					delete_post_meta( $product_id, '_ebay_item_id' );
+					// Its listing's site goes with the listing. Left behind, a product
+					// kept from another site's copy and later linked to the shop's
+					// own listing would still read as from that site.
+					delete_post_meta( $product_id, '_ebay_site' );
 					$preserved_count++;
 				} else {
 					wp_trash_post( $product_id );
@@ -3947,8 +4249,11 @@ class TCGiant_Sync_Importer {
 		}
 
 		TCGiant_Sync_Logger::log( sprintf(
-			'Inventory Pruning: Trashed %d products, preserved %d products (set to out of stock), out of %d eBay-linked.',
-			$trashed_count, $preserved_count, $total_linked
+			'Inventory Pruning: Trashed %d products, preserved %d products (set to out of stock), out of %d eBay-linked.%s',
+			$trashed_count,
+			$preserved_count,
+			$total_linked,
+			$kept_new > 0 ? sprintf( ' Kept %d listed or pushed since the full sync began, which its scan could not have seen.', $kept_new ) : ''
 		), 'success' );
 
 		delete_option( self::ACTIVE_IDS_OPTION );
