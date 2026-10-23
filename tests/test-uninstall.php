@@ -236,6 +236,26 @@ check( '  the rest of the clean slate goes on all the same', array( dropped_tabl
 preg_match_all( "/const \w+_OPTION = '(tcgiant_[a-z_]+)'/", file_get_contents( __DIR__ . '/../includes/class-tcgiant-sync-photo-cleanup.php' ), $tcg_opts );
 check( 'answered Yes: every option of the photo cleanup is deleted', array( count( $tcg_opts[1] ) >= 8, array_values( array_diff( $tcg_opts[1], $DELETED ) ) ), array( true, array() ) );
 
+// The same for the removal of old large photo copies (3.27.7): its options,
+// read from the class, the records PHP keeps of its runs' and its check's
+// deaths, its holds, and the note on each photo it was working on - taken
+// off, leaving the photo as it is - while its transients fall under the
+// plugin's transient sweep.
+$tcg_trim = file_get_contents( __DIR__ . '/../includes/class-tcgiant-sync-size-trim.php' );
+preg_match_all( "/const \w+_OPTION = '(tcgiant_[a-z_]+)'/", $tcg_trim, $tcg_opts );
+preg_match( "/const JOB = '([^']+)'/", $tcg_trim, $tcg_job );
+preg_match( "/const CHECK_JOB = '([^']+)'/", $tcg_trim, $tcg_check_job );
+$tcg_crash = function ( $job ) {
+	return 'tcgiant_sync_last_crash_' . trim( preg_replace( '/[^a-z0-9]+/', '_', strtolower( $job ) ), '_' );
+};
+check( 'answered Yes: every option of the large-copy removal is deleted', array( count( $tcg_opts[1] ), array_values( array_diff( $tcg_opts[1], $DELETED ) ) ), array( 3, array() ) );
+check( '  and the records of its deaths', array_values( array_diff( array( $tcg_crash( $tcg_job[1] ), $tcg_crash( $tcg_check_job[1] ) ), $DELETED ) ), array() );
+preg_match( "/const LOCK_PREFIX = '([a-z_]+)'/", $tcg_trim, $tcg_lock );
+check( '  and its holds', count( array_filter( $QUERIES, function ( $q ) use ( $tcg_lock ) { return false !== strpos( $q, "option_name LIKE '" . $tcg_lock[1] . "%'" ); } ) ), 1 );
+preg_match( "/const PENDING_KEY = '([a-z_]+)'/", $tcg_trim, $tcg_note );
+check( '  and the note on each photo it was working on', count( array_filter( $QUERIES, function ( $q ) use ( $tcg_note ) { return false !== strpos( $q, 'DELETE FROM wp_postmeta' ) && false !== strpos( $q, "meta_key = '" . $tcg_note[1] . "'" ); } ) ), 1 );
+check( '  and its schedule', in_array( 'tcgiant_sync_size_trim', $CLEARED, true ), true );
+
 // The same for the site filter's three options (3.27.5), written out by hand
 // in uninstall.php: all three could go from its list and nothing failed. Its
 // transients have no list of their own - they go because their names fall

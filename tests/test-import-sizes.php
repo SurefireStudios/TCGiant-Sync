@@ -12,7 +12,10 @@
  * photo.
  *
  * 3.27.4 has WordPress skip those two for the photos the image batch
- * downloads, and only while it downloads each one. This loads the real
+ * downloads, while it downloads each one; 3.27.7 keeps them off the plugin's
+ * photos whenever their sizes are made again - a tool that regenerates
+ * thumbnails brought them back - and never touches the shop's own uploads.
+ * This loads the real
  * TCGiant_Sync_Image_Localizer with WordPress stubbed, plays
  * media_sideload_image() making sizes the way wp_create_image_subsizes() does
  * - the big-image limit, then intermediate_image_sizes_advanced with the
@@ -67,6 +70,8 @@ function __( $text ) { return $text; }
 function get_option( $name, $default = false ) { return array_key_exists( $name, $GLOBALS['OPTIONS'] ) ? $GLOBALS['OPTIONS'][ $name ] : $default; }
 function update_option( $name, $value, $autoload = null ) { $GLOBALS['OPTIONS'][ $name ] = $value; return true; }
 function get_post_meta( $id, $key = '', $single = false ) { return $GLOBALS['META'][ $id ][ $key ] ?? ''; }
+/** The photo's type, as its row keeps it: here, what a test says, else a JPEG. */
+function get_post_mime_type( $id = null ) { return $GLOBALS['META'][ (int) $id ]['_mime'] ?? 'image/jpeg'; }
 function update_post_meta( $id, $key, $value ) { $GLOBALS['META'][ $id ][ $key ] = $value; return true; }
 function delete_post_meta( $id, $key ) { unset( $GLOBALS['META'][ $id ][ $key ] ); return true; }
 function has_post_thumbnail( $id ) { return ! empty( $GLOBALS['META'][ $id ]['_thumbnail_id'] ); }
@@ -87,6 +92,12 @@ function wp_clear_scheduled_hook( $hook ) { return 0; }
 
 // Hooks as WordPress keeps them: by priority, then in the order added.
 function add_filter( $hook, $callback, $priority = 10, $accepted_args = 1 ) {
+	// The same callback at the same priority is kept once, as WordPress keys it.
+	foreach ( $GLOBALS['HOOKS'][ $hook ][ $priority ] ?? array() as $h ) {
+		if ( $h[0] === $callback ) {
+			return true;
+		}
+	}
 	$GLOBALS['HOOKS'][ $hook ][ $priority ][] = array( $callback, $accepted_args );
 	return true;
 }
@@ -103,12 +114,32 @@ function remove_filter( $hook, $callback, $priority = 10 ) {
 function apply_filters( $hook, $value, ...$more ) {
 	$by_priority = $GLOBALS['HOOKS'][ $hook ] ?? array();
 	ksort( $by_priority );
-	foreach ( $by_priority as $callbacks ) {
-		foreach ( $callbacks as $h ) {
-			$value = call_user_func_array( $h[0], array_slice( array_merge( array( $value ), $more ), 0, $h[1] ) );
+	$GLOBALS['RUNNING'][] = $hook;
+	try {
+		foreach ( $by_priority as $callbacks ) {
+			foreach ( $callbacks as $h ) {
+				$value = call_user_func_array( $h[0], array_slice( array_merge( array( $value ), $more ), 0, $h[1] ) );
+			}
 		}
+	} finally {
+		array_pop( $GLOBALS['RUNNING'] );
 	}
 	return $value;
+}
+/** The filter being run, as WordPress keeps it. */
+function current_filter() {
+	return empty( $GLOBALS['RUNNING'] ) ? false : end( $GLOBALS['RUNNING'] );
+}
+/** The priority a callback is on a hook at, or false: has_filter(). */
+function has_filter( $hook, $callback = false ) {
+	foreach ( $GLOBALS['HOOKS'][ $hook ] ?? array() as $priority => $callbacks ) {
+		foreach ( $callbacks as $h ) {
+			if ( $h[0] === $callback ) {
+				return $priority;
+			}
+		}
+	}
+	return false;
 }
 function filters_on( $hook ) {
 	$n = 0;
@@ -117,6 +148,18 @@ function filters_on( $hook ) {
 	}
 	return $n;
 }
+/** How many times a callback is on a hook. */
+function hooked( $hook, $callback ) {
+	$n = 0;
+	foreach ( $GLOBALS['HOOKS'][ $hook ] ?? array() as $callbacks ) {
+		foreach ( $callbacks as $h ) {
+			$n += $h[0] === $callback ? 1 : 0;
+		}
+	}
+	return $n;
+}
+$DOWNLOAD_HOOK = array( 'TCGiant_Sync_Image_Localizer', 'import_image_sizes' );
+$GUARD         = array( 'TCGiant_Sync_Image_Localizer', 'guard_large_sizes' );
 
 class TCGiant_Sync_Logger {
 	public static function log( $message, $level = 'info' ) { $GLOBALS['LOG'][] = "[$level] $message"; }
@@ -265,9 +308,12 @@ function fresh_site() {
 	$GLOBALS['SEEN']    = array();
 	$GLOBALS['PHOTO']   = array( 1600, 1200 );
 	$GLOBALS['PHOTO_EXT'] = 'jpg';
-	foreach ( array( 'intermediate_image_sizes_advanced', 'tcgiant_sync_import_image_sizes', 'big_image_size_threshold', 'max_srcset_image_width' ) as $hook ) {
+	foreach ( array( 'intermediate_image_sizes_advanced', 'wp_get_missing_image_subsizes', 'tcgiant_sync_import_image_sizes', 'big_image_size_threshold', 'max_srcset_image_width' ) as $hook ) {
 		unset( $GLOBALS['HOOKS'][ $hook ] );
 	}
+	// The localizer's own, as its constructor registers them on every request.
+	add_filter( 'intermediate_image_sizes_advanced', $GLOBALS['GUARD'], 99, 3 );
+	add_filter( 'wp_get_missing_image_subsizes', $GLOBALS['GUARD'], 99, 3 );
 }
 
 function product( $id, array $photos ) {
@@ -353,9 +399,9 @@ check( '  now: the photo itself is still the largest on offer', srcset_widths( $
 
 check( 'smaller photos are as they were', array( 'lost' => array_values( array_diff( sizes_of( shop_upload( 1200, 900 ) ), $KEPT ) ) ), array( 'lost' => array() ) );
 
-echo "\nONLY WHILE IT DOWNLOADS\n" . str_repeat( '=', 122 ) . "\n";
+echo "\nTHE DOWNLOAD'S OWN HOOK, ONLY WHILE IT DOWNLOADS\n" . str_repeat( '=', 122 ) . "\n";
 
-check( 'after the download, nothing of ours is left on the hook', filters_on( 'intermediate_image_sizes_advanced' ), 0 );
+check( 'after the download, its own hook is gone; the lasting guard stays', array( hooked( 'intermediate_image_sizes_advanced', $DOWNLOAD_HOOK ), hooked( 'intermediate_image_sizes_advanced', $GUARD ) ), array( 0, 1 ) );
 $own = shop_upload( 1600, 1200 );
 check( '  so a photo the shop uploads gets every size, as before', sizes_of( $own ), $EVERY );
 
@@ -363,7 +409,7 @@ fresh_site();
 product( 111, array( photo( 11 ) ) );
 $PHOTO = new WP_Error( 'http_request_failed', 'cURL error 28: Operation timed out after 30000 milliseconds with 0 bytes received' );
 localize( 111 );
-check( 'a download that fails: gone from the hook too', filters_on( 'intermediate_image_sizes_advanced' ), 0 );
+check( 'a download that fails: its hook gone too', hooked( 'intermediate_image_sizes_advanced', $DOWNLOAD_HOOK ), 0 );
 
 fresh_site();
 product( 112, array( photo( 12 ) ) );
@@ -376,7 +422,7 @@ try {
 	$escaped = $e->getMessage();
 }
 check( 'a download that throws: the throw still reaches the batch', $escaped, 'Call to undefined function imagecreatefromwebp()' );
-check( '  and nothing of ours is left on the hook', filters_on( 'intermediate_image_sizes_advanced' ), 0 );
+check( '  and its hook is not left on', hooked( 'intermediate_image_sizes_advanced', $DOWNLOAD_HOOK ), 0 );
 check( '  nor the photo it was downloading', downloading(), '' );
 check( '  the next upload gets every size', sizes_of( shop_upload( 1600, 1200 ) ), $EVERY );
 
@@ -477,7 +523,99 @@ product( 134, array( photo( 34 ) ) );
 localize( 134 );
 check( 'another plugin\'s size is still made', in_array( 'theme-hero', main_sizes( 134 ), true ), true );
 check( '  one that puts the 1,536 px size back is overruled', in_array( '1536x1536', main_sizes( 134 ), true ), false );
-check( '  and its filter stays where it was', filters_on( 'intermediate_image_sizes_advanced' ), 1 );
+check( '  and its filter stays where it was, beside the lasting guard', array( filters_on( 'intermediate_image_sizes_advanced' ), hooked( 'intermediate_image_sizes_advanced', $GUARD ) ), array( 2, 1 ) );
+
+echo "\nA TOOL THAT REGENERATES THUMBNAILS LATER (3.27.7)\n" . str_repeat( '=', 122 ) . "\n";
+
+/**
+ * wp_get_missing_image_subsizes(): the registered sizes smaller than the
+ * photo that its record does not have, through the filter, with its record
+ * and ID - what wp_update_image_subsizes() and WP-CLI's --only-missing make.
+ */
+function missing_sizes( $attachment_id ) {
+	$meta     = $GLOBALS['META'][ $attachment_id ]['_wp_attachment_metadata'];
+	$possible = array();
+	foreach ( registered_sizes() as $name => $size ) {
+		if ( size_of( $meta['width'], $meta['height'], $size ) ) {
+			$possible[ $name ] = $size;
+		}
+	}
+	$missing = array_diff_key( $possible, $meta['sizes'] );
+	return array_keys( apply_filters( 'wp_get_missing_image_subsizes', $missing, $meta, $attachment_id ) );
+}
+
+/** A photo downloaded before 3.27.4: the plugin's mark, and every size. */
+function old_download( $w, $h ) {
+	$id = shop_upload( $w, $h );
+	update_post_meta( $id, '_tcgiant_source_url', photo( $id ) );
+	return $id;
+}
+
+fresh_site();
+$old = old_download( 1600, 1200 );
+check( 'a photo downloaded before 3.27.4 has the copy', in_array( '1536x1536', sizes_of( $old ), true ), true );
+// Regenerate Thumbnails, or "wp media regenerate": every size made again
+// from the file, through intermediate_image_sizes_advanced.
+$GLOBALS['META'][ $old ]['_wp_attachment_metadata'] = make_sizes( $old, 1600, 1200 );
+check( '  regenerated: every size but the copy', sizes_of( $old ), $KEPT );
+// --only-missing, or an optimiser filling in what is missing.
+check( '  and nothing missing brings it back', missing_sizes( $old ), array() );
+
+fresh_site();
+$theirs = shop_upload( 1600, 1200 );
+$GLOBALS['META'][ $theirs ]['_wp_attachment_metadata'] = make_sizes( $theirs, 1600, 1200 );
+check( 'the shop\'s own upload, regenerated: every size, as WordPress makes them', sizes_of( $theirs ), $EVERY );
+unset( $GLOBALS['META'][ $theirs ]['_wp_attachment_metadata']['sizes']['1536x1536'] );
+check( '  and its missing copy is made again', missing_sizes( $theirs ), array( '1536x1536' ) );
+
+fresh_site();
+$trimmed = old_download( 1600, 1200 );
+unset( $GLOBALS['META'][ $trimmed ]['_wp_attachment_metadata']['sizes']['1536x1536'] );
+check( 'a downloaded photo whose copy Image Cleanup took off: not made again', missing_sizes( $trimmed ), array() );
+
+foreach ( array(
+	'a downloaded photo over 2,048 px keeps both when regenerated' => array( array( 3000, 2000 ), 'jpg', array( '1536x1536', '2048x2048' ) ),
+	'a downloaded GIF keeps its copy when regenerated'             => array( array( 1600, 1200 ), 'gif', array( '1536x1536' ) ),
+) as $label => $case ) {
+	fresh_site();
+	$PHOTO_EXT = $case[1];
+	$big       = old_download( $case[0][0], $case[0][1] );
+	$GLOBALS['META'][ $big ]['_wp_attachment_metadata'] = make_sizes( $big, $case[0][0], $case[0][1] );
+	check( $label, array_values( array_intersect( sizes_of( $big ), array( '1536x1536', '2048x2048' ) ) ), $case[2] );
+}
+$PHOTO_EXT = 'jpg';
+
+// A GIF saved under a .jpg name: its type, not its name, says what it is - as
+// the removal of the old copies judges it.
+fresh_site();
+$gj = old_download( 1600, 1200 );
+$GLOBALS['META'][ $gj ]['_mime'] = 'image/gif';
+$GLOBALS['META'][ $gj ]['_wp_attachment_metadata'] = make_sizes( $gj, 1600, 1200 );
+check( 'a downloaded GIF named .jpg keeps its copy when regenerated, as the removal keeps it', in_array( '1536x1536', sizes_of( $gj ), true ), true );
+
+// The shop's filter is the way back, for a regenerate too.
+fresh_site();
+$calls = 0;
+add_filter( 'tcgiant_sync_import_image_sizes', function ( $sizes, $all ) use ( &$calls ) {
+	$calls++;
+	return $all;
+}, 10, 3 );
+$back = old_download( 1600, 1200 );
+$calls = 0;
+$GLOBALS['META'][ $back ]['_wp_attachment_metadata'] = make_sizes( $back, 1600, 1200 );
+check( 'tcgiant_sync_import_image_sizes returning $all: a regenerate makes the copy again', in_array( '1536x1536', sizes_of( $back ), true ), true );
+check( '  asked once', $calls, 1 );
+
+// Once, not twice, while the download's own hook is on as well.
+$calls = 0;
+product( 151, array( photo( 51 ) ) );
+localize( 151 );
+check( 'during a download, the shop\'s filter is asked once a photo', $calls, 1 );
+
+fresh_site();
+$guard_alone = TCGiant_Sync_Image_Localizer::guard_large_sizes( registered_sizes(), array( 'width' => 1600, 'height' => 1200, 'file' => '2026/10/x.jpg' ), 0 );
+check( 'no photo named (WordPress before 5.3): left as it is', array_keys( $guard_alone ), array_keys( registered_sizes() ) );
+check( 'anything but a list is handed back untouched', TCGiant_Sync_Image_Localizer::guard_large_sizes( 'x', array(), $old ), 'x' );
 
 echo "\nIN THE SOURCE\n" . str_repeat( '=', 122 ) . "\n";
 
@@ -487,12 +625,14 @@ foreach ( glob( $ROOT . '/includes/*.php' ) as $f ) {
 }
 $source .= implode( '', array_map( 'file_get_contents', glob( $ROOT . '/admin/*.php' ) ) );
 check( 'the plugin never sets the big-image limit', preg_match( "/add_filter\(\s*'big_image_size_threshold'/", $source ), 0 );
-check( 'intermediate_image_sizes_advanced is hooked in one place, and unhooked there', array(
+check( 'intermediate_image_sizes_advanced: hooked for a download and for the lasting guard; the download\'s unhooked', array(
 	preg_match_all( "/add_filter\(\s*'intermediate_image_sizes_advanced'/", $source ),
+	preg_match_all( "/add_filter\(\s*'intermediate_image_sizes_advanced', array\( __CLASS__, 'guard_large_sizes' \), 99, 3 \)/", $source ),
 	preg_match_all( "/remove_filter\(\s*'intermediate_image_sizes_advanced'/", $source ),
-), array( 1, 1 ) );
+), array( 2, 1, 1 ) );
 $localizer = file_get_contents( $ROOT . '/includes/class-tcgiant-sync-image-localizer.php' );
 check( '  the unhooking is in a finally', 1 === preg_match( "/finally\s*\{\s*remove_filter\(\s*'intermediate_image_sizes_advanced'/", $localizer ), true );
+check( '  the guard is on both filters from the constructor, on every request', 1 === preg_match( "/function __construct\(\) \{.*add_filter\( 'intermediate_image_sizes_advanced', array\( __CLASS__, 'guard_large_sizes' \), 99, 3 \);\s*add_filter\( 'wp_get_missing_image_subsizes', array\( __CLASS__, 'guard_large_sizes' \), 99, 3 \);.*public static function maybe_rearm/s", $localizer ), true );
 
 printf( "\n  %d passed, %d failed\n\n", $pass, $fail );
 exit( $fail > 0 ? 1 : 0 );

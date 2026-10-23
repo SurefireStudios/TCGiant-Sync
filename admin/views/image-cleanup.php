@@ -20,6 +20,10 @@
  * take, from a check that judges each photo exactly as the removal will, and
  * nothing is deleted until a second button is pressed.
  *
+ * Below that, since 3.27.7: the 1,536 px copies WordPress made of downloaded
+ * photos before 3.27.4, counted and removed the same way - a check that
+ * deletes nothing, then a button. See TCGiant_Sync_Size_Trim.
+ *
  * @package TCGiant_Sync
  * @license GPL-2.0-or-later
  * @since   3.10.0
@@ -357,6 +361,337 @@ $base_url  = admin_url( 'admin.php?page=tcgiant-image-cleanup' );
 			});
 		}
 		if (box.data('state') === 'approved' || box.data('state') === 'queued') { poll(); }
+	})(jQuery);
+	</script>
+
+	<?php
+	// The 1,536 px copies WordPress made before 3.27.4. See TCGiant_Sync_Size_Trim.
+	$tc_trim    = TCGiant_Sync_Size_Trim::status();
+	$tc_tcheck  = $tc_trim['check'];
+	$tc_trun    = $tc_trim['run'];
+	$tc_tstate  = $tc_tcheck['status'];
+	$tc_rstate  = $tc_trun['status'];
+	$tc_twhen   = $tc_tcheck['finished_at'] ? wp_date( $tc_format, $tc_tcheck['finished_at'] ) : '';
+	$tc_busy    = in_array( $tc_rstate, array( 'running', 'waiting' ), true );
+	$tc_caches  = $tc_trim['caches'];
+	?>
+
+	<div class="notice notice-info tc-size-trim" id="tc-size-trim" style="margin-top:16px;padding:12px 14px;"
+		data-check-id="<?php echo esc_attr( $tc_tcheck['id'] ); ?>"
+		data-photos="<?php echo esc_attr( $tc_tcheck['photos'] ); ?>"
+		data-state="<?php echo esc_attr( $tc_tstate ); ?>"
+		data-run="<?php echo esc_attr( $tc_rstate ); ?>">
+
+		<h2 style="margin:0 0 8px;font-size:15px;"><?php esc_html_e( 'Old 1,536 px copies of downloaded photos', 'tcgiant-sync' ); ?></h2>
+
+		<p>
+			<?php esc_html_e( 'Until version 3.27.4, WordPress made a 1,536 px copy of every photo TCGiant downloaded at eBay\'s Original size (1,600 px): the same photo, 4% smaller, taking about a quarter of the space each such photo takes on your server. Without it your shoppers see the same photo: a browser that would have picked it, on a high-DPI phone say, picks the photo itself instead. Photos downloaded since 3.27.4 do not have it. This removes it from the photos downloaded before.', 'tcgiant-sync' ); ?>
+		</p>
+		<p>
+			<?php esc_html_e( 'Only that copy goes, and only from photos TCGiant downloaded: each photo itself and all its other sizes stay, and so does a copy another Media Library entry uses. Your own uploads are never touched. A GIF, a photo larger than 2,048 px and a photo whose files are not on this server keep their copies. Tools that regenerate thumbnails no longer make the copy again for the photos TCGiant downloaded.', 'tcgiant-sync' ); ?>
+		</p>
+
+		<?php if ( ! empty( $tc_trim['offloaders'] ) ) : ?>
+
+			<p><strong><?php echo esc_html( TCGiant_Sync_Size_Trim::offloaded_message( $tc_trim['offloaders'] ) ); ?></strong></p>
+			<?php if ( $tc_busy ) : ?>
+				<p><?php esc_html_e( 'The removal you started is waiting, and carries on by itself, from where it stopped, within an hour of the offload plugin being switched off.', 'tcgiant-sync' ); ?></p>
+			<?php endif; ?>
+
+		<?php else : ?>
+
+			<div class="tc-trim-result">
+			<?php if ( 'running' === $tc_rstate ) : ?>
+
+				<p class="tc-trim-progress-text">
+					<?php
+					printf(
+						/* translators: 1: number of photos, 2: percentage */
+						esc_html__( 'Removing in the background: the copy has been taken off the records of %1$s photos so far (%2$s%% of the way through). This carries on by itself; you can leave this page.', 'tcgiant-sync' ),
+						esc_html( number_format_i18n( $tc_trun['photos'] ) ),
+						esc_html( number_format_i18n( $tc_trun['percent'] ) )
+					);
+					?>
+				</p>
+
+			<?php elseif ( 'waiting' === $tc_rstate ) : ?>
+
+				<p class="tc-trim-progress-text">
+					<?php
+					printf(
+						/* translators: 1: number of photos, 2: number of files, 3: size such as "21.4 GB", 4: date and time */
+						esc_html__( 'The copy is off the records of %1$s photos, so your pages no longer offer it. Their %2$s files, about %3$s, are deleted from %4$s.', 'tcgiant-sync' ),
+						esc_html( number_format_i18n( $tc_trun['photos'] ) ),
+						esc_html( number_format_i18n( $tc_trun['files_waiting'] ) ),
+						esc_html( $tc_trun['size_waiting'] ),
+						esc_html( $tc_trun['files_due'] ? wp_date( $tc_format, $tc_trun['files_due'] ) : '' )
+					);
+					if ( $tc_trun['deleted'] > 0 ) {
+						echo ' ';
+						printf(
+							/* translators: 1: number of files, 2: size such as "3.1 GB" */
+							esc_html__( '%1$s deleted so far, about %2$s freed.', 'tcgiant-sync' ),
+							esc_html( number_format_i18n( $tc_trun['deleted'] ) ),
+							esc_html( $tc_trun['freed'] )
+						);
+					}
+					?>
+				</p>
+
+			<?php elseif ( 'done' === $tc_rstate ) : ?>
+
+				<p>
+					<strong>
+					<?php
+					printf(
+						/* translators: 1: date and time, 2: number of files, 3: number of photos, 4: size such as "21.4 GB" */
+						esc_html__( 'Finished %1$s: %2$s old copies deleted from %3$s photos, about %4$s freed on this server.', 'tcgiant-sync' ),
+						esc_html( $tc_trun['finished_at'] ? wp_date( $tc_format, $tc_trun['finished_at'] ) : '' ),
+						esc_html( number_format_i18n( $tc_trun['deleted'] ) ),
+						esc_html( number_format_i18n( $tc_trun['photos'] ) ),
+						esc_html( $tc_trun['freed'] )
+					);
+					?>
+					</strong>
+				</p>
+				<?php if ( $tc_trun['left_files'] > 0 || $tc_trun['given_up'] > 0 ) : ?>
+					<p><?php esc_html_e( 'Some copies could not be removed and were left where they are; the activity log names each one.', 'tcgiant-sync' ); ?></p>
+				<?php endif; ?>
+
+			<?php endif; ?>
+
+			<?php if ( ! $tc_busy ) : ?>
+				<?php if ( '' === $tc_tstate || ( 'done' === $tc_rstate && $tc_tcheck['id'] === $tc_trun['check'] ) ) : ?>
+
+					<p><?php esc_html_e( 'Check how many photos still have the copy and how much space it takes. Nothing is deleted by checking.', 'tcgiant-sync' ); ?></p>
+
+				<?php elseif ( 'scanning' === $tc_tstate ) : ?>
+
+					<p><?php esc_html_e( 'A check was started and has not finished.', 'tcgiant-sync' ); ?></p>
+
+				<?php elseif ( 'found' === $tc_tstate && $tc_tcheck['photos'] > 0 ) : ?>
+
+					<p>
+						<strong>
+						<?php
+						printf(
+							/* translators: 1: number of photos, 2: number of files, 3: size such as "21.4 GB" */
+							esc_html( _n(
+								'%1$s photo still has the old 1,536 px copy: %2$s file, about %3$s on this server.',
+								'%1$s photos still have the old 1,536 px copy: %2$s files, about %3$s on this server.',
+								$tc_tcheck['photos'],
+								'tcgiant-sync'
+							) ),
+							esc_html( number_format_i18n( $tc_tcheck['photos'] ) ),
+							esc_html( number_format_i18n( $tc_tcheck['files'] ) ),
+							esc_html( $tc_tcheck['size'] )
+						);
+						?>
+						</strong>
+					</p>
+					<?php if ( $tc_tcheck['not_here'] > 0 ) : ?>
+						<p>
+							<?php
+							printf(
+								/* translators: %s: number of photos */
+								esc_html__( '%s more are left as they are, because their files are not on this server - an offload plugin may have moved them.', 'tcgiant-sync' ),
+								esc_html( number_format_i18n( $tc_tcheck['not_here'] ) )
+							);
+							?>
+						</p>
+					<?php endif; ?>
+					<?php if ( $tc_tcheck['shared'] > 0 ) : ?>
+						<p>
+							<?php
+							printf(
+								/* translators: %s: number of files */
+								esc_html__( '%s more copies are shared with another Media Library entry, and not counted here: each is deleted only once nothing else uses it.', 'tcgiant-sync' ),
+								esc_html( number_format_i18n( $tc_tcheck['shared'] ) )
+							);
+							?>
+						</p>
+					<?php endif; ?>
+					<p style="color:#555;">
+						<?php
+						/* translators: %s: date and time of the check */
+						printf( esc_html__( 'Checked %s.', 'tcgiant-sync' ), esc_html( $tc_twhen ) );
+						?>
+					</p>
+
+				<?php elseif ( 'found' === $tc_tstate ) : ?>
+
+					<p>
+						<strong><?php esc_html_e( 'No photo has the old copy.', 'tcgiant-sync' ); ?></strong>
+						<?php
+						/* translators: %s: date and time of the check */
+						printf( esc_html__( 'Checked %s.', 'tcgiant-sync' ), esc_html( $tc_twhen ) );
+						?>
+					</p>
+
+				<?php endif; ?>
+			<?php endif; ?>
+			</div>
+
+			<div class="tc-trim-bar" style="display:none;background:#f0f0f0;border-radius:4px;height:14px;margin:6px 0 10px;max-width:520px;">
+				<div style="background:#2271b1;height:100%;border-radius:4px;transition:width .3s;width:0;"></div>
+			</div>
+			<p class="tc-trim-status" style="color:#555;"></p>
+
+			<?php if ( $tc_trim['paused_until'] > 0 && $tc_busy ) : ?>
+				<p>
+					<?php
+					printf(
+						/* translators: %s: date and time */
+						esc_html__( 'Paused until %s: a run was stopped part way, and a run that stops takes the eBay sync with it. It carries on by itself, from where it stopped; the activity log says more.', 'tcgiant-sync' ),
+						esc_html( wp_date( $tc_format, $tc_trim['paused_until'] ) )
+					);
+					?>
+				</p>
+			<?php endif; ?>
+
+			<?php if ( $tc_busy ) : ?>
+				<p style="color:#555;font-size:12px;max-width:760px;">
+					<?php
+					esc_html_e( 'When every record is done, TCGiant purges the page cache of LiteSpeed Cache, WP Rocket, W3 Total Cache, WP Super Cache, Breeze or WP Fastest Cache, if one is active. The files are deleted at least a day after the records, and as long as LiteSpeed Cache or WP Rocket keeps pages, up to 8 days, so pages saved before still show the photo. If your site is behind a CDN or another cache that keeps whole pages, such as Cloudflare, purge it once the records are done and before the files go.', 'tcgiant-sync' );
+					if ( $tc_trun['purged'] ) {
+						echo ' ';
+						printf(
+							/* translators: %s: names of cache plugins, e.g. "LiteSpeed Cache" */
+							esc_html__( 'Purged: %s.', 'tcgiant-sync' ),
+							esc_html( implode( ', ', $tc_trun['purged'] ) )
+						);
+					} elseif ( $tc_caches ) {
+						echo ' ';
+						printf(
+							/* translators: %s: names of cache plugins, e.g. "LiteSpeed Cache" */
+							esc_html__( 'This site uses %s.', 'tcgiant-sync' ),
+							esc_html( implode( ', ', $tc_caches ) )
+						);
+					}
+					if ( $tc_trun['unpurged'] ) {
+						echo ' ';
+						printf(
+							/* translators: %s: names of cache plugins, e.g. "Cloudflare" */
+							esc_html__( '%s cannot be purged by TCGiant: purge it by hand before the files go.', 'tcgiant-sync' ),
+							esc_html( implode( ', ', $tc_trun['unpurged'] ) )
+						);
+					}
+					?>
+				</p>
+			<?php endif; ?>
+
+			<div class="tc-trim-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+				<?php if ( ! $tc_busy && 'found' === $tc_tstate && $tc_tcheck['photos'] > 0 && ! $tc_tcheck['stale'] && $tc_tcheck['id'] !== $tc_trun['check'] ) : ?>
+					<button type="button" class="button button-primary" id="tc-trim-start">
+						<?php
+						printf(
+							/* translators: %s: number of photos */
+							esc_html( _n( 'Remove the copy from this %s photo', 'Remove the copies from these %s photos', $tc_tcheck['photos'], 'tcgiant-sync' ) ),
+							esc_html( number_format_i18n( $tc_tcheck['photos'] ) )
+						);
+						?>
+					</button>
+				<?php endif; ?>
+
+				<?php if ( ! $tc_busy ) : ?>
+					<button type="button" class="button<?php echo '' === $tc_tstate ? ' button-primary' : ''; ?>" id="tc-trim-check">
+						<?php
+						if ( '' === $tc_tstate ) {
+							esc_html_e( 'Check for old copies', 'tcgiant-sync' );
+						} elseif ( 'scanning' === $tc_tstate ) {
+							esc_html_e( 'Carry on checking', 'tcgiant-sync' );
+						} else {
+							esc_html_e( 'Check again', 'tcgiant-sync' );
+						}
+						?>
+					</button>
+				<?php endif; ?>
+			</div>
+
+			<?php if ( ! $tc_busy && 'found' === $tc_tstate && $tc_tcheck['photos'] > 0 && $tc_tcheck['id'] !== $tc_trun['check'] ) : ?>
+				<?php if ( $tc_tcheck['stale'] ) : ?>
+					<p><strong><?php esc_html_e( 'This check is more than a week old. Check again before removing anything.', 'tcgiant-sync' ); ?></strong></p>
+				<?php else : ?>
+					<p style="color:#555;font-size:12px;max-width:760px;">
+						<?php esc_html_e( 'Removal runs in the background, a batch at a time; you can leave this page. Each photo is checked again first. Its record is changed first, so your pages stop offering the copy straight away; when every record is done your page cache is purged if TCGiant can purge it, and the copy\'s file is deleted at least a day later, so pages saved before still show. Purge any CDN or other cache that keeps whole pages, such as Cloudflare, then too. Deleting files cannot be undone, so make sure you have a recent backup of your uploads folder.', 'tcgiant-sync' ); ?>
+					</p>
+				<?php endif; ?>
+			<?php endif; ?>
+
+		<?php endif; ?>
+	</div>
+
+	<script>
+	(function($){
+		var box     = $('#tc-size-trim');
+		var ajaxUrl = '<?php echo esc_url( admin_url( 'admin-ajax.php' ) ); ?>';
+		var nonce   = '<?php echo esc_js( wp_create_nonce( 'tcgiant_sync_ajax' ) ); ?>';
+		var t = {
+			checking: '<?php echo esc_js( __( 'Checking… %1$s%% of the way through; %2$s photos with the copy so far.', 'tcgiant-sync' ) ); ?>',
+			retry:    '<?php echo esc_js( __( 'The server did not answer. Trying again…', 'tcgiant-sync' ) ); ?>',
+			confirm:  '<?php echo esc_js( __( 'Remove the old 1,536 px copy from %s photos? The photos themselves and their other sizes stay. When every record is done, TCGiant purges LiteSpeed Cache, WP Rocket, W3 Total Cache, WP Super Cache, Breeze or WP Fastest Cache; purge any other page cache or CDN, such as Cloudflare, yourself then, or a cached page can show a broken photo once the files go. The files are deleted at least a day after the records, and this cannot be undone.', 'tcgiant-sync' ) ); ?>',
+			running:  '<?php echo esc_js( __( 'Removing in the background: the copy has been taken off the records of %1$s photos so far (%2$s%% of the way through). This carries on by itself; you can leave this page.', 'tcgiant-sync' ) ); ?>',
+			waiting:  '<?php echo esc_js( __( 'The copy is off the records of %1$s photos, so your pages no longer offer it. Their %2$s files, about %3$s, are deleted from %4$s.', 'tcgiant-sync' ) ); ?>',
+			deleted:  '<?php echo esc_js( __( '%1$s deleted so far, about %2$s freed.', 'tcgiant-sync' ) ); ?>',
+			done:     '<?php echo esc_js( __( 'Finished: %1$s old copies deleted from %2$s photos, about %3$s freed on this server.', 'tcgiant-sync' ) ); ?>'
+		};
+		function fmt(s){ var a = arguments; return s.replace(/%%|%(\d)\$s|%s/g, function(m, n){ return m === '%%' ? '%' : String(a[n ? parseInt(n, 10) : 1]); }); }
+		function num(n){ return Number(n || 0).toLocaleString(); }
+		function bar(pct){ box.find('.tc-trim-bar').show().children().css('width', Math.min(100, Math.max(0, pct)) + '%'); }
+		function say(s){ box.find('.tc-trim-status').text(s); }
+
+		// The check: one short step per request until it is done, then reload to
+		// show what it found. A step the host cuts off is simply asked for again.
+		function step(restart, tries){
+			box.find('button').prop('disabled', true);
+			$.post(ajaxUrl, { action:'tcgiant_size_trim_check', restart: restart ? 1 : 0, _ajax_nonce: nonce })
+				.done(function(r){
+					if (!r.success) { say(r.data && r.data.message ? r.data.message : 'Error'); box.find('button').prop('disabled', false); return; }
+					var c = r.data.check;
+					bar(c.percent);
+					say(fmt(t.checking, num(c.percent), num(c.photos)));
+					if (c.status === 'scanning') { setTimeout(function(){ step(false, 0); }, r.data.busy ? 3000 : 300); }
+					else { location.reload(); }
+				})
+				.fail(function(){
+					say(t.retry);
+					if ((tries || 0) < 5) { setTimeout(function(){ step(false, (tries || 0) + 1); }, 5000); }
+					else { box.find('button').prop('disabled', false); }
+				});
+		}
+
+		$('#tc-trim-check').on('click', function(){ step(box.data('state') !== 'scanning', 0); });
+
+		$('#tc-trim-start').on('click', function(){
+			if (!confirm(fmt(t.confirm, num(box.data('photos'))))) { return; }
+			box.find('button').prop('disabled', true);
+			$.post(ajaxUrl, { action:'tcgiant_size_trim_start', check_id: box.data('check-id'), _ajax_nonce: nonce }, function(r){
+				if (!r.success) { alert(r.data && r.data.message ? r.data.message : 'Error'); }
+				location.reload();
+			});
+		});
+
+		// The removal: show where it has got to while it runs.
+		function poll(){
+			$.post(ajaxUrl, { action:'tcgiant_size_trim_status', _ajax_nonce: nonce }, function(r){
+				if (!r.success) { return; }
+				var u = r.data.run, text;
+				if (u.status === 'running') {
+					text = fmt(t.running, num(u.photos), num(u.percent));
+					bar(u.percent);
+				} else if (u.status === 'waiting') {
+					text = fmt(t.waiting, num(u.photos), num(u.files_waiting), u.size_waiting, u.files_due ? new Date(u.files_due * 1000).toLocaleString() : '');
+					if (u.deleted > 0) { text += ' ' + fmt(t.deleted, num(u.deleted), u.freed); }
+					bar(100);
+				} else {
+					text = fmt(t.done, num(u.deleted), num(u.photos), u.freed);
+					bar(100);
+				}
+				box.find('.tc-trim-progress-text').text(text);
+				if (u.status === 'running' || u.status === 'waiting') { setTimeout(poll, 15000); }
+			});
+		}
+		if (box.data('run') === 'running' || box.data('run') === 'waiting') { poll(); }
 	})(jQuery);
 	</script>
 

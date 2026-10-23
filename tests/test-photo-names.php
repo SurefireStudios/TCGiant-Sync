@@ -119,10 +119,23 @@ function remove_filter( $hook, $callback, $priority = 10 ) {
 	return false;
 }
 function apply_filters( $hook, $value, ...$more ) {
-	foreach ( $GLOBALS['HOOKS'][ $hook ] ?? array() as $h ) {
-		$value = call_user_func_array( $h[0], array_slice( array_merge( array( $value ), $more ), 0, $h[1] ) );
+	$GLOBALS['RUNNING'][] = $hook;
+	try {
+		foreach ( $GLOBALS['HOOKS'][ $hook ] ?? array() as $h ) {
+			$value = call_user_func_array( $h[0], array_slice( array_merge( array( $value ), $more ), 0, $h[1] ) );
+		}
+	} finally {
+		array_pop( $GLOBALS['RUNNING'] );
 	}
 	return $value;
+}
+/** The filter being run, and whether a callback is on a hook, as WordPress says. */
+function current_filter() { return empty( $GLOBALS['RUNNING'] ) ? false : end( $GLOBALS['RUNNING'] ); }
+function has_filter( $hook, $callback = false ) {
+	foreach ( $GLOBALS['HOOKS'][ $hook ] ?? array() as $h ) {
+		if ( $h[0] === $callback ) { return 10; }
+	}
+	return false;
 }
 function do_action( $hook, ...$args ) { apply_filters( $hook, ...( $args ?: array( null ) ) ); }
 

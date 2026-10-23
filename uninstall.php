@@ -50,6 +50,7 @@ $tcgiant_hooks = array(
 	'tcgiant_sync_localize_images',
 	'tcgiant_sync_weekly_full',         // Added in 3.12.0; was never cleared.
 	'tcgiant_sync_photo_cleanup',       // Photos of deleted products, 3.27.4.
+	'tcgiant_sync_size_trim',           // Old large copies of downloaded photos, 3.27.7.
 );
 
 foreach ( $tcgiant_hooks as $tcgiant_hook ) {
@@ -204,6 +205,11 @@ $tcgiant_options = array(
 	'tcgiant_sync_photo_cleanup_reading',
 	'tcgiant_sync_photo_check_reading',
 	'tcgiant_sync_photo_cleanup_check',
+	'tcgiant_sync_size_trim_check',            // Image Cleanup's check for old large copies, 3.27.7.
+	'tcgiant_sync_size_trim_run',
+	'tcgiant_sync_size_trim_pause',
+	'tcgiant_sync_last_crash_large_photo_copies',
+	'tcgiant_sync_last_crash_large_photo_copies_check',
 	'tcgiant_sync_jobs',               // Bulk job progress records.
 	'tcgiant_export_state',            // Export state machine.
 	'tcgiant_listings_table_version',
@@ -219,14 +225,16 @@ foreach ( $tcgiant_options as $tcgiant_option ) {
 }
 
 // Per-job item lists, cached eBay business policies, the leftover-photo
-// check's findings and its holds use dynamic names.
+// check's findings and its holds, and the large-copy removal's holds, use
+// dynamic names.
 // phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 $wpdb->query(
 	"DELETE FROM {$wpdb->options}
 	 WHERE option_name LIKE 'tcgiant_sync_job_items_%'
 	    OR option_name LIKE 'tcgiant_export_policies_%'
 	    OR option_name LIKE 'tcgiant_sync_photo_scan_ids_%'
-	    OR option_name LIKE 'tcgiant_sync_photo_cleanup_lock_%'"
+	    OR option_name LIKE 'tcgiant_sync_photo_cleanup_lock_%'
+	    OR option_name LIKE 'tcgiant_sync_size_trim_lock_%'"
 );
 
 // Photos waiting to be removed with the products they belonged to. Taking
@@ -254,6 +262,14 @@ if ( '0' === (string) $tcgiant_started_left ) {
 		 WHERE meta_key IN ( '_tcgiant_delete_after', '_tcgiant_delete_attempts', '_tcgiant_delete_approved' )"
 	);
 }
+
+// The note on each photo whose old large copy was being removed (3.27.7).
+// Taking it off leaves the photo as it is: one whose record no longer names
+// the copy keeps the copy's file on disk, named by nothing - the safe way
+// round for anything the plugin can no longer finish.
+$wpdb->query(
+	"DELETE FROM {$wpdb->prefix}postmeta WHERE meta_key = '_tcgiant_trim_pending'"
+);
 
 // The listing's shipping each imported product holds, copied from eBay for a
 // shop's own code to read (3.27.6). The import writes these and nothing else

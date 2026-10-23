@@ -418,6 +418,7 @@ class TCGiant_Sync_Cron {
 		'tcgiant_sync_import_orders',
 		'tcgiant_sync_check_ended_listings',
 		'tcgiant_sync_photo_cleanup',
+		'tcgiant_sync_size_trim',
 	);
 
 	/**
@@ -574,6 +575,7 @@ class TCGiant_Sync_Cron {
 			'tcgiant_sync_import_orders'        => __( 'imported eBay orders', 'tcgiant-sync' ),
 			'tcgiant_sync_check_ended_listings' => __( 'checked for ended listings', 'tcgiant-sync' ),
 			'tcgiant_sync_photo_cleanup'        => __( 'removed photos of deleted products', 'tcgiant-sync' ),
+			'tcgiant_sync_size_trim'            => __( 'removed old large copies of downloaded photos', 'tcgiant-sync' ),
 		);
 		return $labels[ $hook ] ?? $hook;
 	}
@@ -976,5 +978,6 @@ class TCGiant_Sync_Cron {
 		wp_clear_scheduled_hook( 'tcgiant_sync_scan_resume' );
 		TCGiant_Sync_Image_Localizer::deactivate();
 		TCGiant_Sync_Photo_Cleanup::deactivate();
+		TCGiant_Sync_Size_Trim::deactivate();
 	}
 }

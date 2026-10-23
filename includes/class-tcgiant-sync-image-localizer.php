@@ -188,19 +188,50 @@ class TCGiant_Sync_Image_Localizer {
 	const SKIPPED_IMPORT_SIZES = array( '1536x1536', '2048x2048' );
 
 	/**
+	 * Whether the photo itself takes the place of WordPress's two largest
+	 * sizes in srcset, so that they stand for nothing on it.
+	 *
+	 * Not for a photo larger than 2,048 px: WordPress leaves anything wider
+	 * than that out of srcset, so without them a large screen would be given
+	 * the 1,024 px copy. No eBay photo is that large; one kept on a seller's
+	 * own server can be. Not for a GIF, which srcset never offers whole. And
+	 * not for a photo wider than a theme's own srcset limit
+	 * (max_srcset_image_width), where a theme has lowered it.
+	 *
+	 * One rule for the three places that go by it: a download
+	 * (import_image_sizes()), anything that makes a downloaded photo's sizes
+	 * again later (guard_large_sizes()), and the removal of the copies made
+	 * before 3.27.4 (TCGiant_Sync_Size_Trim), so that they never disagree.
+	 *
+	 * @since 3.27.7
+	 *
+	 * @param array  $image_meta The photo's metadata: its width and height as WordPress serves it, and its file.
+	 * @param string $mime       Its type, where known: image/gif is a GIF whatever its name says.
+	 * @return bool
+	 */
+	public static function skips_large_sizes( $image_meta, $mime = '' ) {
+		$image_meta = is_array( $image_meta ) ? $image_meta : array();
+		$width      = (int) ( $image_meta['width'] ?? 0 );
+		$height     = (int) ( $image_meta['height'] ?? 0 );
+		$is_gif     = 'gif' === strtolower( pathinfo( (string) ( $image_meta['file'] ?? '' ), PATHINFO_EXTENSION ) )
+			|| 'image/gif' === strtolower( (string) $mime );
+		$in_set     = (int) apply_filters( 'max_srcset_image_width', 2048, array( $width, $height ) );
+
+		return ! $is_gif && max( $width, $height ) <= 2048 && ( $in_set <= 0 || $width <= $in_set );
+	}
+
+	/**
 	 * The sizes WordPress makes for a photo the localizer downloads.
 	 *
 	 * Hooked to intermediate_image_sizes_advanced for the length of one
-	 * download only (see localize_product_images()), so it never sees an image
-	 * the shop uploads, or one another plugin works on later in the request.
+	 * download (see localize_product_images()), and to
+	 * wp_get_missing_image_subsizes while a photo a stopped request left half
+	 * saved is finished (see finish_photo()). At any other time
+	 * guard_large_sizes() applies it to the plugin's own photos, and never to
+	 * an image the shop uploads.
 	 *
 	 * The two are skipped only where the photo itself takes their place in
-	 * srcset. A photo larger than 2,048 px keeps both: WordPress leaves anything
-	 * wider than that out of srcset, so without them a large screen would be
-	 * given the 1,024 px copy. No eBay photo is that large; one kept on a
-	 * seller's own server can be. So does a GIF, which srcset never offers
-	 * whole, and any photo wider than a theme's own srcset limit
-	 * (max_srcset_image_width) where a theme has lowered it.
+	 * srcset: see skips_large_sizes().
 	 *
 	 * WordPress's "big image" limit (big_image_size_threshold, 2,560 px) is
 	 * left as it is. It never applies to an eBay photo. For a larger one,
@@ -210,20 +241,17 @@ class TCGiant_Sync_Image_Localizer {
 	 * @param array $sizes         Sizes WordPress is about to make, keyed by name: width, height, crop.
 	 * @param array $image_meta    The photo's metadata so far: its width and height as WordPress will serve it.
 	 * @param int   $attachment_id The photo's attachment ID.
+	 * @param string $mime         Its type, where known (see skips_large_sizes()). WordPress passes none.
 	 * @return array Sizes to make.
 	 */
-	public static function import_image_sizes( $sizes, $image_meta = array(), $attachment_id = 0 ) {
+	public static function import_image_sizes( $sizes, $image_meta = array(), $attachment_id = 0, $mime = '' ) {
 		if ( ! is_array( $sizes ) ) {
 			return $sizes;
 		}
 
-		$all     = $sizes;
-		$width   = (int) ( $image_meta['width'] ?? 0 );
-		$height  = (int) ( $image_meta['height'] ?? 0 );
-		$is_gif  = 'gif' === strtolower( pathinfo( (string) ( $image_meta['file'] ?? '' ), PATHINFO_EXTENSION ) );
-		$in_set  = (int) apply_filters( 'max_srcset_image_width', 2048, array( $width, $height ) );
+		$all = $sizes;
 
-		if ( ! $is_gif && max( $width, $height ) <= 2048 && ( $in_set <= 0 || $width <= $in_set ) ) {
+		if ( self::skips_large_sizes( $image_meta, $mime ) ) {
 			foreach ( self::SKIPPED_IMPORT_SIZES as $name ) {
 				unset( $sizes[ $name ] );
 			}
@@ -232,9 +260,11 @@ class TCGiant_Sync_Image_Localizer {
 		/**
 		 * Image sizes made for a photo downloaded from eBay.
 		 *
-		 * Applies only while TCGiant Sync is downloading a listing's photo,
-		 * never to images the shop uploads. Return $all to have every size
-		 * made, as for the shop's own uploads.
+		 * Applies whenever WordPress makes the sizes of a photo TCGiant Sync
+		 * downloaded - as it downloads a listing's photo, and since 3.27.7 when
+		 * a tool regenerates thumbnails too - and never to images the shop
+		 * uploads. Return $all to have every size made, as for the shop's own
+		 * uploads.
 		 *
 		 * @since 3.27.4
 		 *
@@ -248,6 +278,57 @@ class TCGiant_Sync_Image_Localizer {
 		// the photo with no sizes at all; anything else stops WordPress part
 		// way through the photo on PHP 8.
 		return is_array( $filtered ) ? $filtered : $sizes;
+	}
+
+	/**
+	 * The same, at any time, for a photo the plugin downloaded.
+	 *
+	 * 3.27.4 skipped the two largest sizes only while a photo was being
+	 * downloaded. A tool that regenerates thumbnails afterwards - Regenerate
+	 * Thumbnails, WP-CLI's "wp media regenerate", an image optimiser's own -
+	 * asked WordPress for every registered size again and brought back the
+	 * 1,536 px copy, including on the photos Image Cleanup has taken it off.
+	 * WordPress names the photo it is making sizes for in both filters
+	 * (since 5.3; the plugin needs 5.8), so a photo carrying the plugin's
+	 * mark (_tcgiant_source_url) is given the download's sizes whenever they
+	 * are made: by wp_generate_attachment_metadata() through
+	 * intermediate_image_sizes_advanced, and by wp_update_image_subsizes()
+	 * through wp_get_missing_image_subsizes. Anything else - the shop's own
+	 * uploads first of all - is left as WordPress has it.
+	 *
+	 * The photo is judged with its type, as the removal of the old copies
+	 * judges it, so a GIF saved under a .jpg name keeps its copies here too.
+	 *
+	 * The tcgiant_sync_import_image_sizes filter has the last word here too.
+	 *
+	 * While import_image_sizes() is itself on the filter being run - a
+	 * download, or a photo being finished - this does nothing, so that the
+	 * rule and that filter are applied once.
+	 *
+	 * Not reached: the Media Library's Edit Image, which makes the sizes of
+	 * an edited photo without either filter.
+	 *
+	 * @since 3.27.7
+	 *
+	 * @param array $sizes         Sizes WordPress is about to make, keyed by name: width, height, crop.
+	 * @param array $image_meta    The photo's metadata: its width and height as WordPress serves it, and its file.
+	 * @param int   $attachment_id The photo's attachment ID.
+	 * @return array Sizes to make.
+	 */
+	public static function guard_large_sizes( $sizes, $image_meta = array(), $attachment_id = 0 ) {
+		if ( ! is_array( $sizes ) || (int) $attachment_id < 1 ) {
+			return $sizes;
+		}
+
+		if ( false !== has_filter( current_filter(), array( __CLASS__, 'import_image_sizes' ) ) ) {
+			return $sizes;
+		}
+
+		if ( '' === (string) get_post_meta( (int) $attachment_id, '_tcgiant_source_url', true ) ) {
+			return $sizes;
+		}
+
+		return self::import_image_sizes( $sizes, $image_meta, $attachment_id, (string) get_post_mime_type( (int) $attachment_id ) );
 	}
 
 	/**
@@ -553,6 +634,11 @@ class TCGiant_Sync_Image_Localizer {
 		add_filter( 'wp_get_attachment_image_src', array( __CLASS__, 'filter_image_src' ), 10, 2 );
 		add_filter( 'wp_calculate_image_srcset', array( __CLASS__, 'filter_srcset' ), 10, 5 );
 		add_filter( 'wp_get_attachment_metadata', array( __CLASS__, 'filter_metadata' ), 10, 2 );
+
+		// WordPress's two largest sizes stay off the plugin's photos whenever
+		// their sizes are made again. See guard_large_sizes().
+		add_filter( 'intermediate_image_sizes_advanced', array( __CLASS__, 'guard_large_sizes' ), 99, 3 );
+		add_filter( 'wp_get_missing_image_subsizes', array( __CLASS__, 'guard_large_sizes' ), 99, 3 );
 
 		add_action( 'admin_init', array( __CLASS__, 'maybe_clean_placeholder_paths' ) );
 		add_action( 'admin_init', array( __CLASS__, 'maybe_rearm' ) );

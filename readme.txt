@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.27.6
+Stable tag: 3.27.7
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,13 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.27.7 - 2026-10-23 =
+**Old large copies of downloaded photos**
+* NEW: Image Cleanup can now remove the 1,536 px copy WordPress made of every photo TCGiant downloaded at eBay's Original size before version 3.27.4. It is the photo itself 4% smaller, and takes about a quarter of the space each such photo takes on your server. Without it your shoppers see the same photo: a browser that would have picked the copy, on a high-DPI phone say, picks the photo itself instead. "Check for old copies" counts them and the space they take; nothing is deleted by checking.
+* When you press the button, each photo's record is changed in the background, so pages stop offering the copy. When every record is done, TCGiant purges the page cache of LiteSpeed Cache, WP Rocket, W3 Total Cache, WP Super Cache, Breeze or WP Fastest Cache. The copies' files are deleted at least a day later, and as long as LiteSpeed Cache or WP Rocket keeps pages, up to 8 days, so pages saved before still show. If your site is behind Cloudflare or another CDN or cache that keeps whole pages, purge it then: the screen and the activity log say so, with the date the files go.
+* Only that copy goes, and only from photos TCGiant downloaded: each photo and all its other sizes stay. Your own uploads, GIFs, photos larger than 2,048 px, photos whose files are not on this server and a copy another Media Library entry still uses are left as they are. Nothing is checked or removed while an offload plugin is active (WP Offload Media, Media Cloud, bunny.net's Offloader and others), because it keeps its own copy of every size. The activity log says what each batch did, and the totals when it has finished.
+* FIX: Regenerating thumbnails (with Regenerate Thumbnails, WP-CLI or an image optimiser) made the 1,536 px copy again for photos TCGiant downloaded. It no longer does, except for GIFs and photos larger than 2,048 px, which keep it. Your own uploads are unchanged.
 
 = 3.27.6 - 2026-10-23 =
 **Full syncs of large catalogues carry on by themselves**

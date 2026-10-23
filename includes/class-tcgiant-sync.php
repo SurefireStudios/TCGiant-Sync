@@ -126,6 +126,12 @@ final class TCGiant_Sync {
 		// REST API and by WP-CLI, not only from the admin.
 		TCGiant_Sync_Photo_Cleanup::instance();
 
+		// Takes the 1,536 px copies WordPress made of downloaded photos before
+		// 3.27.4 off them, when the shop asks on Image Cleanup. On every
+		// request too: it runs from WP-Cron, and a photo whose copy waits for
+		// its day can be deleted by any request.
+		TCGiant_Sync_Size_Trim::instance();
+
 		// Initialize Exporter.
 		TCGiant_Sync_Exporter::instance();
 		// Initialize listing-identity protection (every edition; the importer relies on it).

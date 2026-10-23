@@ -19,6 +19,7 @@ add_action   admin_init => maybe_clean_placeholder_paths
 add_action   admin_init => maybe_dispatch_overdue
 add_action   admin_init => maybe_rearm
 add_action   admin_init => maybe_rearm_cleanup
+add_action   admin_init => maybe_rearm_trim
 add_action   admin_init => maybe_revalidate
 add_action   admin_init => register_settings
 add_action   admin_menu => add_menu_pages
@@ -45,6 +46,7 @@ add_action   admin_post_tcgiant_sync_now => handle_manual_sync
 add_action   admin_post_tcgiant_sync_specific => handle_sync_specific
 add_action   admin_post_tcgiant_wizard_save_import => handle_wizard_save_import
 add_action   before_delete_post => on_before_delete_post
+add_action   delete_attachment => on_delete_attachment
 add_action   dp_duplicate_page => on_third_party_duplicate
 add_action   dp_duplicate_post => on_third_party_duplicate
 add_action   init => schedule_cron
@@ -62,6 +64,7 @@ add_action   shutdown => flush
 add_action   shutdown => flush_seen
 add_action   shutdown => guard_loops
 add_action   shutdown => log_marked
+add_action   shutdown => log_with_photo
 add_action   shutdown => make_room
 add_action   shutdown => unguard_loops
 add_action   tcgiant_export_push_product => process_single_push
@@ -81,6 +84,7 @@ add_action   tcgiant_sync_reconcile_inventory => reconcile_inventory
 add_action   tcgiant_sync_scan_all_pages => scan_all_pages
 add_action   tcgiant_sync_scan_resume => scan_all_pages
 add_action   tcgiant_sync_settle_item => settle_item
+add_action   tcgiant_sync_size_trim => process_run
 add_action   tcgiant_sync_update_ebay_stock => process_ebay_stock_update
 add_action   tcgiant_sync_weekly_full => run_weekly_full_sync
 add_action   updated_post_meta => mirror_meta_to_row
@@ -114,6 +118,9 @@ add_action   wp_ajax_tcgiant_photo_remove => ajax_remove
 add_action   wp_ajax_tcgiant_photo_scan => ajax_scan
 add_action   wp_ajax_tcgiant_photo_status => ajax_status
 add_action   wp_ajax_tcgiant_push_product => ajax_push_product
+add_action   wp_ajax_tcgiant_size_trim_check => ajax_check
+add_action   wp_ajax_tcgiant_size_trim_start => ajax_start
+add_action   wp_ajax_tcgiant_size_trim_status => ajax_status
 add_action   wp_ajax_tcgiant_suggest_category => ajax_suggest_category
 add_action   wp_ajax_tcgiant_sync_order_to_ebay => ajax_sync_order_to_ebay
 add_action   wp_ajax_tcgiant_sync_status => ajax_sync_status
@@ -127,6 +134,7 @@ add_filter   bulk_actions-edit-product => register_bulk_push_action
 add_filter   cron_schedules => add_cron_intervals
 add_filter   handle_bulk_actions-edit-product => handle_bulk_push_action
 add_filter   http_request_args => {$download_cap}
+add_filter   intermediate_image_sizes_advanced => guard_large_sizes
 add_filter   intermediate_image_sizes_advanced => import_image_sizes
 add_filter   manage_edit-product_columns => add_ebay_column
 add_filter   manage_edit-product_sortable_columns => make_ebay_column_sortable
@@ -142,6 +150,7 @@ add_filter   wp_editor_set_quality => {$quality_filter}
 add_filter   wp_get_attachment_image_src => filter_image_src
 add_filter   wp_get_attachment_metadata => filter_metadata
 add_filter   wp_get_attachment_url => filter_attachment_url
+add_filter   wp_get_missing_image_subsizes => guard_large_sizes
 add_filter   wp_get_missing_image_subsizes => import_image_sizes
 add_filter   {$hook} => hold_place
 add_filter   {$hook} => {$callback['function']}
@@ -159,5 +168,6 @@ schedule     tcgiant_sync_reconcile_inventory
 schedule     tcgiant_sync_scan_all_pages
 schedule     tcgiant_sync_scan_resume
 schedule     tcgiant_sync_settle_item
+schedule     tcgiant_sync_size_trim
 schedule     tcgiant_sync_update_ebay_stock
 schedule     tcgiant_sync_weekly_full
