@@ -135,6 +135,7 @@ add_filter   manage_woocommerce_page_wc-orders_columns => add_order_ebay_column
 add_filter   pre_wp_cache_get => on_cache_read
 add_filter   woocommerce_can_reduce_order_stock => block_double_reduction
 add_filter   woocommerce_duplicate_product_exclude_meta => duplicate_exclude_meta
+add_filter   woocommerce_prevent_adjust_line_item_product_stock => keep_ebay_order_lines
 add_filter   woocommerce_product_data_tabs => add_sync_log_tab
 add_filter   wp_calculate_image_srcset => filter_srcset
 add_filter   wp_editor_set_quality => {$quality_filter}

@@ -307,6 +307,8 @@ function add_filter( $hook, $callback, $priority = 10, $accepted_args = 1 ) { re
 function apply_filters( $hook, $value ) { return $value; }
 function did_action( $hook ) { return 0; }
 function wp_clear_scheduled_hook() {}
+// The full sync's WP-Cron backstop, armed as it starts (3.27.6).
+function wp_schedule_single_event() { return true; }
 function current_time( $type, $gmt = 0 ) { return gmdate( 'Y-m-d H:i:s' ); }
 function get_gmt_from_date( $date, $format = 'Y-m-d H:i:s' ) {
 	$ts = strtotime( $date . ' UTC' );
@@ -2015,6 +2017,10 @@ function restock( $id, $n = 3 ) {
 	$GLOBALS['META'][ $id ]['_stock']        = $n;
 	$GLOBALS['META'][ $id ]['_stock_status'] = 'instock';
 }
+/** GetItem's answer for a listing eBay no longer has: error 17. */
+function gone_from_ebay() {
+	return new WP_Error( 'api_error', 'This item cannot be accessed because the listing has been deleted, is a Half.com listing, or you are not the seller.', array( 'Ack' => 'Failure', 'Errors' => array( 'ShortMessage' => 'Item cannot be accessed.', 'ErrorCode' => '17' ) ) );
+}
 function prune_with_active( array $active ) {
 	update_option( TCGiant_Sync_Importer::ACTIVE_IDS_OPTION, $active );
 	update_option( TCGiant_Sync_Importer::STATE_OPTION, array_merge( state(), array( 'scan_complete_clean' => true ) ) );
@@ -2038,6 +2044,9 @@ fresh_shop( array_merge( $ONLY_US, array( 'preserve_woo_category_ids' => array( 
 $active = nine_us_products();
 linked_product( 821, '220000000821', 'UK' );
 $TERMS[821] = array( 77 );
+// Gone from eBay, as eBay says when the pruner asks (since 3.27.6, before it
+// retires anything).
+ebay_has( '220000000821', gone_from_ebay() );
 prune_with_active( $active );
 check( 'the pruner keeps it (preserved) and drops its item number', array( status_of( 821 ), meta( 821, '_ebay_item_id' ) ), array( 'publish', null ) );
 check( '  and its listing\'s site with it', meta( 821, '_ebay_site' ), null );
@@ -2060,6 +2069,7 @@ fresh_shop( array_merge( $ONLY_US, array( 'preserve_woo_category_ids' => array( 
 $active = nine_us_products();
 linked_product( 822, '110000000822', 'US' );
 $TERMS[822] = array( 77 );
+ebay_has( '110000000822', gone_from_ebay() );
 prune_with_active( $active );
 ebay_has( '220000000822', ended( '220000000822', 'UK' ) );
 link_by_hand( 822, '220000000822' );

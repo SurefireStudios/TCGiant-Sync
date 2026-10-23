@@ -370,7 +370,9 @@ check( '  each listing is reported on, the last too', substr_count( $delta, 'sel
 check( '  the cache is released before every listing, ahead of the budget check', false !== strpos( $delta, "TCGiant_Sync_Runtime::release_memory();\n\n\t\t\t// Stop starting listings" ) && false === strpos( $delta, '% 10' ), true );
 check( '  no gate before the first listing: a heavy site is not sent round twice', false === strpos( $importer, 'delta_fresh_request_item' ), true );
 $stop = substr( $delta, strpos( $delta, "if ( '' !== \$stopped_for ) {\n\t\t\tTCGiant_Sync_Logger::log" ), 900 );
-check( '  the queue is told to stop only after a stop for memory', 1 === preg_match( '/if \( \$memory_stop \) \{\s*TCGiant_Sync_Runtime::end_queue_runs\(\);\s*\}/', $stop ) && 1 === substr_count( $importer, 'end_queue_runs()' ), true );
+check( '  the queue is told to stop only after a stop for memory', 1 === preg_match( '/if \( \$memory_stop \) \{\s*TCGiant_Sync_Runtime::end_queue_runs\(\);\s*\}/', $stop ) && 2 === substr_count( $importer, 'end_queue_runs()' ), true );
+// The full sync's scan hands on the same way since 3.27.6, from the one place it does.
+check( '  and the full sync scan, every time it hands on: its next batch would read its page again', 1 === preg_match( "/memory, or of time, if the site lets Action Scheduler run longer\s*(?:\/\/[^\n]*\s*)*TCGiant_Sync_Runtime::end_queue_runs\(\);\s*\}/", method_body( $importer, 'hand_off_scan' ) ), true );
 check( '  and a stop is a stop for memory only when time is not up', false !== strpos( $delta, "\$memory_stop = '' === TCGiant_Sync_Runtime::over_time_budget();" ), true );
 foreach ( array(
 	'asking eBay for the listing (GetItem)',

@@ -186,6 +186,9 @@ $tcgiant_options = array(
 	'tcgiant_sync_delta_progress',     // Delta's place in its window, 3.27.0.
 	'tcgiant_sync_delta_window',       // Delta's window kept in brief, 3.27.0.
 	'tcgiant_sync_delta_held',         // Listings the delta stepped over, 3.27.0.
+	'tcgiant_sync_scan_progress',      // The full sync's place in its pages, 3.27.6.
+	'tcgiant_sync_scan_page',          // The listings of the page it is on, 3.27.6.
+	'tcgiant_sync_prune_pending',      // Listings the clean-up has still to ask eBay about, 3.27.6.
 	'tcgiant_sync_last_crash',         // Last run PHP killed, 3.27.0.
 	'tcgiant_sync_last_crash_delta_sync',      // The same, per job, 3.27.2.
 	'tcgiant_sync_last_crash_full_sync_scan',
@@ -251,6 +254,15 @@ if ( '0' === (string) $tcgiant_started_left ) {
 		 WHERE meta_key IN ( '_tcgiant_delete_after', '_tcgiant_delete_attempts', '_tcgiant_delete_approved' )"
 	);
 }
+
+// The listing's shipping each imported product holds, copied from eBay for a
+// shop's own code to read (3.27.6). The import writes these and nothing else
+// does; the shop's own choice of policy for pushing, _ebay_export_fulfillment_policy,
+// is not among them.
+$wpdb->query(
+	"DELETE FROM {$wpdb->prefix}postmeta
+	 WHERE meta_key IN ( '_ebay_shipping_policy_id', '_ebay_shipping_policy_name', '_ebay_shipping_type', '_ebay_shipping_service', '_ebay_shipping_cost', '_ebay_shipping_currency', '_ebay_shipping_services' )"
+);
 
 // Delete all plugin transients (and their timeout rows).
 $wpdb->query(

@@ -100,7 +100,14 @@ class TCGiant_Sync_Inventory {
 		// WooCommerce. Letting WooCommerce reduce stock again for the same sale
 		// took two off for every one sold.
 		add_filter( 'woocommerce_can_reduce_order_stock', array( $this, 'block_double_reduction' ), 10, 2 );
-		
+
+		// Nor when an imported eBay order is saved from its edit screen. There
+		// WooCommerce takes off each line's quantity less what it recorded
+		// taking off before - and since the line above stops it taking any,
+		// it had recorded none. Adding tracking and marking the order
+		// Completed took the sale off a second time: a sold coin at -1.
+		add_filter( 'woocommerce_prevent_adjust_line_item_product_stock', array( $this, 'keep_ebay_order_lines' ), 10, 2 );
+
 		// Real-time stock sync: manual stock edits, CSV imports, REST API updates.
 		add_action( 'woocommerce_product_set_stock', array( $this, 'on_product_stock_change' ) );
 		add_action( 'woocommerce_variation_set_stock', array( $this, 'on_variation_stock_change' ) );
@@ -509,6 +516,52 @@ class TCGiant_Sync_Inventory {
 		) );
 
 		return false;
+	}
+
+	/**
+	 * Orders whose stock WooCommerce has been told to leave alone on saving,
+	 * so the log says so once an order rather than once a line.
+	 *
+	 * @var array
+	 */
+	private static $kept_orders = array();
+
+	/**
+	 * Hook: woocommerce_prevent_adjust_line_item_product_stock.
+	 *
+	 * WooCommerce's wc_maybe_adjust_line_item_product_stock() asks this
+	 * before it changes a product's stock for an order line saved, added or
+	 * removed on the order's edit screen (WooCommerce 3.7.1 and later; the
+	 * plugin needs 5.0). For a line of an order imported from eBay the answer
+	 * is yes: eBay has counted that sale, the sync keeps the stock from it,
+	 * and WooCommerce took nothing off when the order came in
+	 * (block_double_reduction()), so whatever it worked out would be wrong -
+	 * the sale taken off twice, or stock put back that it never took.
+	 *
+	 * @param bool                $prevent What WooCommerce, or another plugin, has said.
+	 * @param WC_Order_Item|mixed $item    The order line.
+	 * @return bool
+	 */
+	public function keep_ebay_order_lines( $prevent, $item = null ) {
+		if ( $prevent || ! is_object( $item ) || ! method_exists( $item, 'get_order' ) ) {
+			return $prevent;
+		}
+
+		$order = $item->get_order();
+		if ( ! is_a( $order, 'WC_Abstract_Order' ) || 'ebay' !== $order->get_meta( '_ebay_order_source' ) ) {
+			return $prevent;
+		}
+
+		$order_id = (int) $order->get_id();
+		if ( ! isset( self::$kept_orders[ $order_id ] ) ) {
+			self::$kept_orders[ $order_id ] = true;
+			TCGiant_Sync_Logger::log( sprintf(
+				'Order #%d came from eBay: saving it does not change WooCommerce stock, which the sync keeps from eBay.',
+				$order_id
+			) );
+		}
+
+		return true;
 	}
 
 	/**

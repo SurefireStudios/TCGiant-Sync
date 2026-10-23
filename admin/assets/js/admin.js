@@ -92,6 +92,8 @@
             var s = res.data.state;
             var st = res.data.stats;
             var lic = res.data.license;
+            // The queued imports' own progress, the scan's next batch, Resume.
+            var p = res.data.progress || {};
             var prevStatus = lastSyncStatus;
             lastSyncStatus = s.status;
 
@@ -121,10 +123,24 @@
                 case 'scanning':
                     label = 'Scanning eBay…';
                     detail = 'Page ' + s.current_page + (s.total_pages ? '/' + s.total_pages : '') + ' - ' + s.filter_name;
+                    // What the scan has done so far, and whether its next batch is waiting.
+                    if (s.total_processed > 0) {
+                        detail += ' · ' + s.total_processed + ' imported';
+                    }
+                    if (p.stalled && p.since_text) {
+                        detail += ' · no progress since ' + p.since_text;
+                    } else if (p.waiting_since > 0) {
+                        detail += ' · next batch waiting since ' + p.since_text;
+                    }
                     break;
                 case 'importing':
                     label = 'Importing…';
-                    detail = s.total_processed + '/' + s.total_queued + ' items';
+                    // The queued imports against the number queued: the
+                    // listings the scan imported itself are counted apart.
+                    detail = (p.queued_done || 0) + '/' + s.total_queued + ' queued listings done';
+                    if (p.inline > 0) {
+                        detail += ', ' + p.inline + ' imported while scanning';
+                    }
                     break;
                 case 'complete':
                     label = 'Complete';
@@ -136,7 +152,7 @@
                     break;
                 case 'error':
                     label = 'Error';
-                    detail = 'Check logs for details.';
+                    detail = s.last_error ? s.last_error : 'Check logs for details.';
                     break;
                 case 'rate_limited':
                     label = 'Rate Limited — Paused';
@@ -153,8 +169,13 @@
             $('#tc-hero-status').text(label);
             $('#tc-hero-detail').text(detail);
 
+            // Resume Import, for a sync stopped by hand or by an error, or a
+            // scan that has stalled. A rate limit has its own card.
+            $('#tc-resume-card, #tc-resume-form').toggle(!!(p.can_resume && s.status !== 'rate_limited'));
+
             // Stats.
             $('#tc-stat-synced').text(st.synced_products);
+            $('#tc-total-imported').text(st.synced_products);
             $('#tc-stat-pending').text(st.pending_jobs);
             $('#tc-stat-queued').text(s.total_queued || '0');
 
@@ -170,7 +191,7 @@
             // Progress bar.
             var $prog = $('#tc-progress');
             if (s.status === 'importing' && s.total_queued > 0) {
-                var pct = Math.round(((s.total_processed + s.total_errors) / s.total_queued) * 100);
+                var pct = p.queued_pct || 0;
                 $prog.show().find('.tc-progress-fill').css('width', pct + '%');
                 $prog.find('.tc-progress-text').text(pct + '%');
             } else {
@@ -198,7 +219,11 @@
      * Update the usage meter UI with live license data.
      */
     function updateUsageMeter(lic) {
-        if (lic.is_pro) return; // Pro users see static "Unlimited" text.
+        // Pro: no meter, just the count of active products, kept live too.
+        if (lic.is_pro) {
+            $('#tc-usage-pro-count').text(lic.active_count);
+            return;
+        }
 
         var $count = $('#tc-usage-count');
         var $remaining = $('#tc-usage-remaining');

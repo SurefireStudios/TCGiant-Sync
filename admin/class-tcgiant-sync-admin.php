@@ -1224,9 +1224,12 @@ class TCGiant_Sync_Admin {
 		$license = TCGiant_Sync_Entitlements::instance();
 		
 		wp_send_json_success( array(
-			'state'   => $state,
-			'stats'   => $stats,
-			'license' => $license->get_status_for_ui(),
+			'state'    => $state,
+			'stats'    => $stats,
+			'license'  => $license->get_status_for_ui(),
+			// The queued imports' own progress, the scan's next batch waiting,
+			// and whether Resume Import has a sync to carry on.
+			'progress' => TCGiant_Sync_Importer::screen_progress( $state ),
 		) );
 	}
 
@@ -3105,6 +3108,23 @@ class TCGiant_Sync_Admin {
 
 				<?php if ( $last_pushed ) : ?>
 					<span style="color:#888;margin-left:6px;"><?php echo esc_html( 'Last pushed: ' . $last_pushed ); ?></span>
+				<?php endif; ?>
+
+				<?php
+				// What the import recorded of the listing's shipping (3.27.6),
+				// for a shop whose own code reads it. Read only.
+				$tc_shipping = TCGiant_Sync_Mapper::stored_shipping_line( $product_id );
+				?>
+				<?php if ( '' !== $tc_shipping ) : ?>
+					<div style="margin-top:5px;color:#555;">
+						<?php
+						printf(
+							/* translators: %s: the listing's shipping policy, service and cost */
+							esc_html__( 'eBay shipping: %s', 'tcgiant-sync' ),
+							esc_html( $tc_shipping )
+						);
+						?>
+					</div>
 				<?php endif; ?>
 
 				<?php if ( $has_ended ) : ?>

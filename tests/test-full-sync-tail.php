@@ -66,6 +66,7 @@ define( 'DAY_IN_SECONDS', 86400 );
 
 $OPTIONS = array();
 $CRON    = array();
+$CRON_AT = array();
 $QUEUE   = array();
 $LOG     = array();
 
@@ -91,9 +92,10 @@ function wp_upload_dir() { return array( 'basedir' => $GLOBALS['UPLOADS'] ); }
 function trailingslashit( $path ) { return rtrim( $path, '/\\' ) . '/'; }
 function current_time( $type, $gmt = 0 ) { return gmdate( 'Y-m-d H:i:s' ); }
 function get_gmt_from_date( $date, $format = 'Y-m-d H:i:s' ) { return gmdate( $format, strtotime( $date . ' UTC' ) ); }
-function wp_schedule_single_event( $ts, $hook ) { $GLOBALS['CRON'][] = $hook; return true; }
-function wp_clear_scheduled_hook( $hook ) { $GLOBALS['CRON'] = array_values( array_diff( $GLOBALS['CRON'], array( $hook ) ) ); }
-function wp_next_scheduled( $hook ) { return in_array( $hook, $GLOBALS['CRON'], true ) ? time() : false; }
+// WP-Cron: the events' hooks, and when each is due.
+function wp_schedule_single_event( $ts, $hook ) { $GLOBALS['CRON'][] = $hook; $GLOBALS['CRON_AT'][ $hook ] = (int) $ts; return true; }
+function wp_clear_scheduled_hook( $hook ) { $GLOBALS['CRON'] = array_values( array_diff( $GLOBALS['CRON'], array( $hook ) ) ); unset( $GLOBALS['CRON_AT'][ $hook ] ); }
+function wp_next_scheduled( $hook ) { return in_array( $hook, $GLOBALS['CRON'], true ) ? ( $GLOBALS['CRON_AT'][ $hook ] ?? time() ) : false; }
 function get_transient( $name ) { return array( 'synced_products' => 0, 'pending_jobs' => 0 ); }
 function apply_filters( $hook, $value ) { return $value; }
 function has_term() { return false; }
@@ -223,7 +225,7 @@ class TCGiant_Sync_API {
 	const DAILY_CALL_LIMIT = 50000;
 	public static function instance() { return new self(); }
 	public function get_remaining_daily_budget() { return 40000; }
-	public function get_item( $item_id ) { return array( 'Item' => array( 'ItemID' => $item_id, 'Title' => 'GetItem ' . $item_id, 'SellingStatus' => array( 'ListingStatus' => 'Active' ), 'ItemSpecifics' => array(), 'PictureDetails' => array( 'PictureURL' => 'u' ) ) ); }
+	public function get_item( $item_id ) { return array( 'Item' => array( 'ItemID' => $item_id, 'Title' => 'GetItem ' . $item_id, 'SellingStatus' => array( 'ListingStatus' => $GLOBALS['EBAY_STATUS'][ (string) $item_id ] ?? 'Active' ), 'ItemSpecifics' => array(), 'PictureDetails' => array( 'PictureURL' => 'u' ) ) ); }
 	public function get_active_listings( $page, $per_page = 200, $mod_from = '', $end_from = '' ) {
 		$GLOBALS['LOCK_AGE_AT_READ'][] = lock_age();
 		if ( isset( $GLOBALS['ON_PAGE'] ) ) {
@@ -260,6 +262,7 @@ function logged( $words ) { return count( preg_grep( '/' . preg_quote( $words, '
 function fresh_site( $pages, $per_page, array $state = array() ) {
 	$GLOBALS['OPTIONS']          = array();
 	$GLOBALS['CRON']             = array();
+	$GLOBALS['CRON_AT']          = array();
 	$GLOBALS['QUEUE']            = array();
 	$GLOBALS['LOG']              = array();
 	$GLOBALS['SAVED']            = array();
@@ -309,6 +312,10 @@ function scan_under_way( $idle_seconds, $activity_seconds = null ) {
 	$GLOBALS['QUEUE'] = array( array( 'tcgiant_sync_process_item_import', array( 'item_id' => '1004' ), 'tcgiant_sync_imports' ) );
 	$GLOBALS['LOG']   = array();
 	age_lock( $idle_seconds + 30 );
+	// The WP-Cron backstop armed as the scan began is that much nearer, or overdue.
+	foreach ( $GLOBALS['CRON_AT'] as $hook => $at ) {
+		$GLOBALS['CRON_AT'][ $hook ] = $at - $idle_seconds;
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -369,7 +376,9 @@ foreach ( (array) get_option( TCGiant_Sync_Importer::ACTIVE_IDS_OPTION, array() 
 	$LINKED[ 2001 + $i ] = (string) $item;
 }
 $started_local = state()['started_at'];
-// Products whose listings have gone from eBay: the pruner's work.
+// Products whose listings have gone from eBay: the pruner's work. eBay says
+// so when asked (since 3.27.6 the pruner asks first).
+$EBAY_STATUS = array( '990000000880' => 'Completed', '990000000881' => 'Completed' );
 $LINKED[880] = '990000000880';
 $PMETA[880]  = array( '_ebay_start_time' => '2026-01-05T10:00:00.000Z', '_ebay_export_last_pushed' => '2026-01-05 10:00:00' );
 $LINKED[881] = '990000000881';

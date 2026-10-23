@@ -280,6 +280,12 @@ class TCGiant_Sync_Mapper {
 			$product_data['meta']['_ebay_site'] = $product_data['site'];
 		}
 
+		// The listing's shipping, from what eBay sent: its policy, and its
+		// services and costs. On the product itself - the parent of a variable
+		// one - for a shop's own code to read. Nothing here asks eBay anything.
+		$product_data['meta_delete'] = array();
+		$this->add_shipping_meta( $ebay_item, $product_data );
+
 		// Map Variations.
 		$product_data['variations'] = array();
 		if ( isset( $ebay_item['Variations']['Variation'] ) ) {
@@ -435,19 +441,9 @@ class TCGiant_Sync_Mapper {
 	 * @return float Shipping cost in listing currency.
 	 */
 	private function extract_shipping_cost( $ebay_item ) {
-		$options = $ebay_item['ShippingDetails']['ShippingServiceOptions'] ?? null;
-		if ( empty( $options ) ) {
-			return 0.0;
-		}
-
-		// Normalize: single service is an assoc array, multiple is indexed array.
-		if ( isset( $options['ShippingService'] ) ) {
-			// Single shipping service — $options is the service itself.
-			$first = $options;
-		} else {
-			// Multiple services — grab the first one.
-			$first = $options[0] ?? null;
-		}
+		// The first in the order eBay sent them, as it always was here.
+		$options = $this->shipping_service_list( $ebay_item['ShippingDetails']['ShippingServiceOptions'] ?? null );
+		$first   = $options[0] ?? null;
 
 		if ( empty( $first ) || ! isset( $first['ShippingServiceCost'] ) ) {
 			return 0.0;
@@ -455,6 +451,237 @@ class TCGiant_Sync_Mapper {
 
 		$cost = $this->parse_price_value( $first['ShippingServiceCost'] );
 		return ( '' !== $cost ) ? (float) $cost : 0.0;
+	}
+
+	/**
+	 * A listing's shipping services, as a list, however many it has.
+	 *
+	 * eBay's XML, turned into an array, gives one service as the service itself
+	 * (its keys are ShippingService, ShippingServiceCost...) and several as a
+	 * list of them.
+	 *
+	 * @param mixed $options ShippingServiceOptions or InternationalShippingServiceOption.
+	 * @return array[]
+	 */
+	private function shipping_service_list( $options ) {
+		if ( empty( $options ) || ! is_array( $options ) ) {
+			return array();
+		}
+
+		// Single shipping service — $options is the service itself.
+		if ( isset( $options['ShippingService'] ) ) {
+			return array( $options );
+		}
+
+		// Multiple services.
+		return array_values( array_filter( $options, 'is_array' ) );
+	}
+
+	/**
+	 * The product meta that holds the listing's shipping, as eBay has it.
+	 *
+	 * For a shop's own code: one shop works out its checkout's shipping from
+	 * its eBay Business Policies. Until now the sync kept only the first
+	 * domestic cost, and only to add it to the price.
+	 */
+	const SHIPPING_META_KEYS = array(
+		'_ebay_shipping_policy_id',
+		'_ebay_shipping_policy_name',
+		'_ebay_shipping_type',
+		'_ebay_shipping_service',
+		'_ebay_shipping_cost',
+		'_ebay_shipping_currency',
+		'_ebay_shipping_services',
+	);
+
+	/**
+	 * Put the listing's shipping into the product's meta, from the eBay item
+	 * in hand, and asking eBay nothing:
+	 *
+	 * - _ebay_shipping_policy_id and _ebay_shipping_policy_name, from
+	 *   SellerProfiles.SellerShippingProfile (the Business Policy);
+	 * - _ebay_shipping_type, ShippingDetails.ShippingType: Flat, Calculated,
+	 *   FlatDomesticCalculatedInternational...;
+	 * - _ebay_shipping_service, _ebay_shipping_cost and _ebay_shipping_currency,
+	 *   from the domestic service eBay offers first (the lowest
+	 *   ShippingServicePriority): the cost a plain decimal, '0.00' when free;
+	 * - _ebay_shipping_services, every domestic and international service:
+	 *   service, cost, additional_cost, priority, free, international.
+	 *
+	 * Only what the item carries is written. A listing read in brief - a delta
+	 * row, say - has no ShippingDetails or SellerProfiles, and leaves what an
+	 * earlier full read recorded. The policy goes only when the item's
+	 * SellerProfiles are in hand and hold no shipping policy.
+	 *
+	 * The cost's currencyID does not survive the API class's conversion of
+	 * eBay's XML (SimpleXML drops an attribute on an element that holds text),
+	 * so the currency is the listing's own, Item.Currency, which eBay requires
+	 * shipping costs to be in, unless the conversion kept it.
+	 *
+	 * Never _ebay_export_fulfillment_policy: that is the shop's own choice of
+	 * policy for pushing the product, and the import leaves it alone.
+	 *
+	 * @param array $ebay_item    eBay item.
+	 * @param array $product_data Product data, given meta and meta_delete here.
+	 */
+	private function add_shipping_meta( array $ebay_item, array &$product_data ) {
+		// The Business Policy for shipping.
+		if ( isset( $ebay_item['SellerProfiles'] ) && is_array( $ebay_item['SellerProfiles'] ) ) {
+			$profile = $ebay_item['SellerProfiles']['SellerShippingProfile'] ?? null;
+			$id      = is_array( $profile ) ? $this->parse_price_value( $profile['ShippingProfileID'] ?? '' ) : '';
+
+			if ( '' !== $id ) {
+				$product_data['meta']['_ebay_shipping_policy_id'] = $id;
+				$name = $this->parse_price_value( $profile['ShippingProfileName'] ?? '' );
+				if ( '' !== $name ) {
+					$product_data['meta']['_ebay_shipping_policy_name'] = $name;
+				}
+			} else {
+				// The listing's policies are in hand, and none is for shipping.
+				$product_data['meta_delete'][] = '_ebay_shipping_policy_id';
+				$product_data['meta_delete'][] = '_ebay_shipping_policy_name';
+			}
+		}
+
+		$details = $ebay_item['ShippingDetails'] ?? null;
+		if ( ! is_array( $details ) ) {
+			return;
+		}
+
+		$type = $this->parse_price_value( $details['ShippingType'] ?? '' );
+		if ( '' !== $type ) {
+			$product_data['meta']['_ebay_shipping_type'] = $type;
+		}
+
+		$services = array();
+		$currency = '';
+		foreach ( array( 'ShippingServiceOptions' => false, 'InternationalShippingServiceOption' => true ) as $container => $international ) {
+			foreach ( $this->shipping_service_list( $details[ $container ] ?? null ) as $order => $option ) {
+				$service = $this->parse_price_value( $option['ShippingService'] ?? '' );
+				if ( '' === $service ) {
+					continue;
+				}
+
+				$cost     = $this->shipping_amount( $option['ShippingServiceCost'] ?? null );
+				$free     = 'true' === strtolower( $this->parse_price_value( $option['FreeShipping'] ?? '' ) )
+					|| ( '' !== $cost && 0.0 === (float) $cost );
+				$priority = $this->parse_price_value( $option['ShippingServicePriority'] ?? '' );
+
+				$services[] = array(
+					'service'         => $service,
+					'cost'            => $free && '' === $cost ? '0.00' : $cost,
+					'additional_cost' => $this->shipping_amount( $option['ShippingServiceAdditionalCost'] ?? null ),
+					'priority'        => '' !== $priority ? (int) $priority : $order + 1,
+					'free'            => $free,
+					'international'   => $international,
+				);
+
+				if ( '' === $currency ) {
+					$currency = self::currency_of( $option['ShippingServiceCost'] ?? null );
+				}
+			}
+		}
+
+		if ( empty( $services ) ) {
+			return;
+		}
+
+		$product_data['meta']['_ebay_shipping_services'] = $services;
+
+		// The domestic service eBay offers first: the lowest priority, and of
+		// two the same, the one it sent first. Kept stable by hand, since PHP
+		// before 8 does not keep the order of equals when it sorts.
+		$domestic = array();
+		foreach ( $services as $index => $one ) {
+			if ( ! $one['international'] ) {
+				$domestic[] = array( $one['priority'], $index, $one );
+			}
+		}
+		if ( empty( $domestic ) ) {
+			return;
+		}
+		usort( $domestic, function ( $a, $b ) {
+			return $a[0] === $b[0] ? $a[1] - $b[1] : $a[0] - $b[0];
+		} );
+		$first = $domestic[0][2];
+
+		$product_data['meta']['_ebay_shipping_service'] = $first['service'];
+
+		// A service with no cost of its own is calculated for each buyer: said
+		// as no cost, but only where the listing says it is calculated - an
+		// answer that left the cost out says nothing about it.
+		if ( '' !== $first['cost'] ) {
+			$product_data['meta']['_ebay_shipping_cost'] = $first['cost'];
+		} elseif ( 0 === strpos( $type, 'Calculated' ) ) {
+			$product_data['meta']['_ebay_shipping_cost'] = '';
+		}
+
+		if ( '' === $currency ) {
+			$currency = $this->parse_price_value( $ebay_item['Currency'] ?? '' );
+		}
+		if ( '' !== $currency ) {
+			$product_data['meta']['_ebay_shipping_currency'] = $currency;
+		}
+	}
+
+	/**
+	 * An amount of eBay's as a plain decimal string, or '' when there is none.
+	 *
+	 * @param mixed $raw ShippingServiceCost and the like.
+	 * @return string E.g. '4.50'.
+	 */
+	private function shipping_amount( $raw ) {
+		$value = $this->parse_price_value( $raw );
+
+		return ( '' !== $value && is_numeric( $value ) ) ? number_format( (float) $value, 2, '.', '' ) : '';
+	}
+
+	/**
+	 * The currencyID an amount came with, where the conversion kept it.
+	 *
+	 * @param mixed $raw An amount from eBay's answer.
+	 * @return string E.g. 'USD', or ''.
+	 */
+	private static function currency_of( $raw ) {
+		if ( ! is_array( $raw ) ) {
+			return '';
+		}
+
+		$id = $raw['@attributes']['currencyID'] ?? ( $raw['currencyID'] ?? '' );
+
+		return is_string( $id ) ? $id : '';
+	}
+
+	/**
+	 * One line saying what the product holds of its listing's shipping, for
+	 * its eBay tab - or '' when nothing was recorded.
+	 *
+	 * @param int $product_id Product.
+	 * @return string E.g. "UK Standard - RoyalMailFirstClass 3.20 GBP".
+	 */
+	public static function stored_shipping_line( $product_id ) {
+		$policy  = (string) get_post_meta( $product_id, '_ebay_shipping_policy_name', true );
+		$service = (string) get_post_meta( $product_id, '_ebay_shipping_service', true );
+		$cost    = (string) get_post_meta( $product_id, '_ebay_shipping_cost', true );
+		$money   = (string) get_post_meta( $product_id, '_ebay_shipping_currency', true );
+		$type    = (string) get_post_meta( $product_id, '_ebay_shipping_type', true );
+
+		$what = $service;
+		if ( '' !== $service ) {
+			if ( '' !== $cost && 0.0 === (float) $cost ) {
+				$what .= ' ' . __( 'free', 'tcgiant-sync' );
+			} elseif ( '' !== $cost ) {
+				$what .= ' ' . trim( $cost . ' ' . $money );
+			} elseif ( '' !== $type ) {
+				$what .= ' (' . $type . ')';
+			}
+		}
+
+		$parts = array_values( array_filter( array( $policy, $what ), function ( $part ) {
+			return '' !== $part;
+		} ) );
+
+		return implode( ' - ', $parts );
 	}
 
 	/**
@@ -994,6 +1221,14 @@ class TCGiant_Sync_Mapper {
 		// Set Custom Meta (including _ebay_item_id for tracking).
 		foreach ( $product_data['meta'] as $key => $val ) {
 			$product->update_meta_data( $key, $val );
+		}
+
+		// What the listing in hand shows it no longer has - never what it
+		// merely did not carry. See add_shipping_meta().
+		foreach ( (array) ( $product_data['meta_delete'] ?? array() ) as $key ) {
+			if ( ! array_key_exists( $key, $product_data['meta'] ) ) {
+				$product->delete_meta_data( $key );
+			}
 		}
 
 		// Save Bin Location if configured.

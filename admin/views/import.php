@@ -27,6 +27,12 @@ if ( 'limit_reached' === $sync_state['status'] && $license_ui['can_import'] ) {
 	TCGiant_Sync_Importer::update_sync_state( array( 'status' => 'stopped' ) );
 }
 
+// What the sync's progress looks like on screen, from the state as it is:
+// the queued imports' own count, the scan's next batch waiting, and whether
+// Resume Import has a sync to carry on. A rate limit has its own card below.
+$tc_screen    = TCGiant_Sync_Importer::screen_progress( $sync_state );
+$tc_resumable = $tc_screen['can_resume'] && 'rate_limited' !== $sync_state['status'];
+
 // Auto-clear rate_limited state when auto-retry already handled it.
 if ( 'rate_limited' === $sync_state['status'] && function_exists( 'as_get_scheduled_actions' ) ) {
 	// Scanning is queued as tcgiant_sync_scan_all_pages; the old per-page
@@ -57,10 +63,10 @@ if ( 'rate_limited' === $sync_state['status'] && function_exists( 'as_get_schedu
 	}
 }
 
-$progress_pct = 0;
-if ( $sync_state['total_queued'] > 0 ) {
-	$progress_pct = round( ( ( $sync_state['total_processed'] + $sync_state['total_errors'] ) / $sync_state['total_queued'] ) * 100 );
-}
+// The queued imports against the number queued. The listings the scan
+// imported itself are in total_processed too, and measured against
+// total_queued they read as "38000/1400" and a bar past the end.
+$progress_pct = $tc_screen['queued_pct'];
 ?>
 
 <div class="wrap tc-dashboard-wrap">
@@ -185,8 +191,21 @@ if ( $sync_state['total_queued'] > 0 ) {
 						<?php
 						if ( 'scanning' === $sync_state['status'] ) {
 							echo 'Page ' . esc_html( $sync_state['current_page'] ) . ( $sync_state['total_pages'] ? '/' . esc_html( $sync_state['total_pages'] ) : '' );
+							// What the scan has done so far, and whether its next
+							// batch is waiting to start.
+							if ( (int) $sync_state['total_processed'] > 0 ) {
+								echo ' · ' . esc_html( number_format_i18n( (int) $sync_state['total_processed'] ) ) . ' imported';
+							}
+							if ( $tc_screen['stalled'] && '' !== $tc_screen['since_text'] ) {
+								echo ' · ' . esc_html( sprintf( 'no progress since %s', $tc_screen['since_text'] ) );
+							} elseif ( $tc_screen['waiting_since'] > 0 ) {
+								echo ' · ' . esc_html( sprintf( 'next batch waiting since %s', $tc_screen['since_text'] ) );
+							}
 						} elseif ( 'importing' === $sync_state['status'] ) {
-							echo esc_html( $sync_state['total_processed'] ) . '/' . esc_html( $sync_state['total_queued'] ) . ' items';
+							echo esc_html( $tc_screen['queued_done'] ) . '/' . esc_html( $sync_state['total_queued'] ) . ' queued listings done';
+							if ( $tc_screen['inline'] > 0 ) {
+								echo ', ' . esc_html( number_format_i18n( $tc_screen['inline'] ) ) . ' imported while scanning';
+							}
 						} elseif ( 'complete' === $sync_state['status'] ) {
 							echo esc_html( $sync_state['total_processed'] ) . ' imported, ' . esc_html( $sync_state['total_errors'] ) . ' errors';
 						} elseif ( 'rate_limited' === $sync_state['status'] ) {
@@ -250,6 +269,19 @@ if ( $sync_state['total_queued'] > 0 ) {
 				</div>
 			<?php endif; ?>
 
+			<!-- Resume Import: a sync stopped by hand or by an error, or a scan that has stalled. Shown and hidden by the status poll. -->
+			<div class="tc-limit-reached-card" id="tc-resume-card" style="border-left:4px solid var(--tc-warning);background:#fff8e1;<?php echo $tc_resumable ? '' : 'display:none;'; ?>">
+				<p style="margin:0 0 12px;font-size:13px;color:#555;"><?php esc_html_e( 'The sync stopped part way. Resume Import carries it on from where it stopped, and keeps the listings it has queued for import.', 'tcgiant-sync' ); ?></p>
+				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+					<input type="hidden" name="action" value="tcgiant_resume_sync">
+					<?php wp_nonce_field( 'tcgiant_resume_sync' ); ?>
+					<button type="submit" class="tc-button full-width" style="background:var(--tc-warning);border-color:var(--tc-warning);">
+						<span class="dashicons dashicons-controls-play" style="font-size:16px;"></span>
+						<?php esc_html_e( 'Resume Import', 'tcgiant-sync' ); ?>
+					</button>
+				</form>
+			</div>
+
 			<!-- Progress Bar -->
 			<div id="tc-progress" class="tc-progress-wrap" style="display:<?php echo 'importing' === $sync_state['status'] ? 'block' : 'none'; ?>;">
 				<div class="tc-progress-bar">
@@ -287,7 +319,7 @@ if ( $sync_state['total_queued'] > 0 ) {
 				<?php if ( $license_ui['is_pro'] ) : ?>
 					<div class="tc-usage-pro">
 						<span class="dashicons dashicons-yes-alt" style="color:var(--tc-success);"></span>
-						<span><strong><?php echo esc_html( $license_ui['active_count'] ); ?></strong> <?php esc_html_e( 'active products — Unlimited', 'tcgiant-sync' ); ?></span>
+						<span><strong id="tc-usage-pro-count"><?php echo esc_html( $license_ui['active_count'] ); ?></strong> <?php esc_html_e( 'active products — Unlimited', 'tcgiant-sync' ); ?></span>
 					</div>
 				<?php else : ?>
 					<div class="tc-usage-bar-wrap">

@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.27.5
+Stable tag: 3.27.6
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,22 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.27.6 - 2026-10-23 =
+**Full syncs of large catalogues carry on by themselves**
+* FIX: A full sync read ten pages of your eBay listings at a time, however long they took, and a host that stopped it part way left it saying "Scanning" with nothing to carry it on. The screen stayed on the same page, and only Fetch Inventory moved it, from page 1 again. The sync now stops in good time and hands on to a fresh request, part way through a page if need be, and carries on from the listing it stopped at. If your host stops it anyway, it carries on by itself within about five minutes, from that listing. If your host stops it at about the same point twice, it hands on before that point from then on. A listing that stops it three times in a row is moved past, named in the log and listed on Stock Review.
+* FIX: Resume Import is now offered on the Import screen and the Dashboard for a full sync that has stopped part way, as well as one stopped by an error or by hand. It carries on from where the sync stopped and keeps the listings it has queued. On a sync that had read every page, it carries on with the imports, without reading your listings again. Fetch Inventory pressed on a full sync that has made no progress for 10 minutes now points to Resume Import instead of starting again from page 1. Fetch Inventory and the hourly sync also leave alone a full sync that is still reading your listings while one of its imports waits for eBay's call limit.
+* FIX: A listing that sold or ended while a full sync was reading your listings could make it miss another, live listing, whose product the clean-up after the sync then moved to the trash. Every page is now read as your listings stood when the sync began, and the list of live listings the clean-up goes by is kept whole even when your host stops the sync while saving it.
+* FIX: Emergency Stop now stops a full sync before the next listing. Resume Import carries it on from there.
+* FIX: The clean-up after a full sync now asks eBay about each product it would move to the trash, and keeps any whose listing is still live. On a large shop, Good 'Til Cancelled listings that renewed while the sync was reading could drop out of what it read, and their products were trashed. It asks about up to 300 products each time, and checks the rest an hour later.
+* The import's totals now go up as the sync reads each page. The Import screen and the Dashboard say when the sync's next batch is waiting to start, and count the listings queued for import on their own: they were measured against every listing imported, so a sync could read "38000/1400 items". "Total Imported" on the Dashboard, and "Import Usage" on Pro, now update without reloading the page.
+* Stock Review now says that its list of products from other eBay sites fills in as a full sync reads your listings, so more can appear while one runs.
+
+**Orders**
+* FIX: Saving an order imported from eBay on its edit screen, to add a tracking number and mark it Completed say, took the sale off the product's stock a second time, so a sold item could show -1. WooCommerce now leaves the stock of an eBay order's items to the sync.
+
+**For developers: each product's eBay shipping**
+* NEW: Every product the import saves now holds its eBay listing's shipping as product meta, for your own code to read: _ebay_shipping_policy_id and _ebay_shipping_policy_name (the listing's shipping Business Policy), _ebay_shipping_type (Flat, Calculated and so on), _ebay_shipping_service, _ebay_shipping_cost and _ebay_shipping_currency (the domestic service the listing offers first; the cost is a plain decimal, 0.00 when free), and _ebay_shipping_services (every domestic and international service). For example: get_post_meta( $product_id, '_ebay_shipping_policy_name', true ). They come from what eBay already sends the import, they are on the parent of a variable product, and the product's eBay tab shows them in one line. The policy is recorded whenever eBay's answer includes it. They are deleted with the plugin's data.
 
 = 3.27.5 - 2026-10-19 =
 **Import only the listings on your own eBay site**

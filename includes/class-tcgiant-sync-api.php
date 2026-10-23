@@ -607,8 +607,11 @@ class TCGiant_Sync_API {
 	 *                                ModTimeFrom/ModTimeTo to only return items modified
 	 *                                since this time (delta sync mode). When omitted,
 	 *                                uses EndTimeFrom/EndTimeTo for a full scan.
+	 * @param string $end_time_from   Optional ISO 8601 timestamp: for a full scan, the
+	 *                                listings ending from then on, rather than from now.
+	 *                                The importer passes the moment its scan began.
 	 */
-	public function get_active_listings( $page_number = 1, $entries_per_page = 200, $mod_time_from = '' ) {
+	public function get_active_listings( $page_number = 1, $entries_per_page = 200, $mod_time_from = '', $end_time_from = '' ) {
 		// Use GetSellerList instead of GetMyeBaySelling because only GetSellerList
 		// returns Storefront (StoreCategoryID) data needed for store category filtering.
 
@@ -622,8 +625,15 @@ class TCGiant_Sync_API {
 			// Full scan mode: all active listings.
 			// eBay limits EndTimeFrom to EndTimeTo range to a maximum of 120 days.
 			// Active GTC listings renew every 30 days, so +120 days captures all active items.
-			$end_from = gmdate( 'Y-m-d\TH:i:s.000\Z' );
-			$end_to   = gmdate( 'Y-m-d\TH:i:s.000\Z', strtotime( '+120 days' ) );
+			//
+			// From when the scan began, when the importer says so: the same
+			// window on every page, so a listing that ends between two reads
+			// stays in the answer, ended, rather than dropping out and moving
+			// every listing after it up a place - see scan_end_from().
+			$from_ts  = '' !== (string) $end_time_from ? strtotime( (string) $end_time_from ) : false;
+			$from_ts  = false === $from_ts ? time() : $from_ts;
+			$end_from = gmdate( 'Y-m-d\TH:i:s.000\Z', $from_ts );
+			$end_to   = gmdate( 'Y-m-d\TH:i:s.000\Z', $from_ts + 120 * DAY_IN_SECONDS );
 			$xml = '
 <EndTimeFrom>' . $end_from . '</EndTimeFrom>
 <EndTimeTo>' . $end_to . '</EndTimeTo>';

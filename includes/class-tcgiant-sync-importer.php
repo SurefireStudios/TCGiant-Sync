@@ -65,6 +65,19 @@ class TCGiant_Sync_Importer {
 	 * ~300 KB serialized array being loaded into memory on every front-end and
 	 * admin request until the scan finished and the pruner deleted it.
 	 *
+	 * Written over, never deleted first. It was deleted and added again, page
+	 * after page, and a request that died between the two - out of memory in
+	 * the add, say - lost every page read before it. Since 3.27.6 a scan
+	 * carries on after a death, so it would have finished, clean, and the
+	 * clean-up after it trashed the products of every page lost. update_option()
+	 * sets autoload too when the value changes, as it always does here (since
+	 * WordPress 4.2; the plugin needs 5.8), and start_full_sync() deletes the
+	 * list before a scan, so it is created with autoload off.
+	 *
+	 * A write the database refuses leaves this page's listings off the list:
+	 * the scan is noted as not clean (scan_ids_lost), and finalize_scan()
+	 * authorises no clean-up after it.
+	 *
 	 * @param array $ids eBay Item IDs seen on this page.
 	 * @return void
 	 */
@@ -78,12 +91,19 @@ class TCGiant_Sync_Importer {
 
 		$merged = array_values( array_unique( array_merge( $existing, $ids ) ) );
 
-		// Delete-then-add is the only reliable way to change an existing
-		// option's autoload flag on WordPress versions before 6.4.
-		if ( ! empty( $existing ) ) {
-			delete_option( self::ACTIVE_IDS_OPTION );
+		if ( count( $merged ) === count( $existing ) ) {
+			return; // Nothing new.
 		}
-		add_option( self::ACTIVE_IDS_OPTION, $merged, '', false );
+
+		// False only when the database would not take it: the value changed.
+		if ( ! update_option( self::ACTIVE_IDS_OPTION, $merged, false ) ) {
+			$state = self::state_from_table();
+			TCGiant_Sync_Logger::error( sprintf(
+				'Full sync: the list of live eBay listings could not be saved (%d listings), so the clean-up after this sync is cancelled: it would take listings left off the list for gone.',
+				count( $merged )
+			) );
+			self::update_sync_state( array( 'scan_ids_lost' => self::scan_key( $state ) ), true );
+		}
 	}
 
 	/**
@@ -187,6 +207,34 @@ class TCGiant_Sync_Importer {
 	 * trashing the store.
 	 */
 	const PRUNE_MAX_RATIO = 0.20;
+
+	/**
+	 * GetItem calls a prune run may make, confirming that each listing whose
+	 * product it would retire has ended (confirm_prune_candidates()). The
+	 * rest are kept, and wait for a run of their own an hour on.
+	 */
+	const PRUNE_CONFIRM_PER_RUN = 300;
+
+	/**
+	 * Failed GetItem calls in a row after which a prune run asks no more.
+	 */
+	const PRUNE_CONFIRM_ERRORS = 5;
+
+	/**
+	 * Products a prune run kept because eBay was not asked, or did not answer,
+	 * about their listings: rows (post ID => item ID), round, and scan - the
+	 * full sync whose clean-up it was (full_started_at). Never autoloaded.
+	 * Deleted by the next full run, by a full sync's start, and by a
+	 * follow-up that finds that sync no longer the last.
+	 */
+	const PRUNE_PENDING_OPTION = 'tcgiant_sync_prune_pending';
+
+	/**
+	 * When the follow-up run takes them up, and how many follow-up runs there
+	 * may be before the rest wait for the next full sync's clean-up.
+	 */
+	const PRUNE_FOLLOW_UP_SECONDS = 3600;
+	const PRUNE_FOLLOW_UP_ROUNDS  = 24;
 
 	/**
 	 * Whether the free-limit notice has already been logged this request, so a
@@ -357,9 +405,15 @@ class TCGiant_Sync_Importer {
 	 * Update sync state.
 	 *
 	 * @param array $updates Key-value pairs to merge into current state.
+	 * @param bool  $fresh   Merge into the state as the table holds it now,
+	 *                       not as this request first read it. For the full
+	 *                       sync's scan, which writes its counts while the
+	 *                       imports it queued write theirs in other requests:
+	 *                       merged into its own copy, it put back their old
+	 *                       figures, and an Emergency Stop pressed meanwhile.
 	 */
-	public static function update_sync_state( $updates ) {
-		$state = self::get_sync_state();
+	public static function update_sync_state( $updates, $fresh = false ) {
+		$state = $fresh ? self::state_from_table() : self::get_sync_state();
 
 		// When the delta last moved its position, for telling a sync working
 		// through a backlog from one that has stopped.
@@ -395,12 +449,15 @@ class TCGiant_Sync_Importer {
 	public static function sync_idle_seconds( $state ) {
 		// The delta notes its place before every listing without touching the
 		// state, so a run working steadily through a long batch is not idle.
+		// So does the full sync's scan, since 3.27.6.
 		$latest   = (int) ( $state['last_activity_ts'] ?? 0 );
 		$progress = get_option( self::DELTA_PROGRESS_OPTION, array() );
 
 		if ( is_array( $progress ) && ! empty( $progress['ts'] ) ) {
 			$latest = max( $latest, (int) $progress['ts'] );
 		}
+
+		$latest = max( $latest, self::scan_progress_ts( is_array( $state ) ? $state : array() ) );
 
 		if ( $latest > 0 ) {
 			return time() - $latest;
@@ -553,6 +610,20 @@ class TCGiant_Sync_Importer {
 	}
 
 	/**
+	 * Hold the sync lock for a full sync's scan, whether or not it is there.
+	 *
+	 * For the batch that has just taken the scan's place (claim_scan_batch()),
+	 * and for one PHP killed as it hands the scan on (on_scan_death()): either
+	 * is the sync at work. refresh_lock() alone left a scan without one for
+	 * good once a batch had died and let it go, so Fetch Inventory or the
+	 * hourly sync could start over it as soon as it paused for anything but
+	 * "scanning" - an import of its put off by eBay's rate limit, say.
+	 */
+	private static function take_lock() {
+		@file_put_contents( self::get_lock_file_path(), (string) time() );
+	}
+
+	/**
 	 * Release the sync lock.
 	 */
 	private static function release_lock() {
@@ -596,7 +667,7 @@ class TCGiant_Sync_Importer {
 		// Guard: don't restart if a sync is already in progress (prevents cron overlap).
 		if ( ! $force ) {
 			$current = self::get_sync_state();
-			if ( in_array( $current['status'], array( 'scanning', 'importing' ), true ) ) {
+			if ( in_array( $current['status'], array( 'scanning', 'importing' ), true ) || self::scan_still_running( $current ) ) {
 				TCGiant_Sync_Logger::log( 'Sync already in progress - skipping duplicate request.' );
 				return new WP_Error(
 					'already_running',
@@ -619,24 +690,69 @@ class TCGiant_Sync_Importer {
 		// the scan writes. The imports it queued keep last_activity_ts fresh
 		// long after the host has killed the scan itself, and judged by that,
 		// a scan dead for hours could not be started again.
+		//
+		// And, since 3.27.6, by the listing it last began: one page can take a
+		// scan many requests now, each one stopping in good time and handing
+		// on to the next, and scan_page_at is written only as a page begins.
 		if ( $force ) {
 			$current   = self::get_sync_state();
 			$status    = (string) ( $current['status'] ?? '' );
-			$scan_idle = time() - (int) ( $current['scan_page_at'] ?? 0 );
+			$scan_idle = time() - self::scan_heartbeat( $current );
 			$stall     = self::SYNC_STALL_MINUTES * MINUTE_IN_SECONDS;
-			if ( 'scanning' === $status && 'full' === ( $current['sync_mode'] ?? 'full' ) && $scan_idle <= $stall ) {
+			if ( in_array( $status, array( 'scanning', 'limit_reached' ), true ) && 'full' === ( $current['sync_mode'] ?? 'full' ) && $scan_idle <= $stall
+				&& self::scan_has_stalled( $current ) ) {
+				// It has stopped, but not for long enough to be given up on:
+				// Resume Import carries on from the listing it stopped at, and
+				// starting again would read every page from the first.
 				TCGiant_Sync_Logger::log( sprintf(
-					'Full sync not started again: the one running is still scanning (page %d, its last page begun %d seconds ago).',
-					(int) ( $current['current_page'] ?? 0 ),
-					$scan_idle
+					'Full sync not started again: the one running has made no progress for %d seconds (page %d). Resume Import carries it on from where it stopped.',
+					$scan_idle,
+					(int) ( $current['current_page'] ?? 0 )
 				) );
 				return new WP_Error(
-					'scan_running',
+					'scan_stalled',
 					sprintf(
-						/* translators: 1: the page the scan has reached, 2: minutes */
-						__( 'A full sync is still reading your eBay listings (page %1$d so far), so it was not started again from page 1. Press Process Queue to run what it has waiting. If it shows no progress for %2$d minutes, you can start it again.', 'tcgiant-sync' ),
+						/* translators: 1: the page the scan has reached, 2: minutes without progress, 3: minutes */
+						__( 'A full sync is still reading your eBay listings (page %1$d so far), but has made no progress for %2$d minutes, so it was not started again from page 1. Press Resume Import to carry it on from where it stopped. If it shows no progress for %3$d minutes, you can start it again.', 'tcgiant-sync' ),
 						(int) ( $current['current_page'] ?? 0 ),
+						(int) floor( $scan_idle / MINUTE_IN_SECONDS ),
 						self::SYNC_STALL_MINUTES
+					)
+				);
+			}
+			// Since 3.27.6, whatever it says - "rate_limited" or "limit_reached"
+			// as well as "scanning" - and by its queued next batch or its
+			// backstop as well as by its progress: see scan_still_running().
+			if ( self::scan_still_running( $current ) ) {
+				TCGiant_Sync_Logger::log( 'scanning' === $status
+					? sprintf(
+						'Full sync not started again: the one running is still scanning (page %d, its last progress %d seconds ago).',
+						(int) ( $current['current_page'] ?? 0 ),
+						$scan_idle
+					)
+					: sprintf(
+						'Full sync not started again: the one running is still reading pages, though it says "%s" (page %d, its last progress %d seconds ago).',
+						$status,
+						(int) ( $current['current_page'] ?? 0 ),
+						$scan_idle
+					) );
+				if ( $scan_idle <= $stall ) {
+					return new WP_Error(
+						'scan_running',
+						sprintf(
+							/* translators: 1: the page the scan has reached, 2: minutes */
+							__( 'A full sync is still reading your eBay listings (page %1$d so far), so it was not started again from page 1. Press Process Queue to run what it has waiting. If it shows no progress for %2$d minutes, you can start it again.', 'tcgiant-sync' ),
+							(int) ( $current['current_page'] ?? 0 ),
+							self::SYNC_STALL_MINUTES
+						)
+					);
+				}
+				return new WP_Error(
+					'scan_waiting',
+					sprintf(
+						/* translators: %d: the page the scan has reached */
+						__( 'A full sync is part way through reading your eBay listings (page %d so far) and its next batch is waiting to run, so it was not started again from page 1. Press Resume Import to carry it on now, or Emergency Stop first to start again.', 'tcgiant-sync' ),
+						(int) ( $current['current_page'] ?? 0 )
 					)
 				);
 			}
@@ -677,6 +793,9 @@ class TCGiant_Sync_Importer {
 			as_unschedule_all_actions( 'tcgiant_sync_fetch_delta_events', null, 'tcgiant_sync_group' );
 			as_unschedule_all_actions( 'tcgiant_sync_process_item_import', null, 'tcgiant_sync_imports' );
 			as_unschedule_all_actions( 'tcgiant_sync_download_images', null, 'tcgiant_sync_images' );
+			// The clean-up's follow-up for the last sync: its products are
+			// this sync's clean-up's to decide (PRUNE_PENDING_OPTION, below).
+			as_unschedule_all_actions( 'tcgiant_sync_prune_orphans', array( 'follow_up' => true ), 'tcgiant_sync_group' );
 		}
 
 		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
@@ -687,6 +806,14 @@ class TCGiant_Sync_Importer {
 			delete_transient( 'tcgiant_sync_cats_' . md5( $settings['category_ids'] ) );
 		}
 
+		// Where the delta picks up once this finishes - see full_sync_position().
+		// It is also what this scan is known by: a batch queued for another
+		// scan, or one still running when this replaced it, stops on seeing it.
+		$scan_started = gmdate( 'Y-m-d\TH:i:s.000\Z' );
+
+		// The last scan's place in its pages goes with it.
+		self::clear_scan_progress();
+
 		// Reset sync state.
 		self::update_sync_state( array(
 			'status'              => 'scanning',
@@ -696,12 +823,16 @@ class TCGiant_Sync_Importer {
 			'total_queued'        => 0,
 			'total_processed'     => 0,
 			'total_errors'        => 0,
+			// Of the totals above, what the scan imported itself, for telling
+			// the queued imports' progress apart from it.
+			'scan_inline'         => 0,
+			'scan_inline_errors'  => 0,
+			'scan_flushed'        => '',
 			'current_page'        => 1,
 			'total_pages'         => 0,
 			'filter_name'         => $filter_name,
 			'started_at'          => current_time( 'mysql' ),
-			// Where the delta picks up once this finishes - see full_sync_position().
-			'full_started_at'     => gmdate( 'Y-m-d\TH:i:s.000\Z' ),
+			'full_started_at'     => $scan_started,
 			'last_item_title'     => '',
 			'rate_limit_retries'  => 0,
 			'scan_complete_clean' => false,
@@ -719,13 +850,15 @@ class TCGiant_Sync_Importer {
 
 		// Clear active IDs list for pruning orphaned items.
 		delete_option( self::ACTIVE_IDS_OPTION );
+		// And what the last clean-up kept to ask eBay about again: this sync's decides afresh.
+		delete_option( self::PRUNE_PENDING_OPTION );
 
 		$api = TCGiant_Sync_API::instance();
 		TCGiant_Sync_Logger::log( sprintf(
 			'Starting full sync for: %s (API budget: %d/%d calls remaining today)',
 			$filter_name, $api->get_remaining_daily_budget(), TCGiant_Sync_API::DAILY_CALL_LIMIT
 		) );
-		as_enqueue_async_action( 'tcgiant_sync_scan_all_pages', array(), 'tcgiant_sync_group' );
+		self::queue_scan_batch( $scan_started );
 
 		return true;
 	}
@@ -763,6 +896,16 @@ class TCGiant_Sync_Importer {
 		// It records nothing meanwhile, but that import is what completes it,
 		// moving the delta sync's position and queuing the pruner. The delta is
 		// an Action Scheduler job too, so this waits on nothing it would not.
+		//
+		// Nor, since 3.27.6, a full sync's scan still at work under another
+		// status - "rate_limited" when an import it queued met eBay's limit,
+		// "limit_reached" on the free tier - or waiting for its next batch or
+		// its backstop: see scan_still_running(). The delta took it over,
+		// cancelled its next batch and left it unfinished.
+		if ( self::scan_still_running( $state ) ) {
+			TCGiant_Sync_Logger::log( 'Sync already in progress — skipping delta sync request.' );
+			return;
+		}
 		if ( in_array( $state['status'], array( 'scanning', 'importing' ), true ) ) {
 			$imports_waiting = 'importing' === $state['status']
 				&& 'full' === ( $state['sync_mode'] ?? 'full' )
@@ -777,6 +920,9 @@ class TCGiant_Sync_Importer {
 				self::SYNC_STALL_MINUTES
 			) );
 			self::release_lock();
+			// A full sync's place in its pages goes with it. A batch of it
+			// still running, against every sign, finds its place gone and stops.
+			self::clear_scan_progress();
 		}
 
 		// File lock: prevent concurrent execution.
@@ -2635,19 +2781,7 @@ class TCGiant_Sync_Importer {
 	 * @return bool
 	 */
 	private static function stop_pressed() {
-		global $wpdb;
-
-		$state = null;
-		if ( isset( $wpdb ) && is_object( $wpdb ) && method_exists( $wpdb, 'get_var' ) && isset( $wpdb->options ) ) {
-			$raw = $wpdb->get_var( $wpdb->prepare( "SELECT option_value FROM {$wpdb->options} WHERE option_name = %s LIMIT 1", self::STATE_OPTION ) );
-			if ( is_string( $raw ) ) {
-				$state = maybe_unserialize( $raw );
-			}
-		}
-
-		if ( ! is_array( $state ) ) {
-			$state = self::get_sync_state();
-		}
+		$state = self::state_from_table();
 
 		return 'stopped' === ( $state['status'] ?? '' );
 	}
@@ -2916,12 +3050,20 @@ class TCGiant_Sync_Importer {
 	 *
 	 * Unlike start_full_sync(), this preserves existing totals and continues
 	 * from the last scanned page or re-queues pending item imports.
+	 *
+	 * Also, since 3.27.6, a full sync whose scan has stopped part way with
+	 * nothing left to carry it on - still saying it is scanning, with no
+	 * progress for SCAN_STALL_MINUTES (scan_has_stalled()). It carries on from
+	 * the listing it stopped at, with the imports it queued kept. Refused, the
+	 * shop's only way on was Fetch Inventory, which began again from page 1.
 	 */
 	public function resume_sync() {
-		$state = self::get_sync_state();
+		// As the table has it: a batch may have written since this request
+		// first read the state.
+		$state = self::state_from_table();
 
-		// Only resume from rate_limited or stopped states.
-		if ( ! in_array( $state['status'], array( 'rate_limited', 'stopped', 'error' ), true ) ) {
+		// Only from rate_limited, stopped, error, or a scan that has stalled.
+		if ( ! self::can_resume( $state ) ) {
 			TCGiant_Sync_Logger::log( 'Cannot resume: sync is not in a paused/limited state.', 'warning' );
 			return;
 		}
@@ -2941,32 +3083,74 @@ class TCGiant_Sync_Importer {
 			wp_clear_scheduled_hook( 'tcgiant_sync_scan_resume' );
 		}
 
+		$key = self::scan_key( $state );
+
+		// Every page was read already: what was paused is the import phase -
+		// one of the queued imports hit eBay's rate limit, say. The sync goes
+		// back to where finalize_scan() left it, so the imports still queued
+		// complete it as before. Queued again, the scan found nothing to read
+		// and left the sync "scanning", for good.
+		if ( '' !== $key && $key === (string) ( $state['scan_finished'] ?? '' ) ) {
+			self::update_sync_state( array(
+				'status'             => 'importing',
+				'rate_limit_retries' => 0,
+			), true );
+			TCGiant_Sync_Logger::log( 'Resuming import phase: every page was read already, and the listings the scan queued carry on importing.', 'success' );
+			return;
+		}
+
+		$stalled     = in_array( (string) ( $state['status'] ?? '' ), array( 'scanning', 'limit_reached' ), true );
 		$resume_page = max( 1, (int) $state['current_page'] );
 		$total_pages = (int) $state['total_pages'];
 
-		// Reset backoff counter on manual resume.
-		self::update_sync_state( array( 'rate_limit_retries' => 0 ) );
+		// Where the scan stopped, to the listing, kept since 3.27.6. The batch
+		// that held it is let go of, unless it has written in the last few
+		// minutes: one still at work keeps its place, and hands on itself.
+		$progress = self::scan_progress();
+		$at_item  = 0;
+		if ( $key === (string) ( $progress['scan'] ?? '' ) && (int) ( $progress['page'] ?? 0 ) > 0 ) {
+			$resume_page = (int) $progress['page'];
+			$at_item     = (int) ( $progress['next'] ?? 0 );
+			if ( ! self::scan_batch_live( $progress ) ) {
+				$progress['owner'] = '';
+				self::save_scan_progress( $progress );
+			}
+		} elseif ( $stalled ) {
+			// A scan begun before 3.27.6 kept only the page it last began, and
+			// died part way through it, most likely. That page is read again
+			// from its first listing, not skipped: its listings were to go on
+			// the list of live listings only once it was done, and the clean-up
+			// after the sync would have taken every one of them for gone.
+			$progress         = self::fresh_scan_progress( $key );
+			$progress['page'] = $resume_page;
+			self::save_scan_progress( $progress );
+		}
 
-		// If we still have pages to scan, resume scanning.
-		if ( $total_pages === 0 || $resume_page <= $total_pages ) {
+		// Reset backoff counter on manual resume.
+		self::update_sync_state( array( 'rate_limit_retries' => 0 ), true );
+
+		// If we still have pages to scan, resume scanning. A scan that stalled
+		// always has: its last page is only done once finalize_scan() says so.
+		if ( $stalled || $total_pages === 0 || $resume_page <= $total_pages ) {
 			self::update_sync_state( array(
 				'status'       => 'scanning',
 				'scan_page_at' => time(),
-			) );
+			), true );
 			TCGiant_Sync_Logger::log( sprintf(
-				'Resuming sync from page %d%s. Progress so far: %d found, %d queued, %d imported.',
+				'Resuming sync from page %d%s%s. Progress so far: %d found, %d queued, %d imported.',
 				$resume_page,
 				$total_pages ? '/' . $total_pages : '',
+				$at_item > 0 ? sprintf( ', at listing %d of it', $at_item + 1 ) : '',
 				$state['total_found'],
 				$state['total_queued'],
 				$state['total_processed']
 			), 'success' );
-			as_enqueue_async_action( 'tcgiant_sync_scan_all_pages', array(), 'tcgiant_sync_group' );
+			self::queue_scan_batch( $key );
 		} else {
 			// All pages were scanned but import phase was interrupted.
 			// Transition to importing — any pending item imports will be re-processed.
 			if ( $state['total_queued'] > ( $state['total_processed'] + $state['total_errors'] ) ) {
-				self::update_sync_state( array( 'status' => 'importing' ) );
+				self::update_sync_state( array( 'status' => 'importing' ), true );
 				TCGiant_Sync_Logger::log( sprintf(
 					'Resuming import phase. %d/%d items still pending.',
 					$state['total_queued'] - $state['total_processed'] - $state['total_errors'],
@@ -2976,30 +3160,195 @@ class TCGiant_Sync_Importer {
 				self::update_sync_state( array(
 					'status'         => 'complete',
 					'last_completed' => current_time( 'mysql' ),
-				) );
+				), true );
 				TCGiant_Sync_Logger::log( 'Resume check: all items were already processed. Sync complete.', 'success' );
 			}
 		}
 	}
 
 	/**
-	 * Scan eBay listing pages in batches with WP-Cron resume.
+	 * The scan's place: the page it is on, and the listing on that page.
 	 *
-	 * Processes up to PAGES_PER_BATCH pages per execution, then schedules
-	 * an immediate WP-Cron event to continue. This handles hosts with strict
-	 * 30-second PHP time limits where set_time_limit() is disabled.
-	 *
-	 * Uses wp_schedule_single_event() (WordPress built-in cron) instead of
-	 * Action Scheduler for resumption. WP-Cron events fire directly on the
-	 * next page load — they don't compete with the AS batch queue.
-	 *
-	 * A 47-page store completes scanning in ~5 minutes across ~5 batches.
+	 * Written before every listing, in an option of its own and never
+	 * autoloaded, as the delta's place is (DELTA_PROGRESS_OPTION). Holds: scan
+	 * (scan_key()), page, next (the listing on the page to do next, by its
+	 * place in SCAN_PAGE_OPTION's list), in_flight (the ItemID being worked
+	 * on), kills and kill_item, reading, read_page and read_kills (a page being
+	 * read), owner and ts (the batch working on it, and when it last wrote),
+	 * add and seq (counts not yet in the sync state), and tally (this page's
+	 * counts, for its line in the log).
 	 */
-	const PAGES_PER_BATCH = 10;
+	const SCAN_PROGRESS_OPTION = 'tcgiant_sync_scan_progress';
 
-	public function scan_all_pages() {
-		// A batch PHP kills leaves a line saying how, and on which page.
-		TCGiant_Sync_Runtime::watch( 'Full sync scan' );
+	/**
+	 * The ItemIDs of the page the scan is on, in the order it works through
+	 * them: scan, page, ids. Written when the page is read. Never autoloaded.
+	 */
+	const SCAN_PAGE_OPTION = 'tcgiant_sync_scan_page';
+
+	/**
+	 * The name the scan is watched under, and its deaths recorded under.
+	 */
+	const SCAN_JOB = 'Full sync scan';
+
+	/**
+	 * Batches that may die on the same listing before it is stepped over.
+	 *
+	 * Three, not the delta's two: a scan batch saves listing after listing,
+	 * and a host that ends requests at a time of its own can end two batches
+	 * on the same one by chance. A third in a row is the listing.
+	 */
+	const SCAN_ITEM_KILLS = 3;
+
+	/**
+	 * Batches that may die reading the same page before the scan stops and
+	 * says so, rather than hand on for ever.
+	 */
+	const SCAN_READ_KILLS = 3;
+
+	/**
+	 * Listings between the scan's writes of its counts to the sync state.
+	 * Not every listing: the state is autoloaded - see DELTA_PROGRESS_OPTION.
+	 */
+	const SCAN_FLUSH_EVERY = 20;
+
+	/**
+	 * How long a batch may write nothing before it is taken to be gone.
+	 *
+	 * A batch writes before every listing and every page it reads, and stops
+	 * starting them once its time budget is used (a minute at most - see
+	 * TCGiant_Sync_Runtime::time_budget()). Three minutes without a word is a
+	 * batch the host killed.
+	 */
+	const SCAN_LIVE_SECONDS = 180;
+
+	/**
+	 * When the WP-Cron backstop carries the scan on, counted from the start
+	 * of the batch that arms it. Later than SCAN_LIVE_SECONDS, so it finds a
+	 * batch killed outright already taken to be gone.
+	 */
+	const SCAN_BACKSTOP_SECONDS = 300;
+
+	/**
+	 * Share of the memory limit at which a scan batch hands on, whatever it
+	 * began with. Below it, from the runtime's own share up, it hands on once
+	 * memory has grown by SCAN_MEMORY_GROWTH since the page was read: see
+	 * scan_over_budget().
+	 */
+	const SCAN_MEMORY_CEILING = 0.80;
+	const SCAN_MEMORY_GROWTH  = 0.10;
+
+	/**
+	 * Batches the host ended from outside, twice at about the same time into
+	 * their requests: the batches after them hand on by this share of it, and
+	 * never earlier than SCAN_MIN_CAP seconds in, nor than the time a page
+	 * takes to read and SCAN_CAP_FLOOR_SAVES listings to save. See
+	 * learn_scan_cap().
+	 */
+	const SCAN_CAP_SHARE       = 0.8;
+	const SCAN_MIN_CAP         = 10;
+	const SCAN_CAP_FLOOR_SAVES = 3;
+
+	/**
+	 * Two kills are at about the same time when they are this many seconds,
+	 * or this share of the later, apart. The last SCAN_CAP_KILLS_KEPT are kept.
+	 */
+	const SCAN_CAP_SIMILAR_SECONDS = 5;
+	const SCAN_CAP_SIMILAR_SHARE   = 0.25;
+	const SCAN_CAP_KILLS_KEPT      = 4;
+
+	/**
+	 * After this many batches in a row that hand on cleanly, the cap rises by
+	 * SCAN_CAP_RISE; each time it has to come down again after rising, twice
+	 * as many are needed. See hand_off_scan().
+	 */
+	const SCAN_CAP_RISE_AFTER = 5;
+	const SCAN_CAP_RISE       = 1.25;
+
+	/**
+	 * Listings a batch works through of a page it has read before its time
+	 * budget may end it - one GetSellerList call a page read, every page read
+	 * again after each hand-on - unless memory ends it, or it comes within
+	 * SCAN_HARD_SHARE of the request's own time limit, or the host's cap.
+	 */
+	const SCAN_MIN_PER_READ = 50;
+	const SCAN_HARD_SHARE   = 0.8;
+
+	/**
+	 * Seconds, past its request's own time limit, that a batch saving a
+	 * listing may write nothing and still be taken to be at work: see
+	 * scan_batch_live().
+	 */
+	const SCAN_LIVE_GRACE = 30;
+
+	/**
+	 * How long a scan may make no progress before Resume Import is offered
+	 * for it, and Fetch Inventory points to that. A scan carries itself on
+	 * within SCAN_BACKSTOP_SECONDS, so one this quiet has nothing left to.
+	 */
+	const SCAN_STALL_MINUTES = 10;
+
+	/**
+	 * Seconds the scan waits between pages, so as not to hammer eBay. A test
+	 * seam: the harnesses read many pages.
+	 *
+	 * @var int
+	 */
+	public static $page_pause = 2;
+
+	/**
+	 * The scan a batch was queued for, from its Action Scheduler action.
+	 *
+	 * @var string
+	 */
+	private static $scan_asked = '';
+
+	/**
+	 * The batch this request is running, for the shutdown handler: token,
+	 * key, handled (listings begun in this batch). Null when none.
+	 *
+	 * @var array|null
+	 */
+	private static $scan_batch = null;
+
+	/**
+	 * Scan eBay listing pages, a batch at a time.
+	 *
+	 * A batch reads pages and imports their listings until this request has
+	 * used the time or memory TCGiant_Sync_Runtime::over_budget() allows it,
+	 * as the delta sync's runs do, then hands the rest to a fresh request -
+	 * part way through a page if need be. It used to read ten pages whatever
+	 * they cost: listings eBay sends in full are saved as they are read, so a
+	 * page of two hundred could take minutes, and a host that stopped the
+	 * request part way left the scan saying "scanning" with nothing to carry
+	 * it on, and Resume Import refusing it.
+	 *
+	 * The scan's place, to the listing, is kept before each one
+	 * (SCAN_PROGRESS_OPTION), so whatever ends a batch, the next carries on
+	 * from the listing it stopped at:
+	 *
+	 * - Out of time or memory, it hands on, to an Action Scheduler action for
+	 *   this scan (queue_scan_batch()), with WP-Cron's tcgiant_sync_scan_resume
+	 *   as a backstop.
+	 * - Killed by PHP, on_scan_death() hands on at once.
+	 * - Killed from outside, with nothing run, the backstop armed as the batch
+	 *   began carries the scan on, SCAN_LIVE_SECONDS having shown the batch
+	 *   to be gone.
+	 *
+	 * One batch at a time (claim_scan_batch()). A listing that has killed
+	 * SCAN_ITEM_KILLS batches in a row is stepped over, as the delta steps
+	 * over one (after_slice_death()), and a batch queued for a scan that a
+	 * newer one has replaced does nothing.
+	 *
+	 * @param string $scan The scan this batch was queued for (scan_key()).
+	 *                     Empty from WP-Cron, and from a batch queued before
+	 *                     3.27.6: the scan the state says is running.
+	 */
+	public function scan_all_pages( $scan = '' ) {
+		self::$scan_asked = is_string( $scan ) ? $scan : '';
+		// A batch PHP kills leaves a line saying how, and on which page - and
+		// hands the scan on to the next.
+		TCGiant_Sync_Runtime::watch( self::SCAN_JOB, array( __CLASS__, 'on_scan_death' ) );
 		// Its listings are saved here too, as the delta's are.
 		TCGiant_Sync_Runtime::guard_loops();
 		TCGiant_Sync_Runtime::guard_cache();
@@ -3010,6 +3359,84 @@ class TCGiant_Sync_Importer {
 			TCGiant_Sync_Runtime::unguard_cache();
 			TCGiant_Sync_Runtime::unguard_loops();
 			TCGiant_Sync_Runtime::unwatch();
+			self::let_go_of_scan();
+		}
+	}
+
+	/**
+	 * The batch is over. Its place is let go of, if it still holds it: every
+	 * way a batch ends has let go already, but one that something threw past
+	 * kept it, and the backstop would have waited for it to look gone. Where
+	 * it was is kept, the listing in flight with it, so the next batch tries
+	 * that listing again and steps over it if it does this every time.
+	 */
+	private static function let_go_of_scan() {
+		$batch            = self::$scan_batch;
+		self::$scan_batch = null;
+
+		if ( null === $batch ) {
+			return;
+		}
+
+		$progress = self::scan_progress_from_table();
+		if ( $batch['token'] === (string) ( $progress['owner'] ?? '' ) ) {
+			$progress['owner'] = '';
+			self::save_scan_progress( $progress );
+		}
+	}
+
+	/**
+	 * PHP has killed a scan batch. Runs on shutdown, so it must allocate little.
+	 *
+	 * Modelled on on_delta_death(), with one difference: the scan is handed
+	 * straight on, and so keeps the lock (take_lock()) rather than release
+	 * it - released, nothing took it again, and the rest of the scan ran
+	 * without one. The lock goes only with a scan that has stopped. The
+	 * next batch finds the listing this one died on (in_flight), tries it
+	 * again, and steps over it once it has killed SCAN_ITEM_KILLS in a row
+	 * (after_scan_death()), so this cannot go round for ever.
+	 *
+	 * @param string $message What the death record said.
+	 */
+	public static function on_scan_death( $message ) {
+		// Before it took the scan's place, the lock was not this batch's: it
+		// may be the batch at work that this one found there.
+		$batch = self::$scan_batch;
+		if ( null === $batch || ! function_exists( 'as_enqueue_async_action' ) ) {
+			return;
+		}
+
+		// Not after Emergency Stop, which the dying batch may not have seen,
+		// nor once the scan is no longer one that reads pages. Let go of.
+		$table = self::state_from_table();
+		if ( ! in_array( (string) ( $table['status'] ?? '' ), array( 'scanning', 'rate_limited', 'limit_reached' ), true ) ) {
+			self::release_lock();
+			return;
+		}
+
+		// Nor for a scan another has replaced meanwhile: the lock is the new
+		// one's now.
+		if ( self::scan_key( $table ) !== $batch['key'] ) {
+			return;
+		}
+
+		// Let go of its place, so the next batch need not wait for this one
+		// to look gone. Only if it is still this batch's.
+		$progress = self::scan_progress_from_table();
+		if ( $batch['token'] === (string) ( $progress['owner'] ?? '' ) ) {
+			$progress['owner'] = '';
+			self::save_scan_progress( $progress );
+		}
+
+		// Handed on, the scan is still at work: it keeps the lock, fresh, as a
+		// batch that hands on in good time does. Let go of here, it ran the
+		// rest of the scan without one.
+		self::take_lock();
+
+		// Pending, not merely queued: Action Scheduler still counts the action
+		// this request was running.
+		if ( ! self::scan_run_pending() ) {
+			as_enqueue_async_action( 'tcgiant_sync_scan_all_pages', array( 'scan' => $batch['key'] ), self::GROUP_SCAN, false, 5 );
 		}
 	}
 
@@ -3020,57 +3447,190 @@ class TCGiant_Sync_Importer {
 		// Try to extend the time limit, but don't rely on it.
 		TCGiant_Sync_Runtime::raise_time_limit( 300 );
 
-		$state = self::get_sync_state();
-		$start_page = max( 1, (int) ( $state['current_page'] ?? 1 ) );
+		// As the table has it. Emergency Stop, or a newer full sync, may have
+		// been written since this request first read the state.
+		$state = self::state_from_table();
+		$key   = self::scan_key( $state );
+		$asked = self::$scan_asked;
+		$mode  = (string) ( $state['sync_mode'] ?? 'full' );
 
-		// If resuming, start from the NEXT page (current_page was already processed).
-		if ( $start_page > 1 && in_array( $state['status'] ?? '', array( 'scanning', 'rate_limited' ), true ) ) {
-			$start_page++;
+		if ( '' !== $asked && $asked !== $key ) {
+			TCGiant_Sync_Logger::log( 'Full sync scan: this batch was queued for a scan that has since been replaced, so it leaves the new one alone.' );
+			return;
 		}
 
-		$api = TCGiant_Sync_API::instance();
-		$mod_time_from = ( 'delta' === ( $state['sync_mode'] ?? 'full' ) ) ? ( $state['delta_mod_from'] ?? '' ) : '';
+		// Only a scan under way reads pages: not one stopped by hand, or by an
+		// error until Resume Import, nor one whose pages are all read.
+		if ( ! in_array( (string) ( $state['status'] ?? '' ), array( 'scanning', 'rate_limited', 'limit_reached' ), true ) ) {
+			return;
+		}
+		if ( '' !== $key && $key === (string) ( $state['scan_finished'] ?? '' ) ) {
+			// Saying "scanning" with every page read can only be a sync put
+			// back to scanning by mistake: nothing would ever read a page for
+			// it again. Back to where finalize_scan() left it.
+			if ( 'scanning' === $state['status'] ) {
+				self::update_sync_state( array( 'status' => ( (int) ( $state['total_queued'] ?? 0 ) > 0 || (int) ( $state['total_processed'] ?? 0 ) > 0 ) ? 'importing' : 'complete' ), true );
+				TCGiant_Sync_Logger::warning( 'Full sync scan: every page had been read already, so the sync goes back to importing what it queued.' );
+			}
+			return;
+		}
+
+		// "Scanning" in delta mode is also the delta sync at work, which
+		// queues its own runs. Only Resume Import's page scan of a delta, from
+		// before the delta read eBay's changes itself, comes this way.
+		if ( 'delta' === $mode && self::delta_run_queued() ) {
+			return;
+		}
+
+		// One batch at a time: the Action Scheduler action that carries the
+		// scan on and the WP-Cron backstop can both come due.
+		$token    = self::new_scan_token();
+		$progress = self::claim_scan_batch( $token, $key );
+		if ( null === $progress ) {
+			TCGiant_Sync_Logger::log( 'Full sync scan: another batch of it is still at work, so this one leaves it to carry on.' );
+			// Back when that batch, if it has gone, would be taken to have:
+			// no later than the usual backstop, no sooner than a minute on.
+			$held = self::scan_progress();
+			self::arm_scan_backstop( max( time() + 60, min( time() + self::SCAN_BACKSTOP_SECONDS, self::scan_batch_dead_at( $held ) + 5 ) ) );
+			return;
+		}
+
+		self::$scan_batch = array(
+			'token'   => $token,
+			'key'     => $key,
+			'handled' => 0,
+			// What the request held before any page, to judge growth from.
+			'share'   => TCGiant_Sync_Runtime::memory_share(),
+		);
+
+		// In case this request is killed outright, when nothing in it runs:
+		// this is what carries the scan on then. Moved on as each batch starts.
+		self::arm_scan_backstop();
+
+		// What a batch that died had counted, but not yet written.
+		self::flush_scan_counts( $progress );
+
+		// A batch that died reading a page, or on a listing.
+		if ( ! self::after_scan_read_death( $progress ) ) {
+			return;
+		}
+		if ( '' !== (string) ( $progress['in_flight'] ?? '' ) ) {
+			self::after_scan_death( $progress );
+		}
+
+		$start_page = (int) ( $progress['page'] ?? 0 );
+		$start_item = (int) ( $progress['next'] ?? 0 );
+		if ( $start_page < 1 ) {
+			// Nothing read yet, or a scan begun before 3.27.6, which kept only
+			// the page it last began.
+			$start_page = max( 1, (int) ( $state['current_page'] ?? 1 ) );
+			$start_item = 0;
+
+			// If resuming, start from the NEXT page (current_page was already processed).
+			//
+			// Only for a scan 3.27.5 began (scan_inline is 3.27.6's): its next
+			// batch, queued as a batch ended, started there. A scan begun since
+			// writes the page it begins, and with its place lost - written
+			// over, say - reads that page again rather than skip it.
+			if ( $start_page > 1 && in_array( $state['status'] ?? '', array( 'scanning', 'rate_limited' ), true )
+				&& ! array_key_exists( 'scan_inline', $state ) ) {
+				$start_page++;
+			}
+		}
+
+		$api           = TCGiant_Sync_API::instance();
+		$mod_time_from = ( 'delta' === $mode ) ? ( $state['delta_mod_from'] ?? '' ) : '';
+		$end_time_from = ( 'delta' === $mode ) ? '' : self::scan_end_from( $state );
 
 		TCGiant_Sync_Logger::log( sprintf(
-			'Scan batch starting from page %d (up to %d pages). API budget: %d/%d.',
-			$start_page, self::PAGES_PER_BATCH, $api->get_remaining_daily_budget(), TCGiant_Sync_API::DAILY_CALL_LIMIT
+			'Scan batch starting at page %d%s. API budget: %d/%d.',
+			$start_page,
+			$start_item > 0 ? sprintf( ', listing %d', $start_item + 1 ) : '',
+			$api->get_remaining_daily_budget(),
+			TCGiant_Sync_API::DAILY_CALL_LIMIT
 		) );
 
 		$total_pages = (int) ( $state['total_pages'] ?? 0 );
-		$pages_this_batch = 0;
 
-		for ( $current_page = $start_page; $pages_this_batch < self::PAGES_PER_BATCH; $current_page++ ) {
-			if ( $pages_this_batch > 0 ) {
+		for ( $current_page = $start_page; ; $current_page++ ) {
+			if ( $current_page > $start_page ) {
 				TCGiant_Sync_Runtime::release_memory();
 			}
 			TCGiant_Sync_Runtime::context( sprintf( 'page %d of %s', $current_page, $total_pages > 0 ? (string) $total_pages : 'an unknown number' ) );
+
+			$why = self::scan_interrupted( $progress );
+			if ( '' !== $why ) {
+				self::scan_left( $progress, $why, sprintf( 'before page %d', $current_page ) );
+				return;
+			}
+
+			// Not a page this request may not have the time or memory left to
+			// work through: the rest goes to a fresh one. Never before anything
+			// is done, so that every batch moves the scan on.
+			if ( self::scan_batch_handled() > 0 ) {
+				$over = self::scan_over_budget( (float) self::$scan_batch['share'], (int) ( $progress['cap'] ?? 0 ) );
+				if ( '' !== $over ) {
+					self::hand_off_scan( $progress, $over );
+					return;
+				}
+			}
 
 			self::update_sync_state( array(
 				'status'              => 'scanning',
 				'current_page'        => $current_page,
 				'rate_limit_retries'  => 0,
 				'scan_page_at'        => time(),
-			) );
+			), true );
 			// Written once, when the sync began, the lock read as stale ten
 			// minutes into a healthy scan, and Fetch Inventory broke it and
 			// started the scan again from page 1.
 			self::refresh_lock();
 
-			$response = $api->get_active_listings( $current_page, 200, $mod_time_from );
+			// Noted before eBay is asked, so that a batch killed while reading
+			// is known to have been (after_scan_read_death()).
+			if ( (int) ( $progress['page'] ?? 0 ) !== $current_page ) {
+				$progress['page']  = $current_page;
+				$progress['next']  = 0;
+				$progress['tally'] = array();
+			}
+			$progress['reading']   = $current_page;
+			$progress['in_flight'] = '';
+			$progress['ts']        = time();
+			$progress['elapsed']   = (int) TCGiant_Sync_Runtime::elapsed();
+			self::save_scan_progress( $progress );
+
+			$read_from = TCGiant_Sync_Runtime::elapsed();
+			$response  = $api->get_active_listings( $current_page, 200, $mod_time_from, $end_time_from );
+
+			$progress['reading'] = 0;
+			// How long a page takes to read: the cap a host's kills teach is
+			// never less than that and a few listings (learn_scan_cap()).
+			$progress['read_secs'] = round( TCGiant_Sync_Runtime::elapsed() - $read_from, 1 );
+
+			// Stop pressed while eBay was being read - the slow part of a page.
+			$why = self::scan_interrupted( $progress );
+			if ( '' !== $why ) {
+				self::scan_left( $progress, $why, sprintf( 'while page %d was being read', $current_page ) );
+				return;
+			}
 
 			// Handle rate limiting — pause and schedule via WP-Cron.
 			if ( is_wp_error( $response ) && 'rate_limited' === $response->get_error_code() ) {
-				$retries = (int) ( self::get_sync_state()['rate_limit_retries'] ?? 0 );
+				$retries = (int) ( self::state_from_table()['rate_limit_retries'] ?? 0 );
 				$retry_delay = $this->get_rate_limit_backoff_delay( $retries );
 				self::update_sync_state( array(
 					'status'             => 'rate_limited',
 					'current_page'       => $current_page - 1, // Last successful page.
 					'rate_limit_retries' => $retries + 1,
-				) );
+				), true );
 				TCGiant_Sync_Logger::log( sprintf(
 					'eBay API rate limit hit on page %d (attempt %d). Auto-retry in %d minutes.',
 					$current_page, $retries + 1, $retry_delay / 60
 				), 'warning' );
+				$progress['owner'] = '';
+				self::save_scan_progress( $progress );
+				// The retry is the scan's next batch, in place of the backstop.
+				wp_clear_scheduled_hook( 'tcgiant_sync_scan_resume' );
 				wp_schedule_single_event( time() + $retry_delay, 'tcgiant_sync_scan_resume' );
 				return;
 			}
@@ -3097,14 +3657,18 @@ class TCGiant_Sync_Importer {
 						$current_page,
 						$response->get_error_message()
 					),
-				) );
+				), true );
+				$progress['owner'] = '';
+				self::save_scan_progress( $progress );
+				self::disarm_scan_backstop();
 				self::release_lock();
 				return;
 			}
 
 			// Genuinely empty page — we have reached the end of the listings.
 			if ( ! isset( $response['ItemArray']['Item'] ) ) {
-				$this->finalize_scan( true );
+				self::save_scan_progress( $progress );
+				$this->finalize_scan( true, $key );
 				return;
 			}
 
@@ -3115,41 +3679,1120 @@ class TCGiant_Sync_Importer {
 			}
 
 			$total_pages = isset( $response['PaginationResult']['TotalNumberOfPages'] ) ? (int) $response['PaginationResult']['TotalNumberOfPages'] : 1;
-			self::update_sync_state( array( 'total_pages' => $total_pages ) );
+			self::update_sync_state( array( 'total_pages' => $total_pages ), true );
+			unset( $response );
 
-			// Process all items on this page inline.
-			$this->process_page_items( $items, $current_page, $total_pages );
-			$pages_this_batch++;
+			// Process all items on this page inline - from the listing the
+			// scan stopped at, when it stopped on this page.
+			$stopped = $this->process_page_items( $items, $current_page, $total_pages, $progress );
+			unset( $items );
 
-			TCGiant_Sync_Logger::log( sprintf(
-				'Page %d/%d scanned (%d/%d in this batch).',
-				$current_page, $total_pages, $pages_this_batch, self::PAGES_PER_BATCH
-			) );
+			if ( '' !== $stopped ) {
+				if ( in_array( $stopped, array( 'stopped', 'replaced', 'taken' ), true ) ) {
+					self::scan_left( $progress, $stopped, sprintf( 'on page %d', $current_page ) );
+				} else {
+					self::hand_off_scan( $progress, $stopped );
+				}
+				return;
+			}
+
+			TCGiant_Sync_Logger::log( sprintf( 'Page %d/%d scanned.', $current_page, $total_pages ) );
 
 			// Check if we've reached the last page.
 			if ( $current_page >= $total_pages ) {
-				$this->finalize_scan( true );
+				$this->finalize_scan( true, $key );
 				return;
 			}
 
 			// Rate-limit pause between pages — 2 seconds to avoid hammering eBay.
-			sleep( 2 );
+			sleep( self::$page_pause );
+		}
+	}
+
+	/**
+	 * Which scan a state is: the moment a full sync began, or for Resume
+	 * Import's page scan of a delta, the window it reads from.
+	 *
+	 * @param array $state Sync state.
+	 * @return string
+	 */
+	private static function scan_key( array $state ) {
+		if ( 'delta' === ( $state['sync_mode'] ?? 'full' ) ) {
+			return 'delta:' . (string) ( $state['delta_mod_from'] ?? '' );
 		}
 
-		// Batch complete but more pages remain.
-		// Schedule immediate resume via WP-Cron (NOT Action Scheduler).
-		TCGiant_Sync_Logger::log( sprintf(
-			'Batch complete (%d pages). Scheduling immediate resume for page %d/%d via WP-Cron.',
-			$pages_this_batch, $current_page, $total_pages
-		) );
-		wp_schedule_single_event( time() - 1, 'tcgiant_sync_scan_resume' );
+		return (string) ( $state['full_started_at'] ?? '' );
+	}
 
-		// spawn_cron() was a no-op here: it returns immediately when DOING_CRON
-		// is defined, which it is, because this scan is itself running from
-		// cron. Dispatching on shutdown instead means the loopback fires once
-		// this run has released the cron lock, so the next batch starts in
-		// seconds rather than waiting for the next natural tick.
+	/**
+	 * The end time a full scan asks eBay for listings from: when it began.
+	 *
+	 * It was "now", worked out again for every page. eBay pages a seller's
+	 * listings in the order they end, and a listing that sold or was ended
+	 * between two pages then dropped out of the answer: every listing after it
+	 * moved up a place, and one the scan had not read slipped onto a page it
+	 * had. The scan never saw that listing, and the clean-up that follows a
+	 * full sync took its product for one whose listing had gone. Asked from
+	 * when the scan began, a listing that ends while it runs stays in the
+	 * answer, ended (process_page_items() leaves it out), and moves nothing.
+	 * A scan now goes back to a page part way through, after a hand-on, so
+	 * this matters on every page, not only between them.
+	 *
+	 * Not for a scan begun more than 60 days ago - resumed after a long stop,
+	 * say. eBay answers no more than 120 days of end times, and listings live
+	 * now could end beyond that.
+	 *
+	 * @param array $state Sync state.
+	 * @return string ISO 8601 UTC, or '' for now.
+	 */
+	private static function scan_end_from( array $state ) {
+		$began = strtotime( (string) ( $state['full_started_at'] ?? '' ) );
+
+		if ( false === $began || $began < time() - 60 * DAY_IN_SECONDS || $began > time() ) {
+			return '';
+		}
+
+		return gmdate( 'Y-m-d\TH:i:s.000\Z', $began );
+	}
+
+	/**
+	 * The sync state as the table holds it now, not as this request first
+	 * read it. One row, read directly: reloading every autoloaded option to
+	 * refresh it is too much to ask - of a request that is dying above all.
+	 *
+	 * @return array
+	 */
+	private static function state_from_table() {
+		global $wpdb;
+
+		$state = null;
+		if ( isset( $wpdb ) && is_object( $wpdb ) && method_exists( $wpdb, 'get_var' ) && isset( $wpdb->options ) ) {
+			$raw = $wpdb->get_var( $wpdb->prepare( "SELECT option_value FROM {$wpdb->options} WHERE option_name = %s LIMIT 1", self::STATE_OPTION ) );
+			if ( is_string( $raw ) ) {
+				$state = maybe_unserialize( $raw );
+			}
+		}
+
+		return is_array( $state ) ? $state : self::get_sync_state();
+	}
+
+	/**
+	 * The scan's place, read fresh.
+	 *
+	 * @return array
+	 */
+	private static function scan_progress() {
+		// Another request may have moved it on since this one first read it.
+		if ( function_exists( 'wp_cache_delete' ) ) {
+			wp_cache_delete( self::SCAN_PROGRESS_OPTION, 'options' );
+		}
+
+		$progress = get_option( self::SCAN_PROGRESS_OPTION, array() );
+
+		return is_array( $progress ) ? $progress : array();
+	}
+
+	/**
+	 * The scan's place as the table holds it, and the stored row as it is.
+	 *
+	 * @param string|null $raw Set to the row's value, or null where the
+	 *                         database cannot be read directly.
+	 * @return array
+	 */
+	private static function scan_progress_from_table( &$raw = null ) {
+		global $wpdb;
+
+		$raw = null;
+		if ( isset( $wpdb ) && is_object( $wpdb ) && method_exists( $wpdb, 'get_var' ) && isset( $wpdb->options ) ) {
+			$read = $wpdb->get_var( $wpdb->prepare( "SELECT option_value FROM {$wpdb->options} WHERE option_name = %s LIMIT 1", self::SCAN_PROGRESS_OPTION ) );
+			if ( is_string( $read ) ) {
+				$raw      = $read;
+				$progress = maybe_unserialize( $read );
+				return is_array( $progress ) ? $progress : array();
+			}
+		}
+
+		return self::scan_progress();
+	}
+
+	/**
+	 * Write the scan's place.
+	 *
+	 * @param array $progress Place.
+	 */
+	private static function save_scan_progress( array $progress ) {
+		update_option( self::SCAN_PROGRESS_OPTION, $progress, false );
+	}
+
+	/**
+	 * Forget the scan's place, and its page's listings.
+	 */
+	private static function clear_scan_progress() {
+		delete_option( self::SCAN_PROGRESS_OPTION );
+		delete_option( self::SCAN_PAGE_OPTION );
+	}
+
+	/**
+	 * A new place for a scan that has read nothing yet.
+	 *
+	 * @param string $key scan_key().
+	 * @return array
+	 */
+	private static function fresh_scan_progress( $key ) {
+		return array(
+			'scan'       => (string) $key,
+			'page'       => 0,
+			'next'       => 0,
+			'in_flight'  => '',
+			'kills'      => 0,
+			'kill_item'  => '',
+			'reading'    => 0,
+			'read_page'  => 0,
+			'read_kills' => 0,
+			'owner'      => '',
+			'ts'         => 0,
+			'add'        => array(),
+			'seq'        => 0,
+			'tally'      => array(),
+		);
+	}
+
+	/**
+	 * Listings this request's batch has begun, 0 when it runs none. Read here,
+	 * not off the property where it is used: process_page_items() counts them.
+	 *
+	 * @return int
+	 */
+	private static function scan_batch_handled() {
+		return null === self::$scan_batch ? 0 : (int) self::$scan_batch['handled'];
+	}
+
+	/**
+	 * A token for one batch.
+	 *
+	 * @return string
+	 */
+	private static function new_scan_token() {
+		return function_exists( 'wp_generate_uuid4' ) ? wp_generate_uuid4() : uniqid( 'scan', true );
+	}
+
+	/**
+	 * Whether a batch is working on the scan: one holds its place and has
+	 * written in the last SCAN_LIVE_SECONDS - or, saving a listing, has not
+	 * yet reached the end of its request's own time limit (its place keeps
+	 * when the request began, and that limit), and SCAN_LIVE_GRACE more.
+	 *
+	 * A batch writes before each listing, not during it. A save that ran
+	 * past four minutes - one listing's, on a slow host - was taken for a
+	 * batch the host had killed, and the backstop's batch saved the same
+	 * listing alongside it and counted it a death towards stepping over it.
+	 *
+	 * @param array $progress Place.
+	 * @return bool
+	 */
+	private static function scan_batch_live( array $progress ) {
+		return '' !== (string) ( $progress['owner'] ?? '' ) && time() < self::scan_batch_dead_at( $progress );
+	}
+
+	/**
+	 * When a batch that holds the scan's place, and has written nothing since,
+	 * is taken to be gone: see scan_batch_live().
+	 *
+	 * @param array $progress Place.
+	 * @return int Unix time.
+	 */
+	private static function scan_batch_dead_at( array $progress ) {
+		$ts      = (int) ( $progress['ts'] ?? 0 );
+		$dead_at = $ts + self::SCAN_LIVE_SECONDS;
+		$limit   = (int) ( $progress['limit'] ?? 0 );
+
+		if ( '' !== (string) ( $progress['in_flight'] ?? '' ) && $limit > 0 ) {
+			$dead_at = max( $dead_at, $ts - (int) ( $progress['elapsed'] ?? 0 ) + $limit + self::SCAN_LIVE_GRACE );
+		}
+
+		return $dead_at;
+	}
+
+	/**
+	 * Take the scan's place for this batch, unless another batch is working
+	 * on it.
+	 *
+	 * Taken by writing the place back only where it is still exactly what was
+	 * read, so of two batches that start together only one gets it - as the
+	 * photo cleanup takes its holds. A place belonging to another scan, or
+	 * none, is begun afresh.
+	 *
+	 * @param string $token This batch.
+	 * @param string $key   The scan, scan_key().
+	 * @return array|null The place, now this batch's; null if another has it.
+	 */
+	private static function claim_scan_batch( $token, $key ) {
+		global $wpdb;
+
+		$sql = isset( $wpdb ) && is_object( $wpdb ) && isset( $wpdb->options )
+			&& method_exists( $wpdb, 'query' ) && method_exists( $wpdb, 'prepare' );
+
+		for ( $try = 0; $try < 2; $try++ ) {
+			$raw  = null;
+			$held = self::scan_progress_from_table( $raw );
+
+			$learned = 0;
+			if ( (string) $key !== (string) ( $held['scan'] ?? '' ) ) {
+				$held = self::fresh_scan_progress( $key );
+			} elseif ( self::scan_batch_live( $held ) ) {
+				return null;
+			} else {
+				$learned = self::learn_scan_cap( $held );
+			}
+
+			$held['owner'] = $token;
+			$held['ts']    = time();
+
+			if ( ! $sql ) {
+				// No database to make it certain: played in a harness.
+				self::save_scan_progress( $held );
+				self::said_scan_cap( $learned, $held );
+				self::take_lock();
+				return $held;
+			}
+
+			$value = maybe_serialize( $held );
+
+			if ( null === $raw ) {
+				// No place written yet. A plain INSERT goes in for one request
+				// only: the options table's names are unique.
+				$quiet = method_exists( $wpdb, 'suppress_errors' ) ? $wpdb->suppress_errors( true ) : false;
+				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+				$took = $wpdb->query( $wpdb->prepare(
+					"INSERT INTO {$wpdb->options} ( option_name, option_value, autoload ) VALUES ( %s, %s, 'no' )",
+					self::SCAN_PROGRESS_OPTION,
+					$value
+				) );
+				if ( method_exists( $wpdb, 'suppress_errors' ) ) {
+					$wpdb->suppress_errors( $quiet );
+				}
+			} else {
+				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+				$took = $wpdb->query( $wpdb->prepare(
+					"UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND option_value = %s",
+					$value,
+					self::SCAN_PROGRESS_OPTION,
+					$raw
+				) );
+			}
+
+			self::forget_cached_option( self::SCAN_PROGRESS_OPTION );
+
+			if ( 1 === (int) $took ) {
+				self::said_scan_cap( $learned, $held );
+				// The scan's batch at work holds the lock, whatever let it go:
+				// a batch PHP killed, or a lock gone stale between batches.
+				self::take_lock();
+				return $held;
+			}
+
+			// Another batch wrote first. Look again: it may have been a
+			// batch letting go.
+		}
+
+		return null;
+	}
+
+	/**
+	 * The batch before this one held the scan and was ended from outside,
+	 * with nothing run - no hand-on, no death record: its place is still its
+	 * own. How far into its request it got is how long this host lets one
+	 * run, near enough, though PHP could not see it: a limit of PHP-FPM's,
+	 * LiteSpeed's or the host's own - once a second batch has been ended at
+	 * about the same time. So the batches after them hand on by
+	 * SCAN_CAP_SHARE of that, rather than each be ended there in turn, five
+	 * minutes apart, and the listing each was on stepped over as though it
+	 * were the listing's doing. Learnt only from batches ended on a listing;
+	 * never below a page read and SCAN_CAP_FLOOR_SAVES listings; raised again
+	 * after clean batches (hand_off_scan()).
+	 *
+	 * @param array $held The place, as the batch before left it; given its cap.
+	 * @return int Seconds the batch before had got to, when the cap came down; 0 otherwise.
+	 */
+	private static function learn_scan_cap( array &$held ) {
+		if ( '' === (string) ( $held['owner'] ?? '' ) || '' === (string) ( $held['in_flight'] ?? '' ) ) {
+			return 0;
+		}
+
+		$lived = (int) ( $held['elapsed'] ?? 0 );
+		if ( $lived <= 0 ) {
+			return 0;
+		}
+
+		// Once is not a limit: an FPM reload, the out-of-memory killer, a
+		// restart. Learnt from a single early kill, a cap of ten seconds held
+		// for the rest of the scan, and every batch read its page again for a
+		// handful of listings. Two at about the same time are.
+		$seen    = array_map( 'intval', (array) ( $held['kill_at'] ?? array() ) );
+		$similar = array();
+		foreach ( $seen as $at ) {
+			if ( abs( $at - $lived ) <= max( self::SCAN_CAP_SIMILAR_SECONDS, self::SCAN_CAP_SIMILAR_SHARE * max( $at, $lived ) ) ) {
+				$similar[] = $at;
+			}
+		}
+		$seen[]          = $lived;
+		$held['kill_at'] = array_slice( $seen, -self::SCAN_CAP_KILLS_KEPT );
+		if ( empty( $similar ) ) {
+			return 0;
+		}
+
+		// Never below a page read and a few listings: a cap shorter than that
+		// would hand on before a batch had done anything worth its read.
+		$floor = (int) ceil( (float) ( $held['read_secs'] ?? 0 ) + self::SCAN_CAP_FLOOR_SAVES * (float) ( $held['save_secs'] ?? 0 ) );
+		$cap   = max( self::SCAN_MIN_CAP, (int) floor( min( $lived, min( $similar ) ) * self::SCAN_CAP_SHARE ), $floor );
+		$was   = (int) ( $held['cap'] ?? 0 );
+		if ( $was > 0 && $was <= $cap ) {
+			return 0;
+		}
+
+		// Down again after rising: the host's limit is what it was taken
+		// for, so it is tried higher only after twice as many clean batches.
+		if ( ! empty( $held['cap_rose'] ) ) {
+			$held['rise_after'] = 2 * max( self::SCAN_CAP_RISE_AFTER, (int) ( $held['rise_after'] ?? 0 ) );
+		}
+		$held['cap']      = $cap;
+		$held['cap_rose'] = false;
+		$held['clean']    = 0;
+
+		return $lived;
+	}
+
+	/**
+	 * Say that the scan's batches now hand on sooner, once the place is taken.
+	 *
+	 * @param int   $lived What learn_scan_cap() said.
+	 * @param array $held  The place.
+	 */
+	private static function said_scan_cap( $lived, array $held ) {
+		if ( $lived > 0 ) {
+			TCGiant_Sync_Logger::warning( sprintf(
+				'Full sync scan: the last batch was ended from outside, with nothing run, about %d s into its request, while importing eBay item %s - as an earlier one was at about the same time. The host does not let a request run longer than that, so from now on each batch hands on by %d s.',
+				$lived,
+				(string) ( $held['in_flight'] ?? '' ),
+				(int) $held['cap']
+			) );
+		}
+	}
+
+	/**
+	 * Why a scan batch should hand on before its next listing or page, or ''.
+	 *
+	 * The delta's budget (TCGiant_Sync_Runtime::over_budget()), with two
+	 * differences for a scan:
+	 *
+	 * - Memory is judged by how far it has grown since the page was read,
+	 *   up to SCAN_MEMORY_CEILING. A batch holds a page of 200 listings in
+	 *   memory, and on a site whose requests already use most of the runtime's
+	 *   share before that, every batch handed on after one listing - and the
+	 *   next asked eBay for the whole page again: a GetSellerList call for
+	 *   each listing. Growth is what a batch adds; what it starts with is not.
+	 * - A host that ended batches from outside sets a time of its own
+	 *   (learn_scan_cap()).
+	 * - Past the time budget, a batch that has read a page does
+	 *   SCAN_MIN_PER_READ of its listings before it hands on, within the
+	 *   limits below.
+	 *
+	 * @param float $from_share Memory share when the page was read.
+	 * @param int   $cap        Seconds into the request to hand on by, or 0.
+	 * @param int   $begun_here Listings this batch has begun of the page it
+	 *                          read; left out between pages, where a batch
+	 *                          past its budget reads no further page.
+	 * @param float $save_secs  What a listing has taken to save, lately.
+	 * @return string
+	 */
+	private static function scan_over_budget( $from_share, $cap, $begun_here = PHP_INT_MAX, $save_secs = 0.0 ) {
+		$elapsed = TCGiant_Sync_Runtime::elapsed();
+
+		// Past the time budget, a batch that has read a page works through
+		// SCAN_MIN_PER_READ of its listings first: every hand-on reads its
+		// page again, so a batch that stopped after a listing or two cost a
+		// GetSellerList call for each - a page read in 14 s of a 15 s budget,
+		// half as many calls as listings. Never within a listing's time of
+		// SCAN_HARD_SHARE of the limit PHP holds the request to, nor past the
+		// host's cap. Memory, below, ends it all the same.
+		$late = TCGiant_Sync_Runtime::over_time_budget();
+		if ( '' !== $late ) {
+			$hard = min( self::SCAN_HARD_SHARE * TCGiant_Sync_Runtime::effective_time_limit(), (float) TCGiant_Sync_Runtime::BUDGET_CAP_SECONDS );
+			if ( $cap > 0 ) {
+				$hard = min( $hard, (float) $cap );
+			}
+			if ( $begun_here >= self::SCAN_MIN_PER_READ || $elapsed + max( 0.0, (float) $save_secs ) >= $hard ) {
+				return $late;
+			}
+		}
+
+		if ( $cap > 0 && $elapsed >= $cap ) {
+			return sprintf( '%d s of this request used, where the host ended a batch from outside', (int) $elapsed );
+		}
+
+		$share = TCGiant_Sync_Runtime::memory_share();
+		if ( $share >= self::SCAN_MEMORY_CEILING
+			|| ( $share >= TCGiant_Sync_Runtime::BUDGET_MEMORY_SHARE && $share - (float) $from_share >= self::SCAN_MEMORY_GROWTH ) ) {
+			return sprintf( '%d%% of the memory limit in use', (int) round( $share * 100 ) );
+		}
+
+		return '';
+	}
+
+	/**
+	 * Drop this request's copy of an option written straight to the table.
+	 *
+	 * @param string $name Option.
+	 */
+	private static function forget_cached_option( $name ) {
+		if ( ! function_exists( 'wp_cache_delete' ) ) {
+			return;
+		}
+
+		wp_cache_delete( $name, 'options' );
+
+		// WordPress remembers options it found missing, too.
+		if ( function_exists( 'wp_cache_get' ) && function_exists( 'wp_cache_set' ) ) {
+			$missing = wp_cache_get( 'notoptions', 'options' );
+			if ( is_array( $missing ) && isset( $missing[ $name ] ) ) {
+				unset( $missing[ $name ] );
+				wp_cache_set( 'notoptions', $missing, 'options' );
+			}
+		}
+	}
+
+	/**
+	 * Why this batch must stop now, or '' to carry on: Emergency Stop
+	 * ('stopped'), a newer scan ('replaced'), or another batch has its place
+	 * ('taken').
+	 *
+	 * @param array $progress Place, as this batch holds it.
+	 * @return string
+	 */
+	private static function scan_interrupted( array $progress ) {
+		$table = self::state_from_table();
+
+		if ( 'stopped' === ( $table['status'] ?? '' ) ) {
+			return 'stopped';
+		}
+
+		if ( self::scan_key( $table ) !== (string) ( $progress['scan'] ?? '' ) ) {
+			return 'replaced';
+		}
+
+		$held = self::scan_progress_from_table();
+		if ( null === self::$scan_batch || (string) ( $held['owner'] ?? '' ) !== self::$scan_batch['token'] ) {
+			return 'taken';
+		}
+
+		return '';
+	}
+
+	/**
+	 * This batch is leaving its scan to someone else, or to no one.
+	 *
+	 * Stopped by hand: the place is kept for Resume Import, and let go of.
+	 * Replaced by a newer scan, or taken by another batch: nothing is
+	 * written, since what is in the table is theirs now.
+	 *
+	 * @param array  $progress Place.
+	 * @param string $why      scan_interrupted().
+	 * @param string $where    For the log, e.g. "on page 3".
+	 */
+	private static function scan_left( array $progress, $why, $where ) {
+		if ( 'stopped' === $why ) {
+			$progress['in_flight'] = '';
+			$progress['owner']     = '';
+			self::flush_scan_counts( $progress );
+			self::disarm_scan_backstop();
+			// Emergency Stop released it; a batch that took the scan's place
+			// as Stop was pressed had taken it again.
+			self::release_lock();
+			TCGiant_Sync_Logger::log( sprintf( 'Full sync scan stopped as requested, %s.', $where ) );
+			return;
+		}
+
+		TCGiant_Sync_Logger::log( 'replaced' === $why
+			? sprintf( 'Full sync scan: a newer full sync has started, so this one stops %s.', $where )
+			: sprintf( 'Full sync scan: another batch has taken it over, so this one stops %s.', $where ) );
+	}
+
+	/**
+	 * This batch has used what this request allows: hand the rest of the
+	 * scan to a fresh one, from the listing it stopped before.
+	 *
+	 * @param array  $progress Place.
+	 * @param string $why      What over_budget() said.
+	 */
+	private static function hand_off_scan( array $progress, $why ) {
+		// Not a scan that is no longer this batch's: Emergency Stop, a newer
+		// scan, or another batch, since it last looked.
+		$interrupted = self::scan_interrupted( $progress );
+		if ( '' !== $interrupted ) {
+			self::scan_left( $progress, $interrupted, sprintf( 'on page %d', (int) $progress['page'] ) );
+			return;
+		}
+
+		$progress['in_flight'] = '';
+		$progress['owner']     = '';
+		$progress['ts']        = time();
+
+		// A cap the host's kills taught rises again once enough batches in a
+		// row have handed on cleanly: learnt from two kills that happened to
+		// fall together, it would have held for the rest of the scan.
+		$cap = (int) ( $progress['cap'] ?? 0 );
+		if ( $cap > 0 ) {
+			$progress['clean'] = (int) ( $progress['clean'] ?? 0 ) + 1;
+			if ( $progress['clean'] >= max( self::SCAN_CAP_RISE_AFTER, (int) ( $progress['rise_after'] ?? 0 ) ) ) {
+				$raised               = (int) ceil( $cap * self::SCAN_CAP_RISE );
+				$progress['cap']      = $raised >= (int) TCGiant_Sync_Runtime::time_budget() ? 0 : $raised;
+				$progress['cap_rose'] = true;
+				$progress['clean']    = 0;
+				TCGiant_Sync_Logger::log( $progress['cap'] > 0
+					? sprintf( 'Full sync scan: %d batches in a row have handed on in good time, so each now hands on by %d s rather than %d s.', max( self::SCAN_CAP_RISE_AFTER, (int) ( $progress['rise_after'] ?? 0 ) ), $progress['cap'], $cap )
+					: sprintf( 'Full sync scan: %d batches in a row have handed on in good time, so the batches go back to the usual time budget.', max( self::SCAN_CAP_RISE_AFTER, (int) ( $progress['rise_after'] ?? 0 ) ) ) );
+			}
+		}
+
+		self::flush_scan_counts( $progress );
+
+		// The heartbeat Fetch Inventory and Resume Import judge the scan by.
+		self::update_sync_state( array( 'scan_page_at' => time() ), true );
+
+		TCGiant_Sync_Logger::log( sprintf(
+			'Full sync scan: stopped this batch on page %d, before listing %d, to stay within this host\'s limits (%s). The rest carries on in a fresh request.',
+			(int) $progress['page'],
+			(int) $progress['next'] + 1,
+			$why
+		) );
+
+		self::queue_scan_batch( (string) $progress['scan'] );
 		TCGiant_Sync_Cron::request_dispatch();
+
+		// The next batch is queued above. Picked up by the queue runner in
+		// this same request, it would start where this one stopped: short of
+		// memory, or of time, if the site lets Action Scheduler run longer
+		// than this batch's budget. Unlike the delta's next run, it would then
+		// ask eBay for its page again to handle one listing, over and over.
+		TCGiant_Sync_Runtime::end_queue_runs();
+	}
+
+	/**
+	 * Queue the scan's next batch, as an Action Scheduler action for this
+	 * scan, unless one is waiting, and arm the WP-Cron backstop.
+	 *
+	 * Ahead of the item imports it queued, where Action Scheduler can put it
+	 * there (3.6 and later): a scan with a thousand imports waiting used to
+	 * wait behind them. Earlier versions take the first three arguments.
+	 *
+	 * @param string $key The scan, scan_key().
+	 */
+	private static function queue_scan_batch( $key ) {
+		if ( ! self::scan_run_pending() ) {
+			as_enqueue_async_action( 'tcgiant_sync_scan_all_pages', array( 'scan' => (string) $key ), self::GROUP_SCAN, false, 5 );
+		}
+
+		self::arm_scan_backstop();
+	}
+
+	/**
+	 * Whether a scan batch is waiting in the queue, not counting one running.
+	 *
+	 * @return bool
+	 */
+	private static function scan_run_pending() {
+		if ( ! function_exists( 'as_get_scheduled_actions' ) ) {
+			return function_exists( 'as_next_scheduled_action' )
+				&& false !== as_next_scheduled_action( 'tcgiant_sync_scan_all_pages', null, self::GROUP_SCAN );
+		}
+
+		return ! empty( as_get_scheduled_actions( array(
+			'hook'     => 'tcgiant_sync_scan_all_pages',
+			'group'    => self::GROUP_SCAN,
+			'status'   => 'pending',
+			'per_page' => 1,
+		), 'ids' ) );
+	}
+
+	/**
+	 * The WP-Cron event that carries the scan on if nothing else does.
+	 */
+	private static function arm_scan_backstop( $at = 0 ) {
+		// Cleared first: WordPress refuses a second event for the same hook
+		// within ten minutes of one already scheduled.
+		wp_clear_scheduled_hook( 'tcgiant_sync_scan_resume' );
+		wp_schedule_single_event( $at > 0 ? (int) $at : time() + self::SCAN_BACKSTOP_SECONDS, 'tcgiant_sync_scan_resume' );
+	}
+
+	/**
+	 * The scan is over, or waits for Resume Import: no backstop.
+	 */
+	private static function disarm_scan_backstop() {
+		wp_clear_scheduled_hook( 'tcgiant_sync_scan_resume' );
+	}
+
+	/**
+	 * Count one thing about a listing, towards the state and the page's line.
+	 *
+	 * @param array  $progress Place.
+	 * @param string $key      found, inline, inline_errors, queued, primary,
+	 *                         other or other_left.
+	 * @param int    $by       How many.
+	 */
+	private static function scan_count( array &$progress, $key, $by = 1 ) {
+		$progress['add'][ $key ]   = (int) ( $progress['add'][ $key ] ?? 0 ) + $by;
+		$progress['tally'][ $key ] = (int) ( $progress['tally'][ $key ] ?? 0 ) + $by;
+	}
+
+	/**
+	 * Whether there are counts to write.
+	 *
+	 * @param array $add Counts.
+	 * @return bool
+	 */
+	private static function has_scan_counts( array $add ) {
+		foreach ( $add as $value ) {
+			if ( ( is_array( $value ) && ! empty( $value ) ) || ( is_string( $value ) && '' !== $value ) || ( is_int( $value ) && 0 !== $value ) ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Add the scan's counts to the sync state's totals.
+	 *
+	 * Added to the totals as the table has them, since the imports the scan
+	 * queued add theirs from other requests meanwhile. With a mark, counts
+	 * already added under that mark are not added again: a batch killed after
+	 * writing them, but before noting that it had, leaves them to the next.
+	 *
+	 * @param array  $add  Counts.
+	 * @param string $mark Which counts these are, or ''.
+	 */
+	private static function apply_scan_counts( array $add, $mark = '' ) {
+		$state = self::state_from_table();
+
+		if ( '' !== $mark && $mark === (string) ( $state['scan_flushed'] ?? '' ) ) {
+			return;
+		}
+
+		$sites   = array_keys( (array) ( $add['sites'] ?? array() ) );
+		$updates = array(
+			'total_found'        => (int) ( $state['total_found'] ?? 0 ) + (int) ( $add['found'] ?? 0 ),
+			'total_queued'       => (int) ( $state['total_queued'] ?? 0 ) + (int) ( $add['queued'] ?? 0 ),
+			'total_processed'    => (int) ( $state['total_processed'] ?? 0 ) + (int) ( $add['inline'] ?? 0 ),
+			'total_errors'       => (int) ( $state['total_errors'] ?? 0 ) + (int) ( $add['inline_errors'] ?? 0 ),
+			'scan_inline'        => (int) ( $state['scan_inline'] ?? 0 ) + (int) ( $add['inline'] ?? 0 ),
+			'scan_inline_errors' => (int) ( $state['scan_inline_errors'] ?? 0 ) + (int) ( $add['inline_errors'] ?? 0 ),
+			'site_primary_seen'  => (int) ( $state['site_primary_seen'] ?? 0 ) + (int) ( $add['primary'] ?? 0 ),
+			'site_other_seen'    => (int) ( $state['site_other_seen'] ?? 0 ) + (int) ( $add['other'] ?? 0 ),
+			'site_other_sites'   => array_values( array_unique( array_merge( (array) ( $state['site_other_sites'] ?? array() ), $sites ) ) ),
+		);
+
+		if ( '' !== (string) ( $add['title'] ?? '' ) ) {
+			$updates['last_item_title'] = (string) $add['title'];
+		}
+		if ( '' !== $mark ) {
+			$updates['scan_flushed'] = $mark;
+		}
+
+		self::update_sync_state( $updates, true );
+	}
+
+	/**
+	 * Write what the scan has counted since it last did, and note that it has.
+	 *
+	 * @param array $progress Place, saved here.
+	 */
+	private static function flush_scan_counts( array &$progress ) {
+		$add = (array) ( $progress['add'] ?? array() );
+
+		if ( self::has_scan_counts( $add ) ) {
+			self::apply_scan_counts( $add, (string) ( $progress['scan'] ?? '' ) . '#' . (int) ( $progress['seq'] ?? 0 ) );
+			$progress['seq'] = (int) ( $progress['seq'] ?? 0 ) + 1;
+		}
+
+		$progress['add'] = array();
+		self::save_scan_progress( $progress );
+		self::refresh_lock();
+	}
+
+	/**
+	 * The last batch died while reading a page: read it again, or stop with
+	 * an error once SCAN_READ_KILLS batches in a row have died reading it,
+	 * rather than hand on for ever.
+	 *
+	 * @param array $progress Place, updated and saved.
+	 * @return bool False when the scan has stopped.
+	 */
+	private static function after_scan_read_death( array &$progress ) {
+		$reading = (int) ( $progress['reading'] ?? 0 );
+
+		if ( $reading < 1 ) {
+			return true;
+		}
+
+		$kills = $reading === (int) ( $progress['read_page'] ?? 0 ) ? (int) ( $progress['read_kills'] ?? 0 ) + 1 : 1;
+
+		$progress['reading'] = 0;
+
+		if ( $kills >= self::SCAN_READ_KILLS ) {
+			$progress['read_page']  = 0;
+			$progress['read_kills'] = 0;
+			$progress['owner']      = '';
+			self::save_scan_progress( $progress );
+
+			TCGiant_Sync_Logger::error( sprintf(
+				'Full sync scan: each of the last %d attempts to read page %d of your eBay listings was stopped before it finished, usually by the host, for using too much memory or time. The scan has stopped there, with its place kept; Resume Import tries the page again.',
+				$kills,
+				$reading
+			) );
+			self::update_sync_state( array(
+				'status'              => 'error',
+				'current_page'        => max( 1, $reading - 1 ),
+				'scan_complete_clean' => false,
+				'last_error'          => sprintf( 'Stopped on page %d: each of the last %d attempts to read it was stopped before it finished, usually by the host.', $reading, $kills ),
+			), true );
+			self::disarm_scan_backstop();
+			self::release_lock();
+			return false;
+		}
+
+		TCGiant_Sync_Logger::warning( sprintf(
+			'Full sync scan: the last attempt to read page %d was stopped before it finished. Trying again (attempt %d of %d).',
+			$reading,
+			$kills + 1,
+			self::SCAN_READ_KILLS
+		) );
+
+		$progress['read_page']  = $reading;
+		$progress['read_kills'] = $kills;
+		self::save_scan_progress( $progress );
+
+		return true;
+	}
+
+	/**
+	 * The last batch died while importing a listing: try it again, or step
+	 * over it once it has killed SCAN_ITEM_KILLS batches in a row.
+	 *
+	 * Stepping over is not dropping, as for the delta (after_slice_death()):
+	 * the listing is queued for a stock check of its own and listed on Stock
+	 * Review. It stays on the list of live listings, so the clean-up after
+	 * this sync leaves its product alone.
+	 *
+	 * @param array $progress Place, with in_flight set; updated and saved.
+	 */
+	private static function after_scan_death( array &$progress ) {
+		$dead_on = (string) $progress['in_flight'];
+		$kills   = (string) ( $progress['kill_item'] ?? '' ) === $dead_on
+			? (int) ( $progress['kills'] ?? 0 ) + 1
+			: 1;
+		$page    = (int) ( $progress['page'] ?? 0 );
+
+		if ( $kills >= self::SCAN_ITEM_KILLS ) {
+			TCGiant_Sync_Logger::error( sprintf(
+				'The full sync was stopped %d times in a row while importing eBay item %s (page %d). Moving past it so the rest can be read. It is queued for a stock check of its own and listed on the Stock Review page; the error line before this one says what stopped it, where PHP said.',
+				$kills,
+				$dead_on,
+				$page
+			) );
+
+			self::hold_back_listing( $dead_on, (string) ( $progress['scan'] ?? '' ) );
+			self::queue_settle( $dead_on );
+
+			// It is the listing the place was at, written before its work.
+			$ids = self::scan_page_ids( $progress );
+			$at  = array_search( $dead_on, $ids, true );
+			if ( false !== $at && $at >= (int) $progress['next'] ) {
+				$progress['next'] = (int) $at + 1;
+			}
+			self::scan_count( $progress, 'inline_errors' );
+
+			$progress['kills']     = 0;
+			$progress['kill_item'] = '';
+		} else {
+			TCGiant_Sync_Logger::warning( sprintf(
+				'The last full sync batch stopped while importing eBay item %s (page %d). Trying it again (attempt %d of %d) before moving past it.',
+				$dead_on,
+				$page,
+				$kills + 1,
+				self::SCAN_ITEM_KILLS
+			) );
+
+			$progress['kills']     = $kills;
+			$progress['kill_item'] = $dead_on;
+		}
+
+		$progress['in_flight'] = '';
+		self::save_scan_progress( $progress );
+	}
+
+	/**
+	 * The ItemIDs of the page the scan is on, as last read.
+	 *
+	 * @param array $progress Place.
+	 * @return string[]
+	 */
+	private static function scan_page_ids( array $progress ) {
+		if ( function_exists( 'wp_cache_delete' ) ) {
+			wp_cache_delete( self::SCAN_PAGE_OPTION, 'options' );
+		}
+
+		$page = get_option( self::SCAN_PAGE_OPTION, array() );
+
+		if ( ! is_array( $page )
+			|| (string) ( $page['scan'] ?? '' ) !== (string) ( $progress['scan'] ?? '' )
+			|| (int) ( $page['page'] ?? 0 ) !== (int) ( $progress['page'] ?? 0 ) ) {
+			return array();
+		}
+
+		return array_values( array_map( 'strval', (array) ( $page['ids'] ?? array() ) ) );
+	}
+
+	/**
+	 * The order this page's listings are worked through in, and the page's
+	 * listings recorded for the next batch.
+	 *
+	 * A page read again after a hand-on can differ from the first read: a
+	 * listing added, one moved by its end time changing. So the place on it is
+	 * kept by ItemID, not by position. The listings already done keep their
+	 * place at the front; after them come the rest, as eBay now sends them.
+	 * One done already that has moved onto this page from the one before is
+	 * worked through again, which costs a save; one still to do that has
+	 * moved off it onto the page before is said in the log - its listing is
+	 * on the list of live listings from the first read, so its product is not
+	 * taken for one whose listing has gone.
+	 *
+	 * @param array    $progress Place.
+	 * @param int      $page     Page number.
+	 * @param string[] $ids      This read's ItemIDs, in eBay's order.
+	 * @return string[]
+	 */
+	private static function scan_page_order( array $progress, $page, array $ids ) {
+		$stored = self::scan_page_ids( $progress );
+		$next   = (int) ( $progress['next'] ?? 0 );
+
+		if ( $next > 0 && ! empty( $stored ) ) {
+			$done  = array_slice( $stored, 0, $next );
+			$order = array_merge( $done, array_values( array_diff( $ids, $done ) ) );
+			$gone  = array_diff( array_slice( $stored, $next ), $ids );
+
+			if ( ! empty( $gone ) ) {
+				TCGiant_Sync_Logger::log( sprintf(
+					'Full sync scan: page %d has changed on eBay since this scan first read it, and %d listing(s) it had still to do are no longer on it (%s). They stay on the list of live listings, so the clean-up after this sync keeps their products; the next sync picks up any change to them.',
+					$page,
+					count( $gone ),
+					implode( ', ', array_slice( $gone, 0, 10 ) )
+				) );
+			}
+		} else {
+			$order = $ids;
+		}
+
+		update_option( self::SCAN_PAGE_OPTION, array(
+			'scan' => (string) ( $progress['scan'] ?? '' ),
+			'page' => (int) $page,
+			'ids'  => $order,
+		), false );
+
+		return $order;
+	}
+
+	/**
+	 * Whether a listing in eBay's answer is live. The scan asks for listings
+	 * ending from when it began (scan_end_from()), so one that has ended
+	 * since is in it too.
+	 *
+	 * @param array $item eBay listing.
+	 * @return bool
+	 */
+	private static function is_live_listing( array $item ) {
+		$status = (string) ( $item['SellingStatus']['ListingStatus'] ?? '' );
+
+		return '' === $status || 'Active' === $status;
+	}
+
+	/**
+	 * When the scan last showed it was at work: the page it last began, or
+	 * the listing, whichever is later.
+	 *
+	 * @param array $state Sync state.
+	 * @return int Unix time, or 0.
+	 */
+	public static function scan_heartbeat( array $state ) {
+		return max( (int) ( $state['scan_page_at'] ?? 0 ), self::scan_progress_ts( $state ) );
+	}
+
+	/**
+	 * When the scan last wrote its place, if it is this state's scan.
+	 *
+	 * @param array $state Sync state.
+	 * @return int Unix time, or 0.
+	 */
+	private static function scan_progress_ts( array $state ) {
+		$progress = self::scan_progress();
+
+		if ( empty( $progress['ts'] ) || '' === (string) ( $progress['scan'] ?? '' )
+			|| (string) $progress['scan'] !== self::scan_key( $state ) ) {
+			return 0;
+		}
+
+		return (int) $progress['ts'];
+	}
+
+	/**
+	 * Whether a full sync's scan has stopped part way, with nothing to carry
+	 * it on: still scanning, with no progress for SCAN_STALL_MINUTES.
+	 *
+	 * @param array $state Sync state.
+	 * @return bool
+	 */
+	public static function scan_has_stalled( array $state ) {
+		return in_array( (string) ( $state['status'] ?? '' ), array( 'scanning', 'limit_reached' ), true )
+			&& 'full' === ( $state['sync_mode'] ?? 'full' )
+			&& ( time() - self::scan_heartbeat( $state ) ) > self::SCAN_STALL_MINUTES * MINUTE_IN_SECONDS;
+	}
+
+	/**
+	 * Whether a full sync's scan has pages still to read: not marked finished
+	 * (finalize_scan()), nor, for one 3.27.5 began, which marked nothing, at
+	 * its last page.
+	 *
+	 * @param array $state Sync state.
+	 * @return bool
+	 */
+	private static function scan_unfinished( array $state ) {
+		if ( 'full' !== (string) ( $state['sync_mode'] ?? 'full' ) ) {
+			return false;
+		}
+
+		$key = self::scan_key( $state );
+		if ( '' !== $key && $key === (string) ( $state['scan_finished'] ?? '' ) ) {
+			return false;
+		}
+
+		return array_key_exists( 'scan_inline', $state )
+			|| (int) ( $state['total_pages'] ?? 0 ) < 1
+			|| (int) ( $state['current_page'] ?? 0 ) < (int) $state['total_pages'];
+	}
+
+	/**
+	 * Whether a full sync's scan is still at work, whatever its status says.
+	 *
+	 * "scanning" is not all a live scan can say. One of the GetItem imports it
+	 * queued that meets eBay's rate limit says "rate_limited", a shop over its
+	 * free limit "limit_reached", and the scan reads on under either. Judged
+	 * by the status alone, Fetch Inventory started such a scan again from page
+	 * 1, cancelling the imports it had queued, and the hourly sync took it
+	 * over and left it unfinished - the lock was all that kept them off, and a
+	 * scan between batches, or one a batch death had left without it, had
+	 * none to show.
+	 *
+	 * At work: progress in the last SYNC_STALL_MINUTES (scan_heartbeat()), or
+	 * its next batch queued in Action Scheduler, or its WP-Cron backstop still
+	 * to come - the retry after eBay's rate limit among them - or no more than
+	 * SCAN_STALL_MINUTES overdue. Later than that, WP-Cron is not running it,
+	 * and as before a scan quiet for SYNC_STALL_MINUTES can be begun again.
+	 * Emergency Stop clears both, so a scan stopped by hand, or by an error,
+	 * never counts.
+	 *
+	 * @param array $state Sync state.
+	 * @return bool
+	 */
+	private static function scan_still_running( array $state ) {
+		if ( ! in_array( (string) ( $state['status'] ?? '' ), array( 'scanning', 'rate_limited', 'limit_reached' ), true )
+			|| ! self::scan_unfinished( $state ) ) {
+			return false;
+		}
+
+		$stall = self::SYNC_STALL_MINUTES * MINUTE_IN_SECONDS;
+		if ( time() - self::scan_heartbeat( $state ) <= $stall ) {
+			return true;
+		}
+
+		if ( self::scan_run_pending() ) {
+			return true;
+		}
+
+		$backstop = function_exists( 'wp_next_scheduled' ) ? wp_next_scheduled( 'tcgiant_sync_scan_resume' ) : false;
+
+		return false !== $backstop && (int) $backstop > time() - self::SCAN_STALL_MINUTES * MINUTE_IN_SECONDS;
+	}
+
+	/**
+	 * Whether Resume Import has a sync to carry on.
+	 *
+	 * @param array $state Sync state.
+	 * @return bool
+	 */
+	public static function can_resume( array $state ) {
+		return in_array( (string) ( $state['status'] ?? '' ), array( 'rate_limited', 'stopped', 'error' ), true )
+			|| self::scan_has_stalled( $state );
+	}
+
+	/**
+	 * Since when the scan's next batch has been waiting to start, or 0 while
+	 * one is at work or the sync is not scanning.
+	 *
+	 * @param array $state Sync state.
+	 * @return int Unix time.
+	 */
+	public static function scan_waiting_since( array $state ) {
+		if ( 'scanning' !== ( $state['status'] ?? '' ) || 'full' !== ( $state['sync_mode'] ?? 'full' ) ) {
+			return 0;
+		}
+
+		$progress = self::scan_progress();
+		if ( '' === (string) ( $progress['scan'] ?? '' ) || (string) $progress['scan'] !== self::scan_key( $state )
+			|| empty( $progress['ts'] ) || self::scan_batch_live( $progress ) ) {
+			return 0;
+		}
+
+		return (int) $progress['ts'];
+	}
+
+	/**
+	 * What the Import screen and the Dashboard show of a sync's progress.
+	 *
+	 * The queued imports' progress is their own: total_processed counts the
+	 * listings the scan imported itself as well, which used to be measured
+	 * against total_queued, the GetItem imports alone - "38000/1400 items",
+	 * and a bar past 100%.
+	 *
+	 * @param array $state Sync state.
+	 * @return array inline, queued_done, queued_pct, waiting_since,
+	 *               stalled, since_text, can_resume.
+	 */
+	public static function screen_progress( array $state ) {
+		$queued = (int) ( $state['total_queued'] ?? 0 );
+		$done   = max( 0, (int) ( $state['total_processed'] ?? 0 ) - (int) ( $state['scan_inline'] ?? 0 ) )
+			+ max( 0, (int) ( $state['total_errors'] ?? 0 ) - (int) ( $state['scan_inline_errors'] ?? 0 ) );
+		$done   = $queued > 0 ? min( $done, $queued ) : 0;
+		// A sync 3.27.5 began kept no count of what its scan imported itself
+		// (scan_inline), so the above took those for queued imports done:
+		// "6/6 (100%)" with all six still queued. What is still queued says
+		// how many are done.
+		if ( $queued > 0 && ! array_key_exists( 'scan_inline', $state ) ) {
+			$done = max( 0, $queued - self::item_imports_waiting( $queued ) );
+		}
+		$since   = self::scan_waiting_since( $state );
+		$stalled = self::scan_has_stalled( $state );
+		// Since when: the next batch has waited, or nothing has happened.
+		$at      = $since > 0 ? $since : ( $stalled ? self::scan_heartbeat( $state ) : 0 );
+		$format  = (string) get_option( 'time_format', 'H:i' );
+
+		return array(
+			'inline'        => (int) ( $state['scan_inline'] ?? 0 ),
+			'queued_done'   => $done,
+			'queued_pct'    => $queued > 0 ? (int) round( $done / $queued * 100 ) : 0,
+			'waiting_since' => $since,
+			'stalled'       => $stalled,
+			'since_text'    => $at > 0 ? (string) ( function_exists( 'wp_date' ) ? wp_date( '' !== $format ? $format : 'H:i', $at ) : gmdate( 'H:i', $at ) ) : '',
+			'can_resume'    => self::can_resume( $state ),
+		);
 	}
 
 	/**
@@ -3174,29 +4817,56 @@ class TCGiant_Sync_Importer {
 	/**
 	 * Finalize the scan — transition to importing or complete state.
 	 *
-	 * @param bool $clean True when every page was scanned without error. Only a
-	 *                    clean scan may authorise orphan pruning, since the
-	 *                    pruner trashes anything absent from the active-ID list.
+	 * @param bool        $clean True when every page was scanned without error. Only a
+	 *                           clean scan may authorise orphan pruning, since the
+	 *                           pruner trashes anything absent from the active-ID list.
+	 * @param string|null $key   The scan this batch belongs to (scan_key()).
 	 */
-	private function finalize_scan( $clean = false ) {
-		$state = self::get_sync_state();
+	private function finalize_scan( $clean = false, $key = null ) {
+		$state = self::state_from_table();
+
+		// Stopped by hand while the last page was read: nothing is finished.
+		if ( 'stopped' === ( $state['status'] ?? '' ) ) {
+			self::release_lock();
+			return;
+		}
+
+		// Overtaken by a newer scan: that one finishes, and the lock is its own.
+		if ( null !== $key && '' !== (string) $key && (string) $key !== self::scan_key( $state ) ) {
+			TCGiant_Sync_Logger::log( 'Full sync scan: a newer full sync has started, so this one ends without finishing.' );
+			return;
+		}
+
+		// Only a full scan has a complete list of live listings. Resume
+		// Import's page scan of a delta reads only what changed since its
+		// window began, and authorised the pruner on that.
+		$clean = $clean && 'full' === ( $state['sync_mode'] ?? 'full' );
+
+		// Nor one whose list of live listings the database would not keep in
+		// full (append_active_ids()).
+		if ( $clean && '' !== self::scan_key( $state ) && self::scan_key( $state ) === (string) ( $state['scan_ids_lost'] ?? '' ) ) {
+			$clean = false;
+			TCGiant_Sync_Logger::warning( 'Inventory Pruning: will not run after this full sync. Its list of live eBay listings could not be saved in full, and pruning against it would take live listings for gone.' );
+		}
+
+		$finished = null !== $key && '' !== (string) $key ? array( 'scan_finished' => (string) $key ) : array();
 
 		if ( $state['total_queued'] > 0 || $state['total_processed'] > 0 ) {
-			self::update_sync_state( array(
+			self::update_sync_state( array_merge( array(
 				'status'              => 'importing',
 				'scan_complete_clean' => (bool) $clean,
-			) );
+			), $finished ), true );
 			TCGiant_Sync_Logger::log( sprintf(
 				'Scan complete. %d found, %d imported inline, %d queued for GetItem across %d pages.',
 				$state['total_found'], $state['total_processed'], $state['total_queued'], $state['total_pages']
 			) );
 		} else {
-			self::update_sync_state( array(
+			self::update_sync_state( array_merge( array(
 				'status'                  => 'complete',
 				'last_completed'          => current_time( 'mysql' ),
 				'last_successful_sync_at' => self::full_sync_position( $state ),
 				'scan_complete_clean'     => (bool) $clean,
-			) );
+			), $finished ), true );
 			TCGiant_Sync_Logger::log( 'Scan complete. No matching items found.' );
 			if ( $clean ) {
 				as_enqueue_async_action( 'tcgiant_sync_prune_orphans', array(), 'tcgiant_sync_group' );
@@ -3215,6 +4885,10 @@ class TCGiant_Sync_Importer {
 			);
 		}
 
+		// Every page read: nothing to carry on.
+		self::disarm_scan_backstop();
+		self::clear_scan_progress();
+
 		// Release the concurrent execution lock.
 		self::release_lock();
 	}
@@ -3222,14 +4896,22 @@ class TCGiant_Sync_Importer {
 	/**
 	 * Process all items from a single page of eBay listings.
 	 *
-	 * Called from the page-scanning loop in scan_all_pages().
+	 * Called from the page-scanning loop in scan_all_pages(), with the scan's
+	 * place: it starts at the listing the place is at, writes the place before
+	 * each listing, and stops starting listings once this request has used
+	 * what TCGiant_Sync_Runtime::over_budget() allows, or the scan has been
+	 * stopped, replaced or taken over (scan_interrupted()). Called without a
+	 * place, it works through the whole page and adds its counts at the end,
+	 * as it always did.
 	 *
-	 * @param array $items       Array of eBay item arrays.
-	 * @param int   $page_number Current page number.
-	 * @param int   $total_pages Total pages available.
+	 * @param array      $items       Array of eBay item arrays.
+	 * @param int        $page_number Current page number.
+	 * @param int        $total_pages Total pages available.
+	 * @param array|null $progress    The scan's place, updated here.
+	 * @return string '' when the page is done, or why it stopped: what
+	 *                over_budget() said, or scan_interrupted()'s answer.
 	 */
-	private function process_page_items( $items, $page_number, $total_pages ) {
-		$queued_count = 0;
+	private function process_page_items( $items, $page_number, $total_pages, &$progress = null ) {
 		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
 		$is_custom_filtering = ! empty( $settings['category_ids'] );
 		$standard_cats       = ! empty( $settings['import_standard_category_ids'] ) && is_array( $settings['import_standard_category_ids'] ) ? $settings['import_standard_category_ids'] : array();
@@ -3237,8 +4919,35 @@ class TCGiant_Sync_Importer {
 
 		$valid_custom_ids = $is_custom_filtering ? $this->get_allowed_category_ids() : array();
 
+		$in_scan = is_array( $progress );
+		if ( ! $in_scan ) {
+			$progress = self::fresh_scan_progress( '' );
+		}
+
+		// The page's listings by ItemID, in eBay's order.
+		$by_id = array();
+		foreach ( $items as $item ) {
+			if ( is_array( $item ) && ! empty( $item['ItemID'] ) ) {
+				$by_id[ (string) $item['ItemID'] ] = $item;
+			}
+		}
+
+		// Every listing on the page goes on the list of live listings before
+		// a single one is saved - the ones before the scan's place on it as
+		// well, and ones that ended while the scan ran. Saving two hundred
+		// can take longer than the host allows, and a request killed part way
+		// used to leave the page off the list: the pruner then took every
+		// listing on it for gone. A page read again adds only what is new on
+		// it: the list is rewritten whole each time, and is large.
+		$ids_here = array_map( 'strval', array_keys( $by_id ) );
+		$known    = $in_scan ? self::scan_page_ids( $progress ) : array();
+		self::append_active_ids( array_values( array_diff( $ids_here, $known ) ) );
+
+		$order = $in_scan ? self::scan_page_order( $progress, $page_number, $ids_here ) : $ids_here;
+		$first = $in_scan ? min( (int) ( $progress['next'] ?? 0 ), count( $order ) ) : 0;
+
 		// Debug: log resolved category IDs on the first page.
-		if ( $page_number === 1 && $is_filtering ) {
+		if ( $page_number === 1 && $is_filtering && 0 === $first ) {
 			TCGiant_Sync_Logger::log( sprintf(
 				'Category filter active. Custom IDs: [%s]. Standard IDs: [%s].',
 				implode( ', ', $valid_custom_ids ),
@@ -3256,27 +4965,83 @@ class TCGiant_Sync_Importer {
 			}
 		}
 
-		$active_ids_batch = array();
 		$mapper = TCGiant_Sync_Mapper::instance();
 		$license = TCGiant_Sync_Entitlements::instance();
-		$inline_processed = 0;
-		$inline_errors = 0;
 
 		// Listings on other eBay sites - see TCGiant_Sync_Sites.
-		$sites_on     = TCGiant_Sync_Sites::primary_only();
-		$other_left   = 0;
-		$primary_seen = 0;
-		$other_seen   = 0;
-		$other_sites  = array();
+		$sites_on = TCGiant_Sync_Sites::primary_only();
 
-		$scan_last = '';
+		$scan_last   = '';
+		$stopped_for = '';
+		$since_flush = 0;
+		$count       = count( $order );
+		// What the request holds with the page read, to judge growth from:
+		// see scan_over_budget().
+		$page_share  = TCGiant_Sync_Runtime::memory_share();
+		// Listings begun of the page this batch has read, and since when.
+		$begun_here  = 0;
+		$saves_from  = TCGiant_Sync_Runtime::elapsed();
 
-		foreach ( $items as $item ) {
-			$item_id = $item['ItemID'] ?? '';
+		for ( $i = $first; $i < $count; $i++ ) {
+			$item_id = (string) $order[ $i ];
 
-			if ( empty( $item_id ) ) {
+			if ( $in_scan ) {
+				// Emergency Stop, a newer scan, another batch: as they happen,
+				// not at the end of the page. First, so that a batch whose
+				// scan is no longer its own never hands it on.
+				if ( null !== self::$scan_batch ) {
+					$stopped_for = self::scan_interrupted( $progress );
+					if ( '' !== $stopped_for ) {
+						$progress['next'] = $i;
+						break;
+					}
+				}
+
+				// Stop starting listings well short of whatever this host
+				// allows, and hand the rest to a fresh request - rather than
+				// run on until the host kills the request part way through
+				// one. Always at least one listing, so every batch moves on.
+				if ( self::scan_batch_handled() > 0 ) {
+					$stopped_for = self::scan_over_budget( $page_share, (int) ( $progress['cap'] ?? 0 ), $begun_here, (float) ( $progress['save_secs'] ?? 0 ) );
+					if ( '' !== $stopped_for ) {
+						$progress['next'] = $i;
+						break;
+					}
+				}
+
+				// The totals, every few listings: the screens show them.
+				if ( $since_flush >= self::SCAN_FLUSH_EVERY ) {
+					self::flush_scan_counts( $progress );
+					$since_flush = 0;
+				}
+
+				// Before the work, so that if this request dies on this
+				// listing the next one knows which, and where to carry on -
+				// and, if the host ended it from outside, how far into its
+				// request it got (learn_scan_cap()).
+				$progress['next']      = $i;
+				$progress['in_flight'] = $item_id;
+				$progress['ts']        = time();
+				$progress['elapsed']   = (int) TCGiant_Sync_Runtime::elapsed();
+				// The limit PHP holds this request to, for how long a save of
+				// it may run (scan_batch_live()), and what a listing takes.
+				$progress['limit']     = (int) TCGiant_Sync_Runtime::effective_time_limit();
+				if ( $begun_here > 0 ) {
+					$progress['save_secs'] = round( ( TCGiant_Sync_Runtime::elapsed() - $saves_from ) / $begun_here, 2 );
+				}
+				$begun_here++;
+				self::save_scan_progress( $progress );
+				if ( null !== self::$scan_batch ) {
+					self::$scan_batch['handled']++;
+				}
+				$since_flush++;
+			}
+
+			if ( ! isset( $by_id[ $item_id ] ) ) {
+				// Done on an earlier read of this page, and gone from it now.
 				continue;
 			}
+			$item = $by_id[ $item_id ];
 
 			// Each listing its own item: the cache guard measures from its
 			// start, and a death names it and its step.
@@ -3285,12 +5050,24 @@ class TCGiant_Sync_Importer {
 			TCGiant_Sync_Runtime::release_memory();
 			TCGiant_Sync_Runtime::context( sprintf( 'eBay item %s (page %d of %s)', $item_id, $page_number, $total_pages > 0 ? (string) $total_pages : 'an unknown number' ) );
 
-			$active_ids_batch[] = $item_id;
+			// A listing that has ended since the scan began. It is in eBay's
+			// answer because the scan asks for listings ending from then
+			// (scan_end_from()). Not saved - as live, its stock would be set
+			// from eBay's figures - nor counted; the delta settles it, as it
+			// settles every ended listing. Its ItemID is on the list of live
+			// listings above, so this sync's clean-up leaves its product to
+			// that, as it would a listing still live.
+			if ( ! self::is_live_listing( $item ) ) {
+				continue;
+			}
+
+			self::scan_count( $progress, 'found' );
+			$progress['add']['title'] = (string) ( $item['Title'] ?? '' );
 
 			// A listing on another eBay site, when the shop imports only its own.
 			//
-			// After the line above on purpose. The ID is already on the active
-			// list, so the pruner still counts the listing as live and never
+			// After the list of live listings above, on purpose. The ID is on
+			// it, so the pruner still counts the listing as live and never
 			// trashes a product imported from it before the shop chose this -
 			// those keep syncing until the shop removes them, from Stock Review.
 			// One whose product exists goes on for the same reason.
@@ -3307,14 +5084,15 @@ class TCGiant_Sync_Importer {
 			if ( $sites_on && '' !== $item_site ) {
 				$item_product = self::find_live_product_for_item( $item_id );
 				if ( TCGiant_Sync_Sites::leaves_out( $item_site ) ) {
-					$other_seen++;
-					$other_sites[ $item_site ] = true;
+					self::scan_count( $progress, 'other' );
+					$progress['add']['sites'][ $item_site ]   = true;
+					$progress['tally']['sites'][ $item_site ] = true;
 					if ( ! $item_product ) {
-						$other_left++;
+						self::scan_count( $progress, 'other_left' );
 						continue;
 					}
 				} else {
-					$primary_seen++;
+					self::scan_count( $progress, 'primary' );
 				}
 				TCGiant_Sync_Sites::record_site( $item_product, $item_site );
 			}
@@ -3355,7 +5133,7 @@ class TCGiant_Sync_Importer {
 				&& ( self::$limit_reported || ! $license->can_import() ) ) {
 				if ( ! self::$limit_reported ) {
 					self::$limit_reported = true;
-					self::update_sync_state( array( 'status' => 'limit_reached' ) );
+					self::update_sync_state( array( 'status' => 'limit_reached' ), true );
 					TCGiant_Sync_Logger::log( sprintf(
 						'Import limit reached (%d/%d products). New listings will not be imported; products already imported carry on syncing normally.',
 						$license->get_active_product_count(),
@@ -3396,7 +5174,7 @@ class TCGiant_Sync_Importer {
 							TCGiant_Sync_Image_Localizer::set_external_images( $product_id, $product_data['images'] );
 						}
 
-						$inline_processed++;
+						self::scan_count( $progress, 'inline' );
 						$price_display = ! empty( $product_data['price'] ) ? '$' . $product_data['price'] : 'No price';
 						$attr_count = count( $product_data['attributes'] );
 						$weight_display = ! empty( $product_data['weight'] ) ? ', ' . $product_data['weight'] . get_option( 'woocommerce_weight_unit', 'lbs' ) : '';
@@ -3406,14 +5184,14 @@ class TCGiant_Sync_Importer {
 							$title, $product_id, $price_display, $product_data['stock_quantity'], $attr_count, $weight_display, $var_label
 						), 'success' );
 					} elseif ( ! TCGiant_Sync_Mapper::$last_skipped ) {
-						$inline_errors++;
+						self::scan_count( $progress, 'inline_errors' );
 						TCGiant_Sync_Logger::error( sprintf( 'Failed to save product for eBay Item: %s [inline]', $item_id ) );
 					}
 				} catch ( Exception $e ) {
-					$inline_errors++;
+					self::scan_count( $progress, 'inline_errors' );
 					TCGiant_Sync_Logger::error( 'Inline import exception for ' . $item_id . ': ' . $e->getMessage() );
 				} catch ( Error $e ) {
-					$inline_errors++;
+					self::scan_count( $progress, 'inline_errors' );
 					TCGiant_Sync_Logger::error( 'Inline import fatal for ' . $item_id . ': ' . $e->getMessage() );
 				}
 			} else {
@@ -3426,52 +5204,58 @@ class TCGiant_Sync_Importer {
 					&& false !== as_next_scheduled_action( 'tcgiant_sync_process_item_import', array( 'item_id' => $item_id ), 'tcgiant_sync_imports' ) ) {
 					continue;
 				}
-				$delay = min( $queued_count, 60 );
+				$delay = min( (int) ( $progress['tally']['queued'] ?? 0 ), 60 );
 				as_schedule_single_action( time() + $delay, 'tcgiant_sync_process_item_import', array( 'item_id' => $item_id ), 'tcgiant_sync_imports' );
-				$queued_count++;
+				self::scan_count( $progress, 'queued' );
 			}
 		}
 		self::report_cache_guard( $scan_last, 'Full sync' );
 		TCGiant_Sync_Runtime::context( sprintf( 'page %d of %s', $page_number, $total_pages > 0 ? (string) $total_pages : 'an unknown number' ) );
 
-		self::append_active_ids( $active_ids_batch );
-
-		// Update state with running totals.
-		$state = self::get_sync_state();
-		$new_total_found = $state['total_found'] + count( $items );
-		$new_total_queued = $state['total_queued'] + $queued_count;
-		$new_total_processed = $state['total_processed'] + $inline_processed;
-		$new_total_errors = $state['total_errors'] + $inline_errors;
-
-		$last_title = '';
-		if ( ! empty( $items ) ) {
-			$last_item = end( $items );
-			$last_title = $last_item['Title'] ?? '';
+		// Stopped part way: the place says where; whoever carries on writes.
+		if ( '' !== $stopped_for ) {
+			return $stopped_for;
 		}
 
-		self::update_sync_state( array(
-			'current_page'    => $page_number,
-			'total_found'     => $new_total_found,
-			'total_queued'    => $new_total_queued,
-			'total_processed' => $new_total_processed,
-			'total_errors'    => $new_total_errors,
-			'last_item_title' => $last_title,
-			'site_primary_seen' => (int) ( $state['site_primary_seen'] ?? 0 ) + $primary_seen,
-			'site_other_seen'   => (int) ( $state['site_other_seen'] ?? 0 ) + $other_seen,
-			'site_other_sites'  => array_values( array_unique( array_merge( (array) ( $state['site_other_sites'] ?? array() ), array_keys( $other_sites ) ) ) ),
-		) );
+		// The page is done. Called on its own, its counts go straight into
+		// the totals, as they always did.
+		if ( $in_scan ) {
+			$progress['next']      = $count;
+			$progress['in_flight'] = '';
+			$progress['ts']        = time();
+			self::flush_scan_counts( $progress );
+		} else {
+			self::apply_scan_counts( (array) $progress['add'] );
+		}
 
 		// Log summary.
+		$tally = (array) $progress['tally'];
 		if ( $page_number <= $total_pages ) {
-			$matched_label = $is_filtering ? sprintf( ', %d matched filter', $inline_processed + $queued_count ) : '';
-			$inline_label = $inline_processed > 0 ? sprintf( ', %d imported inline', $inline_processed ) : '';
-			$queued_label = $queued_count > 0 ? sprintf( ', %d queued for GetItem', $queued_count ) : '';
-			$filter_label = $other_left > 0 ? sprintf( ', %d on other eBay sites left out', $other_left ) : '';
+			$inline        = (int) ( $tally['inline'] ?? 0 );
+			$queued        = (int) ( $tally['queued'] ?? 0 );
+			$other_left    = (int) ( $tally['other_left'] ?? 0 );
+			$matched_label = $is_filtering ? sprintf( ', %d matched filter', $inline + $queued ) : '';
+			$inline_label  = $inline > 0 ? sprintf( ', %d imported inline', $inline ) : '';
+			$queued_label  = $queued > 0 ? sprintf( ', %d queued for GetItem', $queued ) : '';
+			$filter_label  = $other_left > 0 ? sprintf( ', %d on other eBay sites left out', $other_left ) : '';
 			TCGiant_Sync_Logger::log( sprintf(
 				'Page %d/%d: Scanned %d items%s%s%s%s.',
-				$page_number, $total_pages, count( $items ), $matched_label, $inline_label, $queued_label, $filter_label
+				$page_number, $total_pages, (int) ( $tally['found'] ?? 0 ), $matched_label, $inline_label, $queued_label, $filter_label
 			) );
 		}
+
+		if ( ! $in_scan ) {
+			$progress = null;
+			return '';
+		}
+
+		// On to the next page.
+		$progress['page']  = $page_number + 1;
+		$progress['next']  = 0;
+		$progress['tally'] = array();
+		self::save_scan_progress( $progress );
+
+		return '';
 	}
 
 
@@ -3925,13 +5709,20 @@ class TCGiant_Sync_Importer {
 
 			// Handle rate limiting: reschedule this item for later with escalating backoff.
 			if ( is_wp_error( $ebay_response ) && 'rate_limited' === $ebay_response->get_error_code() ) {
-				$state_for_retry = self::get_sync_state();
+				$state_for_retry = self::state_from_table();
 				$retries = (int) ( $state_for_retry['rate_limit_retries'] ?? 0 );
 				$retry_delay = $this->get_rate_limit_backoff_delay( $retries );
-				self::update_sync_state( array(
-					'status'             => 'rate_limited',
-					'rate_limit_retries' => $retries + 1,
-				) );
+				$paused = array( 'rate_limit_retries' => $retries + 1 );
+				// Not the sync's status while its scan still has pages to read:
+				// this import is put off, the scan is not. Said "rate_limited",
+				// the scan read on under it, and nothing kept Fetch Inventory or
+				// the hourly sync off a scan at work. Once every page is read,
+				// it is what the sync is waiting on, as before.
+				if ( ! ( in_array( (string) ( $state_for_retry['status'] ?? '' ), array( 'scanning', 'limit_reached' ), true )
+					&& self::scan_unfinished( $state_for_retry ) ) ) {
+					$paused['status'] = 'rate_limited';
+				}
+				self::update_sync_state( $paused, true );
 				TCGiant_Sync_Logger::log( sprintf(
 					'eBay API rate limit hit while importing item %s (attempt %d). Rescheduled for %d minutes later.',
 					$item_id,
@@ -4043,6 +5834,30 @@ class TCGiant_Sync_Importer {
 	}
 
 	/**
+	 * How many item imports are waiting to run, or running, up to $most.
+	 *
+	 * @param int $most No more than this many are counted.
+	 * @return int
+	 */
+	private static function item_imports_waiting( $most ) {
+		if ( ! function_exists( 'as_get_scheduled_actions' ) || ! class_exists( 'ActionScheduler_Store' ) ) {
+			return 0;
+		}
+
+		$waiting = 0;
+		foreach ( array( ActionScheduler_Store::STATUS_PENDING, ActionScheduler_Store::STATUS_RUNNING ) as $status ) {
+			$waiting += count( (array) as_get_scheduled_actions( array(
+				'hook'     => 'tcgiant_sync_process_item_import',
+				'group'    => self::GROUP_IMPORTS,
+				'status'   => $status,
+				'per_page' => max( 1, (int) $most ),
+			), 'ids' ) );
+		}
+
+		return min( $waiting, max( 0, (int) $most ) );
+	}
+
+	/**
 	 * Check if the sync is complete: its scan has read every page (it says
 	 * importing), and no item import is still waiting to run.
 	 *
@@ -4093,121 +5908,191 @@ class TCGiant_Sync_Importer {
 	 * Remove WooCommerce products that are no longer active on eBay.
 	 *
 	 * This is the single most destructive operation in the plugin, so it is
-	 * gated three ways:
+	 * gated four ways:
 	 *
 	 *   1. The last scan must have completed cleanly (scan_complete_clean).
 	 *      A scan aborted by an API error leaves a partial active-ID list, and
 	 *      pruning against that trashes every product on the pages we never
 	 *      reached.
 	 *   2. The active-ID list must be non-empty. An empty list cannot be
-	 *      distinguished from a failure, and verifying each product against the
-	 *      API instead costs one Trading API call per product.
+	 *      distinguished from a failure.
 	 *   3. The prune set must not exceed PRUNE_MAX_RATIO of the catalogue.
+	 *   4. Since 3.27.6, eBay must confirm, listing by listing, that each one
+	 *      has ended (confirm_prune_candidates()). A listing missing from the
+	 *      list is not proof: GetSellerList orders listings by when they end,
+	 *      and a Good 'Til Cancelled listing that renews while the scan runs
+	 *      moves from the front of that order to the back, so the first
+	 *      listing still to be read slips onto a page already read and is
+	 *      never seen. On a large catalogue that was hundreds of live
+	 *      listings' products, well under the 20% guard. A product whose
+	 *      listing is still live is never retired.
+	 *
+	 * Called with $follow_up by its own Action Scheduler action, for the
+	 * products an earlier run could not confirm yet (PRUNE_PENDING_OPTION).
+	 *
+	 * @param bool $follow_up Whether this is a follow-up run.
 	 */
-	public function prune_orphaned_items() {
+	public function prune_orphaned_items( $follow_up = false ) {
 		$state = self::get_sync_state();
-
-		if ( empty( $state['scan_complete_clean'] ) ) {
-			TCGiant_Sync_Logger::warning(
-				'Inventory Pruning: Skipped — the last scan did not complete cleanly. '
-				. 'Run a full sync to completion before orphaned products can be retired.'
-			);
-			return;
-		}
-
-		$active_ids = get_option( self::ACTIVE_IDS_OPTION, array() );
-		if ( ! is_array( $active_ids ) || empty( $active_ids ) ) {
-			TCGiant_Sync_Logger::warning(
-				'Inventory Pruning: Skipped — no active eBay Item IDs were recorded during the scan. '
-				. 'Refusing to prune, since an empty list is indistinguishable from a failed scan.'
-			);
-			return;
-		}
 
 		global $wpdb;
 		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
 		$preserve_cats = isset( $settings['preserve_woo_category_ids'] ) && is_array( $settings['preserve_woo_category_ids'] ) ? $settings['preserve_woo_category_ids'] : array();
 
-		// O(1) membership test. in_array() over a 10k-element list, once per
-		// product, is 100M string comparisons on a large catalogue.
-		$active_lookup = array_flip( array_map( 'strval', $active_ids ) );
-
-		// Get all products that have an _ebay_item_id.
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-		$ebay_linked_products = $wpdb->get_results(
-			"SELECT post_id, meta_value as ebay_id
-			FROM {$wpdb->postmeta} pm
-			JOIN {$wpdb->posts} p ON p.ID = pm.post_id
-			WHERE pm.meta_key = '_ebay_item_id' AND pm.meta_value != '' AND p.post_type = 'product' AND p.post_status != 'trash'"
-		);
-
-		$total_linked = count( $ebay_linked_products );
-
-		// Decide the prune set up front so we can sanity-check its size before
-		// touching anything.
-		$prune_rows = array();
-		foreach ( $ebay_linked_products as $row ) {
-			if ( ! isset( $active_lookup[ (string) $row->ebay_id ] ) ) {
-				$prune_rows[] = $row;
-			}
-		}
-
-		$prune_count = count( $prune_rows );
-
-		if ( 0 === $prune_count ) {
-			TCGiant_Sync_Logger::log( 'Inventory Pruning: No orphaned products found.' );
-			delete_option( self::ACTIVE_IDS_OPTION );
-			return;
-		}
-
-		/**
-		 * Filter the maximum share of eBay-linked products a single prune may retire.
-		 *
-		 * @param float $ratio        Between 0 and 1. Default self::PRUNE_MAX_RATIO.
-		 * @param int   $prune_count  Number of products this run would retire.
-		 * @param int   $total_linked Total eBay-linked products.
-		 */
-		$max_ratio = (float) apply_filters( 'tcgiant_sync_prune_max_ratio', self::PRUNE_MAX_RATIO, $prune_count, $total_linked );
-
-		if ( $total_linked > 0 && $max_ratio > 0 && ( $prune_count / $total_linked ) > $max_ratio ) {
-			TCGiant_Sync_Logger::error( sprintf(
-				'Inventory Pruning: ABORTED — would have trashed %d of %d eBay-linked products (%.1f%%, limit %.0f%%). '
-				. 'This normally means the scan was incomplete. Nothing was changed. '
-				. 'Re-run a full sync; if the removal is genuine, raise the limit with the '
-				. 'tcgiant_sync_prune_max_ratio filter.',
-				$prune_count,
-				$total_linked,
-				( $prune_count / $total_linked ) * 100,
-				$max_ratio * 100
-			) );
-			return;
-		}
-
-		// Not a product given its listing since this full sync began. The
-		// pruner runs once the last import the sync queued has run, hours after
-		// the scan on a large catalogue, and the active list holds only what
-		// the scan's pages held: a product pushed, relisted by hand or by
-		// Auto-Relist, or linked to a new listing in the meantime - or during
-		// the scan, after its page was read - has an item number that list
-		// never saw, and was trashed with its new listing live.
-		//
-		// Kept by when it was listed, _ebay_start_time against the sync's
-		// start in UTC (full_started_at), or pushed, _ebay_export_last_pushed
-		// against started_at - both the site's local time, as WordPress writes
-		// them - from an hour before, for the hour a clock going back repeats.
-		// A product with neither date is judged as before.
-		$listed_since = strtotime( (string) ( $state['full_started_at'] ?? '' ) );
-		$local_start  = date_create( (string) ( $state['started_at'] ?? '' ), new DateTimeZone( 'UTC' ) );
-		$pushed_since = ( '' !== (string) ( $state['started_at'] ?? '' ) && $local_start ) ? $local_start->modify( '-1 hour' )->format( 'Y-m-d H:i:s' ) : '';
+		$total_linked = 0;
 		$kept_new     = 0;
-		foreach ( $prune_rows as $key => $row ) {
-			$listed = strtotime( (string) get_post_meta( (int) $row->post_id, '_ebay_start_time', true ) );
-			$pushed = (string) get_post_meta( (int) $row->post_id, '_ebay_export_last_pushed', true );
-			if ( ( false !== $listed_since && false !== $listed && $listed >= $listed_since )
-				|| ( '' !== $pushed_since && '' !== $pushed && $pushed >= $pushed_since ) ) {
-				unset( $prune_rows[ $key ] );
-				$kept_new++;
+		$round        = 0;
+
+		if ( $follow_up ) {
+			// Nothing waiting: done, or a newer full sync has taken it. The
+			// list of live listings is left alone - it may be that newer
+			// sync's, part way through its pages. Deleted here, its clean-up
+			// found most of the shop missing from it and gave up over the
+			// ratio guard, or asked eBay about live listings for hours.
+			$pending = get_option( self::PRUNE_PENDING_OPTION, array() );
+			if ( ! is_array( $pending ) || empty( $pending['rows'] ) ) {
+				return;
 			}
+
+			// Only for the full sync whose clean-up left them, while it is
+			// still the last one and every page of it is read: its list of
+			// live listings is the one these were missing from. Any other,
+			// they are dropped, and that sync's own clean-up decides.
+			$made_by = (string) ( $pending['scan'] ?? '' );
+			if ( '' === $made_by || $made_by !== (string) ( $state['full_started_at'] ?? '' ) || $made_by !== (string) ( $state['scan_finished'] ?? '' ) ) {
+				delete_option( self::PRUNE_PENDING_OPTION );
+				TCGiant_Sync_Logger::log( 'Inventory Pruning: the products an earlier clean-up left to check again were from a full sync since replaced, so they are left to the newer one\'s clean-up.' );
+				return;
+			}
+
+			// Products that run left, still linked to the listing it asked
+			// about. The checks it passed - a clean scan, the ratio guard,
+			// nothing listed since - stand; eBay's answer below decides.
+			$round      = (int) ( $pending['round'] ?? 0 ) + 1;
+			$prune_rows = self::pending_prune_rows( $pending );
+			if ( empty( $prune_rows ) ) {
+				delete_option( self::PRUNE_PENDING_OPTION );
+				delete_option( self::ACTIVE_IDS_OPTION );
+				return;
+			}
+		} else {
+			// A full run decides afresh: what an earlier one left goes with it.
+			delete_option( self::PRUNE_PENDING_OPTION );
+
+			if ( empty( $state['scan_complete_clean'] ) ) {
+				TCGiant_Sync_Logger::warning(
+					'Inventory Pruning: Skipped — the last scan did not complete cleanly. '
+					. 'Run a full sync to completion before orphaned products can be retired.'
+				);
+				return;
+			}
+
+			$active_ids = get_option( self::ACTIVE_IDS_OPTION, array() );
+			if ( ! is_array( $active_ids ) || empty( $active_ids ) ) {
+				TCGiant_Sync_Logger::warning(
+					'Inventory Pruning: Skipped — no active eBay Item IDs were recorded during the scan. '
+					. 'Refusing to prune, since an empty list is indistinguishable from a failed scan.'
+				);
+				return;
+			}
+
+			// O(1) membership test. in_array() over a 10k-element list, once per
+			// product, is 100M string comparisons on a large catalogue.
+			$active_lookup = array_flip( array_map( 'strval', $active_ids ) );
+
+			// Get all products that have an _ebay_item_id.
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			$ebay_linked_products = $wpdb->get_results(
+				"SELECT post_id, meta_value as ebay_id
+				FROM {$wpdb->postmeta} pm
+				JOIN {$wpdb->posts} p ON p.ID = pm.post_id
+				WHERE pm.meta_key = '_ebay_item_id' AND pm.meta_value != '' AND p.post_type = 'product' AND p.post_status != 'trash'"
+			);
+
+			$total_linked = count( $ebay_linked_products );
+
+			// Decide the prune set up front so we can sanity-check its size before
+			// touching anything.
+			$prune_rows = array();
+			foreach ( $ebay_linked_products as $row ) {
+				if ( ! isset( $active_lookup[ (string) $row->ebay_id ] ) ) {
+					$prune_rows[] = $row;
+				}
+			}
+
+			$prune_count = count( $prune_rows );
+
+			if ( 0 === $prune_count ) {
+				TCGiant_Sync_Logger::log( 'Inventory Pruning: No orphaned products found.' );
+				delete_option( self::ACTIVE_IDS_OPTION );
+				return;
+			}
+
+			/**
+			 * Filter the maximum share of eBay-linked products a single prune may retire.
+			 *
+			 * @param float $ratio        Between 0 and 1. Default self::PRUNE_MAX_RATIO.
+			 * @param int   $prune_count  Number of products this run would retire.
+			 * @param int   $total_linked Total eBay-linked products.
+			 */
+			$max_ratio = (float) apply_filters( 'tcgiant_sync_prune_max_ratio', self::PRUNE_MAX_RATIO, $prune_count, $total_linked );
+
+			if ( $total_linked > 0 && $max_ratio > 0 && ( $prune_count / $total_linked ) > $max_ratio ) {
+				TCGiant_Sync_Logger::error( sprintf(
+					'Inventory Pruning: ABORTED — would have trashed %d of %d eBay-linked products (%.1f%%, limit %.0f%%). '
+					. 'This normally means the scan was incomplete. Nothing was changed. '
+					. 'Re-run a full sync; if the removal is genuine, raise the limit with the '
+					. 'tcgiant_sync_prune_max_ratio filter.',
+					$prune_count,
+					$total_linked,
+					( $prune_count / $total_linked ) * 100,
+					$max_ratio * 100
+				) );
+				return;
+			}
+
+			// Not a product given its listing since this full sync began. The
+			// pruner runs once the last import the sync queued has run, hours after
+			// the scan on a large catalogue, and the active list holds only what
+			// the scan's pages held: a product pushed, relisted by hand or by
+			// Auto-Relist, or linked to a new listing in the meantime - or during
+			// the scan, after its page was read - has an item number that list
+			// never saw, and was trashed with its new listing live.
+			//
+			// Kept by when it was listed, _ebay_start_time against the sync's
+			// start in UTC (full_started_at), or pushed, _ebay_export_last_pushed
+			// against started_at - both the site's local time, as WordPress writes
+			// them - from an hour before, for the hour a clock going back repeats.
+			// A product with neither date is judged as before.
+			$listed_since = strtotime( (string) ( $state['full_started_at'] ?? '' ) );
+			$local_start  = date_create( (string) ( $state['started_at'] ?? '' ), new DateTimeZone( 'UTC' ) );
+			$pushed_since = ( '' !== (string) ( $state['started_at'] ?? '' ) && $local_start ) ? $local_start->modify( '-1 hour' )->format( 'Y-m-d H:i:s' ) : '';
+			foreach ( $prune_rows as $key => $row ) {
+				$listed = strtotime( (string) get_post_meta( (int) $row->post_id, '_ebay_start_time', true ) );
+				$pushed = (string) get_post_meta( (int) $row->post_id, '_ebay_export_last_pushed', true );
+				if ( ( false !== $listed_since && false !== $listed && $listed >= $listed_since )
+					|| ( '' !== $pushed_since && '' !== $pushed && $pushed >= $pushed_since ) ) {
+					unset( $prune_rows[ $key ] );
+					$kept_new++;
+				}
+			}
+		}
+
+		// Only what eBay says has ended. A listing still live is kept, and goes
+		// on the list of live listings; one eBay could not be asked about - a
+		// rate limit, the day's budget, an error, or more than one run asks -
+		// is kept for now and asked about again by the next run.
+		$confirmed  = $this->confirm_prune_candidates( array_values( $prune_rows ) );
+		$prune_rows = $confirmed['ended'];
+
+		if ( ! empty( $confirmed['live'] ) ) {
+			self::append_active_ids( $confirmed['live'] );
+			TCGiant_Sync_Logger::warning( sprintf(
+				'Inventory Pruning: %d listings missing from the scan are still live on eBay (%s%s), so their products are kept. A listing that renews while a full sync reads the listings can drop out of its pages.',
+				count( $confirmed['live'] ),
+				implode( ', ', array_slice( $confirmed['live'], 0, 5 ) ),
+				count( $confirmed['live'] ) > 5 ? ', ...' : ''
+			) );
 		}
 
 		$trashed_count   = 0;
@@ -4249,14 +6134,165 @@ class TCGiant_Sync_Importer {
 		}
 
 		TCGiant_Sync_Logger::log( sprintf(
-			'Inventory Pruning: Trashed %d products, preserved %d products (set to out of stock), out of %d eBay-linked.%s',
+			'Inventory Pruning: Trashed %d products, preserved %d products (set to out of stock), %s; %d listings checked with eBay.%s',
 			$trashed_count,
 			$preserved_count,
-			$total_linked,
+			$follow_up ? sprintf( 'checking again what an earlier run left (follow-up %d of at most %d)', $round, self::PRUNE_FOLLOW_UP_ROUNDS ) : sprintf( 'out of %d eBay-linked', $total_linked ),
+			$confirmed['asked'],
 			$kept_new > 0 ? sprintf( ' Kept %d listed or pushed since the full sync began, which its scan could not have seen.', $kept_new ) : ''
 		), 'success' );
 
-		delete_option( self::ACTIVE_IDS_OPTION );
+		if ( empty( $confirmed['left'] ) ) {
+			delete_option( self::PRUNE_PENDING_OPTION );
+			delete_option( self::ACTIVE_IDS_OPTION );
+			return;
+		}
+
+		// The rest wait for a run of their own, an hour on, while there are
+		// runs left; after that, for the next full sync's clean-up.
+		$left = array();
+		foreach ( $confirmed['left'] as $row ) {
+			$left[ (int) $row->post_id ] = (string) $row->ebay_id;
+		}
+		$again = $round < self::PRUNE_FOLLOW_UP_ROUNDS && function_exists( 'as_schedule_single_action' );
+
+		TCGiant_Sync_Logger::log( sprintf(
+			'Inventory Pruning: %d products kept for now, their listings not yet confirmed as ended on eBay (%s). %s',
+			count( $left ),
+			$confirmed['why'],
+			$again ? 'They are checked again in an hour.' : 'They are left for the clean-up after the next full sync.'
+		), 'warning' );
+
+		if ( ! $again ) {
+			delete_option( self::PRUNE_PENDING_OPTION );
+			delete_option( self::ACTIVE_IDS_OPTION );
+			return;
+		}
+
+		update_option( self::PRUNE_PENDING_OPTION, array( 'rows' => $left, 'round' => $round, 'scan' => (string) ( $state['full_started_at'] ?? '' ) ), false );
+		as_schedule_single_action( time() + self::PRUNE_FOLLOW_UP_SECONDS, 'tcgiant_sync_prune_orphans', array( 'follow_up' => true ), 'tcgiant_sync_group' );
+	}
+
+	/**
+	 * Ask eBay whether each listing the pruner would retire has ended.
+	 *
+	 * GetItem, as the hourly ended-listing check asks it ("verified via
+	 * GetItem"), up to PRUNE_CONFIRM_PER_RUN a run. Ended or Completed - sold
+	 * out among them - or no longer there at all: retired, as before. Active,
+	 * or anything else: kept. No answer - eBay's rate limit, the day's API
+	 * budget, no token, an error - is never taken for ended: kept, and asked
+	 * again next run; after the rate limit or the budget, or
+	 * PRUNE_CONFIRM_ERRORS failures in a row, nothing more is asked this run.
+	 *
+	 * @param array $rows Candidates: objects with post_id and ebay_id.
+	 * @return array ended (rows), live (item IDs), left (rows), asked (calls), why (why any were left).
+	 */
+	private function confirm_prune_candidates( array $rows ) {
+		$out    = array(
+			'ended' => array(),
+			'live'  => array(),
+			'left'  => array(),
+			'asked' => 0,
+			'why'   => '',
+		);
+		$api    = TCGiant_Sync_API::instance();
+		$failed = 0;
+		$stop   = '';
+
+		foreach ( $rows as $row ) {
+			if ( '' === $stop && $out['asked'] >= self::PRUNE_CONFIRM_PER_RUN ) {
+				$stop = sprintf( 'eBay is asked about %d a run', self::PRUNE_CONFIRM_PER_RUN );
+			}
+			if ( '' !== $stop ) {
+				$out['left'][] = $row;
+				continue;
+			}
+
+			$out['asked']++;
+			$verdict = self::listing_verdict( $api->get_item( (string) $row->ebay_id ) );
+
+			if ( 'ended' === $verdict || 'gone' === $verdict ) {
+				$out['ended'][] = $row;
+				$failed         = 0;
+			} elseif ( 'live' === $verdict ) {
+				$out['live'][] = (string) $row->ebay_id;
+				$failed        = 0;
+			} else {
+				$out['left'][] = $row;
+				$failed++;
+				if ( 'rate_limited' === $verdict || 'no_token' === $verdict ) {
+					$stop = 'rate_limited' === $verdict ? 'eBay\'s call limit, or the day\'s API budget, was reached' : 'there is no valid eBay token';
+				} elseif ( $failed >= self::PRUNE_CONFIRM_ERRORS ) {
+					$stop = sprintf( 'eBay did not answer %d times in a row', $failed );
+				} elseif ( '' === $out['why'] ) {
+					$out['why'] = 'eBay did not answer for some';
+				}
+			}
+		}
+
+		if ( '' !== $stop ) {
+			$out['why'] = $stop;
+		}
+
+		return $out;
+	}
+
+	/**
+	 * What GetItem's answer says of a listing, for the pruner.
+	 *
+	 * @param array|WP_Error $response get_item()'s answer.
+	 * @return string ended, gone (eBay no longer has it), live, or why it said
+	 *                neither: the error's code, or 'no_item'.
+	 */
+	private static function listing_verdict( $response ) {
+		if ( is_wp_error( $response ) ) {
+			// Error 17: "This item cannot be accessed because the listing has
+			// been deleted, is a Half.com listing, or you are not the seller."
+			// What eBay answers for a listing it no longer keeps.
+			$data   = $response->get_error_data();
+			$errors = is_array( $data ) && isset( $data['Errors'] ) ? $data['Errors'] : array();
+			$errors = isset( $errors['ErrorCode'] ) ? array( $errors ) : ( is_array( $errors ) ? $errors : array() );
+			foreach ( $errors as $error ) {
+				if ( is_array( $error ) && '17' === (string) ( $error['ErrorCode'] ?? '' ) ) {
+					return 'gone';
+				}
+			}
+			return (string) $response->get_error_code();
+		}
+
+		if ( ! is_array( $response ) || ! isset( $response['Item'] ) || ! is_array( $response['Item'] ) ) {
+			return 'no_item';
+		}
+
+		$status = (string) ( $response['Item']['SellingStatus']['ListingStatus'] ?? '' );
+
+		return in_array( $status, array( 'Completed', 'Ended' ), true ) ? 'ended' : 'live';
+	}
+
+	/**
+	 * The products an earlier prune run left, as rows like its own, for those
+	 * still on the same listing and not in the trash. One linked to another
+	 * listing since, or trashed, is no longer the pruner's to retire.
+	 *
+	 * @param array $pending PRUNE_PENDING_OPTION: rows (post ID => item ID), round.
+	 * @return array Objects with post_id and ebay_id.
+	 */
+	private static function pending_prune_rows( array $pending ) {
+		$rows = array();
+		foreach ( (array) ( $pending['rows'] ?? array() ) as $post_id => $item_id ) {
+			$post_id = (int) $post_id;
+			$status  = get_post_status( $post_id );
+			if ( $post_id < 1 || false === $status || 'trash' === $status
+				|| (string) get_post_meta( $post_id, '_ebay_item_id', true ) !== (string) $item_id ) {
+				continue;
+			}
+			$rows[] = (object) array(
+				'post_id' => $post_id,
+				'ebay_id' => (string) $item_id,
+			);
+		}
+
+		return $rows;
 	}
 
 

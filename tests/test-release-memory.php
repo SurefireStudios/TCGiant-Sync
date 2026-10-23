@@ -248,7 +248,8 @@ check( '  not only every tenth', false === strpos( $importer, '0 === $handled % 
 check( '  and its old flush-only helper is gone', false === strpos( $importer, 'release_request_cache' ), true );
 
 $scan = substr( $importer, strpos( $importer, 'for ( $current_page = $start_page;' ), 400 );
-check( 'the scan, between pages', false !== strpos( $scan, "if ( \$pages_this_batch > 0 ) {\n\t\t\t\tTCGiant_Sync_Runtime::release_memory();" ), true );
+// Each page a batch reads after its first (3.27.6: a batch ends by its budget, not after ten pages).
+check( 'the scan, between pages', false !== strpos( $scan, "if ( \$current_page > \$start_page ) {\n\t\t\t\tTCGiant_Sync_Runtime::release_memory();" ), true );
 
 $batch = substr( $localizer, strpos( $localizer, 'TCGiant_Sync_Runtime::over_budget();' ) - 200, 300 );
 check( 'the image batch, between products, before it measures', false !== strpos( $batch, "TCGiant_Sync_Runtime::release_memory();\n\t\t\t\t\$stopped_for = TCGiant_Sync_Runtime::over_budget();" ), true );

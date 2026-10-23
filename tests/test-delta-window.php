@@ -929,7 +929,8 @@ check( 'a full sync finishing moves it to when the sync started', state()['last_
 
 $src = php_strip_whitespace( dirname( __DIR__ ) . '/includes/class-tcgiant-sync-importer.php' );
 check( '  as does a full sync that found nothing', substr_count( $src, "'last_successful_sync_at' => self::full_sync_position( \$state )" ), 1 );
-check( '  and the start is recorded when it begins', false !== strpos( $src, "'full_started_at' => gmdate(" ), true );
+// Since 3.27.6 the moment is held for a line first: it is also the scan's key.
+check( '  and the start is recorded when it begins', false !== strpos( $src, "'full_started_at' => gmdate(" ) || ( false !== strpos( $src, "\$scan_started = gmdate( 'Y-m-d\TH:i:s.000\Z' );" ) && false !== strpos( $src, "'full_started_at' => \$scan_started," ) ), true );
 
 echo "\nTIMEZONES\n" . str_repeat( '=', 122 ) . "\n";
 

@@ -256,6 +256,13 @@ $tc_nonce    = wp_create_nonce( 'tcgiant_sync_ajax' );
 						esc_html( number_format_i18n( $tc_other_unchecked ) )
 					);
 					?>
+					<?php
+					// The list is only of products whose site the scan has
+					// recorded, so it grows while a full sync reads the pages -
+					// after the first ones have gone to the trash, too. A shop
+					// seeing that took the clean-up for broken.
+					esc_html_e( 'This list fills in as a full sync reads your eBay listings and records which site each one is on, so more products appear here while a sync is running, including after you have moved some to the trash.', 'tcgiant-sync' );
+					?>
 				</p>
 			<?php endif; ?>
 		</div>
