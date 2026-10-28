@@ -123,6 +123,10 @@ $export_state = TCGiant_Sync_Exporter::get_export_state();
 				<p class="tc-section-desc">
 					<?php esc_html_e( 'Go to Products, select the items you want to push, choose "Push to eBay" from the Bulk Actions dropdown and click Apply. Jobs run in the background via Action Scheduler.', 'tcgiant-sync' ); ?>
 				</p>
+				<p class="tc-section-desc">
+					<strong><?php echo esc_html( TCGiant_Sync_Exporter::bulk_push_line() ); ?></strong>.
+					<?php esc_html_e( 'Every TCGiant shop shares one daily allowance of eBay calls, so bulk pushes are limited per day; the limit resets at midnight UTC and is set in Listing Templates, Template settings.', 'tcgiant-sync' ); ?>
+				</p>
 				<a href="<?php echo esc_url( admin_url( 'edit.php?post_type=product' ) ); ?>" class="tc-button full-width">
 					<span class="dashicons dashicons-list-view" style="font-size:16px;"></span>
 					<?php esc_html_e( 'Go to Products → Bulk Push', 'tcgiant-sync' ); ?>

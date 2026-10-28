@@ -145,6 +145,41 @@ class TCGiant_Sync_Catalog {
 	);
 
 	/**
+	 * Grade label => eBay conditionDescriptorValueId.
+	 * Trading Cards — Descriptor Name 27502.
+	 *
+	 * eBay takes the ID, never the grade as it reads: a PSA 8 sent as "8" is
+	 * refused with "Condition descriptor value 8 is not valid for condition
+	 * descriptor 27502". From eBay's table of condition descriptor IDs for
+	 * trading cards (MIP user guide); the graders' IDs (GRADERS_TCG) match it.
+	 */
+	const GRADE_IDS_TCG = array(
+		'10'                   => '275020',
+		'9.5'                  => '275021',
+		'9'                    => '275022',
+		'8.5'                  => '275023',
+		'8'                    => '275024',
+		'7.5'                  => '275025',
+		'7'                    => '275026',
+		'6.5'                  => '275027',
+		'6'                    => '275028',
+		'5.5'                  => '275029',
+		'5'                    => '2750210',
+		'4.5'                  => '2750211',
+		'4'                    => '2750212',
+		'3.5'                  => '2750213',
+		'3'                    => '2750214',
+		'2.5'                  => '2750215',
+		'2'                    => '2750216',
+		'1.5'                  => '2750217',
+		'1'                    => '2750218',
+		'Authentic'            => '2750219',
+		'Authentic Altered'    => '2750220',
+		'Authentic - Trimmed'  => '2750221',
+		'Authentic - Coloured' => '2750222',
+	);
+
+	/**
 	 * Grade values available for graded Coins.
 	 * Includes standard Sheldon-scale grades plus text-based aliases
 	 * (Gem BU, Choice BU, etc.) that some grading holders use.

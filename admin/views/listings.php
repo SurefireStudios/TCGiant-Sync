@@ -178,6 +178,11 @@ $base_url = admin_url( 'admin.php?page=tcgiant-listings' );
 
 			<button type="button" id="tc-bulk-apply" class="button"><?php esc_html_e( 'Apply', 'tcgiant-sync' ); ?></button>
 
+			<?php // A bulk Push here counts against the site's daily limit, as the products list's does. ?>
+			<?php if ( class_exists( 'TCGiant_Sync_Exporter' ) ) : ?>
+				<span class="tc-bulk-push-count" style="margin-left:8px;color:#646970;"><?php echo esc_html( TCGiant_Sync_Exporter::bulk_push_line() ); ?></span>
+			<?php endif; ?>
+
 			<?php if ( $total > count( $items ) ) : ?>
 				<label style="margin-left:8px;">
 					<input type="checkbox" id="tc-select-all-matching" />
@@ -469,7 +474,7 @@ $base_url = admin_url( 'admin.php?page=tcgiant-listings' );
 			var d = r.data, pct = Math.round((d.processed/total)*100);
 			$('#tc-job-title').text(title + ' — ' + d.processed + '/' + total);
 			$('#tc-job-bar').css('width', pct + '%');
-			$('#tc-job-status').text(d.succeeded + ' succeeded, ' + d.failed + ' failed');
+			$('#tc-job-status').text(jobCounts(d));
 			if (d.errors && d.errors.length) {
 				$('#tc-job-errors').show().html(d.errors.map(function(e){ return '<div style="color:#c00;padding:1px 0;">'+e+'</div>'; }).join(''));
 			}
@@ -478,9 +483,29 @@ $base_url = admin_url( 'admin.php?page=tcgiant-listings' );
 			} else {
 				$('#tc-job-cancel').hide();
 				$('#tc-job-done').show();
-				$('#tc-job-status').text('Complete! ' + d.succeeded + ' succeeded, ' + d.failed + ' failed.');
+				$('#tc-job-status').text('Complete! ' + jobCounts(d) + '.');
 			}
 		});
+	}
+
+	// A bulk Push only queues: it says how many were queued, and how many the
+	// day's bulk-push limit, or a push still under way, left out.
+	function jobCounts(d) {
+		if (!d.is_async) {
+			return d.succeeded + ' succeeded, ' + d.failed + ' failed';
+		}
+		var capped = d.capped || 0, other = (d.kept || 0) - capped;
+		var text = <?php echo wp_json_encode( __( '%d queued', 'tcgiant-sync' ) ); ?>.replace('%d', d.queued || 0);
+		if (capped > 0) {
+			text += ', ' + <?php echo wp_json_encode( __( '%d not pushed (the day\'s bulk-push limit)', 'tcgiant-sync' ) ); ?>.replace('%d', capped);
+		}
+		if (other > 0) {
+			text += ', ' + <?php echo wp_json_encode( __( '%d left out (their last push is under way or did not finish)', 'tcgiant-sync' ) ); ?>.replace('%d', other);
+		}
+		if (d.failed > 0) {
+			text += ', ' + <?php echo wp_json_encode( __( '%d failed', 'tcgiant-sync' ) ); ?>.replace('%d', d.failed);
+		}
+		return text;
 	}
 })(jQuery);
 </script>

@@ -16,6 +16,20 @@ if ( ! defined( 'ABSPATH' ) ) {
 class TCGiant_Sync_Admin {
 
 	/**
+	 * Settings never sent to the browser: the eBay tokens, the relay's key
+	 * for this site, and an eBay Cert ID (a developer key's secret half),
+	 * kept from an older version that let a shop use its own keys. The
+	 * Settings screen's forms do not carry them, and a save from one keeps
+	 * them as stored (sanitize_settings()). app_id, the public half, and
+	 * redirect_uri and token_expiry, which are not secrets, still go with
+	 * the forms.
+	 */
+	const SECRET_SETTINGS = array( 'access_token', 'refresh_token', 'relay_secret', 'cert_id' );
+
+	/** The field each Settings form posts, so that a save from one is known. */
+	const SETTINGS_FORM_MARKER = '_tcg_form';
+
+	/**
 	 * Instance of this class.
 	 *
 	 * @var self|null
@@ -125,6 +139,11 @@ class TCGiant_Sync_Admin {
 		add_action( 'restrict_manage_posts', array( $this, 'render_ebay_status_filter' ) );
 		add_action( 'pre_get_posts', array( $this, 'handle_ebay_status_filter' ) );
 
+		// Listing templates: their screen's saves, AJAX and bulk actions.
+		if ( class_exists( 'TCGiant_Sync_Template_Admin' ) ) {
+			TCGiant_Sync_Template_Admin::instance();
+		}
+
 		// Ended-listing detection lives in TCGiant_Sync_Cron. Registering it
 		// here meant the callback only existed on admin requests, while the
 		// event fires from wp-cron.php — which is not is_admin() — so it never
@@ -148,6 +167,7 @@ class TCGiant_Sync_Admin {
 			'tcgiant-sync_page_tcgiant-listings',
 			'tcgiant-sync_page_tcgiant-stock-review',
 			'tcgiant-sync_page_tcgiant-image-cleanup',
+			'tcgiant-sync_page_tcgiant-templates',
 		);
 		if ( ! in_array( $hook, $tc_pages, true ) ) {
 			return;
@@ -529,7 +549,8 @@ class TCGiant_Sync_Admin {
 		}
 
 		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
-		unset( $settings['access_token'], $settings['refresh_token'], $settings['token_expiry'], $settings['store_name'], $settings['store_username'], $settings['store_id'] );
+		// And an eBay Cert ID an older version kept, which nothing reads now.
+		unset( $settings['access_token'], $settings['refresh_token'], $settings['token_expiry'], $settings['store_name'], $settings['store_username'], $settings['store_id'], $settings['cert_id'] );
 		update_option( 'tcgiant_sync_ebay_settings', $settings );
 
 		// The pending handshake has to go as well, or "disconnect and reconnect"
@@ -616,6 +637,15 @@ class TCGiant_Sync_Admin {
 
 		add_submenu_page(
 			'tcgiant-sync',
+			__( 'Listing Templates', 'tcgiant-sync' ),
+			__( 'Listing Templates', 'tcgiant-sync' ),
+			'manage_options',
+			'tcgiant-templates',
+			array( $this, 'render_templates_page' )
+		);
+
+		add_submenu_page(
+			'tcgiant-sync',
 			__( 'Settings', 'tcgiant-sync' ),
 			__( 'Settings', 'tcgiant-sync' ),
 			'manage_options',
@@ -659,6 +689,7 @@ class TCGiant_Sync_Admin {
 			'stock_review'  => array( 'title' => __( 'Stock Review', 'tcgiant-sync' ), 'icon' => 'dashicons-clipboard', 'page' => 'tcgiant-stock-review' ),
 			'image_cleanup' => array( 'title' => __( 'Image Cleanup', 'tcgiant-sync' ), 'icon' => 'dashicons-images-alt2', 'page' => 'tcgiant-image-cleanup' ),
 			'export'        => array( 'title' => __( 'Push to eBay', 'tcgiant-sync' ), 'icon' => 'dashicons-upload', 'page' => 'tcgiant-export' ),
+			'templates'     => array( 'title' => __( 'Listing Templates', 'tcgiant-sync' ), 'icon' => 'dashicons-layout', 'page' => 'tcgiant-templates' ),
 			'settings'      => array( 'title' => __( 'Settings', 'tcgiant-sync' ), 'icon' => 'dashicons-admin-settings', 'page' => 'tcgiant-settings' ),
 			'logs'          => array( 'title' => __( 'Logs', 'tcgiant-sync' ), 'icon' => 'dashicons-list-view', 'page' => 'tcgiant-logs' ),
 		);
@@ -808,6 +839,13 @@ class TCGiant_Sync_Admin {
 	 */
 	public function render_export_page() {
 		include_once TCGIANT_SYNC_PATH . 'admin/views/export.php';
+	}
+
+	/**
+	 * Render the Listing Templates page.
+	 */
+	public function render_templates_page() {
+		TCGiant_Sync_Template_Admin::instance()->render_page();
 	}
 
 	/**
@@ -1148,9 +1186,25 @@ class TCGiant_Sync_Admin {
 
 	public function sanitize_settings( $input ) {
 		$sanitized = array();
+
+		// A save from one of the Settings screen's forms, which never hold the
+		// eBay tokens or the relay's key: those stay as they are stored, and
+		// one posted is ignored, so a form can neither show nor set them.
+		// Every other write of the option - the connection, a token refresh,
+		// Disconnect - carries no marker and is kept exactly as written.
+		$from_form = is_array( $input ) && isset( $input[ self::SETTINGS_FORM_MARKER ] );
+		if ( $from_form ) {
+			unset( $input[ self::SETTINGS_FORM_MARKER ] );
+		}
+
 		if ( is_array( $input ) ) {
 			foreach ( $input as $key => $value ) {
 				$clean_key = sanitize_key( $key );
+				// Judged by the key as it is stored: ACCESS_TOKEN, "access_token "
+				// and the like all become access_token.
+				if ( $from_form && in_array( $clean_key, self::SECRET_SETTINGS, true ) ) {
+					continue;
+				}
 				if ( is_array( $value ) ) {
 					// map_deep() recurses; array_map( 'sanitize_text_field' )
 					// raised a TypeError on any nested array value.
@@ -1164,6 +1218,15 @@ class TCGiant_Sync_Admin {
 					$sanitized[ $clean_key ] = TCGiant_Sync_Sites::PRIMARY === $value ? TCGiant_Sync_Sites::PRIMARY : TCGiant_Sync_Sites::ALL;
 				} else {
 					$sanitized[ $clean_key ] = sanitize_text_field( $value );
+				}
+			}
+
+			if ( $from_form ) {
+				$stored = get_option( 'tcgiant_sync_ebay_settings', array() );
+				foreach ( self::SECRET_SETTINGS as $key ) {
+					if ( is_array( $stored ) && isset( $stored[ $key ] ) ) {
+						$sanitized[ $key ] = $stored[ $key ];
+					}
 				}
 			}
 
@@ -1574,6 +1637,11 @@ class TCGiant_Sync_Admin {
 			self::save_entered_specifics( $product_id, $_POST['specifics'] ?? array() );
 		}
 
+		// And so do its listing template and eBay-only description.
+		if ( class_exists( 'TCGiant_Sync_Template_Admin' ) ) {
+			TCGiant_Sync_Template_Admin::save_product_fields( $product_id, $_POST );
+		}
+
 		// Pre-push validation: check all requirements BEFORE queuing.
 		// This gives the user instant feedback instead of async error discovery.
 		//
@@ -1906,12 +1974,36 @@ class TCGiant_Sync_Admin {
 		$queued   = $exporter->bulk_push_products( $post_ids );
 
 		return add_query_arg(
-			array(
-				'tcgiant_pushed' => $queued,
-				'post_type'      => 'product',
+			array_merge(
+				array(
+					'tcgiant_pushed' => $queued,
+					'post_type'      => 'product',
+				),
+				// What the day's cap on bulk pushes left out, when it left any,
+				// and the waiting pushes this one replaced.
+				self::bulk_cap_args( $exporter )
 			),
 			$redirect_to
 		);
+	}
+
+	/**
+	 * What the notice after a bulk push needs from the day's cap: the products
+	 * it left out, and the waiting pushes the new one replaced. Nothing when
+	 * neither, so the address is what it always was.
+	 *
+	 * @param TCGiant_Sync_Exporter $exporter The exporter that queued the push.
+	 * @return array
+	 */
+	private static function bulk_cap_args( $exporter ) {
+		$args = array();
+		if ( $exporter->last_bulk_refused() > 0 ) {
+			$args['tcgiant_not_pushed'] = $exporter->last_bulk_refused();
+		}
+		if ( $exporter->last_bulk_replaced() > 0 ) {
+			$args['tcgiant_replaced'] = $exporter->last_bulk_replaced();
+		}
+		return $args;
 	}
 
 	/**
@@ -1945,12 +2037,33 @@ class TCGiant_Sync_Admin {
 		}
 		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
 		$count = (int) $_REQUEST['tcgiant_pushed'];
-		echo '<div class="notice notice-success is-dismissible"><p>';
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		$left_out = isset( $_REQUEST['tcgiant_not_pushed'] ) ? (int) $_REQUEST['tcgiant_not_pushed'] : 0;
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		$replaced = isset( $_REQUEST['tcgiant_replaced'] ) ? (int) $_REQUEST['tcgiant_replaced'] : 0;
+		echo '<div class="notice ' . ( $left_out > 0 ? 'notice-warning' : 'notice-success' ) . ' is-dismissible"><p>';
 		printf(
 			/* translators: %d: number of products queued */
 			esc_html( _n( '%d product queued for push to eBay.', '%d products queued for push to eBay.', $count, 'tcgiant-sync' ) ),
 			(int) $count
 		);
+		if ( $left_out > 0 ) {
+			echo ' ';
+			printf(
+				/* translators: 1: number of products not queued, 2: the daily limit */
+				esc_html( _n( '%1$d was not: this site\'s limit of %2$s bulk pushes a day has been reached. The limit resets tomorrow (midnight UTC), when you can push the rest; it is set in Listing Templates, Template settings.', '%1$d were not: this site\'s limit of %2$s bulk pushes a day has been reached. The limit resets tomorrow (midnight UTC), when you can push the rest; it is set in Listing Templates, Template settings.', $left_out, 'tcgiant-sync' ) ),
+				(int) $left_out,
+				esc_html( number_format_i18n( TCGiant_Sync_Exporter::bulk_push_cap() ) )
+			);
+		}
+		if ( $replaced > 0 ) {
+			echo ' ';
+			printf(
+				/* translators: %d: number of pushes */
+				esc_html( _n( '%d push still waiting from your last bulk push was replaced by this one, and no longer counts towards today\'s limit.', '%d pushes still waiting from your last bulk push were replaced by this one, and no longer count towards today\'s limit.', $replaced, 'tcgiant-sync' ) ),
+				(int) $replaced
+			);
+		}
 		echo ' <a href="' . esc_url( admin_url( 'admin.php?page=tcgiant-sync' ) ) . '">' . esc_html__( 'View progress →', 'tcgiant-sync' ) . '</a></p></div>';
 	}
 
@@ -2356,6 +2469,7 @@ class TCGiant_Sync_Admin {
 						<?php esc_html_e( 'Update these listings on eBay', 'tcgiant-sync' ); ?>
 					</button>
 				</form>
+				<span style="margin-left:8px;color:#646970;"><?php echo esc_html( TCGiant_Sync_Exporter::bulk_push_line() ); ?></span>
 			</p>
 		</div>
 		<?php
@@ -2390,7 +2504,8 @@ class TCGiant_Sync_Admin {
 			}
 		}
 
-		$queued = TCGiant_Sync_Exporter::instance()->bulk_push_products( $product_ids );
+		$exporter = TCGiant_Sync_Exporter::instance();
+		$queued   = $exporter->bulk_push_products( $product_ids );
 
 		delete_transient( 'tcgiant_stale_coin_count' );
 
@@ -2410,7 +2525,7 @@ class TCGiant_Sync_Admin {
 		}
 
 		wp_safe_redirect( add_query_arg(
-			array( 'tcgiant_pushed' => $queued, 'post_type' => 'product' ),
+			array_merge( array( 'tcgiant_pushed' => $queued, 'post_type' => 'product' ), self::bulk_cap_args( $exporter ) ),
 			admin_url( 'edit.php' )
 		) );
 		exit;
@@ -2482,6 +2597,12 @@ class TCGiant_Sync_Admin {
 		// was never opened must leave what is stored alone, not clear it.
 		if ( ! empty( $_POST['_ebay_export_specifics_present'] ) ) {
 			self::save_entered_specifics( $post_id, $_POST['_ebay_export_specifics'] ?? array() );
+		}
+
+		// Its listing template and eBay-only description, likewise only when
+		// they were on screen.
+		if ( class_exists( 'TCGiant_Sync_Template_Admin' ) && isset( $_POST['_tcgiant_tpl_nonce'] ) && wp_verify_nonce( sanitize_key( wp_unslash( $_POST['_tcgiant_tpl_nonce'] ) ), 'tcgiant_tpl_product' ) ) {
+			TCGiant_Sync_Template_Admin::save_product_fields( $post_id, $_POST );
 		}
 
 		// Handle grader ID and grade value saving based on item type.
@@ -2737,6 +2858,13 @@ class TCGiant_Sync_Admin {
 		$end_time   = (string) ( $item['ListingDetails']['EndTime'] ?? '' );
 		$start_time = (string) ( $item['ListingDetails']['StartTime'] ?? '' );
 
+		// A listing linked by hand is not the one a push sent a description
+		// to: what the product records of that send goes.
+		if ( class_exists( 'TCGiant_Sync_Templates' ) && (string) $product->get_meta( '_tcgiant_tpl_item' ) !== (string) $item_id ) {
+			foreach ( TCGiant_Sync_Templates::SENT_META as $sent_key ) {
+				$product->delete_meta_data( $sent_key );
+			}
+		}
 		$product->update_meta_data( '_ebay_item_id', $item_id );
 		$product->update_meta_data( '_ebay_listing_type', $type );
 		$product->update_meta_data( '_ebay_listing_status', $local_status );
@@ -3411,6 +3539,13 @@ class TCGiant_Sync_Admin {
 			</div>
 		</div>
 
+		<?php
+		// == LISTING TEMPLATE ==
+		if ( class_exists( 'TCGiant_Sync_Template_Admin' ) ) {
+			TCGiant_Sync_Template_Admin::render_product_fields( $product_id );
+		}
+		?>
+
 		<?php // == STEP 6: READINESS + PUSH ==
 			  $checks = array();
 			  // Category
@@ -3592,7 +3727,7 @@ class TCGiant_Sync_Admin {
 			// Dismiss error
 			$('#tcgiant-dismiss-export-error').on('click',function(e){e.preventDefault();$.post(ajaxUrl,{action:'tcgiant_clear_export_error',product_id:$(this).data('product-id'),_ajax_nonce:nonce});$('#tcgiant-export-error-notice').slideUp(200);});
 			// Push
-			$('#tcgiant-push-btn').on('click',function(){var btn=$(this),st=$('#tcgiant-push-status');btn.prop('disabled',true);st.css('color','#555').text('Saving & validating...');var cs=$('#_ebay_export_category_id_select').val()||'',cc=$('#_ebay_export_category_id_custom').val()||'',catId=(cs==='custom')?cc:cs,it=$('#_ebay_export_item_type').val()||'',sf=(it&&it!=='other')?'_'+it:'',gid=$('#_ebay_export_grader_id'+sf).val()||'',gv=$('#_ebay_export_grade_value'+sf).val()||'',uc=$('#_ebay_export_ungraded_condition'+sf).val()||'';$.post(ajaxUrl,{action:'tcgiant_push_product',product_id:btn.data('product-id'),override_category_id:catId,override_condition_id:$('#_ebay_export_condition_id').val()||'',override_item_type:it,override_condition_type:$('#_ebay_export_condition_type').val()||'',override_grader_id:gid,override_grade_value:gv,override_cert_number:$('[name="_ebay_export_cert_number"]').val()||'',override_coin_year:$('[name="_ebay_export_coin_year"]').val()||'',override_ungraded_condition:uc,override_listing_type:$('#_ebay_export_listing_type').val()||'',override_listing_duration:$('#_ebay_export_listing_duration').val()||'',override_fulfillment_policy:$('#_ebay_export_fulfillment_policy').val()||'',specifics_present:tcAspectsPresent(),specifics:tcAspectValues(),_ajax_nonce:nonce},function(r){if(r.success){st.css('color','#2a8a2a').text('OK - '+r.data.message);}else{st.css('color','#cc1818').text('Error: '+(r.data?r.data.message:'Unknown error'));btn.prop('disabled',false);}});});
+			$('#tcgiant-push-btn').on('click',function(){var btn=$(this),st=$('#tcgiant-push-status');btn.prop('disabled',true);st.css('color','#555').text('Saving & validating...');var cs=$('#_ebay_export_category_id_select').val()||'',cc=$('#_ebay_export_category_id_custom').val()||'',catId=(cs==='custom')?cc:cs,it=$('#_ebay_export_item_type').val()||'',sf=(it&&it!=='other')?'_'+it:'',gid=$('#_ebay_export_grader_id'+sf).val()||'',gv=$('#_ebay_export_grade_value'+sf).val()||'',uc=$('#_ebay_export_ungraded_condition'+sf).val()||'';$.post(ajaxUrl,{action:'tcgiant_push_product',product_id:btn.data('product-id'),override_category_id:catId,override_condition_id:$('#_ebay_export_condition_id').val()||'',override_item_type:it,override_condition_type:$('#_ebay_export_condition_type').val()||'',override_grader_id:gid,override_grade_value:gv,override_cert_number:$('[name="_ebay_export_cert_number"]').val()||'',override_coin_year:$('[name="_ebay_export_coin_year"]').val()||'',override_ungraded_condition:uc,override_listing_type:$('#_ebay_export_listing_type').val()||'',override_listing_duration:$('#_ebay_export_listing_duration').val()||'',override_fulfillment_policy:$('#_ebay_export_fulfillment_policy').val()||'',specifics_present:tcAspectsPresent(),specifics:tcAspectValues(),_tcgiant_tpl_fields:$('#_tcgiant_tpl_override').length?1:'',_tcgiant_tpl_override:$('#_tcgiant_tpl_override').val()||'',_tcgiant_ebay_description:$('#_tcgiant_ebay_description').val()||'',_ajax_nonce:nonce},function(r){if(r.success){st.css('color','#2a8a2a').text('OK - '+r.data.message);}else{st.css('color','#cc1818').text('Error: '+(r.data?r.data.message:'Unknown error'));btn.prop('disabled',false);}});});
 			// Item specifics: ask eBay what this category requires, and show it.
 			function tcAspectValues(){var o={};$('#tc-aspect-rows [data-aspect]').each(function(){var n=$(this).data('aspect');if(n){o[n]=$.trim($(this).val()||'');}});return o;}
 			function tcAspectsPresent(){return $('#tc-aspect-rows [data-aspect]').length?1:'';}
@@ -3710,7 +3845,7 @@ class TCGiant_Sync_Admin {
 			var fpDurations={'FixedPriceItem':['GTC'],'Chinese':['Days_1','Days_3','Days_5','Days_7','Days_10']};
 			$('#_ebay_export_listing_type').on('change',function(){var lt=$(this).val(),$dur=$('#_ebay_export_listing_duration');if(!lt){$dur.find('option').show();return;}var valid=fpDurations[lt]||[];$dur.find('option').each(function(){var v=$(this).val();if(!v){$(this).show();}else{$(this).toggle(valid.indexOf(v)>=0);}});if(valid.indexOf($dur.val())<0){$dur.val('');}}).trigger('change');
 			// Verify (dry run)
-			$('#tcgiant-verify-btn').on('click',function(){var btn=$(this),st=$('#tcgiant-push-status');btn.prop('disabled',true);st.css('color','#555').text('Verifying listing...');var cs=$('#_ebay_export_category_id_select').val()||'',cc=$('#_ebay_export_category_id_custom').val()||'',catId=(cs==='custom')?cc:cs,it=$('#_ebay_export_item_type').val()||'',sf=(it&&it!=='other')?'_'+it:'',gid=$('#_ebay_export_grader_id'+sf).val()||'',gv=$('#_ebay_export_grade_value'+sf).val()||'',uc=$('#_ebay_export_ungraded_condition'+sf).val()||'';$.post(ajaxUrl,{action:'tcgiant_verify_product',product_id:btn.data('product-id'),override_category_id:catId,override_condition_id:$('#_ebay_export_condition_id').val()||'',override_item_type:it,override_condition_type:$('#_ebay_export_condition_type').val()||'',override_grader_id:gid,override_grade_value:gv,override_cert_number:$('[name="_ebay_export_cert_number"]').val()||'',override_coin_year:$('[name="_ebay_export_coin_year"]').val()||'',override_ungraded_condition:uc,override_listing_type:$('#_ebay_export_listing_type').val()||'',override_listing_duration:$('#_ebay_export_listing_duration').val()||'',override_fulfillment_policy:$('#_ebay_export_fulfillment_policy').val()||'',specifics_present:tcAspectsPresent(),specifics:tcAspectValues(),_ajax_nonce:nonce},function(r){btn.prop('disabled',false);if(r.success){st.css('color','#2a8a2a').html(r.data.message.replace(/\n/g,'<br>'));}else{st.css('color','#cc1818').text('Verify failed: '+(r.data?r.data.message:'Unknown error'));}}).fail(function(){btn.prop('disabled',false);st.css('color','#cc1818').text('Verify request failed.');});});
+			$('#tcgiant-verify-btn').on('click',function(){var btn=$(this),st=$('#tcgiant-push-status');btn.prop('disabled',true);st.css('color','#555').text('Verifying listing...');var cs=$('#_ebay_export_category_id_select').val()||'',cc=$('#_ebay_export_category_id_custom').val()||'',catId=(cs==='custom')?cc:cs,it=$('#_ebay_export_item_type').val()||'',sf=(it&&it!=='other')?'_'+it:'',gid=$('#_ebay_export_grader_id'+sf).val()||'',gv=$('#_ebay_export_grade_value'+sf).val()||'',uc=$('#_ebay_export_ungraded_condition'+sf).val()||'';$.post(ajaxUrl,{action:'tcgiant_verify_product',product_id:btn.data('product-id'),override_category_id:catId,override_condition_id:$('#_ebay_export_condition_id').val()||'',override_item_type:it,override_condition_type:$('#_ebay_export_condition_type').val()||'',override_grader_id:gid,override_grade_value:gv,override_cert_number:$('[name="_ebay_export_cert_number"]').val()||'',override_coin_year:$('[name="_ebay_export_coin_year"]').val()||'',override_ungraded_condition:uc,override_listing_type:$('#_ebay_export_listing_type').val()||'',override_listing_duration:$('#_ebay_export_listing_duration').val()||'',override_fulfillment_policy:$('#_ebay_export_fulfillment_policy').val()||'',specifics_present:tcAspectsPresent(),specifics:tcAspectValues(),_tcgiant_tpl_fields:$('#_tcgiant_tpl_override').length?1:'',_tcgiant_tpl_override:$('#_tcgiant_tpl_override').val()||'',_tcgiant_ebay_description:$('#_tcgiant_ebay_description').val()||'',_ajax_nonce:nonce},function(r){btn.prop('disabled',false);if(r.success){st.css('color','#2a8a2a').html(r.data.message.replace(/\n/g,'<br>'));}else{st.css('color','#cc1818').text('Verify failed: '+(r.data?r.data.message:'Unknown error'));}}).fail(function(){btn.prop('disabled',false);st.css('color','#cc1818').text('Verify request failed.');});});
 		})(jQuery);
 		</script>
 		<?php
@@ -4233,6 +4368,9 @@ class TCGiant_Sync_Admin {
 			<option value="auction" <?php selected( $current, 'auction' ); ?>><?php esc_html_e( '🏷 Auctions Only', 'tcgiant-sync' ); ?></option>
 			<option value="fixed" <?php selected( $current, 'fixed' ); ?>><?php esc_html_e( '💰 Fixed Price Only', 'tcgiant-sync' ); ?></option>
 		</select>
+		<?php if ( class_exists( 'TCGiant_Sync_Exporter' ) ) : ?>
+			<span class="tc-bulk-push-count" style="display:inline-block;margin:5px 8px 0 4px;color:#646970;"><?php echo esc_html( TCGiant_Sync_Exporter::bulk_push_line() ); ?></span>
+		<?php endif; ?>
 		<?php
 	}
 
@@ -4371,6 +4509,11 @@ class TCGiant_Sync_Admin {
 			self::save_entered_specifics( $product_id, $_POST['specifics'] ?? array() );
 		}
 
+		// And so do its listing template and eBay-only description.
+		if ( class_exists( 'TCGiant_Sync_Template_Admin' ) ) {
+			TCGiant_Sync_Template_Admin::save_product_fields( $product_id, $_POST );
+		}
+
 		$settings = $exporter->get_export_settings( $product_id );
 		$valid    = $exporter->validate_export_settings( $settings );
 		if ( is_wp_error( $valid ) ) {
@@ -4394,11 +4537,23 @@ class TCGiant_Sync_Admin {
 			) ) );
 		}
 
-		// Build item XML and call VerifyAddItem.
+		// Build the item a push would add, and refuse what the push refuses
+		// before any call: a description over eBay's 500,000 characters.
 		$item_xml = $exporter->build_item_xml_public( $product, $settings );
+		$too_long = $exporter->description_too_long();
+		if ( is_wp_error( $too_long ) ) {
+			wp_send_json_error( array( 'message' => $too_long->get_error_message() ) );
+		}
+
+		// Through the call the push would add it with: VerifyAddFixedPriceItem
+		// for anything fixed-price, variations above all, which VerifyAddItem
+		// ignores. Verify checks a new listing, so the choice is made as for one,
+		// from the format this product would be listed in now.
 		$full_xml = '<Item>' . "\n" . $item_xml . "\n" . '</Item>';
 		$api      = TCGiant_Sync_API::instance();
-		$result   = $api->verify_add_item( $full_xml );
+		$result   = $exporter->uses_fixed_price_calls( $product, $settings, '' )
+			? $api->verify_add_fixed_price_item( $full_xml )
+			: $api->verify_add_item( $full_xml );
 
 		if ( is_wp_error( $result ) ) {
 			wp_send_json_error( array( 'message' => $result->get_error_message() ) );

@@ -19,7 +19,10 @@ $auth_url         = TCGiant_Sync_OAuth::instance()->get_authorization_url();
 $license          = TCGiant_Sync_Entitlements::instance();
 $license_ui       = $license->get_status_for_ui();
 
-$preserve_keys = array( 'access_token', 'refresh_token', 'token_expiry', 'relay_secret', 'redirect_uri', 'app_id', 'cert_id', 'store_name', 'import_status', 'marketplace' );
+// Not the tokens or the relay's key (TCGiant_Sync_Admin::SECRET_SETTINGS):
+// they are never put in the page, and a save from these forms keeps them.
+$preserve_keys = array( 'token_expiry', 'redirect_uri', 'app_id', 'store_name', 'import_status', 'marketplace' );
+$form_marker   = '<input type="hidden" name="tcgiant_sync_ebay_settings[' . esc_attr( TCGiant_Sync_Admin::SETTINGS_FORM_MARKER ) . ']" value="1">';
 
 // TCG-relevant eBay category map (ID => label).
 $tcg_categories = TCGiant_Sync_Catalog::get_categories();
@@ -256,6 +259,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 			<form method="post" action="options.php">
 				<?php settings_fields( 'tcgiant_sync_ebay_group' ); ?>
 				<?php
+				echo $form_marker; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- built above from esc_attr().
 				foreach ( $preserve_keys as $key ) {
 					if ( ! empty( $settings[ $key ] ) ) {
 						echo '<input type="hidden" name="tcgiant_sync_ebay_settings[' . esc_attr( $key ) . ']" value="' . esc_attr( $settings[ $key ] ) . '">';
@@ -628,6 +632,9 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 							<label><input type="radio" name="tcgiant_sync_ebay_settings[<?php echo esc_attr( $field_key ); ?>]" value="1" <?php checked( $settings[ $field_key ] ?? $field['default'], '1' ); ?>> Yes</label>
 							<label><input type="radio" name="tcgiant_sync_ebay_settings[<?php echo esc_attr( $field_key ); ?>]" value="0" <?php checked( $settings[ $field_key ] ?? $field['default'], '0' ); ?>> No</label>
 						</div>
+						<?php if ( 'overwrite_desc' === $field_key ) : ?>
+							<p class="tc-hint"><?php esc_html_e( 'A listing sent with a TCGiant listing template brings back only its description, not the template around it, and only what the template\'s cleaning kept of it: no videos, no links off eBay, no pictures not served over https, and its shortcodes as what they showed. So while the listing still holds what TCGiant sent it, the product\'s own description is left as it is.', 'tcgiant-sync' ); ?></p>
+						<?php endif; ?>
 					</div>
 					<?php endforeach; ?>
 				</div>
@@ -641,7 +648,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 							<label><input type="radio" name="tcgiant_sync_ebay_settings[delete_data_on_uninstall]" value="1" <?php checked( $settings['delete_data_on_uninstall'] ?? '0', '1' ); ?>> Yes</label>
 							<label><input type="radio" name="tcgiant_sync_ebay_settings[delete_data_on_uninstall]" value="0" <?php checked( $settings['delete_data_on_uninstall'] ?? '0', '0' ); ?>> No</label>
 						</div>
-						<p class="tc-hint"><?php esc_html_e( 'Your products and orders are never deleted either way. This covers only the records this plugin keeps: your settings, the eBay connection, and the links saying which product came from which listing. Leave this on No if you might reinstall or move to a different version, because those links cannot be rebuilt and a later sync would not recognise products it had already imported.', 'tcgiant-sync' ); ?></p>
+						<p class="tc-hint"><?php esc_html_e( 'Your products and orders are never deleted either way. This covers only the records this plugin keeps: your settings, the eBay connection, your listing templates and blocks, each product\'s eBay-only description, and the links saying which product came from which listing. Leave this on No if you might reinstall or move to a different version, because those links cannot be rebuilt and a later sync would not recognise products it had already imported.', 'tcgiant-sync' ); ?></p>
 					</div>
 				</div>
 
@@ -689,6 +696,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 			<form method="post" action="options.php">
 				<?php settings_fields( 'tcgiant_sync_ebay_group' ); ?>
 				<?php
+				echo $form_marker; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- built above from esc_attr().
 				// Preserve all non-export fields.
 				//
 				// Every Import Settings field must be here: this form replaces the

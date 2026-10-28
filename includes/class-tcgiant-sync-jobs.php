@@ -121,6 +121,7 @@ class TCGiant_Sync_Jobs {
 			'succeeded'  => 0,
 			'queued'     => 0,
 			'kept'       => 0,
+			'capped'     => 0,
 			'failed'     => 0,
 			'errors'     => array(),
 			'created_at' => current_time( 'mysql' ),
@@ -366,6 +367,8 @@ class TCGiant_Sync_Jobs {
 		// Products a job deliberately left alone. Distinct from failed, which
 		// means something went wrong, and from succeeded, which means acted on.
 		$kept        = $job['kept'] ?? 0;
+		// Of those, the ones the day's cap on bulk pushes left out (3.27.8).
+		$capped      = $job['capped'] ?? 0;
 		$errors      = $job['errors'];
 
 		// The exporter is resolved inside the arms that use it, not here. Fetched
@@ -394,6 +397,16 @@ class TCGiant_Sync_Jobs {
 						break;
 					}
 
+					// A bulk push, one product at a time: it counts against the
+					// site's daily cap as the products list's does
+					// (TCGiant_Sync_Exporter::take_bulk_push_allowance()).
+					if ( 1 !== TCGiant_Sync_Exporter::take_bulk_push_allowance( 1 ) ) {
+						$kept++;
+						$capped++;
+						$errors[] = sprintf( '#%d: not pushed - this site\'s limit of %d bulk pushes a day is reached. It resets at midnight UTC.', $product_id, TCGiant_Sync_Exporter::bulk_push_cap() );
+						break;
+					}
+
 					// push_product() only enqueues the push and returns true as
 					// soon as the product exists — it does not contact eBay. So
 					// this counter records "queued", not "listed". Reporting it
@@ -403,6 +416,8 @@ class TCGiant_Sync_Jobs {
 					$result = $exporter->push_product( $product_id );
 					if ( $result ) {
 						$queued++;
+						// Counted and waiting: a later bulk push that cancels it gives it back.
+						TCGiant_Sync_Exporter::note_bulk_queued( array( $product_id ) );
 					} else {
 						$failed++;
 						$errors[] = sprintf( '#%d: Could not be queued for push.', $product_id );
@@ -623,6 +638,7 @@ class TCGiant_Sync_Jobs {
 			'succeeded' => $succeeded,
 			'queued'    => $queued,
 			'kept'      => $kept,
+			'capped'    => $capped,
 			'failed'    => $failed,
 			'errors'    => array_slice( $errors, -50 ), // Keep last 50 errors.
 			'status'    => $is_done ? 'completed' : 'running',
@@ -635,6 +651,7 @@ class TCGiant_Sync_Jobs {
 			'succeeded' => $succeeded,
 			'queued'    => $queued,
 			'kept'      => $kept,
+			'capped'    => $capped,
 			'failed'    => $failed,
 			// bulk_push is asynchronous: 'queued' items have been handed to the
 			// background pusher, not confirmed as listed on eBay. Watch the

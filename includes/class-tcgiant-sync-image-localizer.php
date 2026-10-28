@@ -22,7 +22,8 @@ class TCGiant_Sync_Image_Localizer {
 
 	/**
 	 * Number of products to process per WP-Cron tick.
-	 * Each product can have 1-12 images. Higher batch sizes reduce
+	 * Each product brings every photo of its eBay listing - up to 24, and
+	 * one picture for each variation's value. Higher batch sizes reduce
 	 * total localization time for large stores (10k+ items).
 	 */
 	const PRODUCTS_PER_BATCH = 50;

@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 3.27.7
+Stable tag: 3.27.8
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -33,6 +33,7 @@ TCGiant Sync bridges your eBay store and WooCommerce, enabling automatic import 
 * **"All Other" item type** — list non-collectible products (electronics, clothing, etc.) with simple conditions, no grading required
 * eBay ConditionDescriptor support — Graded (PSA, BGS, SGC, CGC, etc.) and Ungraded conditions for Trading Cards and Coins categories
 * Business Policy management (Shipping, Returns, Payments) with one-click fetch
+* **eBay listing templates** -- design the description around your product's own, from five starters or your own HTML, with a preview of exactly what eBay gets; convert your WP-Lister templates
 
 **Pro Features (requires license key):**
 
@@ -73,7 +74,7 @@ The free tier supports up to 50 active synced products. Upgrade to Pro for unlim
 
 = Is my eBay data secure? =
 
-Yes. TCGiant Sync uses eBay's official OAuth 2.0 authentication. Your credentials are never stored in plain text.
+Yes. TCGiant Sync uses eBay's official OAuth 2.0 sign-in, by way of our relay. The eBay developer keys stay on the relay and never reach your site. Your shop's eBay tokens are stored in your WordPress database with the plugin's other settings, and are never shown on the plugin's screens.
 
 = How does inventory sync work? =
 
@@ -94,6 +95,42 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.27.8 - 2026-10-28 =
+**New: eBay listing templates. Nothing changes until you pick one.**
+* NEW: Listing Templates (TCGiant Sync, Listing Templates) designs what your eBay listings show around your product description: a header with your logo or banner, the condition and grading, your item specifics, your return and handling terms, and a link to your eBay Store. Pick colours, a logo, a banner and which parts show, with no code, or edit the HTML and CSS yourself, with placeholders such as {{title}} and {{{description}}}.
+* Five starters come with it, as drafts: Clean, Trading cards, Coins, Sealed or general, and Dark. A template is used only once you publish it and choose it: as your default, for a WooCommerce category, or on a product's eBay tab, where "None" keeps that product on the plain description. Until then every push sends exactly the description it sent before. The products list has a bulk action to set the template of many products at once.
+* The preview shows exactly what a push would send for any product, at desktop, tablet and phone widths, with anything taken out and why. "Check with eBay" asks eBay to check it without creating a listing, 20 times a day unless you change it.
+* What eBay refuses or shows badly is taken out before sending: scripts, forms, frames, links that leave eBay, and pictures not served over https. A templated description over eBay's limit of 500,000 characters is stopped before it is sent, with a message saying so; the plain description goes to eBay as before.
+* The returns and handling blocks say what the Business Policies sent with the listing say. Press Fetch / Refresh Policies from eBay on the Settings screen once after updating, so they have the details. The blocks' wording, and the starters' headings such as "Item specifics" and "Returns", are in English unless the plugin is translated into your language.
+* A template is used for new listings and for listings you push or revise again; listings already on eBay keep their description until then. A product listed on another eBay site than your Primary eBay Marketplace keeps the plain description.
+* Each product's eBay tab can also hold a description for eBay only, used in place of the website's description, with a template or without.
+* With Overwrite Description on, a listing sent with a template brings back only your description when it is imported, not the template around it. While the listing still holds what TCGiant sent it, your product's own description is left as it is: what comes back is only what the template's cleaning kept of it, without videos, links off eBay or pictures not served over https. A listing never sent with a template imports exactly as before.
+* Every save keeps a version, the last ten, with Restore. Templates can be exported and imported as files.
+* FIX: Verify now checks a product with variations, or a fixed-price product, through the same eBay call its push uses. It always used eBay's check for a single-item listing, which ignores variations.
+
+**Coming from WP-Lister for eBay**
+* NEW: Your WP-Lister listing templates can be turned into TCGiant drafts: upload the zip WP-Lister's Download link makes, pick a template folder on this site, or paste its HTML, CSS and settings (config.json). Nothing in it is run. A report says what was converted, what TCGiant does not do, and what to look at, such as Shipping and Returns text the policy blocks could replace.
+* While WP-Lister is active with its order creation or stock sync on, a notice says to turn them off, so orders do not arrive twice and stock is not sent twice. You can dismiss it.
+
+**A daily limit on bulk pushes**
+* NEW: Bulk pushes from one site are limited to 2,000 products a day, so pushing a whole catalogue again after choosing a template cannot use up the eBay calls every TCGiant shop shares. Products past the limit are not queued: the notice, and the Listings screen's progress window, say how many were queued, how many were not, and that the limit resets tomorrow. Pushes still waiting from an earlier bulk push that a new one replaces stop counting. "Bulk pushes today: X of 2,000" shows wherever you push in bulk. Template settings changes the limit, from 50 to 20,000 a day. Pushing a product from its own screen does not count.
+
+**Photos on eBay**
+* FIX: A listing whose photos were partly on eBay and partly on your website was refused by eBay ("A mixture of Self Hosted and EPS pictures are not allowed"). Now, when any of its photos is on eBay already (kept there when it was imported, say), its photos all go on eBay: yours are uploaded, one eBay call each, reused for 20 days. If one of yours can't be uploaded, a new listing goes without it, and an update of a live listing leaves that listing's photos as they are, so no photo is taken off it, while everything else is updated; the log says which photo and why. The next push that can upload it puts it on. If its file isn't on this server (an offload plugin moved it, say), the listing's photos stay as they are until the file is back or that photo is taken off the product. With "Host listing images on eBay?" on and none of its photos on eBay yet, if one can't be uploaded, all its photos are sent from your website instead, and the log says which and why. With no eBay photos and "Host listing images on eBay?" off, nothing changes.
+* FIX: A listing is now sent up to 24 photos, as eBay allows, not 12; a product's 13th to 24th photos never reached eBay. If a product has more than 24, or its photo addresses are too long together for eBay (about 4,000 characters, which very long addresses from a storage service can reach), the first ones that fit go and the log says how many were left and why. With more photos sent, a photo of yours that is already on eBay in 13th to 24th place now makes the listing's photos all go on eBay, so your other photos are uploaded to eBay, one eBay call each, reused for 20 days; with "Host listing images on eBay?" on, a product can upload up to 24 photos.
+
+**Graded trading cards**
+* FIX: Graded trading cards were refused by eBay ("Condition descriptor value 8 is not valid for condition descriptor 27502"): the grade went as it reads, 8 for a PSA 8, where eBay wants its own code for it. Every grade now goes as eBay's code, so graded cards can be pushed and checked with eBay again. A grade eBay has no code for is not sent, and the log names the product and the grade so you can choose it again. A card's certification number is sent up to 30 characters, eBay's limit.
+
+**Your eBay connection**
+* FIX: The Settings screen no longer puts your eBay tokens, or the key your site uses with our relay, in the page it shows you. Saving the settings keeps them exactly as they are stored, where before each save sent them back through WordPress's text cleaning; nothing about your connection changes.
+
+**Updates**
+* The plugin now tells the TCGiant connection service which version it is, so we can see which shops need an update.
+
+**For developers**
+* NEW: Imported products now hold their listing's return and payment Business Policies as well, as product meta: _ebay_return_policy_id, _ebay_return_policy_name, _ebay_payment_policy_id and _ebay_payment_policy_name, by the same rule as 3.27.6's shipping policy. The tcgiant_sync_ebay_description filter changes a listing's description last, before it is sent.
 
 = 3.27.7 - 2026-10-23 =
 **Old large copies of downloaded photos**

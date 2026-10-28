@@ -210,6 +210,11 @@ $tcgiant_options = array(
 	'tcgiant_sync_size_trim_pause',
 	'tcgiant_sync_last_crash_large_photo_copies',
 	'tcgiant_sync_last_crash_large_photo_copies_check',
+	'tcgiant_sync_template_settings',  // Listing templates' settings, 3.27.8.
+	'tcgiant_sync_template_starters',  // Which starter templates were installed.
+	'tcgiant_sync_bulk_push_cap',      // The daily cap on bulk pushes.
+	'tcgiant_sync_bulk_pushed',        // Bulk pushes counted today.
+	'tcgiant_sync_bulk_waiting',       // Bulk pushes counted today and still waiting.
 	'tcgiant_sync_jobs',               // Bulk job progress records.
 	'tcgiant_export_state',            // Export state machine.
 	'tcgiant_listings_table_version',
@@ -278,6 +283,37 @@ $wpdb->query(
 $wpdb->query(
 	"DELETE FROM {$wpdb->prefix}postmeta
 	 WHERE meta_key IN ( '_ebay_shipping_policy_id', '_ebay_shipping_policy_name', '_ebay_shipping_type', '_ebay_shipping_service', '_ebay_shipping_cost', '_ebay_shipping_currency', '_ebay_shipping_services' )"
+);
+
+// The listing's own return and payment policies, recorded beside its shipping
+// one (3.27.8), for 3.28.0's revise of imported listings.
+$wpdb->query(
+	"DELETE FROM {$wpdb->prefix}postmeta
+	 WHERE meta_key IN ( '_ebay_return_policy_id', '_ebay_return_policy_name', '_ebay_payment_policy_id', '_ebay_payment_policy_name' )"
+);
+
+// Listing templates and their text blocks (3.27.8): private posts of the
+// plugin's own types, with their meta - the bodies, versions and design
+// settings.
+$wpdb->query(
+	"DELETE pm FROM {$wpdb->prefix}postmeta pm
+	 INNER JOIN {$wpdb->prefix}posts p ON p.ID = pm.post_id
+	 WHERE p.post_type IN ( 'tcgiant_tpl', 'tcgiant_tpl_block' )"
+);
+$wpdb->query(
+	"DELETE FROM {$wpdb->prefix}posts WHERE post_type IN ( 'tcgiant_tpl', 'tcgiant_tpl_block' )"
+);
+
+// What each product holds of them: its own template choice, its eBay-only
+// description, and the record of the description last sent.
+$wpdb->query(
+	"DELETE FROM {$wpdb->prefix}postmeta
+	 WHERE meta_key IN ( '_tcgiant_tpl_override', '_tcgiant_ebay_description', '_tcgiant_tpl_id', '_tcgiant_tpl_ver', '_tcgiant_tpl_hash_sent', '_tcgiant_content_hash', '_tcgiant_desc_hash', '_tcgiant_region_hash', '_tcgiant_tpl_item', '_tcgiant_desc_sent_at' )"
+);
+
+// The WP-Lister notice, dismissed per user.
+$wpdb->query(
+	"DELETE FROM {$wpdb->usermeta} WHERE meta_key = 'tcgiant_wplister_notice_dismissed'"
 );
 
 // Delete all plugin transients (and their timeout rows).

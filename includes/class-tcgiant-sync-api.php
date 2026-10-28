@@ -907,8 +907,31 @@ class TCGiant_Sync_API {
 	 * @return array|WP_Error Fees array on success, WP_Error on failure.
 	 */
 	public function verify_add_item( $item_xml ) {
-		$result = $this->trading_api_request( 'VerifyAddItem', $item_xml );
+		return $this->verify_answer( $this->trading_api_request( 'VerifyAddItem', $item_xml ) );
+	}
 
+	/**
+	 * Verify a fixed-price item before listing (dry run).
+	 *
+	 * The fixed-price twin of verify_add_item(), for what a push would send
+	 * through AddFixedPriceItem. A listing with variations can only be made
+	 * that way, and VerifyAddItem ignores them, so a variation listing checked
+	 * through it was checked without the variations that make it what it is.
+	 *
+	 * @param string $item_xml The <Item> XML body (same as AddFixedPriceItem).
+	 * @return array|WP_Error Fees array on success, WP_Error on failure.
+	 */
+	public function verify_add_fixed_price_item( $item_xml ) {
+		return $this->verify_answer( $this->trading_api_request( 'VerifyAddFixedPriceItem', $item_xml ) );
+	}
+
+	/**
+	 * The fees and warnings in a Verify call's answer.
+	 *
+	 * @param array|WP_Error $result The call's answer.
+	 * @return array|WP_Error
+	 */
+	private function verify_answer( $result ) {
 		if ( is_wp_error( $result ) ) {
 			return $result;
 		}

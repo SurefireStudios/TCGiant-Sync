@@ -71,6 +71,14 @@ class TCGiant_Sync_Mapper {
 		// Basic Post Data.
 		$product_data['title'] = $ebay_item['Title'] ?? '';
 		$product_data['description'] = $ebay_item['Description'] ?? '';
+
+		// A listing TCGiant sent with a template: only its content region, so
+		// that a re-import never wraps one template inside another. Anything
+		// else - a listing that never had one, whatever classes its own
+		// description uses - eBay's description exactly as it came.
+		if ( is_string( $product_data['description'] ) && class_exists( 'TCGiant_Sync_Templates' ) ) {
+			$product_data['description'] = TCGiant_Sync_Templates::content_region( $product_data['description'], $this->sent_with_template( (string) $item_id, $product_data['description'] ) );
+		}
 		$product_data['sku'] = $ebay_item['SKU'] ?? '';
 
 		// Where the SKU came from decides how much it can be trusted to identify
@@ -285,6 +293,7 @@ class TCGiant_Sync_Mapper {
 		// one - for a shop's own code to read. Nothing here asks eBay anything.
 		$product_data['meta_delete'] = array();
 		$this->add_shipping_meta( $ebay_item, $product_data );
+		$this->add_policy_meta( $ebay_item, $product_data );
 
 		// Map Variations.
 		$product_data['variations'] = array();
@@ -625,6 +634,58 @@ class TCGiant_Sync_Mapper {
 	}
 
 	/**
+	 * The listing's own return and payment policies, beside its shipping one.
+	 */
+	const POLICY_META_KEYS = array(
+		'_ebay_return_policy_id',
+		'_ebay_return_policy_name',
+		'_ebay_payment_policy_id',
+		'_ebay_payment_policy_name',
+	);
+
+	/**
+	 * Put the listing's return and payment Business Policies into the
+	 * product's meta, from SellerProfiles in the item in hand, by the same rule
+	 * as its shipping policy: a key goes only when SellerProfiles are in hand
+	 * and hold no such policy.
+	 *
+	 * Nothing reads these in 3.27.8: a push sends the shop's own policies, and
+	 * a listing template's policy blocks say what is sent. 3.28.0's item 13
+	 * revises imported listings without SellerProfiles, leaving each listing's
+	 * own policies on eBay, and its policy blocks will need these to say what
+	 * that listing really offers.
+	 *
+	 * @param array $ebay_item    eBay item.
+	 * @param array $product_data Product data, given meta and meta_delete here.
+	 */
+	private function add_policy_meta( array $ebay_item, array &$product_data ) {
+		if ( ! isset( $ebay_item['SellerProfiles'] ) || ! is_array( $ebay_item['SellerProfiles'] ) ) {
+			return;
+		}
+
+		$kinds = array(
+			'return'  => array( 'SellerReturnProfile', 'ReturnProfileID', 'ReturnProfileName' ),
+			'payment' => array( 'SellerPaymentProfile', 'PaymentProfileID', 'PaymentProfileName' ),
+		);
+
+		foreach ( $kinds as $kind => $fields ) {
+			$profile = $ebay_item['SellerProfiles'][ $fields[0] ] ?? null;
+			$id      = is_array( $profile ) ? $this->parse_price_value( $profile[ $fields[1] ] ?? '' ) : '';
+
+			if ( '' !== $id ) {
+				$product_data['meta'][ '_ebay_' . $kind . '_policy_id' ] = $id;
+				$name = $this->parse_price_value( $profile[ $fields[2] ] ?? '' );
+				if ( '' !== $name ) {
+					$product_data['meta'][ '_ebay_' . $kind . '_policy_name' ] = $name;
+				}
+			} else {
+				$product_data['meta_delete'][] = '_ebay_' . $kind . '_policy_id';
+				$product_data['meta_delete'][] = '_ebay_' . $kind . '_policy_name';
+			}
+		}
+	}
+
+	/**
 	 * An amount of eBay's as a plain decimal string, or '' when there is none.
 	 *
 	 * @param mixed $raw ShippingServiceCost and the like.
@@ -740,6 +801,59 @@ class TCGiant_Sync_Mapper {
 		}
 
 		return $attributes;
+	}
+
+	/**
+	 * Whether the product linked to a listing recorded a template on its last
+	 * send, for TCGiant_Sync_Templates::content_region().
+	 *
+	 * Asked only when the description has something a marker could be, so
+	 * every other listing costs no query.
+	 *
+	 * @param string $item_id     eBay item number.
+	 * @param string $description eBay's Description.
+	 * @return bool
+	 */
+	private function sent_with_template( $item_id, $description ) {
+		if ( '' === $item_id || ( false === strpos( $description, 'tcg-desc' ) && false === strpos( $description, 'data-tcg' ) ) ) {
+			return false;
+		}
+		global $wpdb;
+		$found = $wpdb->get_row( $wpdb->prepare(
+			"SELECT pm.post_id, p.post_status FROM {$wpdb->postmeta} pm
+			 INNER JOIN {$wpdb->posts} p ON pm.post_id = p.ID
+			 WHERE pm.meta_key = '_ebay_item_id' AND pm.meta_value = %s
+			   AND p.post_type = 'product'
+			 ORDER BY ( p.post_status = 'trash' ) ASC
+			 LIMIT 1",
+			$item_id
+		) );
+		// Of this listing: a record of a send to the listing before it (one
+		// that ended, the product since linked to another) proves nothing here.
+		return $found && (int) get_post_meta( (int) $found->post_id, '_tcgiant_tpl_id', true ) > 0
+			&& (string) get_post_meta( (int) $found->post_id, '_tcgiant_tpl_item', true ) === $item_id;
+	}
+
+	/**
+	 * Whether a listing's description is still what TCGiant last sent it with
+	 * a template or an eBay-only description: the content region by its hash,
+	 * or the whole of it.
+	 *
+	 * @param int    $product_id  Product.
+	 * @param string $description The description the import read, the
+	 *                            content region where there is one.
+	 * @return bool
+	 */
+	private function came_back_as_sent( $product_id, $description ) {
+		$templated = (int) get_post_meta( $product_id, '_tcgiant_tpl_id', true ) > 0;
+		$ebay_only = '' !== trim( (string) get_post_meta( $product_id, '_tcgiant_ebay_description', true ) );
+		if ( ! $templated && ! $ebay_only ) {
+			return false;
+		}
+		$hash   = sha1( $description );
+		$region = (string) get_post_meta( $product_id, '_tcgiant_region_hash', true );
+		$whole  = (string) get_post_meta( $product_id, '_tcgiant_desc_hash', true );
+		return ( $templated && '' !== $region && hash_equals( $region, $hash ) ) || ( '' !== $whole && hash_equals( $whole, $hash ) );
 	}
 
 	/**
@@ -897,6 +1011,10 @@ class TCGiant_Sync_Mapper {
 						$linked_by_sku = true;
 						// Clear the old item ID so it gets replaced with the new one.
 						update_post_meta( $sku_product_id, '_ebay_item_id', $item_id );
+						// What was sent to the old listing is not this one's.
+						if ( class_exists( 'TCGiant_Sync_Templates' ) ) {
+							TCGiant_Sync_Templates::forget_sent( $sku_product_id );
+						}
 						// Its push completed in the table with it. Left to the save
 						// below, a save that died left the product linked here and
 						// still saying its push did not finish, and the next sync
@@ -989,9 +1107,17 @@ class TCGiant_Sync_Mapper {
 			$sync_decisions[] = 'Title skipped (WooCommerce won)';
 		}
 
-		if ( $is_new || ! empty( $settings['overwrite_desc'] ) ) {
+		// A listing that still holds what TCGiant sent it - with a template,
+		// or the product's eBay-only description - was made from this
+		// product's own description, which stays as it is: writing back what
+		// the template's cleaning left of it would lose the rest for good.
+		$as_sent = ! $is_new && ! empty( $settings['overwrite_desc'] ) && $this->came_back_as_sent( (int) $product_id, (string) $product_data['description'] );
+
+		if ( $is_new || ( ! empty( $settings['overwrite_desc'] ) && ! $as_sent ) ) {
 			$product->set_description( $product_data['description'] );
 			if ( ! $is_new ) $sync_decisions[] = 'Description updated (eBay won)';
+		} elseif ( $as_sent ) {
+			$sync_decisions[] = 'Description kept: the listing holds what TCGiant sent it';
 		} elseif ( ! $is_new ) {
 			$sync_decisions[] = 'Description skipped (WooCommerce won)';
 		}

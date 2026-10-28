@@ -42,6 +42,7 @@ function as_unschedule_all_actions( $hook ) {
 
 class FakeWpdb {
 	public $options    = 'wp_options';
+	public $usermeta   = 'wp_usermeta';
 	public $prefix     = 'wp_';
 	public $last_error = '';
 	/** Post meta, as the key of each row: what the photo cleanup's marks come to. */
@@ -293,6 +294,33 @@ foreach ( $tcg_prefixes[1] as $tcg_prefix ) {
 	}
 }
 check( '  and its transients, by the plugin\'s transient sweep', array( count( $tcg_prefixes[1] ), $tcg_left ), array( 3, array() ) );
+
+// Listing templates (3.27.8): their two options and the bulk-push cap's two,
+// read from their classes; the template and block posts with their meta;
+// every key a product holds of them, read from the templates class; and the
+// WP-Lister notice's dismissal, per user.
+$tcg_tpl = file_get_contents( __DIR__ . '/../includes/class-tcgiant-sync-templates.php' );
+$tcg_exp = file_get_contents( __DIR__ . '/../includes/class-tcgiant-sync-exporter.php' );
+preg_match_all( "/const (?:SETTINGS|STARTERS)_OPTION = '(tcgiant_[a-z_]+)'/", $tcg_tpl, $tcg_opts );
+preg_match_all( "/const BULK_(?:PUSH_CAP|PUSHED|WAITING)_OPTION\s*= '(tcgiant_[a-z_]+)'/", $tcg_exp, $tcg_cap );
+check( 'answered Yes: the templates\' options and the bulk-push cap\'s are deleted', array( count( $tcg_opts[1] ) + count( $tcg_cap[1] ), array_values( array_diff( array_merge( $tcg_opts[1], $tcg_cap[1] ), $DELETED ) ) ), array( 5, array() ) );
+$tcg_posts = array_filter( $QUERIES, function ( $q ) { return false !== strpos( $q, "DELETE FROM wp_posts WHERE post_type IN ( 'tcgiant_tpl', 'tcgiant_tpl_block' )" ); } );
+$tcg_pmeta = array_filter( $QUERIES, function ( $q ) { return false !== strpos( $q, 'INNER JOIN wp_posts p ON p.ID = pm.post_id' ) && false !== strpos( $q, "'tcgiant_tpl', 'tcgiant_tpl_block'" ); } );
+check( '  the template and block posts, with their meta first', array( count( $tcg_posts ), count( $tcg_pmeta ), key( $tcg_pmeta ) < key( $tcg_posts ) ), array( 1, 1, true ) );
+preg_match( "/const SENT_META = array\(([^)]*)\)/", $tcg_tpl, $tcg_sent );
+preg_match_all( "/'(_tcgiant_[a-z_]+)'/", $tcg_sent[1] ?? '', $tcg_keys );
+$tcg_keys = array_merge( $tcg_keys[1], array( '_tcgiant_tpl_override', '_tcgiant_ebay_description' ) );
+$tcg_gone = '';
+foreach ( $QUERIES as $tcg_q ) {
+	if ( false !== strpos( $tcg_q, "'_tcgiant_tpl_override'" ) ) {
+		$tcg_gone = $tcg_q;
+	}
+}
+check( '  and every key a product holds of them', array( count( $tcg_keys ), array_values( array_filter( $tcg_keys, function ( $k ) use ( $tcg_gone ) { return false === strpos( $tcg_gone, "'" . $k . "'" ); } ) ) ), array( 10, array() ) );
+check( '  and the WP-Lister notice\'s dismissal', count( array_filter( $QUERIES, function ( $q ) { return false !== strpos( $q, "DELETE FROM wp_usermeta WHERE meta_key = 'tcgiant_wplister_notice_dismissed'" ); } ) ), 1 );
+
+run( array(), false );
+check( 'answered No: no template, block or product template key is touched', count( array_filter( $QUERIES, function ( $q ) { return false !== strpos( $q, 'tcgiant_tpl' ); } ) ), 0 );
 
 echo "\n  " . str_repeat( '-', 88 ) . "\n";
 

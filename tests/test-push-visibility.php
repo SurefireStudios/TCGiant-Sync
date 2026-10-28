@@ -256,6 +256,7 @@ function esc_url( $url ) { return (string) $url; }
 function esc_js( $text ) { return addslashes( (string) $text ); }
 function esc_html_e( $text, $domain = null ) { echo esc_html( $text ); }
 function _n( $single, $plural, $number, $domain = null ) { return 1 === (int) $number ? $single : $plural; }
+function number_format_i18n( $number, $decimals = 0 ) { return number_format( (float) $number, (int) $decimals ); }
 function wp_nonce_field( $action = -1 ) { echo '<input type="hidden" name="_wpnonce" value="harness">'; }
 function get_current_screen() { return (object) array( 'id' => 'edit-product' ); }
 function wp_json_encode( $data, $options = 0, $depth = 512 ) { return json_encode( $data, $options, $depth ); }

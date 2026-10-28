@@ -37,7 +37,7 @@ If the report concerns the hosted relay at `tcgiant.com/syncconnect` rather than
 
 - **It never holds eBay application credentials.** The application secret lives only on the relay; the plugin ships with no keys.
 - **It holds the merchant's OAuth access and refresh tokens** in the `tcgiant_sync_ebay_settings` option, alongside a per-site signing key issued at connect time. Tokens are exchanged for the merchant with eBay directly; the relay sees them only during the OAuth code exchange and refresh.
-- **Usage reporting** (Pro only) sends the site URL and product counts to the relay, signed with the per-site key. It can be switched off with the `TCGIANT_SYNC_DISABLE_TELEMETRY` constant or the `tcgiant_sync_telemetry_enabled` filter.
+- **Usage reporting** (Pro only) sends the site URL, product counts and the plugin's version to the relay, signed with the per-site key. It can be switched off with the `TCGIANT_SYNC_DISABLE_TELEMETRY` constant or the `tcgiant_sync_telemetry_enabled` filter.
 
 ## Supported versions
 

@@ -76,6 +76,8 @@ class TCGiant_Sync_Exporter {
 	public function validate_export_settings( $settings ) { return true; }
 	public function find_missing_required_aspects( $product, $settings ) { return array(); }
 	public function build_item_xml_public( $product, $settings ) { return '<Title>1921 Morgan Dollar</Title>'; }
+	public function description_too_long() { return null; }
+	public function uses_fixed_price_calls( $product, $settings = array(), $ebay_item_id = '' ) { return false; }
 }
 
 require $ROOT . '/includes/class-tcgiant-sync-api.php';

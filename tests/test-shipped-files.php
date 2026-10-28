@@ -76,5 +76,51 @@ foreach ( $sources as $file ) {
 
 check( 'no shipped file references assets/src', $readers, array() );
 
+echo "\nLISTING TEMPLATES SHIP; THEIR HARNESSES DO NOT\n" . str_repeat( '=', 112 ) . "\n";
+
+// 3.27.8's files, in the zip the build makes. The updater's archive ships
+// everything .gitattributes does not exclude, which is all of includes/ and
+// admin/.
+require_once $root . '/tools/build-manifest.php';
+$built = tcgiant_build_file_list( $root );
+$new   = array(
+	'includes/class-tcgiant-sync-templates.php'            => 'TCGiant_Sync_Templates',
+	'includes/class-tcgiant-sync-template-renderer.php'    => 'TCGiant_Sync_Template_Renderer',
+	'includes/class-tcgiant-sync-template-sanitiser.php'   => 'TCGiant_Sync_Template_Sanitiser',
+	'includes/class-tcgiant-sync-template-policies.php'    => 'TCGiant_Sync_Template_Policies',
+	'includes/class-tcgiant-sync-template-admin.php'       => 'TCGiant_Sync_Template_Admin',
+	'includes/class-tcgiant-sync-template-starters.php'    => 'TCGiant_Sync_Template_Starters',
+	'includes/class-tcgiant-sync-wplister-converter.php'   => 'TCGiant_Sync_WPLister_Converter',
+	'admin/views/templates.php'                            => '',
+	'admin/views/template-list.php'                        => '',
+	'admin/views/template-edit.php'                        => '',
+	'admin/views/template-preview.php'                     => '',
+	'admin/views/template-preview-panel.php'               => '',
+	'admin/views/template-blocks.php'                      => '',
+	'admin/views/template-settings.php'                    => '',
+	'admin/views/template-guide.php'                       => '',
+	'admin/views/template-convert.php'                     => '',
+	'admin/assets/js/templates.js'                         => '',
+);
+check( 'every listing-template file is in the build', array_values( array_diff( array_keys( $new ), $built ) ), array() );
+
+// Each class is found by the plugin's autoloader: TCGiant_Sync_X_Y in
+// includes/class-tcgiant-sync-x-y.php.
+$unloadable = array();
+foreach ( $new as $file => $class ) {
+	if ( '' === $class ) {
+		continue;
+	}
+	$expect = 'includes/class-tcgiant-sync-' . preg_replace( '/[^a-z0-9\-]/', '', strtolower( str_replace( '_', '-', substr( $class, strlen( 'TCGiant_Sync_' ) ) ) ) ) . '.php';
+	if ( $expect !== $file || 1 !== preg_match( '/^class ' . $class . ' \{/m', (string) file_get_contents( $root . '/' . $file ) ) ) {
+		$unloadable[] = $class;
+	}
+}
+check( '  and each class where the autoloader looks for it', $unloadable, array() );
+
+$harness = array( 'tests/support/template-world.php', 'tests/wordpress/kses.php', 'tests/test-template-render.php' );
+check( 'the harnesses, the played WordPress and its kses copy do not ship', array_values( array_intersect( $harness, $built ) ), array() );
+check( '  nor reach the updater\'s archive', 1 === preg_match( '/^\/tests\s+export-ignore/m', $attributes ), true );
+
 printf( "\n  %d passed, %d failed\n\n", $pass, $fail );
 exit( $fail > 0 ? 1 : 0 );

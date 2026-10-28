@@ -15,6 +15,11 @@
  * _ebay_shipping_services (every service), from the item in hand - eBay is
  * not asked again - and a listing read in brief wipes none of it.
  *
+ * From 3.27.8 the listing's return and payment policies are kept beside its
+ * shipping one, by the same rule (_ebay_return_policy_id and _name,
+ * _ebay_payment_policy_id and _name), for 3.28.0's revise of imported
+ * listings; nothing reads them yet.
+ *
  * The listings are eBay's XML, turned into arrays exactly as the API class
  * turns its answers (SimpleXML, then JSON), so the shapes are the real ones:
  * one service or several, an amount whose currencyID is lost in the turning.
@@ -137,6 +142,7 @@ class WC_Product {
 	public function is_in_stock() { return true; }
 	public function managing_stock() { return true; }
 	public function get_stock_quantity() { return 1; }
+	public function set_description( $description ) { $GLOBALS['SET_DESC'][ $this->id ] = $description; }
 	public function save() {
 		if ( 0 === $this->id ) {
 			$this->id = ++$GLOBALS['NEXT_ID'];
@@ -322,7 +328,7 @@ list( $meta, $delete ) = mapped( ebay_item( $ONE ) );
 check( 'no SellerProfiles in the answer: no policy key written, none deleted', array( isset( $meta['_ebay_shipping_policy_id'] ), isset( $meta['_ebay_shipping_policy_name'] ), $delete ), array( false, false, array() ) );
 
 list( $meta, $delete ) = mapped( ebay_item( $ONE . '<SellerProfiles><SellerReturnProfile><ReturnProfileID>1</ReturnProfileID><ReturnProfileName>30 days</ReturnProfileName></SellerReturnProfile></SellerProfiles>' ) );
-check( 'SellerProfiles in the answer, with no shipping policy: the policy keys to go', $delete, array( '_ebay_shipping_policy_id', '_ebay_shipping_policy_name' ) );
+check( 'SellerProfiles in the answer, with no shipping policy: the policy keys to go', array_values( array_intersect( $delete, TCGiant_Sync_Mapper::SHIPPING_META_KEYS ) ), array( '_ebay_shipping_policy_id', '_ebay_shipping_policy_name' ) );
 
 // The currency where a converter keeps the cost's currencyID, and where it is the listing's own.
 $kept = ebay_item( $ONE );
@@ -396,6 +402,77 @@ preg_match( "/DELETE FROM \{\\\$wpdb->prefix\}postmeta\s+WHERE meta_key IN \( ('
 $gone = isset( $gone[1] ) ? array_map( function ( $k ) { return trim( $k, " '" ); }, explode( ',', $gone[1] ) ) : array();
 check( 'deleting the plugin with its data deletes every one of the keys', array( array_values( array_diff( TCGiant_Sync_Mapper::SHIPPING_META_KEYS, $gone ) ), array_values( array_diff( $gone, TCGiant_Sync_Mapper::SHIPPING_META_KEYS ) ) ), array( array(), array() ) );
 check( 'the import never writes the shop\'s policy for pushing', array( substr_count( $mapper, '_ebay_export_fulfillment_policy' ) <= 1, substr_count( $importer, '_ebay_export_fulfillment_policy' ) ), array( true, 0 ) );
+
+// ─────────────────────────────────────────────────────────────────────────────
+echo "\nTHE LISTING'S OWN RETURN AND PAYMENT POLICIES (3.27.8)\n" . str_repeat( '=', 130 ) . "\n";
+
+/** The return and payment keys map_ebay_to_woo() gives, and those it deletes. */
+function policies_mapped( array $item ) {
+	$data = ( new TCGiant_Sync_Mapper() )->map_ebay_to_woo( $item );
+	$meta = array_intersect_key( $data['meta'], array_flip( TCGiant_Sync_Mapper::POLICY_META_KEYS ) );
+	ksort( $meta );
+	return array( $meta, array_values( array_intersect( $data['meta_delete'], TCGiant_Sync_Mapper::POLICY_META_KEYS ) ) );
+}
+
+check( 'all three policies in the answer: the return and payment ones, ID and name', policies_mapped( ebay_item( $ONE . $POLICIES ) ), array( array(
+	'_ebay_payment_policy_id'   => '212345678033',
+	'_ebay_payment_policy_name' => 'eBay Payments',
+	'_ebay_return_policy_id'    => '212345678022',
+	'_ebay_return_policy_name'  => '30 days',
+), array() ) );
+check( 'no SellerProfiles: none written, none deleted', policies_mapped( ebay_item( $ONE ) ), array( array(), array() ) );
+check( 'a row read in brief: the same', policies_mapped( $brief ), array( array(), array() ) );
+check( 'SellerProfiles with a return policy only: the payment keys to go', policies_mapped( ebay_item( $ONE . '<SellerProfiles><SellerReturnProfile><ReturnProfileID>1</ReturnProfileID><ReturnProfileName>30 days</ReturnProfileName></SellerReturnProfile></SellerProfiles>' ) ), array( array( '_ebay_return_policy_id' => '1', '_ebay_return_policy_name' => '30 days' ), array( '_ebay_payment_policy_id', '_ebay_payment_policy_name' ) ) );
+check( 'a policy with no name: its ID, and no name written over the one stored', policies_mapped( ebay_item( $ONE . '<SellerProfiles><SellerPaymentProfile><PaymentProfileID>9</PaymentProfileID></SellerPaymentProfile></SellerProfiles>' ) )[0], array( '_ebay_payment_policy_id' => '9' ) );
+
+shop_product( 701, array( '_ebay_export_status' => 'pushed', '_ebay_item_id' => '110000000701' ) );
+$own = function ( array $item ) {
+	$item['ItemID'] = '110000000701';
+	$item['SKU']    = 'CHZ-701';
+	return $item;
+};
+import( $own( ebay_item( $ONE . $POLICIES ) ) );
+check( 'saved on the product', array( meta( 701, '_ebay_return_policy_id' ), meta( 701, '_ebay_return_policy_name' ), meta( 701, '_ebay_payment_policy_id' ), meta( 701, '_ebay_payment_policy_name' ) ), array( '212345678022', '30 days', '212345678033', 'eBay Payments' ) );
+import( $own( $brief ) );
+check( '  a row in brief wipes none of it', meta( 701, '_ebay_return_policy_id' ), '212345678022' );
+import( $own( ebay_item( $ONE . '<SellerProfiles><SellerShippingProfile><ShippingProfileID>5</ShippingProfileID></SellerShippingProfile></SellerProfiles>' ) ) );
+check( '  SellerProfiles with neither: both go', array( meta( 701, '_ebay_return_policy_id' ), meta( 701, '_ebay_return_policy_name' ), meta( 701, '_ebay_payment_policy_id' ) ), array( null, null, null ) );
+
+preg_match( "/WHERE meta_key IN \( ('_ebay_return_policy_id[^)]*) \)/", $uninstall, $gone2 );
+$gone2 = isset( $gone2[1] ) ? array_map( function ( $k ) { return trim( $k, " '" ); }, explode( ',', $gone2[1] ) ) : array();
+check( 'deleting the plugin with its data deletes these four too, and only these', array( array_values( array_diff( TCGiant_Sync_Mapper::POLICY_META_KEYS, $gone2 ) ), array_values( array_diff( $gone2, TCGiant_Sync_Mapper::POLICY_META_KEYS ) ) ), array( array(), array() ) );
+check( 'the import never writes the shop\'s own policies for pushing', array( substr_count( $mapper, '_ebay_export_return_policy' ), substr_count( $mapper, "'export_return_policy'" ) ), array( 0, 0 ) );
+
+// ─────────────────────────────────────────────────────────────────────────────
+echo "\nA LISTING TCGIANT SENT, READ BACK WITH OVERWRITE DESCRIPTION ON (3.27.8)\n" . str_repeat( '=', 130 ) . "\n";
+
+// What comes back from a templated listing is only what the template's
+// cleaning kept of the product's description. While the listing holds what
+// TCGiant sent it, the product's own description stays (push-path review, M3).
+$GLOBALS['SETTINGS']['overwrite_desc'] = '1';
+$read_back = function ( $id, $description ) {
+	unset( $GLOBALS['SET_DESC'][ $id ] );
+	$item           = ebay_item( $GLOBALS['ONE'] . '<Description><![CDATA[' . $description . ']]></Description>' );
+	$item['ItemID'] = '11000000' . $id;
+	$item['SKU']    = 'CHZ-' . $id;
+	import( $item );
+	return array_key_exists( $id, $GLOBALS['SET_DESC'] ?? array() ) ? $GLOBALS['SET_DESC'][ $id ] : null;
+};
+
+shop_product( 7021, array( '_ebay_item_id' => '110000007021', '_tcgiant_tpl_id' => '3', '_tcgiant_region_hash' => sha1( '<p>Near mint.</p>' ), '_tcgiant_desc_hash' => sha1( '<div>whole</div>' ) ) );
+check( 'sent with a template, and it comes back as sent: the website description stays', $read_back( 7021, '<p>Near mint.</p>' ), null );
+check( '  changed on eBay since: eBay wins, as the setting says', $read_back( 7021, '<p>Near mint, edited on eBay.</p>' ), '<p>Near mint, edited on eBay.</p>' );
+
+shop_product( 7022, array( '_ebay_item_id' => '110000007022', '_tcgiant_tpl_id' => '0', '_tcgiant_ebay_description' => '<p>For eBay.</p>', '_tcgiant_desc_hash' => sha1( '<p>For eBay.</p>' ) ) );
+check( 'sent its eBay-only description, which comes back whole: the website description stays', $read_back( 7022, '<p>For eBay.</p>' ), null );
+
+shop_product( 7023, array( '_ebay_item_id' => '110000007023', '_tcgiant_desc_hash' => sha1( '<p>Plain.</p>' ) ) );
+check( 'sent the plain description, as every shop before 3.27.8: written back, as 3.27.7 did', $read_back( 7023, '<p>Plain.</p>' ), '<p>Plain.</p>' );
+shop_product( 7024, array( '_ebay_item_id' => '110000007024', '_tcgiant_tpl_id' => '0', '_tcgiant_region_hash' => '', '_tcgiant_desc_hash' => sha1( '<p>None.</p>' ) ) );
+check( '  and one 3.27.8 sent with None: the same', $read_back( 7024, '<p>None.</p>' ), '<p>None.</p>' );
+
+$GLOBALS['SETTINGS']['overwrite_desc'] = '0';
+check( 'with Overwrite Description off, nothing is written either way', $read_back( 7021, '<p>Anything.</p>' ), null );
 
 printf( "\n  %d passed, %d failed\n\n", $pass, $fail );
 exit( $fail > 0 ? 1 : 0 );

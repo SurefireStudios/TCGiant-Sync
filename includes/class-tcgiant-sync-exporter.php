@@ -75,6 +75,18 @@ class TCGiant_Sync_Exporter {
 	 */
 	private static $in_flight = null;
 
+	/**
+	 * The description the last build_item_xml() put in its item: the bytes, the
+	 * template and version, and the hashes recorded once eBay accepts it.
+	 *
+	 * Reset at the top of every build. One exporter can push several products
+	 * in one Action Scheduler run, and an item that returned early must never
+	 * report the product before it.
+	 *
+	 * @var array|null
+	 */
+	private $last_render = null;
+
 	/*
 	 * Kept for anyone outside the plugin who reached for these here.
 	 *
@@ -242,14 +254,62 @@ class TCGiant_Sync_Exporter {
 	);
 
 	/**
+	 * The per-site daily cap on bulk pushes: its own option, never a key of
+	 * tcgiant_sync_ebay_settings, whose forms rewrite the whole option and
+	 * drop what they do not list.
+	 *
+	 * Every shop shares one eBay call budget, 50,000 a day, and each push costs
+	 * 1 to 13 calls. Until 3.27.8 only the fleet-wide stop at 80% limited a
+	 * bulk push, so a shop applying a new listing template by pushing its
+	 * whole catalogue could spend the day for everyone.
+	 */
+	const BULK_PUSH_CAP_OPTION  = 'tcgiant_sync_bulk_push_cap';
+	const BULK_PUSH_CAP_DEFAULT = 2000;
+	const BULK_PUSH_CAP_MIN     = 50;
+	const BULK_PUSH_CAP_MAX     = 20000;
+
+	/** How many products bulk pushes have queued today, and which day that is. */
+	const BULK_PUSHED_OPTION = 'tcgiant_sync_bulk_pushed';
+
+	/**
+	 * The products a bulk push counted today and queued, whichever screen
+	 * pushed them (the products list, the coin update, the Listings screen):
+	 * {day, ids}. A new bulk push cancels the ones still waiting and gives
+	 * them back to the day's count.
+	 */
+	const BULK_WAITING_OPTION = 'tcgiant_sync_bulk_waiting';
+
+	/**
+	 * Products the last bulk_push_products() call could not queue, because
+	 * the day's cap was reached.
+	 *
+	 * @var int
+	 */
+	private $last_bulk_refused = 0;
+
+	/**
+	 * Pushes still waiting from the last bulk push, which the last
+	 * bulk_push_products() call replaced and gave back to the day's count.
+	 *
+	 * @var int
+	 */
+	private $last_bulk_replaced = 0;
+
+	/**
 	 * Maximum eBay title length (hard limit).
 	 */
 	const MAX_TITLE_LENGTH = 80;
 
 	/**
-	 * Maximum images per eBay listing.
+	 * Maximum photos a listing is sent (PictureDetails.PictureURL).
+	 *
+	 * eBay's Trading API takes up to 24 in almost every category, free; until
+	 * this was 12, so a product's 13th to 24th photos never reached eBay. A
+	 * variation's own pictures (VariationSpecificPictureSet) are limited to 12
+	 * by eBay, but a push sends none: a variable product's photos go in the
+	 * listing's PictureDetails like any other's.
 	 */
-	const MAX_IMAGES = 12;
+	const MAX_IMAGES = 24;
 
 	/**
 	 * Main instance.
@@ -410,13 +470,11 @@ class TCGiant_Sync_Exporter {
 	 * @return int Number of products successfully queued.
 	 */
 	public function bulk_push_products( $product_ids ) {
+		$this->last_bulk_refused  = 0;
+		$this->last_bulk_replaced = 0;
+
 		if ( empty( $product_ids ) || ! is_array( $product_ids ) ) {
 			return 0;
-		}
-
-		// Clear any existing pending export jobs to prevent stacking.
-		if ( function_exists( 'as_unschedule_all_actions' ) ) {
-			as_unschedule_all_actions( self::PUSH_ACTION, null, 'tcgiant_sync_group' );
 		}
 
 		$batch = array();
@@ -427,9 +485,42 @@ class TCGiant_Sync_Exporter {
 			}
 		}
 
+		if ( empty( $batch ) ) {
+			return 0;
+		}
+
+		// The day's cap on bulk pushes, before anything is touched: a push
+		// refused by it leaves the queue exactly as it was. A bulk push still
+		// waits from the last one replaces nothing yet, but once this one is
+		// queued it is cancelled below, so what it counted today is given back.
+		$waiting = self::waiting_bulk_pushes();
+		$allowed = self::take_bulk_push_allowance( count( $batch ), $waiting );
+		$this->last_bulk_refused  = count( $batch ) - $allowed;
+		$this->last_bulk_replaced = $allowed > 0 ? $waiting : 0;
+		if ( $this->last_bulk_replaced > 0 ) {
+			TCGiant_Sync_Logger::log( sprintf(
+				'Bulk push: %d push(es) still waiting from the last bulk push were replaced by this one, and no longer count towards today\'s limit.',
+				$this->last_bulk_replaced
+			) );
+		}
+		if ( $this->last_bulk_refused > 0 ) {
+			TCGiant_Sync_Logger::warning( sprintf(
+				'Bulk push: %1$d product(s) queued and %2$d not, because this site\'s limit of %3$d bulk pushes a day is reached. The limit resets at midnight UTC; it is set in TCGiant Sync > Listing Templates > Template settings.',
+				$allowed,
+				$this->last_bulk_refused,
+				self::bulk_push_cap()
+			) );
+		}
+		$batch = array_slice( $batch, 0, $allowed );
+
 		$queued = count( $batch );
 		if ( 0 === $queued ) {
 			return 0;
+		}
+
+		// Clear any existing pending export jobs to prevent stacking.
+		if ( function_exists( 'as_unschedule_all_actions' ) ) {
+			as_unschedule_all_actions( self::PUSH_ACTION, null, 'tcgiant_sync_group' );
 		}
 
 		// The batch's figures go in before any of its pushes exist. Written
@@ -455,6 +546,9 @@ class TCGiant_Sync_Exporter {
 			// and its end is judged from what they say.
 			'product_ids'  => $batch,
 		) );
+
+		// What waits now is this batch: what waited before is cancelled above.
+		update_option( self::BULK_WAITING_OPTION, array( 'day' => gmdate( 'Y-m-d' ), 'ids' => $batch ), false );
 
 		// Say so on each product, as a push from its own screen does. A bulk
 		// push wrote nothing here, so a product whose push never ran, or never
@@ -506,6 +600,176 @@ class TCGiant_Sync_Exporter {
 		return $queued;
 	}
 
+	/**
+	 * Products the last bulk_push_products() call left unqueued for the day's cap.
+	 *
+	 * @return int
+	 */
+	public function last_bulk_refused() {
+		return $this->last_bulk_refused;
+	}
+
+	/**
+	 * Pushes still waiting from the last bulk push that the last
+	 * bulk_push_products() call replaced.
+	 *
+	 * @return int
+	 */
+	public function last_bulk_replaced() {
+		return $this->last_bulk_replaced;
+	}
+
+	/**
+	 * Note products a bulk push counted today and queued, for a later bulk
+	 * push that cancels them to give back. The products list's and the coin
+	 * update's come through bulk_push_products(); the Listings screen's job
+	 * queues one at a time and notes each.
+	 *
+	 * @param int[] $ids Products queued.
+	 */
+	public static function note_bulk_queued( array $ids ) {
+		$record = get_option( self::BULK_WAITING_OPTION, array() );
+		$today  = gmdate( 'Y-m-d' );
+		$held   = is_array( $record ) && $today === (string) ( $record['day'] ?? '' ) ? array_map( 'intval', (array) ( $record['ids'] ?? array() ) ) : array();
+		update_option( self::BULK_WAITING_OPTION, array(
+			'day' => $today,
+			'ids' => array_values( array_unique( array_merge( $held, array_map( 'intval', $ids ) ) ) ),
+		), false );
+	}
+
+	/**
+	 * Pushes a bulk push counted today that are still waiting to run: the
+	 * ones a new bulk push cancels.
+	 *
+	 * @return int
+	 */
+	private static function waiting_bulk_pushes() {
+		$record = get_option( self::BULK_WAITING_OPTION, array() );
+		$ids    = is_array( $record ) && gmdate( 'Y-m-d' ) === (string) ( $record['day'] ?? '' ) ? array_flip( array_map( 'intval', (array) ( $record['ids'] ?? array() ) ) ) : array();
+		if ( ! $ids || ! function_exists( 'as_get_scheduled_actions' ) || ! class_exists( 'ActionScheduler_Store' ) ) {
+			return 0;
+		}
+
+		// Each product once: one counted, pushed again from its own screen
+		// while it waits, is still one.
+		$waiting = array();
+		foreach ( (array) as_get_scheduled_actions( array(
+			'hook'     => self::PUSH_ACTION,
+			'group'    => 'tcgiant_sync_group',
+			'status'   => ActionScheduler_Store::STATUS_PENDING,
+			'per_page' => -1,
+		) ) as $action ) {
+			$args = is_object( $action ) && method_exists( $action, 'get_args' ) ? $action->get_args() : array();
+			$id   = (int) ( $args['product_id'] ?? 0 );
+			if ( isset( $ids[ $id ] ) ) {
+				$waiting[ $id ] = true;
+			}
+		}
+		return count( $waiting );
+	}
+
+	/**
+	 * A push has run: its product no longer waits, so a push of it queued
+	 * later from its own screen, which the cap never counted, is never given
+	 * back as if it were.
+	 *
+	 * @param int $product_id Product.
+	 */
+	private static function forget_bulk_queued( $product_id ) {
+		$record = get_option( self::BULK_WAITING_OPTION, array() );
+		if ( ! is_array( $record ) || empty( $record['ids'] ) ) {
+			return;
+		}
+		$ids  = array_map( 'intval', (array) $record['ids'] );
+		$left = array_values( array_diff( $ids, array( (int) $product_id ) ) );
+		if ( count( $left ) !== count( $ids ) ) {
+			update_option( self::BULK_WAITING_OPTION, array( 'day' => (string) ( $record['day'] ?? '' ), 'ids' => $left ), false );
+		}
+	}
+
+	/**
+	 * The most products bulk pushes may queue a day on this site.
+	 *
+	 * @return int
+	 */
+	public static function bulk_push_cap() {
+		$cap = get_option( self::BULK_PUSH_CAP_OPTION, self::BULK_PUSH_CAP_DEFAULT );
+		if ( ! is_numeric( $cap ) ) {
+			return self::BULK_PUSH_CAP_DEFAULT;
+		}
+		return (int) max( self::BULK_PUSH_CAP_MIN, min( self::BULK_PUSH_CAP_MAX, (int) $cap ) );
+	}
+
+	/**
+	 * Set the cap, held between 50 and 20,000.
+	 *
+	 * @param int $cap Products a day.
+	 */
+	public static function set_bulk_push_cap( $cap ) {
+		update_option( self::BULK_PUSH_CAP_OPTION, (int) max( self::BULK_PUSH_CAP_MIN, min( self::BULK_PUSH_CAP_MAX, (int) $cap ) ), false );
+	}
+
+	/**
+	 * Products bulk pushes have queued today.
+	 *
+	 * Today as the eBay call counter has it (TCGiant_Sync_API::
+	 * get_daily_call_count()): the UTC date, so the cap and the calls it
+	 * protects turn over together.
+	 *
+	 * @return int
+	 */
+	public static function bulk_pushed_today() {
+		if ( function_exists( 'wp_cache_delete' ) ) {
+			wp_cache_delete( self::BULK_PUSHED_OPTION, 'options' );
+		}
+		$day = get_option( self::BULK_PUSHED_OPTION, array() );
+		if ( ! is_array( $day ) || gmdate( 'Y-m-d' ) !== ( $day['day'] ?? '' ) ) {
+			return 0;
+		}
+		return max( 0, (int) ( $day['count'] ?? 0 ) );
+	}
+
+	/**
+	 * "Bulk pushes today: 120 of 2,000", for wherever a bulk push starts.
+	 *
+	 * @return string
+	 */
+	public static function bulk_push_line() {
+		return sprintf(
+			/* translators: 1: products bulk-pushed today, 2: the daily limit */
+			__( 'Bulk pushes today: %1$s of %2$s', 'tcgiant-sync' ),
+			number_format_i18n( self::bulk_pushed_today() ),
+			number_format_i18n( self::bulk_push_cap() )
+		);
+	}
+
+	/**
+	 * Take up to $wanted of today's bulk pushes, and say how many were had.
+	 *
+	 * Counts products accepted into the queue, whatever then becomes of them.
+	 * A push from a product's own screen never comes here.
+	 *
+	 * @param int $wanted     Products to queue.
+	 * @param int $given_back Pushes counted today that taking this replaces
+	 *                        (cancelled once it is taken), given back first.
+	 *                        Nothing is given back when nothing may be taken.
+	 * @return int How many may be queued.
+	 */
+	public static function take_bulk_push_allowance( $wanted, $given_back = 0 ) {
+		$wanted = max( 0, (int) $wanted );
+		$today  = max( 0, self::bulk_pushed_today() - max( 0, (int) $given_back ) );
+		$take   = min( $wanted, max( 0, self::bulk_push_cap() - $today ) );
+
+		if ( $take > 0 ) {
+			update_option( self::BULK_PUSHED_OPTION, array(
+				'day'   => gmdate( 'Y-m-d' ),
+				'count' => $today + $take,
+			), false );
+		}
+
+		return $take;
+	}
+
 	// -------------------------------------------------------------------------
 	// Action Scheduler Callback
 	// -------------------------------------------------------------------------
@@ -517,6 +781,7 @@ class TCGiant_Sync_Exporter {
 	 */
 	public function process_single_push( $product_id ) {
 		$product_id = (int) $product_id;
+		self::forget_bulk_queued( $product_id );
 		$product    = wc_get_product( $product_id );
 
 		if ( ! $product ) {
@@ -627,6 +892,12 @@ class TCGiant_Sync_Exporter {
 				// listing carrying the right item specifics from one sent before a fix
 				// that added them — the listing on eBay looks the same from here.
 				$product->update_meta_data( '_ebay_export_pushed_version', TCGIANT_SYNC_VERSION );
+
+				// And the description eBay now has: which template and version,
+				// and the hashes 3.28.1's re-send compares. Only here, once eBay
+				// has accepted it - never in build_item_xml(), which Verify and
+				// the preview call too.
+				self::record_description_sent( $product, $result['desc'] ?? null, (string) $item_id );
 
 				// A newly created listing is live, so clear any stale "Ended"
 				// state left over from the listing it replaced — otherwise the
@@ -1160,6 +1431,10 @@ class TCGiant_Sync_Exporter {
 	 * @return array|WP_Error On success, array with 'item_id' and 'action' keys.
 	 */
 	private function do_push( WC_Product $product ) {
+		// A new push: its photos are decided afresh (get_product_image_urls()).
+		$this->pictures_for = array();
+		$this->grade_said   = array();
+
 		$settings = $this->get_export_settings( $product->get_id() );
 
 		// Validate required settings before hitting the API.
@@ -1195,9 +1470,21 @@ class TCGiant_Sync_Exporter {
 			);
 		}
 
-		$item_xml  = $this->build_item_xml( $product, $settings );
-		$api       = TCGiant_Sync_API::instance();
+		// A product with a listing has its item built for the revise below,
+		// which keeps the listing's photos when one of them would be left out.
 		$ebay_item_id = $product->get_meta( '_ebay_item_id' );
+		$item_xml     = $this->build_item_xml( $product, $settings, ! empty( $ebay_item_id ) );
+		$held         = $this->pictures_held;
+
+		// eBay refuses a description over 500,000 characters, tags included, and
+		// a refusal is a call spent. A templated or eBay-only description is
+		// measured; the plain one goes to eBay as 3.27.7 sent it.
+		$too_long = $this->description_too_long();
+		if ( is_wp_error( $too_long ) ) {
+			return $too_long;
+		}
+
+		$api       = TCGiant_Sync_API::instance();
 
 		// Refuse to revise a listing that more than one product claims.
 		//
@@ -1272,10 +1559,17 @@ class TCGiant_Sync_Exporter {
 				? $api->revise_fixed_price_item( $full_xml )
 				: $api->revise_item( $full_xml );
 
+			// The photos this revise was not sent, said once eBay has answered -
+			// unless the listing has ended: the new listing made below says what
+			// it goes without instead.
+			if ( $held && ! self::is_ended_listing_error( $response ) ) {
+				TCGiant_Sync_Logger::warning( self::photos_unchanged_warning( $product->get_id(), $held ) );
+			}
+
 			if ( ! is_wp_error( $response ) ) {
 				// ReviseItem returns ItemID in the response.
 				$returned_item_id = $response['ItemID'] ?? $ebay_item_id;
-				return array( 'item_id' => $returned_item_id, 'action' => 'updated' );
+				return array( 'item_id' => $returned_item_id, 'action' => 'updated', 'desc' => $this->last_render );
 			}
 
 			// An ended listing cannot be revised, and its format cannot be
@@ -1347,10 +1641,24 @@ class TCGiant_Sync_Exporter {
 			}
 
 			// The stock may have come down to what is really left, and the item
-			// was built from the figure before that.
-			if ( $check ) {
-				$product  = wc_get_product( $product->get_id() );
+			// was built from the figure before that. And an item built for the
+			// revise without its photos is built again with them: a new listing
+			// goes without only the ones that cannot be put on eBay, and those
+			// it has no room for, said once - here, as the revise's build did not.
+			if ( $check || $held ) {
+				if ( $check ) {
+					$product = wc_get_product( $product->get_id() );
+				}
 				$item_xml = $this->build_item_xml( $product, $settings );
+				if ( $held ) {
+					TCGiant_Sync_Logger::warning( self::left_out_warning( $product->get_id(), $held ) );
+					$this->say_pictures_not_sent( $product->get_id() );
+				}
+
+				$too_long = $this->description_too_long();
+				if ( is_wp_error( $too_long ) ) {
+					return $too_long;
+				}
 			}
 
 			TCGiant_Sync_Logger::log( sprintf(
@@ -1407,6 +1715,8 @@ class TCGiant_Sync_Exporter {
 				// matching eBay call. Without it a product relisted as an auction
 				// still read as fixed-price until an import sync corrected it.
 				'listing_type'     => $fixed_price ? 'FixedPriceItem' : 'Chinese',
+				// The description it was made with, recorded once saved.
+				'desc'             => $this->last_render,
 			);
 		}
 	}
@@ -1477,11 +1787,18 @@ class TCGiant_Sync_Exporter {
 	/**
 	 * Build the inner <Item> XML content (without the outer <Item> tags).
 	 *
+	 * Always a new listing's item, photos included: Verify and Check with eBay
+	 * send it to VerifyAddItem or VerifyAddFixedPriceItem, which check an add.
+	 *
 	 * @param WC_Product $product  The WooCommerce product.
 	 * @param array      $settings Merged export settings.
 	 * @return string XML string.
 	 */
 	public function build_item_xml_public( WC_Product $product, array $settings ) {
+		// A build of its own: its photos are decided afresh.
+		$this->pictures_for = array();
+		$this->grade_said   = array();
+
 		return $this->build_item_xml( $product, $settings );
 	}
 
@@ -1742,6 +2059,11 @@ class TCGiant_Sync_Exporter {
 
 		update_post_meta( $product_id, '_ebay_item_id', $new_id );
 		update_post_meta( $product_id, '_ebay_listing_status', 'Active' );
+		// RelistItem keeps the description eBay had, so the record of what was
+		// sent follows the listing to its new number.
+		if ( (string) get_post_meta( $product_id, '_tcgiant_tpl_item', true ) === (string) $ebay_item_id ) {
+			update_post_meta( $product_id, '_tcgiant_tpl_item', $new_id );
+		}
 
 		$end_time = TCGiant_Sync_API::scalar_value( $result['EndTime'] ?? '' );
 		if ( '' !== $end_time ) {
@@ -1824,9 +2146,22 @@ class TCGiant_Sync_Exporter {
 		return 'FixedPriceItem' === ( $settings['listing_type'] ?? 'FixedPriceItem' );
 	}
 
-	private function build_item_xml( WC_Product $product, array $settings ) {
-		$title       = $this->sanitize_title( $product->get_name() );
-		$description = $this->build_description( $product );
+	/**
+	 * Build the inner <Item> XML content (without the outer <Item> tags).
+	 *
+	 * @param WC_Product $product  The WooCommerce product.
+	 * @param array      $settings Merged export settings.
+	 * @param bool       $revise   Whether the item goes to ReviseItem or
+	 *                             ReviseFixedPriceItem, for a live listing.
+	 * @return string XML string.
+	 */
+	private function build_item_xml( WC_Product $product, array $settings, $revise = false ) {
+		$this->last_render = null;
+
+		$title             = $this->sanitize_title( $product->get_name() );
+		$rendered          = $this->build_listing_description( $product, $settings, $title );
+		$description       = $rendered['html'];
+		$this->last_render = $rendered;
 		$price       = wc_format_decimal( $product->get_regular_price(), 2 );
 		// How many to offer.
 		//
@@ -1862,9 +2197,19 @@ class TCGiant_Sync_Exporter {
 		}
 
 		$sku         = $product->get_sku();
-		$images      = $this->get_product_image_urls( $product );
+		$images      = $this->get_product_image_urls( $product, $revise );
 
-		// Build picture URLs XML.
+		// A photo left out because the listing's others are on eBay would come
+		// off the live listing with a revise, which replaces the photos with
+		// those it is sent. So that revise is sent none: eBay's Revise calls
+		// change only what they are sent, and the listing keeps its own.
+		$this->pictures_held = $revise ? ( $this->pictures_for[ $product->get_id() ]['left_out'] ?? array() ) : array();
+		if ( $this->pictures_held ) {
+			$images = array();
+		}
+
+		// Build picture URLs XML. No photos, no PictureDetails at all: an empty
+		// one would tell eBay the listing has none.
 		$picture_xml = '';
 		if ( ! empty( $images ) ) {
 			$picture_xml = '<PictureDetails>' . "\n";
@@ -1914,7 +2259,7 @@ class TCGiant_Sync_Exporter {
 
 		// Condition: use new ConditionDescriptor system for eligible categories,
 		// fall back to legacy ConditionID for everything else.
-		$descriptor_xml = $this->build_condition_descriptors_xml( $settings );
+		$descriptor_xml = $this->build_condition_descriptors_xml( $settings, $product->get_id() );
 		if ( ! empty( $descriptor_xml ) ) {
 			// ConditionID is set inside build_condition_descriptors_xml based on type.
 			$condition_id = 'graded' === $settings['condition_type'] ? '2750' : '4000';
@@ -1962,14 +2307,10 @@ class TCGiant_Sync_Exporter {
 		if ( $product instanceof WC_Product_Variable ) {
 			$xml .= '<Variations>' . "\n";
 			$xml .= "\t<VariationSpecificsSet>\n";
-			$attributes = $product->get_variation_attributes();
-			foreach ( $attributes as $attr_name => $options ) {
-				$label = wc_attribute_label( $attr_name );
+			foreach ( $this->variation_specifics_set( $product ) as list( $label, $values ) ) {
 				$xml .= "\t\t<NameValueList>\n";
 				$xml .= "\t\t\t<Name>" . esc_xml( $label ) . "</Name>\n";
-				foreach ( $options as $opt ) {
-					$term = get_term_by( 'slug', $opt, $attr_name );
-					$val = $term ? $term->name : $opt;
+				foreach ( $values as $val ) {
 					$xml .= "\t\t\t<Value>" . esc_xml( $val ) . "</Value>\n";
 				}
 				$xml .= "\t\t</NameValueList>\n";
@@ -2211,6 +2552,16 @@ class TCGiant_Sync_Exporter {
 			}
 		}
 
+		// The listing template the description is built with: the product's own
+		// choice, its WooCommerce category's, the default, or None.
+		$settings['template_id']  = 0;
+		$settings['template_why'] = 'none';
+		if ( $product && class_exists( 'TCGiant_Sync_Templates' ) ) {
+			$resolved                 = TCGiant_Sync_Templates::resolve( $product );
+			$settings['template_id']  = $resolved['template_id'];
+			$settings['template_why'] = $resolved['why'];
+		}
+
 		// Flag category-item_type mismatch so validation can catch it.
 		// e.g. user picks "Coins" but the global default category is 183050 (TCG).
 		$item_type   = $settings['item_type'] ?? '';
@@ -2284,7 +2635,8 @@ class TCGiant_Sync_Exporter {
 			return new WP_Error(
 				'missing_export_settings',
 				/* translators: %s: comma-separated list of missing settings */
-				sprintf( __( 'Cannot push to eBay — missing required settings: %s', 'tcgiant-sync' ), implode( ', ', $missing ) )
+				sprintf( __( 'Cannot push to eBay — missing required settings: %s', 'tcgiant-sync' ), implode( ', ', $missing ) ),
+				array( 'missing' => $missing )
 			);
 		}
 
@@ -2825,22 +3177,67 @@ class TCGiant_Sync_Exporter {
 			return '';
 		}
 
-		// eBay caps the number of name/value pairs per listing.
-		$specifics = array_slice( $specifics, 0, self::MAX_SPECIFICS, true );
-
 		$xml = '<ItemSpecifics>' . "\n";
-		foreach ( $specifics as $name => $value ) {
-			if ( '' === trim( (string) $value ) ) {
-				continue;
-			}
+		foreach ( $this->specifics_sent( $specifics ) as $pair ) {
 			$xml .= "\t<NameValueList>\n";
-			$xml .= "\t\t<Name>" . esc_xml( mb_substr( (string) $name, 0, self::MAX_SPECIFIC_NAME ) ) . "</Name>\n";
-			$xml .= "\t\t<Value>" . esc_xml( mb_substr( (string) $value, 0, self::MAX_SPECIFIC_VALUE ) ) . "</Value>\n";
+			$xml .= "\t\t<Name>" . esc_xml( $pair[0] ) . "</Name>\n";
+			$xml .= "\t\t<Value>" . esc_xml( $pair[1] ) . "</Value>\n";
 			$xml .= "\t</NameValueList>\n";
 		}
 		$xml .= '</ItemSpecifics>';
 
 		return $xml;
+	}
+
+	/**
+	 * The item specifics exactly as the item sends them: after eBay's cut to
+	 * thirty, without the empty ones, each name and value cut to eBay's
+	 * lengths. The template's specifics table is made from this same list, so
+	 * the table and the specifics eBay shows beside it never disagree.
+	 *
+	 * @param array $specifics build_specifics_map()'s name => value.
+	 * @return array[] Each array( name, value ).
+	 */
+	private function specifics_sent( array $specifics ) {
+		// eBay caps the number of name/value pairs per listing.
+		$specifics = array_slice( $specifics, 0, self::MAX_SPECIFICS, true );
+
+		$sent = array();
+		foreach ( $specifics as $name => $value ) {
+			if ( '' === trim( (string) $value ) ) {
+				continue;
+			}
+			$sent[] = array(
+				mb_substr( (string) $name, 0, self::MAX_SPECIFIC_NAME ),
+				mb_substr( (string) $value, 0, self::MAX_SPECIFIC_VALUE ),
+			);
+		}
+
+		return $sent;
+	}
+
+	/**
+	 * A variable product's options, as VariationSpecificsSet sends them: each
+	 * attribute's label, and its values by term name where it is a taxonomy.
+	 *
+	 * A list, one entry per attribute, rather than keyed by label: a global
+	 * "Color" and a custom one share a label, and 3.27.7 sent both.
+	 *
+	 * @param WC_Product_Variable $product Variable product.
+	 * @return array<int, array{0: string, 1: string[]}> Label and values.
+	 */
+	private function variation_specifics_set( WC_Product_Variable $product ) {
+		$set = array();
+		foreach ( $product->get_variation_attributes() as $attr_name => $options ) {
+			$label  = wc_attribute_label( $attr_name );
+			$values = array();
+			foreach ( $options as $opt ) {
+				$term     = get_term_by( 'slug', $opt, $attr_name );
+				$values[] = $term ? $term->name : $opt;
+			}
+			$set[] = array( $label, $values );
+		}
+		return $set;
 	}
 
 	/**
@@ -2860,6 +3257,30 @@ class TCGiant_Sync_Exporter {
 		}
 
 		return false;
+	}
+
+	/**
+	 * eBay's value ID for a trading card's grade (descriptor 27502).
+	 *
+	 * From the grade as the product or the settings hold it ("8", "9.5",
+	 * "Authentic"), or a stored value that is one of eBay's IDs already, which
+	 * goes as it is.
+	 *
+	 * @param string $grade Grade label, or eBay's ID for one.
+	 * @return string The ID, or '' when the value is neither.
+	 */
+	public static function tcg_grade_id( $grade ) {
+		$grade = trim( (string) $grade );
+
+		if ( isset( TCGiant_Sync_Catalog::GRADE_IDS_TCG[ $grade ] ) ) {
+			return TCGiant_Sync_Catalog::GRADE_IDS_TCG[ $grade ];
+		}
+
+		if ( in_array( $grade, TCGiant_Sync_Catalog::GRADE_IDS_TCG, true ) ) {
+			return $grade;
+		}
+
+		return '';
 	}
 
 	// -------------------------------------------------------------------------
@@ -3019,15 +3440,25 @@ class TCGiant_Sync_Exporter {
 	}
 
 	/**
+	 * The products whose trading-card grade has no eBay ID and was said so in
+	 * this push, by product ID: a relist builds its item twice, and says it
+	 * once. Cleared with $pictures_for.
+	 *
+	 * @var array<int,bool>
+	 */
+	private $grade_said = array();
+
+	/**
 	 * Build <ConditionDescriptors> XML for the listing.
 	 *
 	 * Returns empty string if the category does not require descriptors
 	 * or if the condition_type is not set.
 	 *
-	 * @param array $settings Merged export settings.
+	 * @param array $settings   Merged export settings.
+	 * @param int   $product_id The product, for the log.
 	 * @return string XML string or empty.
 	 */
-	private function build_condition_descriptors_xml( array $settings ) {
+	private function build_condition_descriptors_xml( array $settings, $product_id = 0 ) {
 		$item_type = $settings['item_type'] ?? '';
 		if ( ! self::is_descriptor_category( $settings['category_id'], $item_type ) ) {
 			return '';
@@ -3105,19 +3536,33 @@ class TCGiant_Sync_Exporter {
 					$xml .= "\t</ConditionDescriptor>\n";
 				}
 	
-				// Grade (required) for TCG.
+				// Grade (required) for TCG: eBay's value ID for it, never the grade
+				// as it reads. "8" was refused: "Condition descriptor value 8 is not
+				// valid for condition descriptor 27502". A grade with no ID is not
+				// sent, and said once a push: eBay then asks for the grade, which
+				// says more than a value it cannot read.
 				if ( ! empty( $settings['grade_value'] ) ) {
-					$xml .= "\t<ConditionDescriptor>\n";
-					$xml .= "\t\t<Name>27502</Name>\n";
-					$xml .= "\t\t<Value>" . esc_attr( $settings['grade_value'] ) . "</Value>\n";
-					$xml .= "\t</ConditionDescriptor>\n";
+					$grade_id = self::tcg_grade_id( $settings['grade_value'] );
+					if ( '' !== $grade_id ) {
+						$xml .= "\t<ConditionDescriptor>\n";
+						$xml .= "\t\t<Name>27502</Name>\n";
+						$xml .= "\t\t<Value>" . esc_attr( $grade_id ) . "</Value>\n";
+						$xml .= "\t</ConditionDescriptor>\n";
+					} elseif ( empty( $this->grade_said[ (int) $product_id ] ) ) {
+						$this->grade_said[ (int) $product_id ] = true;
+						TCGiant_Sync_Logger::warning( sprintf(
+							'Push: the grade "%2$s" of WC #%1$d is not one eBay takes for a graded trading card, so it was not sent and eBay will ask for it. Choose the grade again in the product\'s eBay Listing tab.',
+							(int) $product_id,
+							$settings['grade_value']
+						) );
+					}
 				}
-	
-				// Certification Number (optional) for TCG.
+
+				// Certification Number (optional) for TCG — free text, max 30 chars.
 				if ( ! empty( $settings['cert_number'] ) ) {
 					$xml .= "\t<ConditionDescriptor>\n";
 					$xml .= "\t\t<Name>27503</Name>\n";
-					$xml .= "\t\t<AdditionalInfo>" . esc_attr( $settings['cert_number'] ) . "</AdditionalInfo>\n";
+					$xml .= "\t\t<AdditionalInfo>" . esc_attr( substr( $settings['cert_number'], 0, 30 ) ) . "</AdditionalInfo>\n";
 					$xml .= "\t</ConditionDescriptor>\n";
 				}
 			}
@@ -3400,13 +3845,352 @@ class TCGiant_Sync_Exporter {
 	}
 
 	/**
-	 * Get all public image URLs for a WooCommerce product.
+	 * The description a listing is sent with.
 	 *
-	 * Returns the featured image first, then gallery images, up to MAX_IMAGES.
+	 * With no template - None as the default, a product set to None, a
+	 * template since deleted - exactly build_description(), as every release
+	 * before templates sent it, unless the product has an eBay-only
+	 * description: that goes through the_content and then the sanitiser,
+	 * template or not, since it is new and there is no old output to keep.
 	 *
-	 * @param WC_Product $product The WooCommerce product.
-	 * @return string[] Array of image URLs.
+	 * A product linked to a listing on another eBay site is sent the plain
+	 * description whatever its rules say, and the log says why: this shop's
+	 * template, in this shop's language, must never reach an eBay.de or
+	 * eBay.co.uk copy.
+	 *
+	 * Push, Verify and the template preview all come here, so the preview shows
+	 * the bytes a push sends.
+	 *
+	 * @param WC_Product  $product  Product being listed.
+	 * @param array       $settings get_export_settings(): template_id (or the
+	 *                              editor's template_draft), and the policies the
+	 *                              item attaches.
+	 * @param string|null $title    The title the item sends; worked out here when
+	 *                              not given.
+	 * @return array html, none, template_id, version, hash, tpl_hash,
+	 *               content_hash, chars, warnings, removed.
 	 */
+	public function build_listing_description( WC_Product $product, array $settings, $title = null ) {
+		$templates = class_exists( 'TCGiant_Sync_Templates' );
+		$draft     = $templates && isset( $settings['template_draft'] ) && is_array( $settings['template_draft'] );
+		$tpl_id    = $templates ? (int) ( $settings['template_id'] ?? 0 ) : 0;
+		$ebay_only = $templates ? trim( (string) $product->get_meta( TCGiant_Sync_Templates::EBAY_DESCRIPTION_META ) ) : '';
+		$warnings  = array();
+
+		if ( $tpl_id > 0 || $draft || '' !== $ebay_only ) {
+			$site = (string) $product->get_meta( '_ebay_site' );
+			$here = TCGiant_Sync_API::instance()->get_marketplace_config();
+			if ( '' !== $site && TCGiant_Sync_Sites::marketplace_of( $site ) !== $here['marketplace_id'] ) {
+				$tpl_id    = 0;
+				$draft     = false;
+				$ebay_only = '';
+				$warnings[] = sprintf(
+					/* translators: %s: an eBay site, e.g. "eBay Germany" */
+					__( 'This product\'s eBay listing is on %s, not your Primary eBay Marketplace, so it is sent the plain description: no template and no eBay-only description.', 'tcgiant-sync' ),
+					TCGiant_Sync_Sites::label( $site )
+				);
+				if ( empty( $settings['_preview'] ) ) {
+					TCGiant_Sync_Logger::log( sprintf(
+						'Listing template not used for WC #%1$d: its eBay listing is on %2$s, not the shop\'s %3$s, so it was sent the plain description.',
+						$product->get_id(),
+						TCGiant_Sync_Sites::label( $site ),
+						'eBay ' . ( TCGiant_Sync_API::MARKETPLACES[ $here['marketplace_id'] ]['label'] ?? $here['marketplace_id'] )
+					), 'info' );
+				}
+			}
+		}
+
+		$render = array();
+		if ( $tpl_id > 0 || $draft ) {
+			if ( null === $title ) {
+				$title = $this->sanitize_title( $product->get_name() );
+			}
+			$render = TCGiant_Sync_Templates::render( $product, $settings, $this->template_facts( $product, $settings, $title, $ebay_only ) );
+		}
+
+		if ( empty( $render ) ) {
+			$removed = array();
+			if ( '' !== $ebay_only ) {
+				$clean    = TCGiant_Sync_Template_Sanitiser::clean( (string) apply_filters( 'the_content', $ebay_only ), array(
+					'home_host'  => (string) wp_parse_url( home_url(), PHP_URL_HOST ),
+					'site_https' => TCGiant_Sync_Templates::site_https(),
+				) );
+				$html     = $clean['html'];
+				$removed  = TCGiant_Sync_Templates::count_removed( $clean['removed'] );
+				$warnings = array_merge( $warnings, $clean['warnings'], TCGiant_Sync_Template_Sanitiser::lint( $html ) );
+			} else {
+				$html = $this->build_description( $product );
+			}
+
+			$render = array(
+				'html'         => $html,
+				'none'         => true,
+				// 3.27.7's own description, built as it built it.
+				'plain'        => '' === $ebay_only,
+				'template_id'  => 0,
+				'version'      => 0,
+				'name'         => '',
+				'tpl_hash'     => '',
+				'content_hash' => sha1( (string) $html ),
+				'region_hash'  => '',
+				'warnings'     => $warnings,
+				'removed'      => $removed,
+			);
+		} elseif ( $warnings ) {
+			$render['warnings'] = array_merge( $warnings, $render['warnings'] );
+		}
+
+		/**
+		 * Filters the description a listing is sent with.
+		 *
+		 * With no callbacks it changes nothing: the plain description stays
+		 * byte for byte what it was.
+		 *
+		 * @since 3.27.8
+		 *
+		 * @param string     $html    The description.
+		 * @param WC_Product $product The product being listed.
+		 * @param array      $render  What built it: template_id, version, none.
+		 */
+		$render['html']  = (string) apply_filters( 'tcgiant_sync_ebay_description', $render['html'], $product, $render );
+		$render['hash']  = sha1( $render['html'] );
+		$render['chars'] = function_exists( 'mb_strlen' ) ? mb_strlen( $render['html'], 'UTF-8' ) : strlen( $render['html'] );
+
+		return $render;
+	}
+
+	/**
+	 * Why the description the last build put in its item cannot be sent, if
+	 * it cannot: eBay's 500,000-character ceiling.
+	 *
+	 * Only for a description a template or the eBay-only description made.
+	 * The plain description is sent exactly as 3.27.7 sent it, and eBay
+	 * decides, so a shop that picks no template sees no change.
+	 *
+	 * @return WP_Error|null
+	 */
+	public function description_too_long() {
+		$chars = (int) ( $this->last_render['chars'] ?? 0 );
+		if ( $chars <= 500000 || ! empty( $this->last_render['plain'] ) ) {
+			return null;
+		}
+		return new WP_Error(
+			'description_too_long',
+			sprintf(
+				/* translators: 1: characters, 2: the limit */
+				__( 'This product\'s eBay description is %1$s characters long, and eBay takes up to %2$s, tags included. Shorten the description, or choose a smaller listing template, then push again. Nothing was sent to eBay.', 'tcgiant-sync' ),
+				number_format_i18n( $chars ),
+				number_format_i18n( 500000 )
+			)
+		);
+	}
+
+	/**
+	 * The description the last build_item_xml() put in its item.
+	 *
+	 * @return array|null
+	 */
+	public function last_render() {
+		return $this->last_render;
+	}
+
+	/**
+	 * Record on a product the description eBay has just accepted.
+	 *
+	 * @param WC_Product $product Product, saved by the caller.
+	 * @param array|null $desc    build_listing_description()'s answer.
+	 * @param string     $item_id The listing it was sent to.
+	 */
+	private static function record_description_sent( WC_Product $product, $desc, $item_id = '' ) {
+		if ( ! is_array( $desc ) || ! isset( $desc['hash'] ) ) {
+			return;
+		}
+		// As strings, which is how post meta comes back.
+		$product->update_meta_data( '_tcgiant_tpl_id', (string) (int) ( $desc['template_id'] ?? 0 ) );
+		$product->update_meta_data( '_tcgiant_tpl_ver', (string) (int) ( $desc['version'] ?? 0 ) );
+		$product->update_meta_data( '_tcgiant_tpl_hash_sent', (string) ( $desc['tpl_hash'] ?? '' ) );
+		$product->update_meta_data( '_tcgiant_content_hash', (string) ( $desc['content_hash'] ?? '' ) );
+		$product->update_meta_data( '_tcgiant_desc_hash', (string) $desc['hash'] );
+		$product->update_meta_data( '_tcgiant_region_hash', (string) ( $desc['region_hash'] ?? '' ) );
+		// Which listing: a re-import cuts a content region only for the
+		// listing the record is of (TCGiant_Sync_Mapper::sent_with_template()).
+		$product->update_meta_data( '_tcgiant_tpl_item', (string) $item_id );
+		$product->update_meta_data( '_tcgiant_desc_sent_at', (string) time() );
+	}
+
+	/**
+	 * What a template may say about a product, taken from what the item sends.
+	 *
+	 * @param WC_Product $product   Product being listed.
+	 * @param array      $settings  Export settings.
+	 * @param string     $title     The title the item sends.
+	 * @param string     $ebay_only The eBay-only description, or ''.
+	 * @return array
+	 */
+	private function template_facts( WC_Product $product, array $settings, $title, $ebay_only ) {
+		$attributes = $this->attribute_rows( $product );
+
+		$by_slug = array();
+		foreach ( $attributes as $row ) {
+			$by_slug[ $row['slug'] ] = $row['value'];
+			// {{attr.brand}} as well as {{attr.pa_brand}} for a global attribute.
+			if ( 0 === strpos( $row['slug'], 'pa_' ) && ! isset( $by_slug[ substr( $row['slug'], 3 ) ] ) ) {
+				$by_slug[ substr( $row['slug'], 3 ) ] = $row['value'];
+			}
+		}
+
+		return array(
+			'title'             => (string) $title,
+			'content_source'    => '' !== $ebay_only ? $ebay_only : $this->content_source( $product, $attributes ),
+			'short_description' => (string) $product->get_short_description(),
+			'sku'               => (string) $product->get_sku(),
+			'attributes'        => $by_slug,
+			'condition_name'    => $this->condition_name( $settings ),
+			'grading'           => $this->grading_facts( $settings ),
+			'specifics'         => $this->specifics_sent( $this->build_specifics_map( $product, $settings ) ),
+			'variations'        => $product instanceof WC_Product_Variable ? $this->variation_specifics_set( $product ) : array(),
+			'images'            => $this->description_image_urls( $product ),
+		);
+	}
+
+	/**
+	 * The website description, by build_description()'s fallback chain - long,
+	 * short, attributes, name - but with attributes by their term names.
+	 * build_description() lists a global attribute's term IDs, which the None
+	 * path keeps so that it stays byte for byte what it was.
+	 *
+	 * @param WC_Product $product    Product.
+	 * @param array      $attributes attribute_rows().
+	 * @return string
+	 */
+	private function content_source( WC_Product $product, array $attributes ) {
+		$desc = (string) $product->get_description();
+
+		if ( '' === trim( $desc ) ) {
+			$desc = (string) $product->get_short_description();
+		}
+
+		if ( '' === trim( $desc ) ) {
+			$lines = array();
+			foreach ( $attributes as $row ) {
+				if ( '' !== $row['label'] && '' !== $row['value'] ) {
+					$lines[] = '<strong>' . esc_html( $row['label'] ) . ':</strong> ' . esc_html( $row['value'] );
+				}
+			}
+			$desc = implode( '<br>', $lines );
+		}
+
+		if ( '' === trim( $desc ) ) {
+			$desc = esc_html( $product->get_name() );
+		}
+
+		return $desc;
+	}
+
+	/**
+	 * Every attribute of the product - variation axes too - with its values by
+	 * name, as build_specifics_map() reads them.
+	 *
+	 * @param WC_Product $product Product.
+	 * @return array[] slug, label, value.
+	 */
+	private function attribute_rows( WC_Product $product ) {
+		$rows = array();
+		foreach ( $product->get_attributes() as $attribute ) {
+			if ( ! $attribute instanceof WC_Product_Attribute ) {
+				continue;
+			}
+			if ( $attribute->is_taxonomy() ) {
+				$values = wc_get_product_terms( $product->get_id(), $attribute->get_name(), array( 'fields' => 'names' ) );
+			} else {
+				$values = $attribute->get_options();
+			}
+			$values = array_filter( array_map( 'trim', array_map( 'strval', (array) $values ) ), function ( $value ) {
+				return '' !== $value;
+			} );
+
+			$rows[] = array(
+				'slug'  => sanitize_title( $attribute->get_name() ),
+				'label' => (string) wc_attribute_label( $attribute->get_name(), $product ),
+				'value' => implode( ', ', $values ),
+			);
+		}
+		return $rows;
+	}
+
+	/**
+	 * eBay's name for the condition the item sends.
+	 *
+	 * In a card or coin category with a condition type, build_item_xml() sends
+	 * ConditionID 2750 (graded) or 4000 (ungraded) with descriptors; otherwise
+	 * the condition chosen, named from the catalogue.
+	 *
+	 * @param array $settings Export settings.
+	 * @return string
+	 */
+	private function condition_name( array $settings ) {
+		$item_type = $settings['item_type'] ?? '';
+		if ( self::is_descriptor_category( $settings['category_id'] ?? '', $item_type ) && ! empty( $settings['condition_type'] ) ) {
+			if ( 'graded' === $settings['condition_type'] ) {
+				return __( 'Graded', 'tcgiant-sync' );
+			}
+			$ungraded = self::get_ungraded_conditions( $settings['category_id'] ?? '', $item_type, $settings['category_name'] ?? '' );
+			$value    = (string) ( $settings['ungraded_condition'] ?? '' );
+			return isset( $ungraded[ $value ] ) ? __( 'Ungraded', 'tcgiant-sync' ) . ' - ' . $ungraded[ $value ] : __( 'Ungraded', 'tcgiant-sync' );
+		}
+
+		return (string) ( TCGiant_Sync_Catalog::CONDITIONS[ (string) ( $settings['condition_id'] ?? '' ) ] ?? '' );
+	}
+
+	/**
+	 * The grading line, for a graded card or coin only: the same grader, grade
+	 * and certificate number as the ConditionDescriptors.
+	 *
+	 * @param array $settings Export settings.
+	 * @return array|false grader, grade, cert.
+	 */
+	private function grading_facts( array $settings ) {
+		$item_type = $settings['item_type'] ?? '';
+		if ( ! self::is_descriptor_category( $settings['category_id'] ?? '', $item_type ) || 'graded' !== ( $settings['condition_type'] ?? '' ) ) {
+			return false;
+		}
+
+		$coins  = self::is_coins_category( $settings['category_id'] ?? '', $item_type, $settings['category_name'] ?? '' );
+		$grader = ! empty( $settings['grader_id'] ) ? self::get_grader_name_by_id( $settings['grader_id'], $coins ? 'coins' : 'tcg' ) : '';
+		$cert   = (string) ( $settings['cert_number'] ?? '' );
+
+		$grading = array(
+			'grader' => false !== $grader ? (string) $grader : '',
+			'grade'  => (string) ( $settings['grade_value'] ?? '' ),
+			// The first 20 characters for coins, 30 for cards: the descriptors' limits.
+			'cert'   => substr( $cert, 0, $coins ? 20 : 30 ),
+		);
+
+		return '' === implode( '', $grading ) ? false : $grading;
+	}
+
+	/**
+	 * Image addresses for the description: the site's own https attachment
+	 * URLs, never eBay-hosted ones. Pictures eBay hosts expire when unused, and
+	 * the listing's photos are shown above the description by eBay itself.
+	 *
+	 * @param WC_Product $product Product.
+	 * @return string[]
+	 */
+	private function description_image_urls( WC_Product $product ) {
+		$urls = array();
+		foreach ( array_merge( array( (int) $product->get_image_id() ), array_map( 'intval', (array) $product->get_gallery_image_ids() ) ) as $id ) {
+			if ( $id <= 0 || count( $urls ) >= TCGiant_Sync_Templates::MAX_IMAGE_N ) {
+				continue;
+			}
+			$url = TCGiant_Sync_Templates::image_url( $id );
+			if ( '' !== $url ) {
+				$urls[] = $url;
+			}
+		}
+		return array_values( array_unique( $urls ) );
+	}
+
 	/**
 	 * How long an uploaded eBay Picture Services URL stays valid for reuse.
 	 *
@@ -3416,49 +4200,93 @@ class TCGiant_Sync_Exporter {
 	const EPS_URL_TTL = 20 * DAY_IN_SECONDS;
 
 	/**
-	 * Resolve an attachment to a picture URL for the listing.
+	 * The photos each product's item was given in this push, by product ID:
+	 * 'urls', the addresses it sends; 'left_out', the photos left out of them
+	 * because the listing's others are on eBay (attachment ID => why);
+	 * 'past_cap', how many of the product's photos are not sent for want of
+	 * room; and 'too_long', whether that room ran out by the addresses'
+	 * length together (MAX_PICTURE_CHARS) rather than by their number.
 	 *
-	 * Prefers an eBay-hosted (EPS) copy when the "Host images on eBay" setting
-	 * is enabled, falling back to the site's own URL if the upload fails, so a
-	 * transient eBay problem can never block a listing.
+	 * A relist builds its item twice in one push, and the second build sends
+	 * what the first decided: nothing is uploaded again, or said again.
+	 * Cleared at the start of every push, and of every build for Verify.
 	 *
-	 * @param int $attachment_id Attachment ID.
-	 * @return string URL, or '' when unavailable.
+	 * @var array<int,array{urls:string[],left_out:array<int,string>,past_cap:int,too_long:bool}>
 	 */
-	private function resolve_picture_url( $attachment_id ) {
-		$attachment_id = (int) $attachment_id;
-		$local         = wp_get_attachment_image_url( $attachment_id, 'full' );
+	private $pictures_for = array();
 
-		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
-		if ( empty( $settings['host_images_on_ebay'] ) ) {
-			return $local ? $local : '';
-		}
+	/**
+	 * How long a listing's photo addresses may be together, as sent.
+	 *
+	 * eBay refuses a listing whose PictureURLs come to more than about 3975
+	 * characters in all (PictureDetailsType; not verified here, and a seller
+	 * reports about 4000). Twelve addresses never reached it; 24 long ones can
+	 * - a CDN's, say, with the long names imported photos are given - so a
+	 * listing stops short of it, with room to spare.
+	 */
+	const MAX_PICTURE_CHARS = 3900;
+
+	/**
+	 * The photos the last build held back from a revise, attachment ID => why.
+	 *
+	 * When any would be left out, a revise is sent no PictureDetails at all
+	 * (build_item_xml()), and do_push() says so once eBay has answered.
+	 * Empty when the build sent its photos as decided.
+	 *
+	 * @var array<int,string>
+	 */
+	private $pictures_held = array();
+
+	/**
+	 * Why a photo has no eBay copy when there is no file here to upload.
+	 */
+	const PICTURE_NOT_HERE = 'its file is not on this server';
+
+	/**
+	 * Whether a picture address is eBay's own (EPS, ebayimg.com): an imported
+	 * photo kept on eBay by "Keep eBay-hosted URLs", or a copy uploaded here.
+	 *
+	 * @param string $url Picture address.
+	 * @return bool
+	 */
+	private static function is_ebay_picture( $url ) {
+		return 1 === preg_match( '#^https?://(?:[a-z0-9-]+\.)*ebayimg\.com(?::[0-9]+)?(?:[/?\#]|$)#i', (string) $url );
+	}
+
+	/**
+	 * An attachment's eBay-hosted (EPS) copy: the cached one while it is
+	 * fresh, otherwise uploaded now and cached.
+	 *
+	 * @param int    $attachment_id Attachment ID.
+	 * @param string $reason        Set, in plain words, when there is none.
+	 * @return string The EPS URL, or '' when the photo could not be put on eBay.
+	 */
+	private function eps_picture_url( $attachment_id, &$reason ) {
+		$reason = '';
 
 		// Reuse a previous upload while it is still fresh, keyed to the file so
 		// replacing the image invalidates it.
-		$file    = get_attached_file( $attachment_id );
-		$stamp   = $file && file_exists( $file ) ? (string) filemtime( $file ) : '0';
-		$cached  = get_post_meta( $attachment_id, '_tcgiant_eps_url', true );
+		$file       = get_attached_file( $attachment_id );
+		$stamp      = $file && file_exists( $file ) ? (string) filemtime( $file ) : '0';
+		$cached     = get_post_meta( $attachment_id, '_tcgiant_eps_url', true );
 		$cached_key = get_post_meta( $attachment_id, '_tcgiant_eps_key', true );
 		$cached_at  = (int) get_post_meta( $attachment_id, '_tcgiant_eps_time', true );
 
 		if ( $cached && $cached_key === $stamp && ( time() - $cached_at ) < self::EPS_URL_TTL ) {
-			return $cached;
+			return (string) $cached;
 		}
 
+		// Offloaded to a CDN, or deleted: nothing here to upload.
 		if ( ! $file || ! file_exists( $file ) ) {
-			return $local ? $local : '';
+			$reason = self::PICTURE_NOT_HERE;
+			return '';
 		}
 
 		$uploaded = TCGiant_Sync_API::instance()->upload_picture( $file, get_the_title( $attachment_id ) );
 
 		if ( is_wp_error( $uploaded ) ) {
-			TCGiant_Sync_Logger::warning( sprintf(
-				'eBay picture upload failed for attachment #%d (%s). Falling back to the site URL.',
-				$attachment_id,
-				$uploaded->get_error_message()
-			) );
-			return $local ? $local : '';
+			$reason = rtrim( $uploaded->get_error_message(), '. ' );
+			return '';
 		}
 
 		update_post_meta( $attachment_id, '_tcgiant_eps_url', $uploaded );
@@ -3468,30 +4296,360 @@ class TCGiant_Sync_Exporter {
 		return $uploaded;
 	}
 
-	private function get_product_image_urls( WC_Product $product ) {
-		$urls = array();
-
-		// Featured image.
-		$thumb_id = (int) $product->get_image_id();
-		if ( $thumb_id ) {
-			$src = $this->resolve_picture_url( $thumb_id );
-			if ( $src ) {
-				$urls[] = $src;
-			}
+	/**
+	 * The photos a listing sends: the featured image, then the gallery, up to
+	 * MAX_IMAGES.
+	 *
+	 * eBay refuses a whole listing whose photos mix its own (EPS) addresses
+	 * with addresses on another site ("A mixture of Self Hosted and EPS
+	 * pictures are not allowed"), so a listing's photos are never a mix,
+	 * whatever the settings:
+	 *
+	 * - No photo already on eBay, "Host listing images on eBay?" off: each
+	 *   photo's own address, exactly as 3.27.7 sent them.
+	 * - No photo already on eBay, the setting on: each goes as its eBay copy,
+	 *   uploaded in order or taken from the cache. At the first that cannot be
+	 *   put on eBay - its upload failed, or its file is not on this server -
+	 *   nothing more is uploaded, and every photo goes as its own address, with
+	 *   one warning.
+	 * - A photo already on eBay, with any setting - an imported photo kept there
+	 *   by "Keep eBay-hosted URLs", whose own address is eBay's: the listing
+	 *   goes all on eBay. Each other photo goes as its eBay copy, uploaded or
+	 *   from the cache, even with the setting off; one that cannot be put on
+	 *   eBay is left out. A new listing goes without it, with one warning a
+	 *   push naming each. A revise would take it off the live listing, so
+	 *   build_item_xml() sends that one no PictureDetails at all, and the push
+	 *   warns once eBay has answered (do_push()).
+	 *
+	 * A photo with no address at all is left out, as it always was. The copies
+	 * uploaded stay cached for later pushes.
+	 *
+	 * Every item built for eBay gets its PictureDetails from here: AddItem and
+	 * AddFixedPriceItem, the two Revise calls, a new listing for an ended one,
+	 * and both Verify calls. RelistItem and RelistFixedPriceItem send no
+	 * pictures; eBay keeps the listing's own.
+	 *
+	 * A product with more photos than a listing has room for - MAX_IMAGES of
+	 * them, MAX_PICTURE_CHARS of their addresses together - sends the first
+	 * that fit, with one warning a push saying how many were not sent, and why.
+	 *
+	 * Decided once a push (the memo), and said once: here, for an item that is
+	 * sent its photos. A revise sent none says so once eBay has answered, and a
+	 * new listing made for an ended one says the rest (do_push()).
+	 *
+	 * @param WC_Product $product The WooCommerce product.
+	 * @param bool       $revise  Whether the item goes to a Revise call.
+	 * @return string[] Array of image URLs.
+	 */
+	private function get_product_image_urls( WC_Product $product, $revise = false ) {
+		// A relist's second build sends what the first decided.
+		$product_id = $product->get_id();
+		if ( isset( $this->pictures_for[ $product_id ] ) ) {
+			return $this->pictures_for[ $product_id ]['urls'];
 		}
 
-		// Gallery images.
-		$gallery_ids = $product->get_gallery_image_ids();
-		foreach ( $gallery_ids as $img_id ) {
-			if ( count( $urls ) >= self::MAX_IMAGES ) {
+		$left_out = array();
+		$past_cap = 0;
+		$urls     = $this->decide_product_image_urls( $product, $left_out, $past_cap );
+
+		// The addresses' length together, as sent: the list stops before the
+		// first that would take it past MAX_PICTURE_CHARS, and the rest are not
+		// sent either. Website addresses can reach it; eBay's are short.
+		$too_long = false;
+		$chars    = 0;
+		foreach ( $urls as $i => $url ) {
+			$chars += strlen( esc_url( $url ) );
+			if ( $chars > self::MAX_PICTURE_CHARS ) {
+				$past_cap += count( $urls ) - $i;
+				$urls      = array_slice( $urls, 0, $i );
+				$too_long  = true;
 				break;
 			}
-			$src = $this->resolve_picture_url( $img_id );
-			if ( $src ) {
-				$urls[] = $src;
+		}
+
+		$this->pictures_for[ $product_id ] = array( 'urls' => $urls, 'left_out' => $left_out, 'past_cap' => $past_cap, 'too_long' => $too_long );
+
+		if ( ! $revise || ! $left_out ) {
+			if ( $left_out ) {
+				TCGiant_Sync_Logger::warning( self::left_out_warning( $product_id, $left_out ) );
+			}
+			$this->say_pictures_not_sent( $product_id );
+		}
+
+		return $urls;
+	}
+
+	/**
+	 * Logs the warning for the photos this push's decision had no room for,
+	 * when it had any: past MAX_IMAGES, or past MAX_PICTURE_CHARS together.
+	 *
+	 * @param int $product_id Product.
+	 */
+	private function say_pictures_not_sent( $product_id ) {
+		$decided = $this->pictures_for[ (int) $product_id ] ?? null;
+		if ( $decided && $decided['past_cap'] > 0 ) {
+			TCGiant_Sync_Logger::warning( self::past_cap_warning( (int) $product_id, $decided['past_cap'], count( $decided['urls'] ), $decided['too_long'] ) );
+		}
+	}
+
+	/**
+	 * The decision get_product_image_urls() describes, made afresh.
+	 *
+	 * @param WC_Product        $product  The WooCommerce product.
+	 * @param array<int,string> $left_out Set to the photos left out because the
+	 *                                    listing's others are on eBay, ID => why.
+	 * @param int               $past_cap Set to how many photos come after the
+	 *                                    first MAX_IMAGES, not sent.
+	 * @return string[]
+	 */
+	private function decide_product_image_urls( WC_Product $product, &$left_out, &$past_cap ) {
+		$ids = array();
+
+		// Featured image, then the gallery.
+		$thumb_id = (int) $product->get_image_id();
+		if ( $thumb_id ) {
+			$ids[] = $thumb_id;
+		}
+		foreach ( $product->get_gallery_image_ids() as $img_id ) {
+			$ids[] = (int) $img_id;
+		}
+
+		// Each photo's own address, as 3.27.7 sent them with the setting off.
+		$site_past = 0;
+		$site      = $this->site_picture_urls( $ids, $site_past );
+
+		$on_ebay = false;
+		foreach ( $site as $url ) {
+			if ( self::is_ebay_picture( $url ) ) {
+				$on_ebay = true;
+				break;
 			}
 		}
 
+		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
+		if ( ! $on_ebay && empty( $settings['host_images_on_ebay'] ) ) {
+			$past_cap = $site_past;
+			return $site;
+		}
+
+		$product_id = $product->get_id();
+		$urls       = array();
+		$reason     = '';
+		foreach ( $ids as $id ) {
+			// Already on eBay: its own address is eBay's.
+			$own = (string) wp_get_attachment_image_url( $id, 'full' );
+
+			// Past eBay's limit: not sent, and counted for the warning.
+			if ( count( $urls ) >= self::MAX_IMAGES ) {
+				if ( '' !== $own ) {
+					$past_cap++;
+				}
+				continue;
+			}
+
+			if ( self::is_ebay_picture( $own ) ) {
+				$urls[] = $own;
+				continue;
+			}
+
+			$eps = $this->eps_picture_url( $id, $reason );
+			if ( '' !== $eps ) {
+				$urls[] = $eps;
+				continue;
+			}
+
+			// No copy on eBay and no address on the website either - an
+			// attachment since deleted, say: there is nothing to send, so it is
+			// left out, as it always was. When eBay refused its upload, the log
+			// says so, as 3.27.7's did.
+			if ( '' === $own ) {
+				if ( self::PICTURE_NOT_HERE !== $reason ) {
+					TCGiant_Sync_Logger::log( sprintf(
+						'eBay picture upload failed for attachment #%d (%s). It has no address on this site either, so it is left out of the listing.',
+						$id,
+						$reason
+					) );
+				}
+				continue;
+			}
+
+			// Other photos of this listing are on eBay already, so this one
+			// cannot go as its own address beside them.
+			if ( $on_ebay ) {
+				$left_out[ $id ] = $reason;
+				continue;
+			}
+
+			TCGiant_Sync_Logger::warning( sprintf(
+				'Push: photo #%d of WC #%d could not be put on eBay (%s), so this listing\'s photos are all sent from your website. eBay does not accept a mix.',
+				$id,
+				$product_id,
+				$reason
+			) );
+
+			$past_cap = $site_past;
+			return $site;
+		}
+
+		return $urls;
+	}
+
+	/**
+	 * The one warning a push gives when a product has more photos than a
+	 * listing has room for.
+	 *
+	 * @param int  $product_id Product.
+	 * @param int  $not_sent   How many were not sent.
+	 * @param int  $sent       How many were.
+	 * @param bool $too_long   Whether the addresses' length together, rather
+	 *                         than their number, left no room.
+	 * @return string
+	 */
+	private static function past_cap_warning( $product_id, $not_sent, $sent, $too_long ) {
+		if ( $too_long ) {
+			if ( 1 === (int) $not_sent ) {
+				return sprintf(
+					'Push: the photo addresses of WC #%1$d are too long together for eBay, which takes about 4,000 characters of them in one listing, so the one after the first %2$d was not sent.',
+					$product_id,
+					$sent
+				);
+			}
+
+			return sprintf(
+				'Push: the photo addresses of WC #%1$d are too long together for eBay, which takes about 4,000 characters of them in one listing, so the %3$d after the first %2$d were not sent.',
+				$product_id,
+				$sent,
+				$not_sent
+			);
+		}
+
+		if ( 1 === (int) $not_sent ) {
+			return sprintf(
+				'Push: WC #%1$d has more photos than the %2$d eBay takes in one listing, so the one after the first %2$d was not sent.',
+				$product_id,
+				self::MAX_IMAGES
+			);
+		}
+
+		return sprintf(
+			'Push: WC #%1$d has more photos than the %2$d eBay takes in one listing, so the %3$d after the first %2$d were not sent.',
+			$product_id,
+			self::MAX_IMAGES,
+			$not_sent
+		);
+	}
+
+	/**
+	 * The one warning a push gives for the photos it left out of a listing
+	 * whose other photos are on eBay.
+	 *
+	 * @param int                $product_id Product.
+	 * @param array<int,string>  $left_out   Attachment ID => why.
+	 * @return string
+	 */
+	private static function left_out_warning( $product_id, array $left_out ) {
+		$names  = array();
+		$detail = array();
+		foreach ( $left_out as $id => $reason ) {
+			$names[]  = '#' . $id;
+			$detail[] = '#' . $id . ': ' . $reason;
+		}
+
+		if ( 1 === count( $names ) ) {
+			return sprintf(
+				'Push: photo %s of WC #%d was left out of the listing: it could not be put on eBay (%s), and the listing\'s other photos are on eBay, which does not accept a mix.',
+				$names[0],
+				$product_id,
+				reset( $left_out )
+			);
+		}
+
+		return sprintf(
+			'Push: photos %s of WC #%d were left out of the listing: they could not be put on eBay (%s), and the listing\'s other photos are on eBay, which does not accept a mix.',
+			implode( ', ', $names ),
+			$product_id,
+			implode( '; ', $detail )
+		);
+	}
+
+	/**
+	 * The one warning a push gives when its revise was sent no photos, so that
+	 * none came off the live listing (build_item_xml()).
+	 *
+	 * It says when the listing's photos will change again. For an upload that
+	 * failed, with the next push that can upload it. For a photo whose file is
+	 * not on this server - an offloader moved it, say - no push can, so the
+	 * listing's photos, the shop's own changes to them included, stay as they
+	 * are until the file is back or the photo is taken off the product.
+	 *
+	 * @param int               $product_id Product.
+	 * @param array<int,string> $held       Attachment ID => why.
+	 * @return string
+	 */
+	private static function photos_unchanged_warning( $product_id, array $held ) {
+		$names  = array();
+		$detail = array();
+		$absent = array();
+		foreach ( $held as $id => $reason ) {
+			$names[]  = '#' . $id;
+			$detail[] = '#' . $id . ': ' . $reason;
+			if ( self::PICTURE_NOT_HERE === $reason ) {
+				$absent[] = '#' . $id;
+			}
+		}
+
+		if ( ! $absent ) {
+			$then = 1 === count( $names )
+				? 'It goes on the listing with the next push that can upload it.'
+				: 'They go on the listing with the next push that can upload them.';
+		} elseif ( 1 === count( $absent ) ) {
+			$then = sprintf( 'The listing\'s photos stay as they are until the file of %s is back on this server or that photo is taken off the product.', $absent[0] );
+		} else {
+			$then = sprintf( 'The listing\'s photos stay as they are until the files of %s are back on this server or those photos are taken off the product.', implode( ', ', $absent ) );
+		}
+
+		if ( 1 === count( $names ) ) {
+			return sprintf(
+				'Push: photo %s of WC #%d could not be put on eBay (%s), so the listing\'s photos were not changed this time: its other photos are on eBay, which does not accept a mix. %s',
+				$names[0],
+				$product_id,
+				reset( $held ),
+				$then
+			);
+		}
+
+		return sprintf(
+			'Push: photos %s of WC #%d could not be put on eBay (%s), so the listing\'s photos were not changed this time: its other photos are on eBay, which does not accept a mix. %s',
+			implode( ', ', $names ),
+			$product_id,
+			implode( '; ', $detail ),
+			$then
+		);
+	}
+
+	/**
+	 * The photos' own addresses, as a listing sends them with "Host listing
+	 * images on eBay?" off and none of them on eBay.
+	 *
+	 * @param int[] $ids      Attachment IDs, the featured image first.
+	 * @param int   $past_cap Set to how many with an address come after the
+	 *                        first MAX_IMAGES, and so are not among them.
+	 * @return string[]
+	 */
+	private function site_picture_urls( array $ids, &$past_cap = 0 ) {
+		$urls     = array();
+		$past_cap = 0;
+		foreach ( $ids as $id ) {
+			$src = wp_get_attachment_image_url( $id, 'full' );
+			if ( ! $src ) {
+				continue;
+			}
+			if ( count( $urls ) >= self::MAX_IMAGES ) {
+				$past_cap++;
+				continue;
+			}
+			$urls[] = $src;
+		}
 		return $urls;
 	}
 
@@ -3541,17 +4699,50 @@ class TCGiant_Sync_Exporter {
 		$policies = array();
 		if ( isset( $response[ $key ] ) && is_array( $response[ $key ] ) ) {
 			foreach ( $response[ $key ] as $policy ) {
-				$policies[] = array(
+				$row = array(
 					'id'   => $policy[ $id_field ] ?? '',
 					'name' => $policy['name'] ?? 'Unknown Policy',
 				);
+
+				// What a listing template's policy blocks say, kept from this same
+				// answer, so they cost no call of their own and a description
+				// never asks eBay anything (TCGiant_Sync_Template_Policies). The
+				// field names are eBay's Account API v1 ReturnPolicy and
+				// FulfillmentPolicy, checked against its specification:
+				// https://developer.ebay.com/api-docs/master/sell/account/openapi/3/sell_account_v1_oas3.json
+				if ( 'return' === $type ) {
+					$row['returns_accepted']  = isset( $policy['returnsAccepted'] ) ? (bool) $policy['returnsAccepted'] : null;
+					$row['return_period']     = self::time_duration( $policy['returnPeriod'] ?? null );
+					$row['return_cost_payer'] = is_string( $policy['returnShippingCostPayer'] ?? null ) ? $policy['returnShippingCostPayer'] : '';
+				} elseif ( 'fulfillment' === $type ) {
+					$row['handling_time'] = self::time_duration( $policy['handlingTime'] ?? null );
+				}
+
+				$policies[] = $row;
 			}
 		}
 
 		// Store permanently — only refreshed when user clicks "Fetch eBay Policies".
 		update_option( $option_key, $policies, false );
+		update_option( 'tcgiant_export_policies_fetched', time(), false );
 
 		return $policies;
+	}
+
+	/**
+	 * An Account API TimeDuration - {"value": 30, "unit": "DAY"} - as stored.
+	 *
+	 * @param mixed $duration From eBay's answer.
+	 * @return array|null value and unit, or null when there is none.
+	 */
+	private static function time_duration( $duration ) {
+		if ( ! is_array( $duration ) || ! isset( $duration['value'] ) || ! is_numeric( $duration['value'] ) ) {
+			return null;
+		}
+		return array(
+			'value' => (int) $duration['value'],
+			'unit'  => is_string( $duration['unit'] ?? null ) ? strtoupper( $duration['unit'] ) : '',
+		);
 	}
 
 	/**

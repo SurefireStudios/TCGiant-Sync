@@ -1123,9 +1123,11 @@ class TCGiant_Sync_OAuth {
 		}
 
 		$response = self::post_to_relay( array(
-			'action'   => 'claim',
-			'code'     => $code,
-			'site_url' => get_site_url(),
+			'action'         => 'claim',
+			'code'           => $code,
+			'site_url'       => get_site_url(),
+			// Which version this shop runs, as the token refresh sends it.
+			'plugin_version' => TCGIANT_SYNC_VERSION,
 		) );
 
 		if ( is_wp_error( $response ) ) {
@@ -1208,6 +1210,10 @@ class TCGiant_Sync_OAuth {
 			'site_url'        => get_site_url(),
 			'api_calls_today' => $api->get_daily_call_count(),
 			'api_calls_date'  => gmdate( 'Y-m-d' ),
+			// Which version this shop runs, for the relay's dashboard. An
+			// ordinary field like the others: a relay that does not read it yet
+			// ignores it.
+			'plugin_version'  => TCGIANT_SYNC_VERSION,
 		) );
 
 		if ( is_wp_error( $response ) ) {

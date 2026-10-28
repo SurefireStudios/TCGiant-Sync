@@ -91,6 +91,9 @@ class TCGiant_Sync_Telemetry {
 			'pushed_total' => TCGiant_Sync_License::instance()->get_pushed_product_count(),
 			'pulled_total' => TCGiant_Sync_License::instance()->get_pulled_product_count(),
 			'license_type' => $license_type,
+			// Which version this shop runs. In the body, so the signature
+			// below covers it.
+			'version'      => TCGIANT_SYNC_VERSION,
 		) );
 
 		$headers = array( 'Content-Type' => 'application/json' );

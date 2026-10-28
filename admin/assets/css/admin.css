@@ -896,3 +896,428 @@
     0%   { transform: rotate(0deg); }
     100% { transform: rotate(360deg); }
 }
+
+/* ─── Listing Templates ─── */
+.wrap.tc-dashboard-wrap .tc-subnav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 0 0 18px;
+}
+
+.wrap.tc-dashboard-wrap .tc-subnav-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 6px 14px;
+    border: 1px solid var(--tc-border);
+    border-radius: var(--tc-radius-sm);
+    background: var(--tc-card-bg);
+    color: var(--tc-text-main);
+    text-decoration: none;
+    font-weight: 500;
+    line-height: 1.4;
+    white-space: nowrap;
+}
+
+.wrap.tc-dashboard-wrap .tc-subnav-link.is-active {
+    border-color: var(--tc-primary);
+    color: var(--tc-primary);
+}
+
+.wrap.tc-dashboard-wrap .tc-badge-draft {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 8px;
+    border-radius: 10px;
+    background: #fef3c7;
+    color: #92400e;
+    font-size: 11px;
+}
+
+.wrap.tc-dashboard-wrap .tc-template-actions a.tc-danger-link {
+    color: var(--tc-danger);
+}
+
+.wrap.tc-dashboard-wrap .tc-templates-table th,
+.wrap.tc-dashboard-wrap .tc-template-actions a {
+    white-space: nowrap;
+}
+
+/* A starter's name and summary, then its button. A grid rather than flex:
+   the button has a column of its own, 11em in every row (both labels fit on
+   one line), so the buttons line up and are the same width, and the summary
+   never runs under the button. */
+.wrap.tc-dashboard-wrap .tc-starter-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(11em, max-content);
+    align-items: center;
+    gap: 8px 16px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--tc-border);
+}
+
+.wrap.tc-dashboard-wrap .tc-starter-row .tc-button {
+    width: 100%;
+}
+
+/* The category rules keep to their card: the selects take their column's
+   width, not their longest option's. */
+.wrap.tc-dashboard-wrap .tc-category-map {
+    table-layout: fixed;
+}
+
+.wrap.tc-dashboard-wrap .tc-category-map th:last-child {
+    width: 7.5em;
+}
+
+.wrap.tc-dashboard-wrap .tc-category-map select {
+    width: 100%;
+    max-width: 100%;
+}
+
+.wrap.tc-dashboard-wrap .tc-guide-steps li {
+    margin-bottom: 6px;
+    line-height: 1.5;
+}
+
+.wrap.tc-dashboard-wrap .tc-editor-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 320px;
+    gap: 20px;
+}
+
+@media (max-width: 1100px) {
+    .wrap.tc-dashboard-wrap .tc-editor-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
+.wrap.tc-dashboard-wrap .tc-editor-meta,
+.wrap.tc-dashboard-wrap .tc-design-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr));
+    gap: 12px 18px;
+}
+
+.wrap.tc-dashboard-wrap .tc-colour {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.wrap.tc-dashboard-wrap .tc-image-preview {
+    display: block;
+    max-width: 160px;
+    max-height: 80px;
+    margin: 4px 0;
+}
+
+/* A part's checkbox, its label beside it: on a narrow screen the label
+   wraps in its own column rather than under the box. */
+.wrap.tc-dashboard-wrap .tc-parts label {
+    display: inline-flex;
+    align-items: flex-start;
+    gap: 2px;
+    max-width: 100%;
+    margin: 4px 16px 4px 0;
+}
+
+.wrap.tc-dashboard-wrap .tc-parts label input {
+    flex: none;
+}
+
+.wrap.tc-dashboard-wrap .tc-code {
+    width: 100%;
+    font-family: Consolas, Monaco, monospace;
+    font-size: 12px;
+}
+
+.wrap.tc-dashboard-wrap .tc-insert-group {
+    margin: 12px 0 4px;
+    font-size: 12px;
+    color: var(--tc-text-muted);
+    text-transform: uppercase;
+}
+
+.wrap.tc-dashboard-wrap .tc-insert-list {
+    margin: 0;
+}
+
+.wrap.tc-dashboard-wrap .tc-insert {
+    width: 100%;
+    padding: 4px 8px;
+    border: 1px solid var(--tc-border);
+    border-radius: 6px;
+    background: #f8fafc;
+    text-align: left;
+    cursor: pointer;
+}
+
+.wrap.tc-dashboard-wrap .tc-insert:hover {
+    border-color: var(--tc-primary);
+}
+
+.wrap.tc-dashboard-wrap .tc-version summary,
+.wrap.tc-dashboard-wrap .tc-block summary {
+    cursor: pointer;
+    padding: 6px 0;
+}
+
+.wrap.tc-dashboard-wrap .tc-diff {
+    max-height: 260px;
+    overflow: auto;
+    padding: 8px;
+    background: #f8fafc;
+    font-size: 11px;
+    white-space: pre-wrap;
+}
+
+.wrap.tc-dashboard-wrap .tc-diff-add {
+    background: #dcfce7;
+}
+
+.wrap.tc-dashboard-wrap .tc-diff-del {
+    background: #fee2e2;
+}
+
+.wrap.tc-dashboard-wrap .tc-preview-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.wrap.tc-dashboard-wrap .tc-preview-devices {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.wrap.tc-dashboard-wrap .tc-preview-devices .is-active {
+    border-color: var(--tc-primary);
+    color: var(--tc-primary);
+}
+
+.wrap.tc-dashboard-wrap .tc-preview-stage {
+    padding: 12px;
+    background: #e2e8f0;
+    border-radius: var(--tc-radius-sm);
+    text-align: center;
+}
+
+.wrap.tc-dashboard-wrap #tc-preview-frame {
+    width: 100%;
+    max-width: 100%;
+    height: 720px;
+    border: 0;
+    background: #fff;
+    transition: width 0.2s;
+}
+
+.wrap.tc-dashboard-wrap .tc-preview-count.is-over,
+.wrap.tc-dashboard-wrap .tc-warning-text,
+.wrap.tc-dashboard-wrap .tc-preview-check-result.is-bad {
+    color: var(--tc-danger);
+}
+
+.wrap.tc-dashboard-wrap .tc-preview-check-result.is-ok {
+    color: var(--tc-success);
+}
+
+.wrap.tc-dashboard-wrap .tc-preview-lists {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
+    gap: 16px;
+}
+
+.wrap.tc-dashboard-wrap .tc-preview-lists ul {
+    margin: 0 0 0 18px;
+    list-style: disc;
+}
+
+.wrap.tc-dashboard-wrap .tc-preview-lists li.is-empty {
+    list-style: none;
+    margin-left: -18px;
+    color: var(--tc-text-muted);
+}
+
+/* ─── Listing Templates: narrower windows and phones ─── */
+/* Nothing on these screens may widen the page: a button keeps its label on
+   one line, and what cannot wrap at a space (a long code, an address in the
+   converter's report, a file input) wraps or shrinks inside its box. */
+.wrap.tc-dashboard-wrap.tc-templates-wrap .tc-button {
+    white-space: nowrap;
+}
+
+.wrap.tc-dashboard-wrap.tc-templates-wrap input[type="file"] {
+    max-width: 100%;
+}
+
+.wrap.tc-dashboard-wrap.tc-templates-wrap code,
+.wrap.tc-dashboard-wrap .tc-report-list li {
+    overflow-wrap: break-word;
+    overflow-wrap: anywhere;
+}
+
+.wrap.tc-dashboard-wrap.tc-templates-wrap .tc-form-footer {
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+/* The preview's product search and picker keep the widths their markup
+   gives them (.tc-input's max-width: 100% !important had made each a whole
+   line), so the controls share a line where there is room. */
+.wrap.tc-dashboard-wrap .tc-preview-bar #tc-preview-search {
+    max-width: 260px !important;
+    max-width: min(260px, 100%) !important;
+}
+
+.wrap.tc-dashboard-wrap .tc-preview-bar #tc-preview-product {
+    max-width: 320px !important;
+    max-width: min(320px, 100%) !important;
+}
+
+@media screen and (max-width: 960px) {
+    /* New template / Import a template file, the two Template settings
+       cards and the two limits: one column. */
+    .wrap.tc-dashboard-wrap.tc-templates-wrap .tc-row-2col {
+        grid-template-columns: minmax(0, 1fr) !important;
+    }
+}
+
+@media screen and (max-width: 782px) {
+    /* The templates table: a block per template, each cell labelled with
+       its column's heading (its data-label), as WordPress's own list tables
+       are at this width. The headings stay for screen readers. */
+    .wrap.tc-dashboard-wrap .tc-templates-table thead {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(1px, 1px, 1px, 1px);
+        clip-path: inset(50%);
+        white-space: nowrap;
+    }
+
+    .wrap.tc-dashboard-wrap .tc-templates-table,
+    .wrap.tc-dashboard-wrap .tc-templates-table tbody,
+    .wrap.tc-dashboard-wrap .tc-templates-table tr,
+    .wrap.tc-dashboard-wrap .tc-templates-table td {
+        display: block;
+    }
+
+    .wrap.tc-dashboard-wrap .tc-templates-table tr {
+        padding: 6px 0;
+        border-bottom: 1px solid var(--tc-border);
+    }
+
+    .wrap.tc-dashboard-wrap .tc-templates-table tbody tr:last-child {
+        border-bottom: 0;
+    }
+
+    .wrap.tc-dashboard-wrap .tc-templates-table td {
+        position: relative;
+        padding: 5px 10px 5px 35%;
+        padding-left: min(35%, 9em);
+    }
+
+    .wrap.tc-dashboard-wrap .tc-templates-table td::before {
+        content: attr(data-label);
+        position: absolute;
+        left: 10px;
+        width: calc(35% - 20px);
+        width: calc(min(35%, 9em) - 20px);
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        font-weight: 600;
+        color: var(--tc-text-muted);
+    }
+
+    /* The Blocks screen's policy table (the only other table straight in a
+       card here): its name cell above its text. */
+    .wrap.tc-dashboard-wrap.tc-templates-wrap .tc-card > table.widefat:not(.tc-templates-table),
+    .wrap.tc-dashboard-wrap.tc-templates-wrap .tc-card > table.widefat:not(.tc-templates-table) tbody,
+    .wrap.tc-dashboard-wrap.tc-templates-wrap .tc-card > table.widefat:not(.tc-templates-table) tr,
+    .wrap.tc-dashboard-wrap.tc-templates-wrap .tc-card > table.widefat:not(.tc-templates-table) td {
+        display: block;
+        width: auto !important;
+    }
+
+    .wrap.tc-dashboard-wrap.tc-templates-wrap .tc-card > table.widefat:not(.tc-templates-table) td:first-child {
+        padding-bottom: 0;
+    }
+}
+
+/* The category rules sit in a half-width card, so they go by the card's
+   width rather than the window's: in a card narrower than 440 px (beside the
+   shop's fields on a laptop, or on a phone) each rule is a block, its cells
+   labelled as the templates table's are. A browser without container
+   queries keeps the table, which still fits its card. */
+.wrap.tc-dashboard-wrap.tc-templates-wrap .tc-row-2col > .tc-card {
+    container-type: inline-size;
+}
+
+@container (max-width: 440px) {
+    .wrap.tc-dashboard-wrap .tc-category-map thead {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(1px, 1px, 1px, 1px);
+        clip-path: inset(50%);
+        white-space: nowrap;
+    }
+
+    .wrap.tc-dashboard-wrap .tc-category-map,
+    .wrap.tc-dashboard-wrap .tc-category-map tbody,
+    .wrap.tc-dashboard-wrap .tc-category-map tr,
+    .wrap.tc-dashboard-wrap .tc-category-map td {
+        display: block;
+    }
+
+    .wrap.tc-dashboard-wrap .tc-category-map tr {
+        padding: 6px 0;
+        border-bottom: 1px solid var(--tc-border);
+    }
+
+    .wrap.tc-dashboard-wrap .tc-category-map tbody tr:last-child {
+        border-bottom: 0;
+    }
+
+    .wrap.tc-dashboard-wrap .tc-category-map td {
+        position: relative;
+        padding: 4px 10px 4px 7em;
+    }
+
+    .wrap.tc-dashboard-wrap .tc-category-map td::before {
+        content: attr(data-label);
+        position: absolute;
+        top: 50%;
+        left: 10px;
+        width: calc(7em - 20px);
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        font-weight: 600;
+        color: var(--tc-text-muted);
+        transform: translateY(-50%);
+    }
+}
+
+@media screen and (max-width: 600px) {
+    /* A starter's button under its summary, as wide as the card. */
+    .wrap.tc-dashboard-wrap .tc-starter-row {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    /* The sub-tabs share each line they wrap onto. */
+    .wrap.tc-dashboard-wrap .tc-subnav-link {
+        flex: 1 1 auto;
+    }
+}

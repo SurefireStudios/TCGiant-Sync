@@ -87,6 +87,18 @@ class TCGiant_Sync_Listing_Link {
 			// History belonging to the original.
 			'_tcgiant_sync_log',
 			'_tcgiant_sync_pushed',
+			// What the original's listing was last sent, with which template
+			// (3.27.8, TCGiant_Sync_Templates::SENT_META). The template the
+			// product is set to, _tcgiant_tpl_override, is a setting and is
+			// copied.
+			'_tcgiant_tpl_id',
+			'_tcgiant_tpl_ver',
+			'_tcgiant_tpl_hash_sent',
+			'_tcgiant_content_hash',
+			'_tcgiant_desc_hash',
+			'_tcgiant_region_hash',
+			'_tcgiant_tpl_item',
+			'_tcgiant_desc_sent_at',
 		);
 	}
 

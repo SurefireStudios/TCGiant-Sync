@@ -1753,7 +1753,7 @@ $src = (string) file_get_contents( $ROOT . '/includes/class-tcgiant-sync-exporte
 $src = preg_replace( '/^<\?php/', '', $src );
 $src = str_replace( "if ( ! defined( 'ABSPATH' ) ) {\n\texit;\n}", '', $src );
 $src = str_replace( 'class TCGiant_Sync_Exporter {', 'class Push_Harness_Exporter {', $src, $renamed );
-$src = str_replace( 'private function build_item_xml( WC_Product $product, array $settings ) {', 'private function build_item_xml( WC_Product $product, array $settings ) { return \'<Title>\' . $product->get_name() . \'</Title>\'; } private function build_item_xml_as_shipped( WC_Product $product, array $settings ) {', $src, $swapped );
+$src = str_replace( 'private function build_item_xml( WC_Product $product, array $settings, $revise = false ) {', 'private function build_item_xml( WC_Product $product, array $settings, $revise = false ) { return \'<Title>\' . $product->get_name() . \'</Title>\'; } private function build_item_xml_as_shipped( WC_Product $product, array $settings, $revise = false ) {', $src, $swapped );
 if ( 1 !== $renamed || 1 !== $swapped ) {
 	echo "could not prepare the exporter\n";
 	exit( 2 );
