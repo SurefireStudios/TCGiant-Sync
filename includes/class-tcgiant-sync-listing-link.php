@@ -78,12 +78,36 @@ class TCGiant_Sync_Listing_Link {
 			'_ebay_listing_type',
 			'_ebay_listing_duration',
 			'_ebay_end_time',
+			// Why that listing ended, and which listing the reason is about
+			// (3.28.0).
+			'_ebay_end_reason',
+			'_ebay_end_reason_item',
+			// eBay's SKU for a variation of that listing (3.28.0).
+			'_ebay_variation_sku',
+			// Stock changes still on their way to that listing (3.28.0).
+			'_ebay_push_pending',
+			// eBay's sales of that listing the stock has taken off, and the
+			// listing its type was read for (3.28.0).
+			'_ebay_sold_seen',
+			'_ebay_listing_type_item',
+			// Stock pushes under way for it, and the units of a sale that
+			// never reached it.
+			'_ebay_push_running',
+			'_ebay_unsent_qty',
+			// The failed tries of a variation's own push for a pool (3.28.0).
+			'_ebay_own_push_tries',
 			'_sync_last_updated',
 			// Push state belonging to the original.
 			'_ebay_export_status',
 			'_ebay_export_error',
 			'_ebay_export_last_pushed',
 			'_ebay_export_pushing_since',
+			'_ebay_auction_listed_item',
+			// What the import recorded about the auction - its bids and prices.
+			'_ebay_start_price',
+			'_ebay_current_price',
+			'_ebay_bid_count',
+			'_ebay_buy_it_now_price',
 			// History belonging to the original.
 			'_tcgiant_sync_log',
 			'_tcgiant_sync_pushed',

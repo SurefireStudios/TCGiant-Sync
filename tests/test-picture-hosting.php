@@ -50,7 +50,11 @@ class TCGiant_Sync_Runtime {
 class TCGiant_Sync_Inventory {
 	const SETTLE_KEYS = array();
 	public static function restocked_after_website_sale( $product_id ) { return 0; }
-	public static function listing_already_settled( $product_id, $item_id ) { return false; }
+	// Settled once eBay's sales of the listing the product follows were taken
+	// in, as the real class records it (_ebay_stock_settled_item): 3.28.0's
+	// push of an ended listing asks before following a relist and again
+	// before the new listing.
+	public static function listing_already_settled( $product_id, $item_id ) { return '' !== (string) $item_id && (string) $item_id === (string) ( $GLOBALS['SETTLED_ITEM'][ (int) $product_id ] ?? '' ); }
 	/**
 	 * eBay's sales brought into the stock: what is left, as the product already
 	 * holds it - unless $GLOBALS['SOLD_DOWN'] names the product. Then the stock
@@ -59,6 +63,7 @@ class TCGiant_Sync_Inventory {
 	 * has the new one.
 	 */
 	public static function apply_ended_listing_stock( $product_id, $listed, $sold ) {
+		$GLOBALS['SETTLED_ITEM'][ (int) $product_id ] = (string) get_post_meta( $product_id, '_ebay_item_id', true );
 		$product = wc_get_product( $product_id );
 		if ( empty( $GLOBALS['SOLD_DOWN'][ $product_id ] ) ) {
 			return (int) $product->get_stock_quantity();
@@ -607,14 +612,19 @@ check( '  two files offloaded: no PictureDetails, one warning naming both files,
 $staging = photographed( 703, array( 321, 322, 323 ) );
 kept_on_ebay( 321 );
 live( 703 );
-$staged                               = new WP_Error( 'staging_blocked', 'eBay write operations are disabled on staging/dev environments.' );
+// 3.28.0's refusal, as TCGiant_Sync_Environment::write_block() gives it. (On
+// a real copy the exporter does not ask for the upload at all:
+// test-picture-relist.php's staging run.)
+$staged                               = new WP_Error( 'staging_blocked', TCGiant_Sync_Environment::message( 'wp-config' ) );
+$staged_why                           = rtrim( TCGiant_Sync_Environment::message( 'wp-config' ), '. ' );
 $API->refuse['coin-322.jpg']          = $staged;
 $API->refuse['coin-323.jpg']          = $staged;
 $API->answers['ReviseFixedPriceItem'] = $staged;
 list( $calls, $uploads, $warned, $result ) = pushed( $staging );
 check( 'a revise on a staging copy, both of the shop\'s photos refused: ReviseFixedPriceItem with no PictureDetails', array( $calls, picture_nodes( sent( 0 ) ) ), array( array( array( 'ReviseFixedPriceItem', array() ) ), 0 ) );
-check( '  one warning naming both, the revise refused too: the push fails with that refusal', array( $warned, is_wp_error( $result ) ? $result->get_error_code() : '' ), array( array( unchanged_warning( 703, array( 322 => 'eBay write operations are disabled on staging/dev environments', 323 => 'eBay write operations are disabled on staging/dev environments' ) ) ), 'staging_blocked' ) );
-check( '  the refusal played is the real one, upload_picture()\'s and trading_api_request()\'s', substr_count( $api_src, "return new WP_Error( 'staging_blocked', __( 'eBay write operations are disabled on staging/dev environments.', 'tcgiant-sync' ) );" ), 2 );
+check( '  one warning naming both, the revise refused too: the push fails with that refusal', array( $warned, is_wp_error( $result ) ? $result->get_error_code() : '' ), array( array( unchanged_warning( 703, array( 322 => $staged_why, 323 => $staged_why ) ) ), 'staging_blocked' ) );
+$env_src = (string) file_get_contents( dirname( __DIR__ ) . '/includes/class-tcgiant-sync-environment.php' );
+check( '  the refusal played is the real one: write_block()\'s, asked by upload_picture() and trading_api_request()', array( substr_count( $api_src, "\$blocked = \$this->blocked_write( 'UploadSiteHostedPictures' );" ), substr_count( $api_src, '$blocked = $this->blocked_write( $call_name );' ), substr_count( $env_src, "return new WP_Error( 'staging_blocked', self::message( \$reason ), array(" ) ), array( 1, 1, 1 ) );
 unset( $API->refuse['coin-322.jpg'], $API->refuse['coin-323.jpg'], $API->answers['ReviseFixedPriceItem'] );
 
 // An auction's listing: ReviseItem. One file offloaded and one upload refused.
@@ -919,8 +929,10 @@ foreach ( array_merge( glob( dirname( __DIR__ ) . '/includes/*.php' ), glob( dir
 		$revise_sites[ basename( $file ) ] = $n;
 	}
 }
-check( 'every ReviseItem and ReviseFixedPriceItem of an item is do_push()\'s, one of each', array( $revise_sites, substr_count( $exp_src, '? $api->revise_fixed_price_item( $full_xml )' ), substr_count( $exp_src, ': $api->revise_item( $full_xml );' ) ), array( array( 'class-tcgiant-sync-exporter.php' => 2 ), 1, 1 ) );
-check( '  and the item it sends is built for a revise', substr_count( $exp_src, '$item_xml     = $this->build_item_xml( $product, $settings, ! empty( $ebay_item_id ) );' ), 1 );
+// 3.28.0: two of each in do_push() - the listing the push began with, and a
+// live relist of it the push follows - each built for a revise.
+check( 'every ReviseItem and ReviseFixedPriceItem of an item is do_push()\'s, two of each', array( $revise_sites, substr_count( $exp_src, '? $api->revise_fixed_price_item( $full_xml )' ), substr_count( $exp_src, ': $api->revise_item( $full_xml );' ) ), array( array( 'class-tcgiant-sync-exporter.php' => 4 ), 2, 2 ) );
+check( '  and the item each sends is built for a revise', array( substr_count( $exp_src, '$item_xml     = $this->build_item_xml( $product, $settings, ! empty( $ebay_item_id ) );' ), substr_count( $exp_src, '$item_xml = $this->build_item_xml( $product, $settings, $relist_live );' ) ), array( 1, 1 ) );
 
 // No empty PictureDetails anywhere, which eBay would read as "no photos":
 // every item this run built or sent has none, or one with its photos in it.

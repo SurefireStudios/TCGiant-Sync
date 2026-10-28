@@ -180,11 +180,25 @@ echo "\nTHE ANSWER TO \"WHAT IS BEING COMPARED\"\n" . str_repeat( '=', 118 ) . "
 // the stored item number alone. Nothing about the product is compared with
 // anything on eBay. If that ever changes, this assertion should change with it
 // deliberately - the answer we give merchants depends on it.
+//
+// 3.28.0 changed it, deliberately, and only once eBay has refused to revise the
+// stored listing because it has ended. The push then asks eBay about that one
+// listing, and where eBay says it was relisted, revises the relist rather than
+// creating another copy beside it (test-relist-guard.php). Still nothing about
+// the product is compared with anything on eBay: the push follows eBay's own
+// record of the listing it already had.
 $do_push = substr( $exporter, (int) strpos( $exporter, 'private function do_push(' ) );
 $do_push = substr( $do_push, 0, (int) strpos( $do_push, 'private function' ) ?: 12000 );
-foreach ( array( 'GetItem', 'GetSellerList', 'GetMyeBaySelling', 'find_product_id_by_sku' ) as $lookup ) {
-	check( 'the push still makes no ' . $lookup . ' call', false === strpos( $do_push, $lookup ), true );
+$ended   = (int) strpos( $do_push, 'is_ended_listing_error(' );
+check( 'the push recognises a listing eBay says has ended', $ended > 0, true );
+foreach ( array( 'GetItem', 'get_item(', 'GetSellerList', 'GetMyeBaySelling', 'find_product_id_by_sku' ) as $lookup ) {
+	check( 'until then the push makes no ' . $lookup . ' call', false === strpos( substr( $do_push, 0, $ended ), $lookup ), true );
 }
+foreach ( array( 'GetSellerList', 'GetMyeBaySelling', 'find_product_id_by_sku' ) as $lookup ) {
+	check( 'nor after, a ' . $lookup . ' call', false === strpos( substr( $do_push, $ended ), $lookup ), true );
+}
+check( 'after, the one thing asked is the ended listing itself', array( substr_count( $do_push, '->get_item(' ), false !== strpos( substr( $do_push, $ended ), '->get_item( $ebay_item_id )' ) ), array( 1, true ) );
+check( '  and a relist eBay names for it is followed', false !== strpos( substr( $do_push, $ended ), '->follow_newest_relist(' ), true );
 check( 'it branches on the stored item id', false !== strpos( $do_push, "\$ebay_item_id = \$product->get_meta( '_ebay_item_id' );" ), true );
 
 echo "\nWRITING ONE COLUMN WRITES ONE COLUMN\n" . str_repeat( '=', 118 ) . "\n";

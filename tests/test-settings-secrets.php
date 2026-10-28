@@ -18,7 +18,7 @@
  * @package TCGiant_Sync
  */
 
-require __DIR__ . '/support/template-world.php';
+require __DIR__ . '/support/settings-world.php';
 
 // --- what the Settings view needs, played --------------------------------------
 
@@ -89,8 +89,10 @@ check( 'the Settings screen drew both forms', substr_count( $page, 'name="option
 foreach ( $SECRETS as $key => $value ) {
 	check( 'not in the page: ' . $key, array( false === strpos( $page, $value ), false === strpos( $page, esc_attr( $value ) ), false === strpos( $page, 'tcgiant_sync_ebay_settings[' . $key . ']' ) ), array( true, true, true ) );
 }
-check( 'each form carries the marker instead', substr_count( $page, 'name="tcgiant_sync_ebay_settings[' . TCGiant_Sync_Admin::SETTINGS_FORM_MARKER . ']" value="1"' ), 2 );
-check( 'what is not secret still goes with the forms: the App ID, the expiry, the marketplace', array( false !== strpos( $page, 'TCGiant-Sync-PRD-public' ), false !== strpos( $page, 'tcgiant_sync_ebay_settings[token_expiry]' ), false !== strpos( $page, 'tcgiant_sync_ebay_settings[marketplace]' ) ), array( true, true, true ) );
+// 3.28.0: the marker names its form, which then carries only its own
+// settings (TCGiant_Sync_Admin::SETTINGS_FORMS).
+check( 'each form carries the marker instead, naming the form', array( substr_count( $page, 'name="tcgiant_sync_ebay_settings[' . TCGiant_Sync_Admin::SETTINGS_FORM_MARKER . ']" value="import"' ), substr_count( $page, 'name="tcgiant_sync_ebay_settings[' . TCGiant_Sync_Admin::SETTINGS_FORM_MARKER . ']" value="export"' ) ), array( 1, 1 ) );
+check( 'the App ID and the expiry stay out of the page too (3.28.0), and the marketplace is a field of its own', array( false === strpos( $page, 'TCGiant-Sync-PRD-public' ), false === strpos( $page, 'tcgiant_sync_ebay_settings[token_expiry]' ), false !== strpos( $page, 'tcgiant_sync_ebay_settings[marketplace]' ) ), array( true, true, true ) );
 check( 'the list of secrets is the four', TCGiant_Sync_Admin::SECRET_SETTINGS, array( 'access_token', 'refresh_token', 'relay_secret', 'cert_id' ) );
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -103,6 +105,10 @@ $saved = form_save( $import_form );
 check( 'all four kept as they were stored', array_intersect_key( $saved, $SECRETS ), $SECRETS );
 check( '  and every setting the form sent, as it sent it', array( $saved['import_sites'], $saved['overwrite_desc'], $saved['export_category_id'], $saved['app_id'] ), array( 'all', '1', '261328', 'TCGiant-Sync-PRD-public' ) );
 check( '  the marker is not stored', array_key_exists( TCGiant_Sync_Admin::SETTINGS_FORM_MARKER, $saved ), false );
+// 3.28.0: the App ID and the token's expiry are the connection's, never a
+// form's - one the form posts that differs from the stored one is ignored.
+$saved = form_save( array_merge( $import_form, array( 'app_id' => 'Someone-Elses-App-PRD', 'token_expiry' => '1000000000' ) ) );
+check( '  an App ID and an expiry other than the stored ones, posted by a form, are both ignored', array( $saved['app_id'], $saved['token_expiry'] ), array( 'TCGiant-Sync-PRD-public', '1893456000' ) );
 
 $saved = form_save( array_merge( $import_form, array( 'access_token' => 'evil', 'refresh_token' => 'evil', 'relay_secret' => 'evil', 'cert_id' => 'evil' ) ) );
 check( 'a form that posts access_token=evil changes none of them', array_intersect_key( $saved, $SECRETS ), $SECRETS );
@@ -138,6 +144,7 @@ $refreshed = array_merge( $STORED, array( 'access_token' => 'v^1.1#i^1#NEW-ACCES
 $saved     = form_save( $refreshed );
 check( 'a token refresh stores the new access token', array( $saved['access_token'], $saved['token_expiry'] ), array( 'v^1.1#i^1#NEW-ACCESS-TOKEN', '1893463200' ) );
 $oauth = file_get_contents( dirname( __DIR__ ) . '/includes/class-tcgiant-sync-oauth.php' );
-check( '  which is how the OAuth class writes it: the whole option, no marker', array( false !== strpos( $oauth, "\$settings['access_token'] = \$body['access_token'];" ), false === strpos( $oauth, TCGiant_Sync_Admin::SETTINGS_FORM_MARKER ) ), array( true, true ) );
+// 3.28.0: the refresh writes only its two keys, onto the row (test-token-refresh.php).
+check( '  which is how the OAuth class writes it: its own keys, no marker', array( false !== strpos( $oauth, "'access_token' => \$body['access_token']," ), false === strpos( $oauth, TCGiant_Sync_Admin::SETTINGS_FORM_MARKER ) ), array( true, true ) );
 
 done();

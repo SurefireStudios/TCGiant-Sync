@@ -418,25 +418,79 @@ $tc_nonce    = wp_create_nonce( 'tcgiant_sync_ajax' );
 	<?php endif; ?>
 
 	<?php if ( ! empty( $held_back ) ) : ?>
+		<?php
+		// Why each is here (3.28.0): the sync moved past it, or its stock
+		// check after an eBay sale gave up. One moved past by 3.27 has no
+		// reason kept.
+		$held_why = array(
+			TCGiant_Sync_Importer::HELD_KILLED     => __( 'It stopped the sync every time it was imported. Its other details may be out of date.', 'tcgiant-sync' ),
+			TCGiant_Sync_Importer::HELD_UNREAD     => __( 'eBay could not be read for it, three runs in a row, while it answered other calls. Its stock is checked on its own.', 'tcgiant-sync' ),
+			TCGiant_Sync_Importer::HELD_SALE_CHECK => __( 'Its stock check after an eBay sale could not read it from eBay, though it tried for up to three days. Its stock here is unchanged.', 'tcgiant-sync' ),
+			TCGiant_Sync_Importer::HELD_NO_CALLS   => __( 'The day\'s eBay calls ran out before its stock check after an eBay sale could read it, three days running. Its stock here is unchanged.', 'tcgiant-sync' ),
+		);
+		// A relist no product follows: it was the listing it was relisted from that could not be read.
+		$held_why_relist = __( 'Its stock check after an eBay sale could not read the listing it was relisted from, though it tried for up to three days. Its stock here is unchanged.', 'tcgiant-sync' );
+		$held_also = array(
+			TCGiant_Sync_Importer::HELD_SALE_CHECK => __( 'Its stock check after an eBay sale could not read it either.', 'tcgiant-sync' ),
+			TCGiant_Sync_Importer::HELD_NO_CALLS   => __( 'Its stock check after an eBay sale ran out of the day\'s eBay calls.', 'tcgiant-sync' ),
+		);
+		$held_counts = array( 'moved' => 0, 'check' => 0, 'calls' => 0 );
+		foreach ( $held_back as $held ) {
+			// One the sync moved past whose own check then gave up is counted
+			// with the checks that gave up: its stock check is not coming.
+			$held_reason = TCGiant_Sync_Importer::is_check_reason( $held['check'] ?? '' ) ? (string) $held['check'] : (string) ( $held['why'] ?? '' );
+			if ( TCGiant_Sync_Importer::HELD_NO_CALLS === $held_reason ) {
+				$held_counts['calls']++;
+			} elseif ( TCGiant_Sync_Importer::HELD_SALE_CHECK === $held_reason ) {
+				$held_counts['check']++;
+			} else {
+				$held_counts['moved']++;
+			}
+		}
+		?>
 		<div class="notice notice-error" style="margin-top:16px;padding:12px 14px;">
 			<p style="margin:0 0 6px;">
-				<strong><?php printf( esc_html( _n( '%s eBay listing stopped the sync every time it was imported.', '%s eBay listings stopped the sync every time they were imported.', count( $held_back ), 'tcgiant-sync' ) ), esc_html( number_format_i18n( count( $held_back ) ) ) ); ?></strong>
+				<strong><?php printf( esc_html( _n( '%s eBay listing to check by hand.', '%s eBay listings to check by hand.', count( $held_back ), 'tcgiant-sync' ) ), esc_html( number_format_i18n( count( $held_back ) ) ) ); ?></strong>
 			</p>
-			<p style="margin:0 0 10px;"><?php esc_html_e( 'The sync moved past each of these so it could carry on with the rest. Each was given a separate stock check, so a sale still takes it off your shop, but its other details may be out of date. The Activity Log says what stopped the sync. Syncing the item by hand from the Import page tries it again.', 'tcgiant-sync' ); ?></p>
+			<?php if ( $held_counts['moved'] > 0 ) : ?>
+				<p style="margin:0 0 6px;"><?php printf( esc_html( _n( 'The sync moved past %s of them so it could carry on with the rest. It was given a stock check of its own, which lowers the stock here when eBay sells it.', 'The sync moved past %s of them so it could carry on with the rest. Each was given a stock check of its own, which lowers the stock here when eBay sells it.', $held_counts['moved'], 'tcgiant-sync' ) ), esc_html( number_format_i18n( $held_counts['moved'] ) ) ); ?></p>
+			<?php endif; ?>
+			<?php if ( $held_counts['check'] > 0 ) : ?>
+				<p style="margin:0 0 6px;"><?php printf( esc_html( _n( 'For %s, the stock check after an eBay sale could not read eBay, so its stock here is unchanged.', 'For %s, the stock check after an eBay sale could not read eBay, so their stock here is unchanged.', $held_counts['check'], 'tcgiant-sync' ) ), esc_html( number_format_i18n( $held_counts['check'] ) ) ); ?></p>
+			<?php endif; ?>
+			<?php if ( $held_counts['calls'] > 0 ) : ?>
+				<p style="margin:0 0 6px;"><?php printf( esc_html( _n( 'For %s, the day\'s eBay calls ran out before the stock check after an eBay sale could read it, so its stock here is unchanged.', 'For %s, the day\'s eBay calls ran out before the stock check after an eBay sale could read them, so their stock here is unchanged.', $held_counts['calls'], 'tcgiant-sync' ) ), esc_html( number_format_i18n( $held_counts['calls'] ) ) ); ?></p>
+			<?php endif; ?>
+			<p style="margin:0 0 10px;"><?php esc_html_e( 'Check each listing on eBay, and its stock here. Syncing an item by hand from the Import page tries it again; the Activity Log says what happened to each.', 'tcgiant-sync' ); ?></p>
 			<table class="widefat striped" style="margin-bottom:10px;">
-				<thead><tr><th><?php esc_html_e( 'eBay item', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'Product', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'Moved past', 'tcgiant-sync' ); ?></th></tr></thead>
+				<thead><tr><th><?php esc_html_e( 'eBay item', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'Product', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'Why', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'Since', 'tcgiant-sync' ); ?></th></tr></thead>
 				<tbody>
 				<?php foreach ( array_reverse( $held_back, true ) as $held ) : ?>
-					<?php $held_pid = TCGiant_Sync_Importer::find_live_product_for_item( $held['item_id'] ); ?>
+					<?php
+					// A relist no product follows: the product of the listing it was relisted from.
+					$held_pid    = ! empty( $held['product'] ) ? (int) $held['product'] : TCGiant_Sync_Importer::find_live_product_for_item( $held['item_id'] );
+					$held_reason = (string) ( $held['why'] ?? '' );
+					$held_text   = $held_why[ $held_reason ] ?? __( 'The Activity Log from that day says why.', 'tcgiant-sync' );
+					if ( TCGiant_Sync_Importer::HELD_SALE_CHECK === $held_reason && ! empty( $held['parent'] ) ) {
+						$held_text = $held_why_relist;
+					}
+					if ( isset( $held['check'], $held_also[ (string) $held['check'] ] ) ) {
+						$held_text .= ' ' . $held_also[ (string) $held['check'] ];
+					}
+					?>
 					<tr>
 						<td><?php echo esc_html( $held['item_id'] ); ?></td>
 						<td>
 							<?php if ( $held_pid ) : ?>
 								<a href="<?php echo esc_url( (string) get_edit_post_link( $held_pid ) ); ?>">#<?php echo esc_html( $held_pid ); ?></a>
+								<?php if ( ! empty( $held['parent'] ) ) : ?>
+									<span style="color:#777;"><?php printf( esc_html__( 'follows %s, which this was relisted from', 'tcgiant-sync' ), esc_html( (string) $held['parent'] ) ); ?></span>
+								<?php endif; ?>
 							<?php else : ?>
 								<span style="color:#777;"><?php esc_html_e( 'Not imported', 'tcgiant-sync' ); ?></span>
 							<?php endif; ?>
 						</td>
+						<td><?php echo esc_html( $held_text ); ?></td>
 						<td><?php echo esc_html( wp_date( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), (int) $held['at'] ) ); ?></td>
 					</tr>
 				<?php endforeach; ?>

@@ -132,6 +132,8 @@ class TCGiant_Sync_Importer {
 	public static function delta_behind_seconds() { return self::$behind; }
 	public static function delta_behind_threshold() { return DAY_IN_SECONDS; }
 	public static function delta_catch_up() { return self::$catch_up; }
+	// The real rule, verbatim (3.28.0): a stock check's own reasons.
+	public static function is_check_reason( $why ) { return in_array( $why, array( 'sale_check', 'no_calls' ), true ); }
 }
 
 function get_current_screen() { return (object) array( 'id' => 'toplevel_page_tcgiant-sync' ); }
@@ -235,7 +237,32 @@ check( 'an hour behind, nothing held back: no notice', notice(), '' );
 
 TCGiant_Sync_Importer::$held = array( '123' => array( 'item_id' => '123' ) );
 $html = notice();
-check( 'listings stepped over still show, without the lateness', says( $html, 'listings the sync had to step over' ) && ! says( $html, 'reaching your shop' ) && ! says( $html, 'catching up' ), true );
+check( 'listings stepped over still show, without the lateness', says( $html, 'listings to check by hand' ) && ! says( $html, 'reaching your shop' ) && ! says( $html, 'catching up' ), true );
+check( '  one the sync moved past: queued for a stock check of its own', says( $html, '1 eBay listing could not be imported, so the sync moved past it. It was queued for a stock check of its own' ), true );
+check( '  and nothing said of a check that gave up', says( $html, 'could not reach eBay' ), false );
+
+// Stock checks after an eBay sale that gave up (3.28.0): never said to be queued.
+TCGiant_Sync_Importer::$held = array(
+	'124' => array( 'item_id' => '124', 'why' => 'sale_check' ),
+	'125' => array( 'item_id' => '125', 'why' => 'no_calls' ),
+);
+$html = notice();
+check( 'two sale checks that gave up: their stock unchanged, check them on Stock Review', says( $html, '2 stock checks after an eBay sale could not reach eBay, so their stock here is unchanged; check them on Stock Review.' ), true );
+check( '  not that they stopped the sync, nor that a check is queued', says( $html, 'stopped the sync' ) || says( $html, 'queued' ), false );
+TCGiant_Sync_Importer::$held = array(
+	'126' => array( 'item_id' => '126', 'why' => 'killed' ),
+	'127' => array( 'item_id' => '127', 'why' => 'unread', 'check' => 'sale_check' ),
+	'128' => array( 'item_id' => '128', 'why' => 'sale_check' ),
+);
+$html = notice();
+// 127: the sync moved past it, and then its own check gave up too - counted
+// with the checks that gave up, never as queued.
+check( 'both kinds: each said once, with its own count', array( says( $html, '1 eBay listing could not be imported, so the sync moved past it. It was queued' ), says( $html, '2 stock checks after an eBay sale could not reach eBay, so their stock here is unchanged; check them on Stock Review.' ) ), array( true, true ) );
+TCGiant_Sync_Importer::$held = array(
+	'129' => array( 'item_id' => '129', 'why' => 'killed', 'check' => 'no_calls' ),
+);
+$html = notice();
+check( 'one the sync moved past whose own check then gave up: not said to be queued', array( says( $html, 'queued' ), says( $html, '1 stock check after an eBay sale could not reach eBay, so its stock here is unchanged; check it on Stock Review.' ) ), array( false, true ) );
 
 printf( "\n  %d passed, %d failed\n\n", $pass, $fail );
 exit( $fail > 0 ? 1 : 0 );

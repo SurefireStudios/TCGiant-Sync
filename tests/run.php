@@ -29,6 +29,7 @@ if ( empty( $files ) ) {
 // Every delta, scan and image batch used to die on its first line there.
 $variants = array(
 	'test-delta-window' => array( 'no set_time_limit' => '-d disable_functions=set_time_limit,ignore_user_abort' ),
+	'test-relist-adopt' => array( 'no set_time_limit' => '-d disable_functions=set_time_limit,ignore_user_abort' ),
 );
 
 $runs = array();

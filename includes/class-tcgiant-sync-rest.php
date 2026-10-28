@@ -241,7 +241,6 @@ class TCGiant_Sync_REST {
 	 */
 	public function get_sync_status( $request ) {
 		$state    = TCGiant_Sync_Importer::get_sync_state();
-		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
 
 		return new WP_REST_Response( array(
 			'status'          => $state['status'] ?? 'idle',
@@ -251,7 +250,7 @@ class TCGiant_Sync_REST {
 			'current_page'    => (int) ( $state['page_number'] ?? 0 ),
 			'total_pages'     => (int) ( $state['total_pages'] ?? 0 ),
 			'last_activity'   => $state['last_activity'] ?? '',
-			'api_calls_today' => (int) ( $settings['api_calls_today'] ?? 0 ),
+			'api_calls_today' => TCGiant_Sync_API::instance()->get_daily_call_count(),
 			'next_cron'       => wp_next_scheduled( 'tcgiant_sync_poll_ebay_cron' )
 				? gmdate( 'Y-m-d H:i:s', wp_next_scheduled( 'tcgiant_sync_poll_ebay_cron' ) )
 				: null,

@@ -174,12 +174,15 @@ class TCGiant_Sync_OAuth {
 	 * @param array $data Token data.
 	 */
 	public function save_tokens_from_relay( $data ) {
-		$settings = $this->get_settings();
-		
 		if ( ! empty( $data['access_token'] ) ) {
-			$settings['access_token']  = sanitize_text_field( $data['access_token'] );
-			$settings['refresh_token'] = sanitize_text_field( $data['refresh_token'] );
-			$settings['token_expiry']  = time() + (int) $data['expires_in'];
+			// Only the connection's own keys, onto the settings as the database
+			// holds them now (TCGiant_Sync_Inventory::save_settings_keys()):
+			// what another request saved meanwhile stands.
+			$settings = array(
+				'access_token'  => sanitize_text_field( $data['access_token'] ),
+				'refresh_token' => sanitize_text_field( $data['refresh_token'] ),
+				'token_expiry'  => time() + (int) $data['expires_in'],
+			);
 			
 			// Use the per-site signing key provided by the relay server.
 			// This key is unique to this installation and used to verify
@@ -200,7 +203,7 @@ class TCGiant_Sync_OAuth {
 			// least the truth. Connecting to eBay again is what fixes it, because
 			// that is when the relay issues a real key.
 
-			update_option( 'tcgiant_sync_ebay_settings', $settings );
+			TCGiant_Sync_Inventory::save_settings_keys( $settings );
 			return true;
 		}
 
@@ -1193,13 +1196,38 @@ class TCGiant_Sync_OAuth {
 	}
 
 	public function refresh_access_token() {
-		$settings = $this->get_settings();
+		// The connection as the database holds it now, not this request's
+		// copy: a long request - a sync batch, cron - refreshes long after it
+		// began, and a Disconnect or a connection to another eBay account
+		// saved meanwhile must stand. (Compared again below, once the relay
+		// has answered.)
+		$settings = TCGiant_Sync_Inventory::settings_row();
 		if ( empty( $settings['refresh_token'] ) ) {
 			return false;
 		}
 
+		// Renewed, or connected anew, by another request since this one read
+		// its copy, and not yet due: that token is the one to use, and the
+		// relay is not asked. (The token this request holds, expired or
+		// refused by eBay, is renewed.) It becomes this request's own: its
+		// copy is dropped, so the rest of the request uses it, and a refusal
+		// of it renews it.
+		$mine = $this->get_settings();
+		$mine = is_array( $mine ) ? (string) ( $mine['access_token'] ?? '' ) : '';
+		if ( (string) ( $settings['access_token'] ?? '' ) !== $mine && (int) ( $settings['token_expiry'] ?? 0 ) >= time() + 300 ) {
+			TCGiant_Sync_Inventory::forget_settings_copy();
+			return (string) $settings['access_token'];
+		}
+
 		// Include the site's API call count so the relay can compute global budget.
 		$api = TCGiant_Sync_API::instance();
+
+		// Kept with the relay's answer below: the calls this site makes after
+		// it are added to the relay's figure until the next refresh. With the
+		// UTC day it is for, which names the relay's answer too: a refresh
+		// sent at 23:59:59 and answered after midnight is yesterday's.
+		$calls_sent = $api->get_daily_call_count();
+		$calls_date = gmdate( 'Y-m-d' );
 
 		// The renewal needs this every bit as much as the first connection:
 		// a site that got connected while the filter was quiet would otherwise
@@ -1208,8 +1236,8 @@ class TCGiant_Sync_OAuth {
 			'action'          => 'refresh',
 			'refresh_token'   => $settings['refresh_token'],
 			'site_url'        => get_site_url(),
-			'api_calls_today' => $api->get_daily_call_count(),
-			'api_calls_date'  => gmdate( 'Y-m-d' ),
+			'api_calls_today' => $calls_sent,
+			'api_calls_date'  => $calls_date,
 			// Which version this shop runs, for the relay's dashboard. An
 			// ordinary field like the others: a relay that does not read it yet
 			// ignores it.
@@ -1244,20 +1272,39 @@ class TCGiant_Sync_OAuth {
 		}
 
 		if ( isset( $body['access_token'] ) ) {
-			$settings['access_token'] = $body['access_token'];
-			$settings['token_expiry'] = time() + (int) $body['expires_in'];
-			update_option( 'tcgiant_sync_ebay_settings', $settings );
-
 			// Store the relay-provided global budget so the API class can use it.
+			// It is the fleet's figure, with this site's count when it was sent:
+			// kept whatever happens to the token below.
 			if ( isset( $body['remaining_budget'] ) ) {
-				$date_key = gmdate( 'Y-m-d' );
+				$date_key = $calls_date;
 				set_transient( 'tcgiant_relay_budget_' . $date_key, array(
 					'remaining'    => (int) $body['remaining_budget'],
 					'global_calls' => (int) ( $body['global_api_calls'] ?? 0 ),
 					'daily_limit'  => (int) ( $body['daily_limit'] ?? 50000 ),
 					'updated_at'   => time(),
+					// This site's own count in global_calls - see
+					// TCGiant_Sync_API::fleet_calls_now().
+					'local_calls'  => (int) $calls_sent,
 				), DAY_IN_SECONDS );
 			}
+
+			// Saved only onto the connection it renews: the row must still hold
+			// the refresh token it was asked with. Otherwise - Disconnect, or
+			// another account connected, while the relay answered - the new
+			// token is dropped and the connection as it is now stands. Only the
+			// two keys are written, onto the row; whatever else another request
+			// saved meanwhile stands too.
+			$now = TCGiant_Sync_Inventory::settings_row();
+			if ( (string) ( $now['refresh_token'] ?? '' ) !== (string) $settings['refresh_token'] ) {
+				TCGiant_Sync_Logger::log( 'Token refresh: the eBay connection changed while the new token was on its way, so it was not saved.' );
+				// And this request's copy, which holds the old connection, goes.
+				TCGiant_Sync_Inventory::forget_settings_copy();
+				return TCGiant_Sync_Inventory::connected( $now ) ? (string) $now['access_token'] : false;
+			}
+			TCGiant_Sync_Inventory::save_settings_keys( array(
+				'access_token' => $body['access_token'],
+				'token_expiry' => time() + (int) $body['expires_in'],
+			) );
 
 			return $body['access_token'];
 		}

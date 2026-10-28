@@ -141,8 +141,26 @@ function get_post_meta( $id, $key = '', $single = false ) {
 	if ( '_ebay_item_id' === $key ) {
 		return (string) ( w_load( 'linked', array() )[ (int) $id ] ?? '' );
 	}
-	return '';
+	return (string) ( w_load( 'meta', array() )[ (int) $id ][ $key ] ?? '' );
 }
+// A product's other marks - the 3.28.0 pruner's, and the Ended it writes -
+// kept in the world as they are written. Each Ended is a line of its own.
+function update_post_meta( $id, $key, $value ) {
+	$m                       = w_load( 'meta', array() );
+	$m[ (int) $id ][ $key ] = $value;
+	w_save( 'meta', $m );
+	if ( '_ebay_listing_status' === $key && 'Ended' === $value ) {
+		w_line( 'ended', (string) (int) $id );
+	}
+	return true;
+}
+function delete_post_meta( $id, $key ) {
+	$m = w_load( 'meta', array() );
+	unset( $m[ (int) $id ][ $key ] );
+	w_save( 'meta', $m );
+	return true;
+}
+function wc_get_product( $id ) { return false; }
 function get_post_status( $id ) {
 	if ( ! array_key_exists( (int) $id, w_load( 'linked', array() ) ) ) {
 		return false;
@@ -281,12 +299,22 @@ class Harness_wpdb {
 	}
 	public function suppress_errors( $suppress = true ) { return false; }
 	public function get_row( $q ) { return null; }
+	/** The pruner's question: every linked product, with the marks the 3.28.0 pruner reads beside each. */
 	public function get_results( $q ) {
 		$rows    = array();
 		$trashed = is_file( w_file( 'trashed.txt' ) ) ? file( w_file( 'trashed.txt' ), FILE_IGNORE_NEW_LINES ) : array();
+		$meta    = w_load( 'meta', array() );
 		foreach ( w_load( 'linked', array() ) as $pid => $item ) {
 			if ( ! in_array( (string) $pid, $trashed, true ) ) {
-				$rows[] = (object) array( 'post_id' => $pid, 'ebay_id' => $item );
+				$m      = $meta[ (int) $pid ] ?? array();
+				$rows[] = (object) array(
+					'post_id'        => $pid,
+					'ebay_id'        => $item,
+					'listing_status' => (string) ( $m['_ebay_listing_status'] ?? '' ),
+					'stock_status'   => (string) ( $m['_stock_status'] ?? '' ),
+					'checked'        => (string) ( $m['_ebay_prune_checked'] ?? '0' ),
+					'missed'         => (string) ( $m['_ebay_prune_missed'] ?? '0' ),
+				);
 			}
 		}
 		return $rows;
@@ -330,6 +358,24 @@ class TCGiant_Sync_Sites {
 	public static function leaves_out( $site ) { return self::primary_only() && '' !== (string) $site && 'US' !== (string) $site; }
 	public static function remembered_site() { return ''; }
 	public static function remember_site() {}
+}
+
+/**
+ * The ended-listing settle the 3.28.0 pruner hands an ended listing to, as
+ * far as these paths go: each settle is a line, and nothing is trashed.
+ */
+class TCGiant_Sync_Inventory {
+	public static function listing_already_settled( $id, $item_id ) { return false; }
+	public static function variations_already_settled( $id, $item_id ) { return true; }
+	public static function apply_ended_listing_stock( $id, $listed, $sold ) { w_line( 'settled', (string) (int) $id ); return 0; }
+	public static function maybe_remove_sold_out( $id, $listed, $sold ) { return false; }
+	public static function settle_variations() { return array(); }
+	public static function lower_stock_to( $id, $quantity ) { return null; }
+	// The stock push's record of eBay's sales and listing types (3.28.0):
+	// nothing these paths look at.
+	public static function absorb_sold() {}
+	public static function note_listing_type() {}
+	public static function forget_unsent_sale() {}
 }
 
 /**
@@ -467,7 +513,8 @@ if ( 'apixml' !== $DO ) {
 	 * end time as GetSellerList reads them.
 	 */
 	class TCGiant_Sync_API {
-		const DAILY_CALL_LIMIT = 50000;
+		const DAILY_CALL_LIMIT        = 50000;
+		const DAILY_CALL_SOFT_CEILING = 0.80;
 		public static function instance() { return new self(); }
 		public function get_remaining_daily_budget() { return 40000; }
 		public function get_item( $item_id ) {
@@ -481,6 +528,11 @@ if ( 'apixml' !== $DO ) {
 			// No answer, as scripted: rate_limited, http_request_failed...
 			$fails = (array) scenario( 'getitem_fails', array() );
 			if ( isset( $fails[ $item_id ] ) ) {
+				// eBay's call limit as the API class reports it: 518 (3.28.0
+				// tells that apart from eBay's 10007, a rate limit in name only).
+				if ( 'rate_limited' === $fails[ $item_id ] ) {
+					return new WP_Error( 'rate_limited', 'Calls to this call have exceeded the call limit.', array( 'Ack' => 'Failure', 'Errors' => array( 'ErrorCode' => '518' ) ) );
+				}
 				return new WP_Error( $fails[ $item_id ], 'eBay did not answer' );
 			}
 			$status = self::status_of( $item_id );

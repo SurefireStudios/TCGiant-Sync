@@ -19,16 +19,22 @@ add_action   admin_init => maybe_backfill_listing_type
 add_action   admin_init => maybe_clean_placeholder_paths
 add_action   admin_init => maybe_dispatch_overdue
 add_action   admin_init => maybe_install
+add_action   admin_init => maybe_queue_gallery_heal
 add_action   admin_init => maybe_rearm
 add_action   admin_init => maybe_rearm_cleanup
 add_action   admin_init => maybe_rearm_trim
 add_action   admin_init => maybe_revalidate
+add_action   admin_init => record_verdict
 add_action   admin_init => register_settings
+add_action   admin_init => upgrade_auction_import
 add_action   admin_menu => add_menu_pages
+add_action   admin_notices => auction_import_notice
 add_action   admin_notices => bulk_notice
 add_action   admin_notices => bulk_push_admin_notice
 add_action   admin_notices => connect_failed_notice
+add_action   admin_notices => environment_change_notice
 add_action   admin_notices => other_sites_notice
+add_action   admin_notices => push_switch_notice
 add_action   admin_notices => shared_listing_admin_notice
 add_action   admin_notices => staging_admin_notice
 add_action   admin_notices => stale_coin_listings_notice
@@ -37,6 +43,10 @@ add_action   admin_notices => unsettled_stock_notice
 add_action   admin_notices => wplister_notice
 add_action   admin_post_tcgiant_clear_log => handle_clear_log
 add_action   admin_post_tcgiant_clear_recent_sales => handle_clear_recent_sales
+add_action   admin_post_tcgiant_confirm_live => handle_confirm_live
+add_action   admin_post_tcgiant_dismiss_auction_notice => handle_dismiss_auction_notice
+add_action   admin_post_tcgiant_dismiss_env_notice => handle_dismiss_env_notice
+add_action   admin_post_tcgiant_dismiss_push_notice => handle_dismiss_push_notice
 add_action   admin_post_tcgiant_dismiss_sites_notice => handle_dismiss_sites_notice
 add_action   admin_post_tcgiant_dismiss_wplister_notice => handle_dismiss_wplister
 add_action   admin_post_tcgiant_force_queue => handle_force_queue
@@ -60,6 +70,7 @@ add_action   before_delete_post => on_before_delete_post
 add_action   delete_attachment => on_delete_attachment
 add_action   dp_duplicate_page => on_third_party_duplicate
 add_action   dp_duplicate_post => on_third_party_duplicate
+add_action   init => maybe_upgrade_push_switch
 add_action   init => register_types
 add_action   init => schedule_cron
 add_action   init => schedule_events
@@ -81,9 +92,11 @@ add_action   shutdown => make_room
 add_action   shutdown => unguard_loops
 add_action   tcgiant_export_push_product => process_single_push
 add_action   tcgiant_sync_check_ended_listings => check_ended_listings
+add_action   tcgiant_sync_check_ended_listings => upgrade_auction_import
 add_action   tcgiant_sync_daily_maintenance => auto_relist_ended_items
 add_action   tcgiant_sync_daily_maintenance => daily_maintenance
 add_action   tcgiant_sync_fetch_delta_events => fetch_delta_events
+add_action   tcgiant_sync_gallery_heal => run_gallery_heal
 add_action   tcgiant_sync_import_orders => import_recent_orders
 add_action   tcgiant_sync_localize_images => process_batch
 add_action   tcgiant_sync_photo_cleanup => process_queue
@@ -92,13 +105,18 @@ add_action   tcgiant_sync_poll_ebay_cron => poll_ebay
 add_action   tcgiant_sync_poll_ebay_cron => sync_orders
 add_action   tcgiant_sync_process_item_import => process_item_import
 add_action   tcgiant_sync_prune_orphans => prune_orphaned_items
+add_action   tcgiant_sync_push_stock => process_stock_push
+add_action   tcgiant_sync_reconcile_continue => continue_reconciliation
 add_action   tcgiant_sync_reconcile_inventory => reconcile_inventory
+add_action   tcgiant_sync_reconcile_stall => reconcile_stall_check
 add_action   tcgiant_sync_scan_all_pages => scan_all_pages
 add_action   tcgiant_sync_scan_resume => scan_all_pages
-add_action   tcgiant_sync_settle_item => settle_item
+add_action   tcgiant_sync_settle_item => settle_queued
 add_action   tcgiant_sync_size_trim => process_run
 add_action   tcgiant_sync_update_ebay_stock => process_ebay_stock_update
 add_action   tcgiant_sync_weekly_full => run_weekly_full_sync
+add_action   update_option_tcgiant_sync_ebay_settings => auctions_setting_saved
+add_action   update_option_tcgiant_sync_ebay_settings => connection_saved
 add_action   updated_post_meta => mirror_meta_to_row
 add_action   woocommerce_order_status_completed => push_tracking_to_ebay
 add_action   woocommerce_process_product_meta => save_bin_location_field
@@ -108,7 +126,9 @@ add_action   woocommerce_product_duplicate => on_product_duplicated
 add_action   woocommerce_product_options_sku => add_bin_location_field
 add_action   woocommerce_product_set_stock => on_product_stock_change
 add_action   woocommerce_reduce_order_stock => sync_stock_to_ebay
+add_action   woocommerce_restore_order_stock => forget_order_pushes
 add_action   woocommerce_save_product_variation => save_variation_bin_location_field
+add_action   woocommerce_simple_add_to_cart => render_auction_notice
 add_action   woocommerce_variation_options_pricing => add_variation_bin_location_field
 add_action   woocommerce_variation_set_stock => on_variation_stock_change
 add_action   wp_ajax_tcgiant_activate_license => ajax_activate_license
@@ -143,6 +163,7 @@ add_action   wp_ajax_tcgiant_tpl_products => ajax_products
 add_action   wp_ajax_tcgiant_unlink_ebay => ajax_unlink_ebay
 add_action   wp_ajax_tcgiant_verify_product => ajax_verify_product
 add_action   {$hook} => on_save_hook
+add_action   {$hook} => {$armed->listener}
 add_filter   action_scheduler_maximum_execution_time_likely_to_be_exceeded => __return_true
 add_filter   action_scheduler_memory_exceeded => __return_true
 add_filter   bulk_actions-edit-product => register_bulk_actions
@@ -159,7 +180,10 @@ add_filter   manage_edit-shop_order_columns => add_order_ebay_column
 add_filter   manage_woocommerce_page_wc-orders_columns => add_order_ebay_column
 add_filter   pre_wp_cache_get => on_cache_read
 add_filter   woocommerce_can_reduce_order_stock => block_double_reduction
+add_filter   woocommerce_can_reduce_order_stock => note_order_reduction
 add_filter   woocommerce_duplicate_product_exclude_meta => duplicate_exclude_meta
+add_filter   woocommerce_get_price_html => filter_price_html
+add_filter   woocommerce_is_purchasable => filter_purchasable
 add_filter   woocommerce_prevent_adjust_line_item_product_stock => keep_ebay_order_lines
 add_filter   woocommerce_product_data_tabs => add_sync_log_tab
 add_filter   wp_calculate_image_srcset => filter_srcset
@@ -175,16 +199,19 @@ schedule     tcgiant_export_push_product
 schedule     tcgiant_sync_check_ended_listings
 schedule     tcgiant_sync_daily_maintenance
 schedule     tcgiant_sync_fetch_delta_events
+schedule     tcgiant_sync_gallery_heal
 schedule     tcgiant_sync_import_orders
 schedule     tcgiant_sync_localize_images
 schedule     tcgiant_sync_photo_cleanup
 schedule     tcgiant_sync_poll_ebay_cron
 schedule     tcgiant_sync_process_item_import
 schedule     tcgiant_sync_prune_orphans
+schedule     tcgiant_sync_push_stock
+schedule     tcgiant_sync_reconcile_continue
 schedule     tcgiant_sync_reconcile_inventory
+schedule     tcgiant_sync_reconcile_stall
 schedule     tcgiant_sync_scan_all_pages
 schedule     tcgiant_sync_scan_resume
 schedule     tcgiant_sync_settle_item
 schedule     tcgiant_sync_size_trim
-schedule     tcgiant_sync_update_ebay_stock
 schedule     tcgiant_sync_weekly_full

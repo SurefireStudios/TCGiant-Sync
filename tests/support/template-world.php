@@ -441,6 +441,13 @@ class TCGiant_Sync_OAuth {
 	public function get_authorization_url() { return 'https://auth.ebay.example/connect'; }
 }
 
+// A live shop, by wp-config, for TCGiant_Sync_Environment (3.28.0), which a
+// push and a bulk push ask before anything goes to eBay. Staging copies are
+// test-staging-detect.php's.
+if ( ! defined( 'TCGIANT_SYNC_IS_STAGING' ) ) {
+	define( 'TCGIANT_SYNC_IS_STAGING', false );
+}
+require_once $ROOT . '/includes/class-tcgiant-sync-environment.php';
 require $ROOT . '/includes/class-tcgiant-sync-catalog.php';
 require $ROOT . '/includes/class-tcgiant-sync-api.php';
 require $ROOT . '/includes/class-tcgiant-sync-sites.php';

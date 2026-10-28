@@ -123,9 +123,11 @@ class TCGiant_Sync_Orders {
 			}
 		}
 
-		// Update last import timestamp.
-		$settings['last_order_import'] = current_time( 'mysql' );
-		update_option( 'tcgiant_sync_ebay_settings', $settings );
+		// Update last import timestamp - onto the settings as the database
+		// holds them now. This request's copy is older than the import: a
+		// token refreshed during it, or Disconnect pressed meanwhile in
+		// another request, was put back as it was.
+		TCGiant_Sync_Inventory::save_settings_keys( array( 'last_order_import' => current_time( 'mysql' ) ) );
 
 		TCGiant_Sync_Logger::log( sprintf(
 			'Order Import: Complete. %d created, %d skipped (already imported)%s.',
@@ -523,6 +525,17 @@ class TCGiant_Sync_Orders {
 		}
 
 		if ( empty( $line_item_id ) ) {
+			return;
+		}
+
+		// CompleteSale marks the buyer's order shipped on eBay and sends them
+		// the tracking number. A staging copy completing a test order would
+		// tell a real buyer their parcel was on its way. Refused here, before
+		// the request is built, so a copy notes it once rather than logging an
+		// error for every order it completes.
+		$blocked = TCGiant_Sync_Environment::write_block();
+		if ( $blocked ) {
+			TCGiant_Sync_Environment::note_blocked( sprintf( 'Tracking for order #%d', $order_id ), $blocked );
 			return;
 		}
 

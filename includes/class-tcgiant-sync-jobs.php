@@ -215,6 +215,19 @@ class TCGiant_Sync_Jobs {
 		}
 
 		$type       = sanitize_text_field( wp_unslash( $_POST['type'] ?? '' ) );
+
+		// Jobs that change listings on eBay are refused whole on a staging
+		// copy: one clear answer, rather than the same failure written against
+		// every product in the job. Verify only asks eBay to check a listing,
+		// and the Stock Review jobs only change this site, so those still run.
+		if ( in_array( $type, array( 'bulk_push', 'bulk_end', 'bulk_relist' ), true ) ) {
+			$blocked = TCGiant_Sync_Environment::write_block();
+			if ( $blocked ) {
+				TCGiant_Sync_Environment::note_blocked( 'Bulk job ' . $type, $blocked );
+				wp_send_json_error( array( 'message' => $blocked->get_error_message() ) );
+			}
+		}
+
 		$product_ids = array_map( 'absint', (array) ( $_POST['product_ids'] ?? array() ) );
 		$product_ids = array_filter( $product_ids );
 
@@ -571,6 +584,16 @@ class TCGiant_Sync_Jobs {
 							$product_id,
 							is_wp_error( $detail ) ? $detail->get_error_message() : 'eBay returned nothing for this listing.'
 						);
+						break;
+					}
+
+					// A variation listing's variations each from their own
+					// figures, before the parent takes the listing's.
+					$settle_product = wc_get_product( $product_id );
+					if ( $settle_product && $settle_product->is_type( 'variable' )
+						&& null === TCGiant_Sync_Inventory::settle_variations( $product_id, $detail['Item'] + array( 'ItemID' => (string) $ebay_id ), 'Stock review' ) ) {
+						$failed++;
+						$errors[] = sprintf( '#%d: eBay did not report the variations of this listing; their stock was not checked.', $product_id );
 						break;
 					}
 

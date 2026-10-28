@@ -132,6 +132,9 @@ class TCGiant_Sync_OAuth {
 
 class TCGiant_Sync_Inventory {
 	public static function mark_ebay_origin( $product_id ) {}
+	// The settings' row, played as the option (3.28.0).
+	public static function settings_row() { $s = get_option( 'tcgiant_sync_ebay_settings', array() ); return is_array( $s ) ? $s : array(); }
+	public static function save_settings_keys( array $keys ) { update_option( 'tcgiant_sync_ebay_settings', array_replace( self::settings_row(), $keys ) ); }
 }
 
 // WooCommerce, as far as create_wc_order() builds an order. The order keeps
@@ -179,6 +182,14 @@ function wc_create_order() {
 	return $order;
 }
 
+// The live shop. Since 3.28.0 the API class asks TCGiant_Sync_Environment
+// before anything that changes eBay; at a live address it lets everything
+// through, so nothing below changes.
+function wp_load_alloptions() { return array( 'home' => 'https://numismax.com', 'siteurl' => 'https://numismax.com' ); }
+function wp_get_environment_type() { return 'production'; }
+function wp_parse_url( $url, $component = -1 ) { return parse_url( $url, $component ); }
+
+require $ROOT . '/includes/class-tcgiant-sync-environment.php';
 require $ROOT . '/includes/class-tcgiant-sync-api.php';
 require $ROOT . '/includes/class-tcgiant-sync-sites.php';
 require $ROOT . '/includes/class-tcgiant-sync-orders.php';

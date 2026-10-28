@@ -184,12 +184,22 @@ class TCGiant_Sync_Entitlements {
 
 class TCGiant_Sync_Mapper {
 	public static $last_skipped = false;
+	public static $last_deferred = null;
+	public $relist_parent_error = null;
 	public static function instance() { static $i; return $i ? $i : ( $i = new self() ); }
 	public function map_ebay_to_woo( $item ) {
 		return array( 'id' => $item['ItemID'], 'price' => '1.00', 'stock_quantity' => 1, 'attributes' => array(), 'images' => array(), 'variations' => array() );
 	}
 	public function save_as_product( $data ) {
 		$id = $data['id'];
+		// An eBay auction left out while "Import eBay auctions" is off: the
+		// real mapper returns false and says it skipped on purpose.
+		self::$last_skipped = false;
+		if ( in_array( $id, $GLOBALS['GATED'] ?? array(), true ) ) {
+			$GLOBALS['GATED_SEEN'][] = $id;
+			self::$last_skipped      = true;
+			return false;
+		}
 		$GLOBALS['IMPORTED'][ $id ] = ( $GLOBALS['IMPORTED'][ $id ] ?? 0 ) + 1;
 		// What the dashboard would see if it polled right now.
 		$GLOBALS['STATUS_DURING'][] = TCGiant_Sync_Importer::get_sync_state()['status'];
@@ -268,8 +278,14 @@ class TCGiant_Sync_API {
 		$f  = strtotime( $from );
 		$t  = strtotime( $to );
 		$in = array();
+		// eBay does not say whether a change made at ModTimeFrom or ModTimeTo
+		// itself is in the period: 'bounds' plays each answer, '[]' (both in)
+		// by default. A change marked 'late' is one eBay has not recorded yet.
+		$bounds = $e['bounds'] ?? '[]';
 		foreach ( $e['events'] as $event ) {
-			if ( $event['ts'] >= $f && $event['ts'] <= $t ) {
+			$after  = '(' === $bounds[0] ? $event['ts'] > $f : $event['ts'] >= $f;
+			$before = ')' === $bounds[1] ? $event['ts'] < $t : $event['ts'] <= $t;
+			if ( $after && $before && empty( $event['late'] ) ) {
 				$in[] = $event;
 			}
 		}
@@ -334,7 +350,13 @@ class TCGiant_Sync_API {
 		if ( 1 === count( $items ) ) {
 			$items = $items[0];
 		}
-		return array( 'Ack' => 'Success', 'ItemArray' => empty( $items ) ? array() : array( 'Item' => $items ) );
+		$answer = array( 'Ack' => 'Success', 'ItemArray' => empty( $items ) ? array() : array( 'Item' => $items ) );
+		// eBay's own clock, when 'ebay_clock' says how far it is from this
+		// server's: the Timestamp every answer carries.
+		if ( isset( $e['ebay_clock'] ) ) {
+			$answer = array( 'Timestamp' => gmdate( 'Y-m-d\TH:i:s.000\Z', time() + (int) $e['ebay_clock'] ) ) + $answer;
+		}
+		return $answer;
 	}
 }
 
@@ -1120,6 +1142,7 @@ check( '  and again', array( imported_ids( $batch ), progress()['stops'] ?? null
 later();
 drain();
 check( '  the third time it is moved past', isset( TCGiant_Sync_Importer::held_back_listings()[ $bad ] ), true );
+check( '  listed as one eBay could not be read for (3.28.0)', TCGiant_Sync_Importer::held_back_listings()[ $bad ]['why'] ?? null, TCGiant_Sync_Importer::HELD_UNREAD );
 check( '  saying why', logged( 'eBay item ' . $bad . ' could not be read 3 runs in a row (cURL error 28' ), true );
 check( '  every other listing imported', imported_ids( $batch ), 29 );
 check( '  the window finished', caught_up(), true );
@@ -1460,6 +1483,322 @@ update_option( TCGiant_Sync_Importer::STATE_OPTION, $s );
 $EBAY['fail'] = 'cURL error 6: Could not resolve host';
 hourly_tick();
 check( '  a window that could not be read does not', state()['delta_moved_at'], 1 );
+
+echo "\nAN AUCTION THE IMPORT LEAVES OUT (3.28.0)\n" . str_repeat( '=', 122 ) . "\n";
+
+// One of ten changes is an eBay auction nothing follows, with "Import eBay
+// auctions" off. Left out on purpose, it is no error: the window finishes,
+// nothing is held back or retried, and the rest import.
+fresh_site( 'UTC', array( 'last_successful_sync_at' => iso( $NOW - HOUR_IN_SECONDS ) ) );
+$window     = changes( 10, $NOW - 50 * MINUTE_IN_SECONDS, $NOW - 120, 5000, 780000 );
+$GATED      = array( $window[4]['id'] );
+$GATED_SEEN = array();
+add_changes( $window );
+hourly_tick();
+check( 'a window with a skipped auction finishes', caught_up(), true );
+check( '  the other nine import', imported_ids( $window ), 9 );
+check( '  the auction was offered once, and left out', $GATED_SEEN, $GATED );
+check( '  no error counted', state()['total_errors'], 0 );
+check( '  nothing held back for a stock check', TCGiant_Sync_Importer::held_back_listings(), array() );
+check( '  and nothing in the log calls it a failure', logged( 'Failed to save product for eBay Item: ' . $GATED[0] ), false );
+$GATED = array();
+
+echo "\nA WINDOW WHOLLY IN THE PAST: THE NEXT STARTS WHERE IT ENDED (3.28.0)\n" . str_repeat( '=', 122 ) . "\n";
+
+// Every window used to reach back five minutes over the last one's end, for
+// eBay recording a change late - which matters only near the present. On a
+// catch-up of 15-minute windows that read a third of every window again and
+// moved forward 10 minutes at a time. Now a window that was over an hour in
+// the past when eBay was read for it is followed from one second before its
+// end; one read near the present still keeps the five minutes.
+
+/** The windows asked for, and how far each reached back over the one before. */
+function reach_backs() {
+	$out   = array();
+	$calls = $GLOBALS['EBAY']['calls'];
+	for ( $i = 1; $i < count( $calls ); $i++ ) {
+		$out[] = strtotime( $calls[ $i - 1 ]['to'] ) - strtotime( $calls[ $i ]['from'] );
+	}
+	return $out;
+}
+
+/** How many windows each change fell in - which is how often it should have been read. */
+function windows_holding( array $change ) {
+	$n = 0;
+	foreach ( $GLOBALS['EBAY']['calls'] as $call ) {
+		if ( $change['ts'] >= strtotime( $call['from'] ) && $change['ts'] <= strtotime( $call['to'] ) ) {
+			$n++;
+		}
+	}
+	return $n;
+}
+
+/** Hourly polls until caught up, at most $max. */
+function catch_up( $max = 12 ) {
+	for ( $i = 0; $i < $max && ! caught_up(); $i++ ) {
+		hourly_tick();
+	}
+	return $i;
+}
+
+// Twenty-four hours behind, in 15-minute windows - the shortest - each heavy
+// enough that it never widens: a listing changed every 37 seconds. The sync
+// was last left by 3.27, with no record of how its last window was read.
+$S = $NOW - DAY_IN_SECONDS;
+fresh_site( 'UTC', array( 'last_successful_sync_at' => iso( $S ), 'delta_window_minutes' => 15 ) );
+$day = changes( (int) floor( ( DAY_IN_SECONDS - 120 ) / 37 ), $S + 13, $S + 13 + 37 * ( (int) floor( ( DAY_IN_SECONDS - 120 ) / 37 ) - 1 ), 480000, 800000 );
+add_changes( $day );
+$polls = catch_up();
+$calls = $EBAY['calls'];
+$backs = reach_backs();
+
+check( 'a day behind: caught up', caught_up(), true );
+check( '  every changed listing imported', imported_ids( $day ), count( $day ) );
+check( '  the window stayed at 15 minutes until the present', array_unique( array_map( function ( $c ) { return strtotime( $c['to'] ) - strtotime( $c['from'] ); }, array_slice( $calls, 0, -1 ) ) ), array( 900 ) );
+check( '  the first window after the update reaches back five minutes, as 3.27 did', $calls[0]['from'], iso( $S - 300 ) );
+// Each reach-back by how far the window before it was behind the clock
+// (the harness reads eBay within seconds of $NOW): a minute either side of
+// the hour is left out.
+$past = array();
+$near = array();
+for ( $i = 1; $i < count( $calls ); $i++ ) {
+	$behind = $NOW - strtotime( $calls[ $i - 1 ]['to'] );
+	if ( $behind > HOUR_IN_SECONDS + 60 ) {
+		$past[] = $backs[ $i - 1 ];
+	} elseif ( $behind < HOUR_IN_SECONDS - 60 ) {
+		$near[] = $backs[ $i - 1 ];
+	}
+}
+check( sprintf( '  each of the %d windows wholly in the past starts one second before the last ended', count( $past ) ), array_values( array_unique( $past ) ), array( 1 ) );
+check( sprintf( '  each of the %d ending within the hour reaches back five minutes', count( $near ) ), array_values( array_unique( $near ) ), array( 300 ) );
+// 23 hours of 15-minute windows moving 899 seconds at a time, and the last
+// hour's moving 600, is about 99; the old overlap moved them all 600 seconds
+// at a time, which is 145.
+check( sprintf( '  %d reads of eBay for the day (the five-minute overlap took 145)', count( $calls ) ), count( $calls ) >= 96 && count( $calls ) <= 101, true );
+check( sprintf( '  over %d hourly polls, each chasing up to 24 windows', $polls ), $polls <= 5, true );
+$twice = array();
+$wrong = array();
+foreach ( $day as $c ) {
+	if ( ( $IMPORTED[ $c['id'] ] ?? 0 ) !== windows_holding( $c ) ) {
+		$wrong[] = $c['id'];
+	}
+	if ( ( $IMPORTED[ $c['id'] ] ?? 0 ) > 1 && $c['ts'] < $NOW - 75 * MINUTE_IN_SECONDS ) {
+		$twice[] = $c['id'];
+	}
+}
+check( '  each listing read as often as a window held it, and no more', $wrong, array() );
+$older = count( array_filter( $day, function ( $c ) use ( $NOW ) { return $c['ts'] < $NOW - 75 * MINUTE_IN_SECONDS; } ) );
+check( sprintf( '  of the %d listings changed over 75 minutes ago, %d read twice: changed in a one-second reach-back', $older, count( $twice ) ), count( $twice ) * 100 < $older, true );
+$old_twice = 0;
+foreach ( $day as $c ) {
+	if ( $c['ts'] < $NOW - 75 * MINUTE_IN_SECONDS && ( ( $c['ts'] - ( $S - 300 ) ) % 600 ) <= 300 ) {
+		$old_twice++;
+	}
+}
+check( sprintf( '  (the five-minute overlap would have read about %d of them twice)', $old_twice ), $old_twice > 1000, true );
+check( 'the last window, read at the present, is not marked as in the past', state()['delta_settled_end'], '' );
+
+// The present: a listing changed a minute before that last window ended,
+// which eBay had not recorded when it was read. The next poll's window
+// reaches back five minutes and finds it.
+$end  = strtotime( state()['last_successful_sync_at'] );
+$late = array( 'ts' => $end - 60, 'id' => '000000899999', 'bytes' => 5000, 'late' => true );
+add_changes( array( $late ) );
+foreach ( $EBAY['events'] as $i => $event ) {
+	unset( $EBAY['events'][ $i ]['late'] );
+}
+$before = count( $EBAY['calls'] );
+hourly_tick();
+check( 'a window near now: the next reaches back five minutes over it', $EBAY['calls'][ $before ]['from'] ?? '', iso( $end - 300 ) );
+check( '  and imports the change eBay recorded late', $IMPORTED['000000899999'] ?? 0, 1 );
+
+// A change on the boundary itself, whichever way eBay counts it.
+foreach ( array( '[]' => 'both ends in', '[)' => 'the end out', '(]' => 'the start out', '()' => 'both out' ) as $bounds => $how ) {
+	$S = $NOW - 2 * HOUR_IN_SECONDS;
+	fresh_site( 'UTC', array( 'last_successful_sync_at' => iso( $S ), 'delta_window_minutes' => 15 ) );
+	$EBAY['bounds'] = $bounds;
+	$two = changes( 190, $S + 13, $S + 13 + 37 * 189, 480000, 880000 );
+	// The first window ends at $S + 600; the next is wholly in the past too,
+	// and ends at $S + 600 + 899.
+	$edge = array(
+		array( 'ts' => $S + 600, 'id' => '000000889001', 'bytes' => 480000 ),
+		array( 'ts' => $S + 1499, 'id' => '000000889002', 'bytes' => 480000 ),
+	);
+	add_changes( array_merge( $two, $edge ) );
+	catch_up();
+	check( sprintf( 'ModTimeFrom and ModTimeTo with %s: the windows end on the boundaries', $how ), array( $EBAY['calls'][0]['to'] ?? '', $EBAY['calls'][1]['to'] ?? '' ), array( iso( $S + 600 ), iso( $S + 1499 ) ) );
+	check( '  a listing changed on each is read', ( $IMPORTED['000000889001'] ?? 0 ) >= 1 && ( $IMPORTED['000000889002'] ?? 0 ) >= 1, true );
+	check( '  and every other listing', imported_ids( $two ), count( $two ) );
+}
+$EBAY['bounds'] = '[]';
+
+// The places that start a window, given a window read wholly in the past:
+// the hand-off straight to the next, the next poll, and a restart of a sync
+// presumed dead - all from the same second, so a restarted window keeps its
+// place.
+$S = $NOW - 6 * HOUR_IN_SECONDS;
+fresh_site( 'UTC', array( 'last_successful_sync_at' => iso( $S ), 'delta_window_minutes' => 15 ) );
+$EBAY['bare_events'] = true;
+// 90 listings in the second window: three runs of forty.
+$busy = array_merge(
+	changes( 20, $S + 30, $S + 590, 480000, 890000 ),
+	changes( 90, $S + 610, $S + 1490, 80000, 891000 )
+);
+add_changes( $busy );
+// Out of calls part way through the second window: it pauses there.
+$EBAY['get_item_error'] = function ( $id ) use ( $budget_out ) {
+	return count( $GLOBALS['EBAY']['get_items'] ) > 70 ? $budget_out() : null;
+};
+$IMP->start_delta_sync();
+drain();
+check( 'paused part way through a window wholly in the past', array( state()['status'], progress()['from'] ?? '', imported_ids( $busy ) ), array( 'scanning', iso( $S + 599 ), 70 ) );
+check( '  that window was handed on from one second before the last ended', $EBAY['calls'][1]['from'] ?? '', iso( $S + 599 ) );
+// Its queued retry is lost - a host clearing its queue, say - and the poll
+// an hour later finds the sync stalled and starts it again.
+$LATER                  = array();
+$EBAY['get_item_error'] = null;
+$LOG                    = array();
+$p                      = progress();
+$p['ts']               -= HOUR_IN_SECONDS;
+update_option( TCGiant_Sync_Importer::DELTA_PROGRESS_OPTION, $p );
+hourly_tick();
+check( '  the poll finds it stalled and starts it again', logged( 'presumed to have failed' ), true );
+check( '  from the same second, so its place is kept: eBay not asked for it again', count( array_filter( $EBAY['calls'], function ( $c ) use ( $S ) { return $c['from'] === iso( $S + 599 ); } ) ), 1 );
+check( '  each listing imported once', array( imported_ids( $busy ), max( $IMPORTED ) ), array( count( $busy ), 1 ) );
+check( '  and the window after it handed on from one second before it ended', $EBAY['calls'][2]['from'] ?? '', iso( $S + 1498 ) );
+$EBAY['bare_events'] = false;
+
+// A window read near the present, carried on over three runs from the
+// listings kept in brief: the window after it still reaches back five
+// minutes, however long the runs took.
+$S = $NOW - 50 * MINUTE_IN_SECONDS;
+fresh_site( 'UTC', array( 'last_successful_sync_at' => iso( $S ) ) );
+$EBAY['bare_events'] = true;
+$EBAY['get_item_error'] = function ( $id ) use ( $budget_out ) {
+	return 50 === count( $GLOBALS['EBAY']['get_items'] ) ? $budget_out() : null;
+};
+$recent = changes( 100, $S + 60, $NOW - 120, 5000, 893000 );
+add_changes( $recent );
+$IMP->start_delta_sync();
+drain();
+$EBAY['get_item_error'] = null;
+later();
+drain();
+$end = strtotime( state()['last_successful_sync_at'] );
+check( 'a window read near the present, finished over several runs from its kept listings', array( count( $EBAY['calls'] ), imported_ids( $recent ), caught_up() ), array( 1, 100, true ) );
+hourly_tick();
+check( '  the next reaches back five minutes over it', $EBAY['calls'][1]['from'] ?? '', iso( $end - 300 ) );
+$EBAY['bare_events'] = false;
+
+// A window carried on from 3.27, with no note of how it was read, whose kept
+// listings are gone: read again, by now long past - and the window after it
+// still reaches back five minutes, as its first listings came from a read
+// near the present. With the note, a second.
+foreach ( array( 'no note' => null, 'noted as in the past' => true ) as $how => $note ) {
+	$S = $NOW - 3 * HOUR_IN_SECONDS;
+	$T = $S + 900;
+	fresh_site( 'UTC', array( 'status' => 'scanning', 'sync_mode' => 'delta', 'delta_mod_from' => iso( $S ), 'last_successful_sync_at' => iso( $S + 300 ), 'delta_window_minutes' => 15, 'last_activity_ts' => time() ) );
+	$part = changes( 60, $S + 30, $S + 870, 480000, 894000 );
+	add_changes( $part );
+	$p = array( 'from' => iso( $S ), 'to' => iso( $T ), 'cursor' => $part[19]['id'], 'done' => 20, 'in_flight' => '', 'body_bytes' => 0, 'ts' => time() );
+	if ( null !== $note ) {
+		$p['settled'] = $note;
+	}
+	update_option( TCGiant_Sync_Importer::DELTA_PROGRESS_OPTION, $p );
+	$EBAY['budget'] = 0; // so the window does not chase on to the next
+	$QUEUE[]        = 'tcgiant_sync_fetch_delta_events';
+	drain();
+	$EBAY['budget'] = 40000;
+	check( sprintf( '[%s] carried on: read again, the rest imported', $how ), array( count( $EBAY['calls'] ), imported_ids( array_slice( $part, 20 ) ) ), array( 1, 40 ) );
+	$LOG = array();
+	hourly_tick();
+	check( sprintf( '  the window after it starts %s', null === $note ? 'five minutes back' : 'a second back' ), $EBAY['calls'][1]['from'] ?? '', iso( $T - ( null === $note ? 300 : 1 ) ) );
+}
+
+// An empty window wholly in the past, the sync stopping after it - most of
+// the day's calls used: the next poll starts a second before it ended.
+$S = $NOW - 3 * HOUR_IN_SECONDS;
+fresh_site( 'UTC', array( 'last_successful_sync_at' => iso( $S ), 'delta_window_minutes' => 15 ) );
+$EBAY['budget'] = 0;
+$IMP->start_delta_sync();
+drain();
+$EBAY['budget'] = 40000;
+check( 'an empty window in the past, the sync stopping after it', array( count( $EBAY['calls'] ), $EBAY['calls'][0]['count'] ?? null, state()['delta_settled_end'] ?? '' ), array( 1, 0, iso( $S + 600 ) ) );
+hourly_tick();
+check( '  the next poll starts a second before it ended', $EBAY['calls'][1]['from'] ?? '', iso( $S + 599 ) );
+
+// Whether a window was read near the present is judged by eBay's clock - the
+// Timestamp of its answer - and by this server's only when there is none. A
+// server clock 90 minutes fast took a window eBay had read 20 minutes after
+// its end for one read an hour and 50 minutes after it.
+foreach ( array( 'eBay\'s clock 90 minutes behind the server\'s' => array( -5400, 300 ), 'eBay\'s clock and the server\'s agree' => array( 0, 1 ), 'no Timestamp in the answer: the server\'s clock' => array( null, 1 ) ) as $how => $case ) {
+	$S = $NOW - 2 * HOUR_IN_SECONDS;
+	fresh_site( 'UTC', array( 'last_successful_sync_at' => iso( $S ), 'delta_window_minutes' => 15 ) );
+	if ( null !== $case[0] ) {
+		$EBAY['ebay_clock'] = $case[0];
+	}
+	add_changes( changes( 20, $S + 30, $S + 590, 480000, 897000 ) );
+	$EBAY['budget'] = 0; // so the window does not chase on to the next
+	$IMP->start_delta_sync();
+	drain();
+	$EBAY['budget'] = 40000;
+	hourly_tick();
+	check( sprintf( '%s: the next window reaches back %d s', $how, $case[1] ), $EBAY['calls'][1]['from'] ?? '', iso( $S + 600 - $case[1] ) );
+}
+
+// A server clock 90 minutes fast, near the present: each window asked for
+// reaches 90 minutes past eBay's now. It used to be taken as read to its end,
+// so what eBay recorded in those 90 minutes was never read. Now it is read as
+// far as eBay's clock says, and the next window starts from there.
+$EBAY_NOW = $NOW - 5400;
+fresh_site( 'UTC', array( 'last_successful_sync_at' => iso( $EBAY_NOW - 600 ) ) );
+$EBAY['ebay_clock'] = -5400;
+add_changes( changes( 5, $EBAY_NOW - 500, $EBAY_NOW - 100, 5000, 898000 ) );
+$t0 = time();
+hourly_tick();
+$read_to = strtotime( state()['last_successful_sync_at'] );
+check( 'a server clock 90 minutes fast: the window is taken as read to eBay\'s now, not to the server\'s', array( $read_to >= $t0 - 5400 && $read_to <= time() - 5400, imported_ids( changes( 5, $EBAY_NOW - 500, $EBAY_NOW - 100, 5000, 898000 ) ) ), array( true, 5 ) );
+// eBay records a change after that read, before the server's "now" of it.
+$later = array( array( 'ts' => $read_to + 120, 'id' => '000000898900', 'bytes' => 5000 ) );
+add_changes( $later );
+hourly_tick();
+check( '  the change eBay recorded after it is read by the next', array( imported_ids( $later ), $EBAY['calls'][1]['from'] ?? '' ), array( 1, iso( $read_to - 300 ) ) );
+
+// The first window after the update on that server starts from where 3.27
+// took its last window as read - the server's now then, ahead of eBay's. eBay
+// has nothing after that start yet, and what it recorded since 3.27's last
+// read is before it. Taken as read to eBay's now, before the window's start,
+// so the next window reaches back over those changes.
+fresh_site( 'UTC', array( 'last_successful_sync_at' => iso( $NOW - 600 ) ) );
+$EBAY['ebay_clock'] = -5400;
+$missed = changes( 4, $NOW - 5400 - 250, $NOW - 5400 - 60, 5000, 899000 );
+add_changes( $missed );
+$t0 = time();
+hourly_tick();
+$read_to = strtotime( state()['last_successful_sync_at'] );
+check( 'the first window after the update, its start ahead of eBay\'s clock: read as far as eBay\'s now, before its start', array( $read_to >= $t0 - 5400 && $read_to <= time() - 5400, imported_ids( $missed ) ), array( true, 0 ) );
+hourly_tick();
+check( '  the next reaches back from there, and reads what 3.27 never did', array( $EBAY['calls'][1]['from'] ?? '', imported_ids( $missed ) ), array( iso( $read_to - 300 ), 4 ) );
+
+// A window cut short by its length that still reaches past eBay's now: read
+// to eBay's now, it is no longer cut short, so the sync does not chase on to
+// a next window - which would reach past eBay's now again, and again.
+fresh_site( 'UTC', array( 'last_successful_sync_at' => iso( $NOW - 5400 - 300 ), 'delta_window_minutes' => 15 ) );
+$EBAY['ebay_clock'] = -5400;
+$QUEUE = array();
+hourly_tick();
+drain();
+check( 'a 15-minute window past eBay\'s now, on that server: read once, no chase', count( $EBAY['calls'] ), 1 );
+unset( $EBAY['ebay_clock'] );
+
+// The same restart after a window read near the present keeps five minutes.
+fresh_site( 'UTC', array( 'last_successful_sync_at' => iso( $NOW - 20 * MINUTE_IN_SECONDS ), 'delta_settled_end' => iso( $NOW - 3 * HOUR_IN_SECONDS ) ) );
+$IMP->start_delta_sync();
+check( 'a record of some other window wholly in the past: five minutes, as before', state()['delta_mod_from'], iso( $NOW - 20 * MINUTE_IN_SECONDS - 300 ) );
+fresh_site( 'UTC', array( 'last_successful_sync_at' => iso( $NOW - 3 * HOUR_IN_SECONDS ), 'delta_settled_end' => iso( $NOW - 3 * HOUR_IN_SECONDS ) ) );
+$IMP->start_delta_sync();
+check( '  of this one: one second', state()['delta_mod_from'], iso( $NOW - 3 * HOUR_IN_SECONDS - 1 ) );
+drain();
 
 @unlink( lock_file() );
 @rmdir( $UPLOADS );

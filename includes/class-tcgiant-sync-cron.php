@@ -61,6 +61,12 @@ class TCGiant_Sync_Cron {
 		// One-time listing type backfill on upgrade.
 		add_action( 'admin_init', array( $this, 'maybe_backfill_listing_type' ) );
 
+		// One-time "Import eBay auctions" decision on upgrade (3.28.0). The
+		// hourly check as well as admin_init, so a site nobody opens the admin
+		// of still decides - and says so in its log.
+		add_action( 'admin_init', array( 'TCGiant_Sync_Mapper', 'upgrade_auction_import' ) );
+		add_action( 'tcgiant_sync_check_ended_listings', array( 'TCGiant_Sync_Mapper', 'upgrade_auction_import' ), 5 );
+
 		// Keep background work moving on hosts where WP-Cron is disabled or
 		// unreliable — admin page views act as the heartbeat.
 		add_action( 'admin_init', array( __CLASS__, 'maybe_dispatch_overdue' ) );
@@ -184,6 +190,7 @@ class TCGiant_Sync_Cron {
 		foreach ( $rows as $row ) {
 			$pid      = (int) $row->ID;
 			$duration = (string) $row->duration;
+			$answer   = null;
 
 			// A fixed-length listing genuinely is over once its end time passes,
 			// so the stored value can be trusted and costs nothing to act on.
@@ -199,7 +206,9 @@ class TCGiant_Sync_Cron {
 				// compare but it can still be sitting there for sale.
 				$stock_product = wc_get_product( $pid );
 
-				if ( $stock_product && $stock_product->is_in_stock() ) {
+				// A variable product's own figure can be 0 while a variation
+				// still sells, so its variations decide whether to look.
+				if ( $stock_product && ( $stock_product->is_type( 'variable' ) || $stock_product->is_in_stock() ) ) {
 					// Out of budget for this run. Leave the product unmarked so it
 					// comes back round next hour rather than being lost with its
 					// stock still wrong.
@@ -214,6 +223,19 @@ class TCGiant_Sync_Cron {
 						$expired = TCGiant_Sync_API::instance()->get_item( $expired_id );
 
 						if ( ! is_wp_error( $expired ) && isset( $expired['Item'] ) ) {
+							$answer = $expired['Item'];
+
+							// Each variation from its own figures, before the
+							// parent takes the listing's.
+							if ( $stock_product->is_type( 'variable' )
+								&& null === TCGiant_Sync_Inventory::settle_variations( $pid, $answer + array( 'ItemID' => (string) $expired_id ), 'Ended listing check' ) ) {
+								TCGiant_Sync_Logger::warning( sprintf(
+									'Ended listing check: eBay did not report the variations of listing %s, so the variations of WC #%d were not settled. Check their stock by hand.',
+									$expired_id,
+									$pid
+								) );
+							}
+
 							// The listing's eBay site, from the answer in hand
 							// (TCGiant_Sync_Sites). Settled here, an ended listing is
 							// never read by a sync again, so this is the one chance
@@ -269,6 +291,11 @@ class TCGiant_Sync_Cron {
 
 				update_post_meta( $pid, '_ebay_listing_status', 'Ended' );
 				$ended++;
+
+				// After the Ended write, which would otherwise land on the relist.
+				if ( is_array( $answer ) ) {
+					self::follow_relist_of( $pid, $answer );
+				}
 				continue;
 			}
 
@@ -319,6 +346,10 @@ class TCGiant_Sync_Cron {
 			// here is not read by a sync again either.
 			TCGiant_Sync_Sites::record_site( $pid, TCGiant_Sync_Sites::site_of( $item ) );
 
+			// And its type, for the listing it is about: a stock push may then
+			// end it without asking eBay what it is (3.28.0).
+			TCGiant_Sync_Inventory::note_listing_type( $pid, (string) $item_id, $item['ListingType'] ?? '' );
+
 			if ( 'Active' === $status ) {
 				update_post_meta( $pid, '_ebay_listing_status', 'Active' );
 
@@ -337,7 +368,18 @@ class TCGiant_Sync_Cron {
 				// And settle the stock. Recording the status and stopping there
 				// left sold goods showing as available, the same fault the hourly
 				// sync had in the other place a listing is seen to end. The item
-				// is already in hand here, so this costs nothing.
+				// is already in hand here, so this costs nothing. A variation
+				// listing's variations first, each from its own figures.
+				$variable = wc_get_product( $pid );
+				if ( $variable && $variable->is_type( 'variable' )
+					&& null === TCGiant_Sync_Inventory::settle_variations( $pid, $item + array( 'ItemID' => (string) $item_id ), 'Ended listing check' ) ) {
+					TCGiant_Sync_Logger::warning( sprintf(
+						'Ended listing check: eBay did not report the variations of listing %s, so the variations of WC #%d were not settled. Check their stock by hand.',
+						$item_id,
+						$pid
+					) );
+				}
+
 				$settled = TCGiant_Sync_Inventory::apply_ended_listing_stock(
 					$pid,
 					isset( $item['Quantity'] ) ? $item['Quantity'] : null,
@@ -371,6 +413,8 @@ class TCGiant_Sync_Cron {
 						$pid
 					) );
 				}
+
+				self::follow_relist_of( $pid, $item );
 			}
 		}
 
@@ -380,6 +424,53 @@ class TCGiant_Sync_Cron {
 				$ended, $active, $verified
 			) );
 		}
+	}
+
+	/**
+	 * Move a product on to the relist eBay's answer for its ended listing
+	 * names, now rather than at the next delta sync.
+	 *
+	 * Settled and left on the old listing, a product listed at auction from
+	 * WooCommerce went back on sale on the website while the relist ran on
+	 * eBay, and a website sale of anything sent its stock change to the
+	 * listing that had ended, so the relist stayed up. Moved on, it follows
+	 * the live listing. The per-sale stock check does the move, with every
+	 * check the import makes, handed the old listing's answer so eBay is not
+	 * asked for it again.
+	 *
+	 * @param int   $pid  Product.
+	 * @param array $item eBay's GetItem answer for its ended listing.
+	 * @return void
+	 */
+	private static function follow_relist_of( $pid, array $item ) {
+		$relisted_as = TCGiant_Sync_API::scalar_value( $item['ListingDetails']['RelistedItemID'] ?? '' );
+
+		if ( 1 !== preg_match( '/^[1-9]\d{0,18}$/', $relisted_as ) || 'trash' === get_post_status( $pid )
+			|| TCGiant_Sync_Importer::find_any_product_for_item( $relisted_as ) ) {
+			return;
+		}
+
+		// A single item that sold is never moved on to its relist - see
+		// TCGiant_Sync_Mapper::relist_parent_product() - so eBay is not asked
+		// about the relist only to be told so. The prune skips it the same way.
+		if ( isset( $item['Quantity'], $item['SellingStatus']['QuantitySold'] )
+			&& (int) $item['Quantity'] <= 1 && (int) $item['SellingStatus']['QuantitySold'] >= 1 ) {
+			return;
+		}
+
+		// Nor one on another eBay site, when the shop imports only its own:
+		// its relist is on that site too, and no product is moved on to it -
+		// see TCGiant_Sync_Mapper::adopt_relist() - so eBay is not asked.
+		if ( TCGiant_Sync_Sites::leaves_out( TCGiant_Sync_Sites::site_of( $item ) ) ) {
+			return;
+		}
+
+		$old = (string) get_post_meta( $pid, '_ebay_item_id', true );
+		if ( '' === $old ) {
+			return;
+		}
+
+		TCGiant_Sync_Importer::instance()->settle_item( $relisted_as, 'Ended listing check', $item + array( 'ItemID' => $old ) );
 	}
 
 	/**
@@ -808,8 +899,8 @@ class TCGiant_Sync_Cron {
 	 */
 	private function log_daily_summary() {
 		$state = TCGiant_Sync_Importer::get_sync_state();
-		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
-		$api_calls = isset( $settings['api_calls_today'] ) ? (int) $settings['api_calls_today'] : 0;
+		// The day's count itself (3.28.0). This read a setting nothing writes, so said 0.
+		$api_calls = TCGiant_Sync_API::instance()->get_daily_call_count();
 
 		TCGiant_Sync_Logger::log( sprintf(
 			'Daily summary: Status=%s, Total found=%d, Processed=%d, Errors=%d, API calls today=%d',
@@ -828,6 +919,14 @@ class TCGiant_Sync_Cron {
 	public function auto_relist_ended_items() {
 		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
 		if ( empty( $settings['auto_relist_enabled'] ) ) {
+			return;
+		}
+
+		// Every relist would be refused on a staging copy, but only after a
+		// GetItem each to check it - up to fifty a day spent for nothing.
+		$blocked = TCGiant_Sync_Environment::write_block();
+		if ( $blocked ) {
+			TCGiant_Sync_Environment::note_blocked( 'Auto-Relist', $blocked );
 			return;
 		}
 
@@ -888,6 +987,34 @@ class TCGiant_Sync_Cron {
 
 			if ( empty( $ebay_item_id ) || ! $product_id ) {
 				continue;
+			}
+
+			// A listing eBay no longer has: a relist would only fail, every day.
+			if ( (string) $ebay_item_id === (string) get_post_meta( $product_id, '_ebay_unreadable_item', true ) ) {
+				$skipped++;
+				continue;
+			}
+
+			// eBay relisted it as a listing another product follows, which the
+			// log has said. Asked again only once that product lets go of it,
+			// or this one moves on: until then the answer is the same.
+			$held = explode( '>', (string) get_post_meta( $product_id, '_ebay_relist_held', true ) );
+			if ( 2 === count( $held ) && (string) $ebay_item_id === $held[0]
+				&& TCGiant_Sync_Listing_Link::find_products_sharing_item_id( $product_id, $held[1] ) ) {
+				$skipped++;
+				continue;
+			}
+
+			// Its stock is only where a relist cannot send it, which the log
+			// has said. Asked again once the stock or the listing changes.
+			$unsendable = (string) get_post_meta( $product_id, '_ebay_relist_unsendable', true );
+			if ( '' !== $unsendable ) {
+				$variable = wc_get_product( $product_id );
+				if ( $variable && $variable->is_type( 'variable' )
+					&& $unsendable === (string) $ebay_item_id . '>' . TCGiant_Sync_Exporter::relist_stock_state( $variable ) ) {
+					$skipped++;
+					continue;
+				}
 			}
 
 			// Every check - stock, whether eBay says it sold out, the right call
@@ -974,6 +1101,7 @@ class TCGiant_Sync_Cron {
 		wp_clear_scheduled_hook( 'tcgiant_sync_check_ended_listings' );
 		wp_clear_scheduled_hook( 'tcgiant_sync_weekly_full' );
 		wp_clear_scheduled_hook( 'tcgiant_sync_reconcile_inventory' );
+		wp_clear_scheduled_hook( 'tcgiant_sync_reconcile_stall' );   // The weekly check's stall check, 3.28.0.
 		wp_clear_scheduled_hook( 'tcgiant_sync_import_orders' );
 		wp_clear_scheduled_hook( 'tcgiant_sync_scan_resume' );
 		TCGiant_Sync_Image_Localizer::deactivate();

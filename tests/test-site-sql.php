@@ -108,6 +108,11 @@ class Sqlite_Wpdb {
 		$rows = $this->run( $query );
 		return ARRAY_A === $output ? $rows : array_map( function ( $row ) { return (object) $row; }, $rows );
 	}
+	/** One meta value, read without being counted among the queries asked. */
+	public function meta( $id, $key ) {
+		$v = $this->db->querySingle( $this->prepare( 'SELECT meta_value FROM wp_postmeta WHERE post_id = %d AND meta_key = %s ORDER BY meta_id LIMIT 1', $id, $key ) );
+		return null === $v ? '' : (string) $v;
+	}
 	// Filling it.
 	public function product( $id, array $meta, $status = 'publish' ) {
 		$this->db->exec( $this->prepare( 'INSERT INTO wp_posts VALUES ( %d, %s, %s )', $id, 'product', $status ) );
@@ -126,7 +131,14 @@ class Sqlite_Wpdb {
 	}
 }
 $wpdb = new Sqlite_Wpdb();
+// Auto-relist reads a product's own marks before asking eBay (3.28.0).
+function get_post_meta( $id, $key = '', $single = false ) { return $GLOBALS['wpdb']->meta( (int) $id, (string) $key ); }
 
+// A live shop, by wp-config, for TCGiant_Sync_Environment (3.28.0), which
+// the push, Relist and auto-relist ask before anything goes to eBay.
+// Staging copies are test-staging-detect.php's.
+define( 'TCGIANT_SYNC_IS_STAGING', false );
+require $ROOT . '/includes/class-tcgiant-sync-environment.php';
 require $ROOT . '/includes/class-tcgiant-sync-api.php';
 require $ROOT . '/includes/class-tcgiant-sync-sites.php';
 

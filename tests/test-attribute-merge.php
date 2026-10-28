@@ -209,7 +209,12 @@ check( '  and says which way it went', false !== strpos( $mapper, "'Attributes s
 
 check( 'the setting exists', false !== strpos( $settings, "'overwrite_attributes'  => array( 'label' => __( 'Overwrite Attributes', 'tcgiant-sync' ), 'default' => '0' )," ), true );
 check( '  defaulting to WooCommerce winning', false !== strpos( $settings, "__( 'Overwrite Attributes', 'tcgiant-sync' ), 'default' => '0'" ), true );
-check( '  and surviving a save', false !== strpos( $settings, "'overwrite_taxonomy', 'overwrite_attributes', 'overwrite_weight_dims'" ), true );
+// 3.28.0: a save keeps every setting but its own form's (TCGiant_Sync_Admin::SETTINGS_FORMS),
+// so the setting survives by being one of Import Settings' own.
+$admin_src = (string) file_get_contents( $root . '/admin/class-tcgiant-sync-admin.php' );
+$forms_at  = (int) strpos( $admin_src, 'const SETTINGS_FORMS' );
+$import_of = substr( $admin_src, $forms_at, (int) strpos( $admin_src, "'export' => array(", $forms_at ) - $forms_at );
+check( '  and surviving a save', array( $forms_at > 0, false !== strpos( $import_of, "'overwrite_attributes'" ) ), array( true, true ) );
 check( '  with the screen saying globals are never touched', false !== strpos( $settings, 'Global attributes you have set in WooCommerce are never overwritten' ), true );
 
 // Variations are deliberately left replacing. A variation's attributes are its

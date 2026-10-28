@@ -104,6 +104,22 @@ class TCGiant_Sync_Image_Localizer {
 	const UNFINISHED_META = '_tcgiant_download_unfinished';
 
 	/**
+	 * The pass, once, over galleries already showing the main photo twice
+	 * (3.28.0) - see run_gallery_heal(): its Action Scheduler hook and group,
+	 * its record, and how many products one batch looks at.
+	 */
+	const GALLERY_HEAL_HOOK   = 'tcgiant_sync_gallery_heal';
+	const GALLERY_HEAL_GROUP  = 'tcgiant_sync_gallery';
+	const GALLERY_HEAL_OPTION = 'tcgiant_sync_gallery_heal';
+	const GALLERY_HEAL_BATCH  = 200;
+
+	/**
+	 * Set while a batch of the gallery pass is under way: found set, a run
+	 * was stopped part way through its batch.
+	 */
+	const GALLERY_HEAL_OPEN_OPTION = 'tcgiant_sync_gallery_heal_open';
+
+	/**
 	 * What a photo without our mark must also be to count as the shop's own.
 	 *
 	 * See attachments_by_origin(). Added by someone signed in, with a file,
@@ -644,6 +660,223 @@ class TCGiant_Sync_Image_Localizer {
 		add_action( 'admin_init', array( __CLASS__, 'maybe_clean_placeholder_paths' ) );
 		add_action( 'admin_init', array( __CLASS__, 'maybe_rearm' ) );
 		add_action( 'admin_init', array( __CLASS__, 'maybe_backfill_galleries' ) );
+		add_action( 'admin_init', array( __CLASS__, 'maybe_queue_gallery_heal' ) );
+		add_action( self::GALLERY_HEAL_HOOK, array( __CLASS__, 'run_gallery_heal' ) );
+	}
+
+	/**
+	 * Whether a gallery entry is this plugin's copy of the product's main
+	 * photo, which the product shows already as its main image (3.27.2). One
+	 * the shop put in the gallery itself carries no _tcgiant_source_url.
+	 *
+	 * @param int|string $gid        Gallery entry.
+	 * @param int        $main_photo The product's main photo.
+	 * @return bool
+	 */
+	private static function is_main_photo_copy( $gid, $main_photo ) {
+		return (int) $gid === (int) $main_photo && get_post_meta( (int) $gid, '_tcgiant_source_url', true );
+	}
+
+	/**
+	 * Queue the gallery pass, until it has finished - see run_gallery_heal().
+	 *
+	 * Asked on admin requests, at most every ten minutes, so a pass whose run
+	 * was killed - which queues nothing after it - is queued again.
+	 *
+	 * @return void
+	 */
+	public static function maybe_queue_gallery_heal() {
+		$record = get_option( self::GALLERY_HEAL_OPTION, array() );
+		if ( is_array( $record ) && ! empty( $record['done'] ) ) {
+			return;
+		}
+
+		if ( ! function_exists( 'as_enqueue_async_action' ) || ! function_exists( 'as_next_scheduled_action' ) ) {
+			return;
+		}
+
+		if ( get_transient( 'tcgiant_gallery_heal_tick' ) ) {
+			return;
+		}
+		set_transient( 'tcgiant_gallery_heal_tick', 1, 10 * MINUTE_IN_SECONDS );
+
+		// Waiting, or running now.
+		if ( false !== as_next_scheduled_action( self::GALLERY_HEAL_HOOK, null, self::GALLERY_HEAL_GROUP ) ) {
+			return;
+		}
+
+		as_enqueue_async_action( self::GALLERY_HEAL_HOOK, array(), self::GALLERY_HEAL_GROUP );
+	}
+
+	/**
+	 * Take the main photo out of the galleries of products already showing it
+	 * twice, once.
+	 *
+	 * 3.27.2 stopped a product whose photos were fetched over several batches
+	 * showing its main photo again in its gallery, and put right one already
+	 * showing it the next time its photos were fetched - which for most is
+	 * never. This applies that rule, is_main_photo_copy(), to every product
+	 * the plugin imported photos for (_tcgiant_external_image_urls), in ID
+	 * order, a batch at a time, each batch queuing the next.
+	 *
+	 * Only the gallery list changes: no photo is deleted - Image Cleanup sees
+	 * to photos nothing uses - and nothing is asked of eBay. A gallery is
+	 * written only over the row read, still holding what was read, and only
+	 * while the main photo is the one read (heal_gallery()), so one the image
+	 * batch or an import changes meanwhile is left to them, as they apply the
+	 * same rule. Where it has got to is kept once a batch, so a run killed
+	 * part way carries on from the batch it was in, queued again by
+	 * maybe_queue_gallery_heal(); that batch's products put right before the
+	 * kill are not in the count, and the log line says so. Once through, it is
+	 * marked done and says how many it put right in one line.
+	 *
+	 * @return void
+	 */
+	public static function run_gallery_heal() {
+		global $wpdb;
+
+		$record = get_option( self::GALLERY_HEAL_OPTION, array() );
+		$record = array_merge( array( 'cursor' => 0, 'checked' => 0, 'healed' => 0, 'started' => time(), 'done' => 0, 'stopped' => 0 ), is_array( $record ) ? $record : array() );
+
+		if ( ! empty( $record['done'] ) ) {
+			return;
+		}
+
+		// A batch is under way from here to its record: one found under way
+		// was stopped before it got there.
+		if ( false !== get_option( self::GALLERY_HEAL_OPEN_OPTION, false ) ) {
+			$record['stopped']++;
+		}
+		update_option( self::GALLERY_HEAL_OPEN_OPTION, (int) $record['cursor'], false );
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$ids = $wpdb->get_col( $wpdb->prepare(
+			"SELECT DISTINCT post_id FROM {$wpdb->postmeta}
+			 WHERE meta_key = '_tcgiant_external_image_urls'
+			   AND post_id > %d
+			 ORDER BY post_id ASC
+			 LIMIT %d",
+			(int) $record['cursor'],
+			self::GALLERY_HEAL_BATCH
+		) );
+
+		// A read the database failed is not the end of the list.
+		if ( '' !== (string) $wpdb->last_error ) {
+			delete_option( self::GALLERY_HEAL_OPEN_OPTION );
+			return;
+		}
+
+		if ( empty( $ids ) ) {
+			$record['done'] = time();
+			update_option( self::GALLERY_HEAL_OPTION, $record, false );
+			delete_option( self::GALLERY_HEAL_OPEN_OPTION );
+
+			TCGiant_Sync_Logger::log( sprintf(
+				'Gallery check: %d of %d imported product(s) showed their main photo again in the gallery; it was taken out of the gallery, and no photo was deleted.%s',
+				(int) $record['healed'],
+				(int) $record['checked'],
+				$record['stopped'] > 0
+					? sprintf( ' A run was stopped part way %d time(s), so up to %d more may have been put right than counted.', (int) $record['stopped'], (int) $record['stopped'] * self::GALLERY_HEAL_BATCH )
+					: ''
+			) );
+			return;
+		}
+
+		foreach ( $ids as $product_id ) {
+			$product_id = (int) $product_id;
+
+			$record['checked']++;
+			$record['cursor'] = $product_id;
+
+			if ( self::heal_gallery( $product_id ) ) {
+				$record['healed']++;
+			}
+		}
+
+		update_option( self::GALLERY_HEAL_OPTION, $record, false );
+		delete_option( self::GALLERY_HEAL_OPEN_OPTION );
+
+		as_enqueue_async_action( self::GALLERY_HEAL_HOOK, array(), self::GALLERY_HEAL_GROUP );
+	}
+
+	/**
+	 * Take this plugin's copy of the main photo out of one product's gallery.
+	 *
+	 * Read from the table, and written by the gallery row's own meta_id,
+	 * only while it still holds what was read and the main photo is still
+	 * the one read: a gallery deleted meanwhile - the mapper moving a trashed
+	 * product's photos to the product that replaces it - is not put back, and
+	 * one whose main photo changed is left for its next gallery write.
+	 *
+	 * @param int $product_id Product.
+	 * @return bool Whether its gallery changed.
+	 */
+	private static function heal_gallery( $product_id ) {
+		global $wpdb;
+
+		$main_photo = self::meta_now( $product_id, '_thumbnail_id' );
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$row = $wpdb->get_row( $wpdb->prepare(
+			"SELECT meta_id, meta_value FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key = '_product_image_gallery' ORDER BY meta_id ASC LIMIT 1",
+			$product_id
+		) );
+
+		if ( (int) $main_photo <= 0 || ! is_object( $row ) || '' === (string) $row->meta_value ) {
+			return false;
+		}
+
+		$was     = (string) $row->meta_value;
+		$gallery = explode( ',', $was );
+		$kept    = array();
+		foreach ( $gallery as $gid ) {
+			if ( ! self::is_main_photo_copy( $gid, (int) $main_photo ) ) {
+				$kept[] = $gid;
+			}
+		}
+
+		if ( count( $kept ) === count( $gallery ) ) {
+			return false;
+		}
+
+		// The main photo, read again just before the write.
+		if ( self::meta_now( $product_id, '_thumbnail_id' ) !== $main_photo ) {
+			return false;
+		}
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery
+		$written = $wpdb->update(
+			$wpdb->postmeta,
+			array( 'meta_value' => implode( ',', $kept ) ),
+			array( 'meta_id' => (int) $row->meta_id, 'meta_value' => $was )
+		);
+
+		if ( ! $written ) {
+			return false;
+		}
+
+		wp_cache_delete( $product_id, 'post_meta' );
+
+		return true;
+	}
+
+	/**
+	 * A product's meta value as the table holds it now, past any cache.
+	 *
+	 * @param int    $product_id Product.
+	 * @param string $key        Meta key.
+	 * @return string|null Null when there is none.
+	 */
+	private static function meta_now( $product_id, $key ) {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$value = $wpdb->get_var( $wpdb->prepare(
+			"SELECT meta_value FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key = %s ORDER BY meta_id ASC LIMIT 1",
+			$product_id,
+			$key
+		) );
+
+		return null === $value ? null : (string) $value;
 	}
 
 	/**
@@ -2041,7 +2274,7 @@ class TCGiant_Sync_Image_Localizer {
 				// not another gallery entry. One a product already shows twice
 				// is put right here, the next time its photos are fetched; one
 				// the shop put in the gallery itself is left alone.
-				if ( (int) $gid === $main_photo && get_post_meta( (int) $gid, '_tcgiant_source_url', true ) ) {
+				if ( self::is_main_photo_copy( $gid, $main_photo ) ) {
 					continue;
 				}
 				$is_external = get_post_meta( (int) $gid, '_tcgiant_external_url', true );

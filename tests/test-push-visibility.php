@@ -491,17 +491,31 @@ class TCGiant_Sync_DB {
 }
 class TCGiant_Sync_Inventory {
 	const SETTLE_KEYS = array( '_ebay_stock_settled_at', '_ebay_stock_settled_item' );
+	// What the real class names (3.28.0): the auction the shop listed from
+	// WooCommerce, and the figures an auction import records.
+	const AUCTION_LISTED_KEY  = '_ebay_auction_listed_item';
+	const AUCTION_FIGURE_KEYS = array( '_ebay_start_price', '_ebay_current_price', '_ebay_bid_count', '_ebay_buy_it_now_price' );
 	// What a push asks before it lists an ended listing's product again: no
 	// website sale was put back in stock, and the ended listing's sales are in.
 	public static function restocked_after_website_sale( $product_id ) { return 0; }
 	public static function listing_already_settled( $product_id, $item_id ) { return true; }
 	// What a relist forgets about the listing it replaced.
 	public static function clear_settled_mark( $product_id ) { return true; }
+	// A SKU made from the old item number moves with a relist (3.28.0); these
+	// products' SKUs are their own (GC-...), so there is nothing to move.
+	public static function follow_item_number_sku( $product_id, $old_item_id, $new_item_id ) {}
+	// The type eBay gave, noted for the listing it is for (3.28.0, fix round 3).
+	public static function note_listing_type( $product_id, $item_id, $type ) { $GLOBALS['NOTED_TYPES'][] = array( (int) $product_id, (string) $item_id, (string) $type ); }
 }
 class TCGiant_Sync_Importer {
 	const GROUP_SCAN = 'tcgiant_sync_group';
 }
 
+// A live shop, by wp-config, for TCGiant_Sync_Environment (3.28.0), which
+// the push, Relist and auto-relist ask before anything goes to eBay.
+// Staging copies are test-staging-detect.php's.
+define( 'TCGIANT_SYNC_IS_STAGING', false );
+require $ROOT . '/includes/class-tcgiant-sync-environment.php';
 require $ROOT . '/includes/class-tcgiant-sync-runtime.php';
 require $ROOT . '/includes/class-tcgiant-sync-catalog.php';
 require $ROOT . '/includes/class-tcgiant-sync-api.php';
@@ -538,10 +552,13 @@ class Harness_eBay extends TCGiant_Sync_API {
 		}
 
 		if ( 'GetItem' === $call_name ) {
-			if ( ! isset( $GLOBALS['W']['ebay'][ $item_id ] ) ) {
+			// An ended listing is one eBay still has, and answers for: since
+			// 3.28.0 a push and a relist ask about it before listing anything
+			// new, for a relist made on eBay.
+			if ( ! isset( $GLOBALS['W']['ebay'][ $item_id ] ) && ! isset( $GLOBALS['W']['ended'][ $item_id ] ) ) {
 				return new WP_Error( 'ebay', 'Item not found.' );
 			}
-			preg_match( '#<Title>(.*?)</Title>#s', (string) $GLOBALS['W']['ebay'][ $item_id ]['xml'], $title );
+			preg_match( '#<Title>(.*?)</Title>#s', (string) ( $GLOBALS['W']['ebay'][ $item_id ]['xml'] ?? '' ), $title );
 			return array( 'Ack' => 'Success', 'Item' => array(
 				'ItemID'        => $item_id,
 				'Title'         => html_entity_decode( (string) ( $title[1] ?? '' ) ),

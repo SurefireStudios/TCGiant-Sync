@@ -45,6 +45,7 @@ $tcgiant_hooks = array(
 	'tcgiant_sync_daily_maintenance',
 	'tcgiant_sync_check_ended_listings',
 	'tcgiant_sync_reconcile_inventory',
+	'tcgiant_sync_reconcile_stall',     // The weekly check's stall check, 3.28.0.
 	'tcgiant_sync_import_orders',
 	'tcgiant_sync_scan_resume',
 	'tcgiant_sync_localize_images',
@@ -64,8 +65,11 @@ if ( function_exists( 'as_unschedule_all_actions' ) ) {
 		'tcgiant_sync_fetch_delta_events',
 		'tcgiant_sync_process_item_import',
 		'tcgiant_sync_prune_orphans',
-		'tcgiant_sync_update_ebay_stock',
+		'tcgiant_sync_update_ebay_stock',  // Stock pushes queued before 3.28.0.
+		'tcgiant_sync_push_stock',         // Stock pushes, 3.28.0.
 		'tcgiant_sync_settle_item',        // Per-listing stock checks, 3.27.0.
+		'tcgiant_sync_gallery_heal',       // The gallery pass, 3.28.0.
+		'tcgiant_sync_reconcile_continue', // The weekly check's follow-up, 3.28.0.
 
 		// The exporter's queue. This was listed as tcgiant_sync_push_product,
 		// which is not a hook this plugin has ever registered, so queued pushes
@@ -194,6 +198,16 @@ $tcgiant_options = array(
 	'tcgiant_sync_last_crash_delta_sync',      // The same, per job, 3.27.2.
 	'tcgiant_sync_last_crash_full_sync_scan',
 	'tcgiant_sync_last_crash_image_localiser',
+	'tcgiant_sync_last_crash_inventory_pruning',
+	'tcgiant_sync_prune_queue',        // The pruner's list to check, 3.28.0.
+	'tcgiant_sync_env_verdict',        // Staging check as last recorded, 3.28.0.
+	'tcgiant_sync_live_confirmed',     // "This is my live shop", 3.28.0.
+	'tcgiant_sync_push_failures',      // Stock pushes eBay never took, 3.28.0.
+	'tcgiant_sync_push_switch',        // What the 3.28.0 upgrade did about stock pushes, and its notice.
+	'tcgiant_sync_disconnected_at',    // When the eBay connection was last taken away, 3.28.0.
+	'tcgiant_sync_last_crash_stock_push',      // A stock push PHP killed, 3.28.0.
+	'tcgiant_auction_import_notice',   // "Import eBay auctions" decided at upgrade, 3.28.0.
+	'tcgiant_auction_listed_marked',   // Auctions listed from WooCommerce marked at upgrade, 3.28.0.
 	'tcgiant_sync_last_crash_push',            // A push PHP killed, 3.27.4.
 	'tcgiant_sync_last_crash_photo_cleanup',   // Photos of deleted products, 3.27.4.
 	'tcgiant_sync_last_crash_photo_check',
@@ -219,6 +233,11 @@ $tcgiant_options = array(
 	'tcgiant_export_state',            // Export state machine.
 	'tcgiant_listings_table_version',
 	'tcgiant_listing_type_backfilled',
+	'tcgiant_sync_gallery_heal',       // The gallery pass, how far it got and what it did, 3.28.0.
+	'tcgiant_sync_gallery_heal_open',  // The gallery pass's batch in hand, 3.28.0.
+	'tcgiant_sync_settle_chains',      // Stock checks waiting to try again, 3.28.0.
+	'tcgiant_sync_call_count_tidied',  // The day the eBay call counts were last tidied, 3.28.0.
+	'tcgiant_sync_reconcile_pass',     // Where the weekly check has got to, 3.28.0.
 	'tcgiant_postmeta_index_version',
 	'tcgiant_sync_license',
 	'tcgiant_sync_settings',           // Legacy name, harmless if absent.
@@ -230,8 +249,10 @@ foreach ( $tcgiant_options as $tcgiant_option ) {
 }
 
 // Per-job item lists, cached eBay business policies, the leftover-photo
-// check's findings and its holds, and the large-copy removal's holds, use
-// dynamic names.
+// check's findings and its holds, the large-copy removal's holds, the
+// day's eBay call counts (3.28.0's, and the transients 3.27 kept them in),
+// and when each stock check waiting to try again was last joined (3.28.0)
+// use dynamic names.
 // phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 $wpdb->query(
 	"DELETE FROM {$wpdb->options}
@@ -239,7 +260,11 @@ $wpdb->query(
 	    OR option_name LIKE 'tcgiant_export_policies_%'
 	    OR option_name LIKE 'tcgiant_sync_photo_scan_ids_%'
 	    OR option_name LIKE 'tcgiant_sync_photo_cleanup_lock_%'
-	    OR option_name LIKE 'tcgiant_sync_size_trim_lock_%'"
+	    OR option_name LIKE 'tcgiant_sync_size_trim_lock_%'
+	    OR option_name LIKE 'tcgiant_sync_api_calls_%'
+	    OR option_name LIKE 'tcgiant_sync_settle_joined_%'
+	    OR option_name LIKE '_transient_tcgiant_api_calls_%'
+	    OR option_name LIKE '_transient_timeout_tcgiant_api_calls_%'"
 );
 
 // Photos waiting to be removed with the products they belonged to. Taking
@@ -286,7 +311,7 @@ $wpdb->query(
 );
 
 // The listing's own return and payment policies, recorded beside its shipping
-// one (3.27.8), for 3.28.0's revise of imported listings.
+// one (3.27.8), for 3.28.1's revise of imported listings (item 13).
 $wpdb->query(
 	"DELETE FROM {$wpdb->prefix}postmeta
 	 WHERE meta_key IN ( '_ebay_return_policy_id', '_ebay_return_policy_name', '_ebay_payment_policy_id', '_ebay_payment_policy_name' )"

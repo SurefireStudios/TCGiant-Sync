@@ -2,9 +2,9 @@
 Contributors: tcgiantteam
 Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
-Tested up to: 7.0
+Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.27.8
+Stable tag: 3.28.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -29,6 +29,7 @@ TCGiant Sync bridges your eBay store and WooCommerce, enabling automatic import 
 * **Pre-push readiness checklist** validates category, condition, policies, images, and title length
 * Per-product eBay Category and Condition overrides
 * **Per-product Listing Type & Duration** — choose Fixed Price or Auction, with duration from 1 day to GTC, per product or as global defaults
+* **eBay auctions stay on eBay** -- a product on a running auction shows its opening or current bid with a link to the auction, and cannot be bought on your website; importing auctions you start on eBay is a setting of its own
 * **Per-product Shipping Policy** — override the default fulfillment policy on individual products
 * **"All Other" item type** — list non-collectible products (electronics, clothing, etc.) with simple conditions, no grading required
 * eBay ConditionDescriptor support — Graded (PSA, BGS, SGC, CGC, etc.) and Ungraded conditions for Trading Cards and Coins categories
@@ -80,6 +81,49 @@ Yes. TCGiant Sync uses eBay's official OAuth 2.0 sign-in, by way of our relay. T
 
 When a product sells on either eBay or WooCommerce, the plugin automatically adjusts stock levels on the other platform to prevent overselling.
 
+= Will a staging copy of my shop change my eBay listings? =
+
+Not if TCGiant Sync can tell it is a copy. A copy of your shop carries your eBay connection with it, so TCGiant Sync decides on every site whether it is the live shop, and a site it treats as a copy sends nothing to eBay: no stock changes, no new, revised, ended or relisted listings, no picture uploads and no tracking numbers. It still reads from eBay, so imports carry on. A notice on the TCGiant Sync screens says when a site is being treated as a copy, and why.
+
+A site is treated as a copy when any of these is true:
+
+* WordPress's environment type (WP_ENVIRONMENT_TYPE) is local, development or staging. Many hosts set this on their staging sites for you.
+* Its address is localhost, a private network address, a machine name with no domain, an address of a local development tool (DDEV's .ddev.site, Lando's .lndo.site, Docksal's .docksal.site), or ends in .local, .localhost, .localdomain, .lan, .test, .example, .invalid or .internal.
+* A subdomain in front of your own domain is staging, stage, stg, dev, development, test, testing, uat or preprod (a number after it counts too, as in staging2), or starts or ends with staging, stage, stg, dev or test and a hyphen, as in staging-yourshop or yourshop-stg. Your own domain name is never looked at, so webdev-supplies.com and test.co.uk are live shops, while dev.yourshop.com is a copy.
+* It is a Kinsta env- address or a WP Engine environment whose name ends in stg or dev.
+* Its address is in a first folder with one of the words above, as in yourshop.com/staging.
+
+A copy at an address none of these match - a host's temporary address such as Cloudways' cloudwaysapps.com or GoDaddy's myftpupload.com, or a name you choose yourself - looks like a live shop and sends changes to eBay. On a copy like that, set WP_ENVIRONMENT_TYPE to staging, or add define( 'TCGIANT_SYNC_IS_STAGING', true ); to its wp-config.php, as soon as you make it.
+
+The decision comes from your site's address as saved in WordPress (or WP_HOME in wp-config.php), so it is the same whether the plugin is running in a page, from WP-CLI or from a server cron job. If your wp-config.php builds WP_HOME from the visiting address, as Bitnami's (AWS Lightsail) does, a WP-CLI run given no --url has no real address to go by and follows what the last admin page load decided. Given --url (or a url in wp-cli.yml), it goes by that address.
+
+= My live shop is being treated as a staging copy. What do I do? =
+
+If it is your address that looks like a copy - a live shop at dev.yourshop.com, for example - an administrator can press "This is my live shop" in the notice on the TCGiant Sync dashboard. That applies to that exact address only: a copy at any other address is judged by its own address again.
+
+The button cannot overrule WP_ENVIRONMENT_TYPE. If WordPress says your live shop is a staging or development site, change that where it is set: in wp-config.php, or in your host's settings.
+
+You can also decide it yourself in wp-config.php, above the line that says "That's all, stop editing!":
+
+`define( 'TCGIANT_SYNC_IS_STAGING', false );` treats the site as your live shop, whatever its address or environment type.
+
+`define( 'TCGIANT_SYNC_IS_STAGING', true );` keeps the site off eBay, whatever its address.
+
+Only set it to false on the live shop itself. If you then copy the site, the copy takes wp-config.php with it on many hosts, and would send changes to eBay too.
+
+= Does it work with eBay auctions? =
+
+Yes, with one rule: a product on a running eBay auction cannot be bought on your website. Where Add to cart would be, it shows "Auction on eBay" with the opening bid, or the current bid once someone has bid, and a link to the auction. Its website price is the opening bid, which no longer climbs with every bid. A website sale used to take the item at whatever the bidding had reached, and then either sold it twice or ended the auction, which cancels every bid.
+
+Auctions you start on eBay become products only when "Import eBay auctions" is on (Settings, Import Settings). It is off for new shops. It was turned on at the 3.28.0 update for shops that already had products imported from auctions, so theirs keep arriving. Either way, products already linked to an auction keep syncing.
+
+An auction is always one item, so stock changes are not sent to it. When a product runs out:
+
+* An auction with no bids is ended, if "Auto-end listing when stock reaches 0" is on.
+* An auction with bids is left running, and the activity log says so. Ending it from here would cancel every bid, and eBay does not allow it at all in an auction's last 12 hours. If the item has gone, end the auction in Seller Hub.
+
+A product you listed at auction from WooCommerce goes back on sale on your website once eBay reports the auction ended unsold, which can take up to an hour. A product imported from an eBay auction does not, because its price is eBay's opening bid rather than a price you set.
+
 = What types of products are supported? =
 
 TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It includes full eBay ConditionDescriptor support for graded items (PSA, BGS, SGC, CGC, and 17 other graders) and ungraded items (Near Mint, Excellent, etc. for cards; Uncirculated, Fine to Very Fine, etc. for coins). It works with any eBay listing type.
@@ -95,6 +139,165 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.28.0 - 2026-10-28 =
+**Upgrade notice: please read before updating**
+* If you saved "Reduce WooCommerce stock on eBay sale?" as No, its default, TCGiant Sync has not been sending your website's stock changes to eBay. That setting was switching them off by mistake. 3.28.0 turns them on, unless you have since set the new "Send website stock changes to eBay?" yourself. From then on, these all update the linked eBay listing: a website sale, a cancelled or refunded order, and a stock change made by hand, by a CSV import or by another plugin. At 0 the listing is ended if "Auto-end listing when stock reaches 0?" is Yes, the default. A product that allows backorders is treated the same at 0 or below. Nothing is sent at the update itself: each product's stock goes to eBay the next time it changes.
+  - Not if WP-Lister for eBay is active when you update. Two plugins sending stock to the same eBay listings overwrite each other's quantities, so 3.28.0 leaves sending off and says so, in one warning in the activity log and a notice. It stays off if you deactivate WP-Lister later. To use TCGiant Sync's instead, turn off WP-Lister's stock sync, then set "Send website stock changes to eBay?" to Yes in Settings.
+* What you will see: one warning in the activity log, at the first request after the update: "Updated to 3.28.0: website stock changes are now sent to eBay. They had been switched off on this site since "Reduce WooCommerce stock on eBay sale?" was saved as No - that setting was wrongly turning them off as well, and now only does what it says. To stop sending stock to eBay, set "Send website stock changes to eBay?" to No in Settings."
+  - Administrators also see a notice, "TCGiant Sync now sends your website's stock changes to eBay", on the WordPress Dashboard, the Products list, product screens and TCGiant Sync's own screens. It appears once the shop is connected to eBay and is not a staging copy, and stays until you press Got it or save Import Settings.
+  - The dashboard's health panel shows "Website stock to eBay: On".
+* To turn it off: TCGiant Sync, Settings, Import Settings, Scheduling. Set "Send website stock changes to eBay?" to No and save. Changes already waiting, and changes being tried again, stop as well. Do this only if something else keeps your eBay quantities up to date: with it off, an item sold on your website stays for sale on eBay. The order screen's "Push to eBay" still sends, because you ask for it by hand.
+* What every shop sends to eBay differently from 3.27:
+  - Each website sale reads the listing before it changes it: 2 eBay calls instead of 1.
+  - A change eBay does not take is tried up to 5 more times over about 10 hours, at 2 or 3 calls a try. While eBay's own call limit (518) holds, the change waits, for up to 3 days. Once an hour, one call asks for everything waiting whether the limit has lifted.
+  - With "Auto-end listing when stock reaches 0?" at No, 0 is sent instead of ending the listing.
+  - Variations are sent one at a time, by SKU. Stock that a product's variations share is sent to each of them, up to 4 to a call and read back. That also happens after an eBay sale of one of them.
+  - Past 80% of the day's eBay allowance shared by all shops, hand edits and imports wait until just after midnight UTC. Sales and changes to 0 still go.
+  - No quantity is sent to an auction. At 0, an auction is ended only if nobody has bid.
+  - The weekly stock check reads every page, at one call per 200 listings. A shop with more than 5,000 listings makes more calls than before: 10,000 listings take 50 a week instead of 25. It still only reports.
+  - A staging copy that 3.27 took for the live shop now sends nothing. A live shop that 3.27 took for a copy now sends, and a notice says so.
+* Also at the update, with nothing sent to eBay:
+  - "Import eBay auctions" is turned on for shops that already have products imported from auctions.
+  - Products on a running auction can no longer be bought on your website.
+  - The first check of each listing with variations brings any variation you restocked by hand since the listing ended down to eBay's figure. The log names each one.
+  - Galleries that show the main photo twice are put right in the background.
+
+**Website stock changes reach eBay**
+* FIX: Saving Settings with "Reduce WooCommerce stock on eBay sale?" at No, its default, also switched off sending your website's stock changes to eBay. So an item sold on your website stayed for sale on eBay. That setting now only does what it says, and is renamed "Take eBay sales off stock for products not linked to a listing?". A new setting, "Send website stock changes to eBay?" (Settings, Import Settings, Scheduling), decides sending. Shops the old setting had switched off get sending back on at the update: see the upgrade notice.
+* Not while WP-Lister for eBay is active: two plugins sending stock to the same eBay listings overwrite each other's quantities. A shop that has it active when it updates keeps sending off, saved as its own No, so it stays off if WP-Lister is deactivated later. One warning in the activity log and a notice say why. To use TCGiant Sync's instead, turn off WP-Lister's stock sync, then set "Send website stock changes to eBay?" to Yes.
+* NEW: The dashboard's health panel shows "Website stock to eBay: On" or "Off". While it is off, the activity log says once a day that a change was not sent. Setting it to No also stops changes already waiting and changes being tried again. The order screen's "Push to eBay" still sends.
+* A shop not connected to eBay no longer queues stock changes it cannot send. After Disconnect, changes are still queued for about 11 hours, so reconnecting within that time gets them to eBay.
+
+**What a website sale sends**
+* FIX: A website sale now asks eBay what the listing has sold first. eBay sales your website has not heard of yet are taken off your website's stock too. eBay is then sent your website's figure, never more than eBay already shows. Before, your website's figure was sent as it was, which put back on eBay anything eBay had sold since the last sync. Each push reads the stock when it runs. So two website sales before the queue ran no longer end a listing that still has stock, and a restock made just after a sale is no longer wiped. Cost: 2 eBay calls a sale instead of 1.
+* FIX: A hand edit, refund or cancel could put back a unit eBay had sold since the last sync. Once the listing's eBay sales are on record here, that is now put right at once: your website's stock is lowered by that sale and eBay is sent the corrected figure. It costs one more call, only when it happens. A website order that was cancelled and then paid after all is now sent to eBay again; eBay used to keep the unit the website had sold.
+* FIX: Every stock change now goes to the listing of the product that changed. Two products could share a SKU or a barcode: two listings of the same part, say, or a Sell Similar copy. They sent their stock to each other's listing, so one selling out ended the other's listing and left its own for sale. A listing linked to two products is sent nothing until one of them is unlinked, and the log names them.
+* FIX: A website order could queue two stock changes for the same sale: when paid through the block checkout, a payment gateway's webhook, or a status change in the admin. It now queues one. A stock change of another product in the same request is no longer held back.
+* FIX: Products you listed from WooCommerce are now recorded as ended when a website sale ends their listing. Before, only imported products were.
+* FIX: The order screen's "Push to eBay" ended the listing of a product whose stock WooCommerce does not track. Those lines are now skipped, with the reason shown, and the button never sends more than eBay already shows.
+* A sale whose listing has since been relisted is sent to the relist, never more than the relist shows.
+  - Stock changes queued just before you update are still sent, with the stock the product has when they run. If the queued SKU belongs to more than one product, nothing is sent and the log names them.
+  - If you go back to 3.27, changes waiting on the new queue are not sent: edit those products' stock again.
+
+**When eBay refuses, is down or is out of calls**
+* FIX: When eBay refused to end a listing, or to take a new quantity, the listing could be recorded as ended anyway. It now stays live here, and the change is tried again after 5 and 15 minutes, then 1, 3 and 6 hours. Each try reads the listing first, at 2 or 3 calls a try. If eBay still refuses, the change is logged as an error with eBay's last answer. Whether a listing has ended is now read from eBay, not from the wording of its error. So a message containing "suspended" is no longer taken for an ended listing, and nothing depends on your eBay site's language.
+* FIX: "Auto-end listing when stock reaches 0? No" was ignored, and the listing was ended anyway. With No, 0 is now sent, and the listing stays live but hidden from search, through eBay's Out-of-Stock control; turn that on in eBay's selling preferences. Without it, eBay refuses 0, so the listing is ended so that it cannot sell again, and the log says so once a day.
+* FIX: A stock change your host stopped part way, at a time or memory limit or by ending the request, was lost. It is now tried again, and logged.
+* NEW: Outages no longer use up the tries:
+  - eBay's own call limit (518): a waiting change is tried again hourly, every 15 minutes in the hour after 00:05 UTC, for up to 3 days, and none of these count as tries. One call per slot asks eBay, for everything waiting, whether the limit has lifted. Nothing else is sent until it has.
+  - The plugin's own daily budget: the change waits until just after 00:05 UTC, for up to 3 days.
+  - eBay not answering at all: the change waits another 6 hours at a time, for up to 3 days.
+
+  If a change is given up, the log line says how long it waited, and for what.
+* CHANGED: Some changes now go past 80% of the day's eBay allowance shared by all shops: website sales, pushes by hand, anything going to 0, and the stock checks after eBay sales. Before, they were refused like everything else. Other hand edits and CSV imports are now sent just after midnight UTC, one per product, with the stock it has then; before, they were dropped. If eBay refuses a hand edit or import the same way twice, with the listing unchanged, it is given up at once and logged. Sales and changes to 0 keep every try.
+* CHANGED: A listing made through eBay's Inventory API is changed through that API only when eBay says the SKU's offer is that very listing. Before, any inventory item with the product's SKU was changed.
+
+**eBay sales reaching your website**
+* FIX: The stock check after an eBay sale could fail to reach eBay: a timeout, the day's calls used up, no token. It then gave up and left the sale to the regular sync, which may be days behind, so the item stayed for sale on your website. It now tries again after 15 minutes, 1 hour, 4 hours and 12 hours. If eBay is out of calls, it waits as a stock change does, for up to 3 days. If eBay is not answering at all, it waits 12 hours at a time, for up to 3 days. A later check that reads the listing after the sale ends the wait early. If it gives up, the log names the product and the listing, and Stock Review lists it.
+* FIX: A website sale and an eBay sale of the same product close together are each taken off once. The stock check leaves the stock to a website sale's push that is still on its way, when there is no record of eBay's sales to go by. For a website sale whose push never reached eBay, only that sale's units are held back.
+* FIX: While a stock change is on its way to eBay, the sync no longer writes eBay's older, higher figure over your website's. While a website sale is on its way, it leaves your website's stock alone, because eBay's figure does not include that sale. Once nothing is waiting, eBay's figure applies as before, so stock you raise in Seller Hub still reaches the website.
+* Improved: Stock Review's list of eBay listings to check by hand says why each one is there and what to do next. The reasons: it stopped the sync when imported, eBay could not be read for it, or its stock check after a sale gave up. The notice on the plugin's pages tells them apart too.
+
+**Listings with variations**
+* FIX: When a listing with variations ended, sold or ran on, only the product as a whole was brought into line with eBay. So a variation eBay had sold out stayed in stock on your website. Each variation is now brought down to what eBay says it has left, and never raised.
+* FIX: Variations are now sent to eBay one at a time, by the SKU eBay has for them. A variation sold on your website used to reach eBay as nothing at all, and one with no SKU of its own could end the whole listing. A variation that sells out is set to 0, and the listing is not ended because one variation sold out. The exception is the last variation with stock on eBay. If eBay will not set it to 0 (no Out-of-Stock control), and no other variation has stock here, the listing is ended and the log says so.
+* FIX: Stock kept on the product and shared by its variations is now sent to every variation of the listing that shares it, up to 4 to a call, and read back. Before, eBay heard nothing until the stock ran out, and then the listing was ended. A variation that keeps its own stock is never sent the shared figure.
+  - The sync no longer splits the shared stock into stock of each variation's own: a shared 5 became 5 each. Only eBay's sales of the variations come off it, and the new figure is then sent to the listing's other variations.
+* FIX: An eBay sale of a variation was taken off your website's stock twice: by the order sync, and again when the sync read eBay's figures. It is now taken off once. For shared stock, the order sync takes it off as soon as it sees the order, if 3.28.0 has read that listing and the read came more than 5 minutes before the order. Otherwise the sale's own stock check takes it off.
+* FIX: Bulk Relist, Auto-Relist and Push did not check a variation listing's sales before listing it again, and eBay put a sold-out variation back up at its first quantity. Each variation's sales are now brought in first. A relist sends every variation's quantity: your stock for the ones you have, 0 for the ones that sold out (eBay drops those unless Out-of-Stock control is on).
+  - A listing with nothing left in any variation is not relisted.
+  - Nor is one whose variation stock could not be set, because another plugin holds it, say; the log names the variation.
+  - A listing whose product shows no stock of its own while a variation does can now be relisted and checked.
+* FIX: When the sync could not read an ended listing's variations (out of calls, say), it moved past the listing, and the variations were never settled. It now waits on that listing and reads it again.
+* Note: the first check of each listing with variations after the update also brings down any variation you restocked by hand since its listing ended. The log names each one, with the figures.
+  - An eBay variation that cannot be matched to one of yours, by SKU or by its options, is left alone and named.
+  - A variation with no SKU is not sent, and is named: give it the SKU it has on eBay.
+  - Without Out-of-Stock control, eBay removes a variation set to 0 before it has ever sold, so a later restock of it cannot reach eBay. The log says so; push the product to put it back.
+
+**Relists stay one product**
+* FIX: A listing you relist on eBay now moves the product that sold the old listing on to the new one. It used to become a second product, while the first stayed in stock on the ended listing, so a website sale never reached eBay and the item could sell twice. A relist that sells before the sync sees it is caught too, by any of three checks: the sync, the stock check after a sale, or the clean-up after a full sync. The stock is brought down to what eBay says is left.
+* FIX: Bulk Relist, Auto-Relist and Push no longer relist a listing you had already relisted on eBay: the product follows your relist, and a push updates it. Sales on the old listing that the sync had not brought in are taken off first. A SKU made from the eBay item number moves to the new number where it can.
+  - That update keeps to 3.27.8's photo rules: never a mix of eBay's photos and your website's. If one of your photos can't be put on eBay beside photos already there, the relist keeps the photos it has, so none is taken off it, and the log says so once.
+* A relist is left as a product of its own, with a line in the log saying why, in these cases:
+  - the old listing is still live, or eBay's record of it does not name this one as its relist (a Sell Similar copy);
+  - neither the relist's SKU nor its barcode is the product's;
+  - the old listing was a single item that sold;
+  - two products share the old listing, or it has been relisted already.
+
+  Cost: one or two calls per relist, to ask eBay about the old listing.
+* When a relist offers more than your website held, the log says so and how to correct the stock. The usual cause: an item sold on your website, then relisted from eBay's Unsold list.
+  - Stock Review may list a product as put back in stock after a website sale. If its relist ended unsold, that product stays on its old listing until you set its stock there.
+  - Duplicates made by earlier versions are not merged.
+
+**eBay auctions**
+* FIX: A product on a running eBay auction could be bought on your website at whatever the bidding had reached. The sale then either sold it twice or ended the auction, which cancels every bid. Now it cannot be bought here. Where Add to cart was, it shows the opening bid, or the current bid once someone has bid, with a link to the auction. A page from a full-page cache may still show Add to cart until it refreshes, but the sale is refused.
+* FIX: An imported auction's website price was its current bid, and it climbed with every bid. It is now the opening bid, and an Update from WooCommerce no longer moves the opening bid.
+* NEW: "Import eBay auctions" (Settings, Import Settings). Auctions you start on eBay become products only while it is on. It is off for new shops, and is turned on at the update for shops that already had products imported from auctions, with a notice. Products already linked to an auction keep syncing either way. While it is off, an auction does not take over a product of yours with the same SKU.
+* FIX: No stock changes are sent to auctions, which are always one item. When a product on an auction runs out, the auction is ended only if nobody has bid, which takes one call to check. With bids it is left running, and the log says so: ending it would cancel the bids, and eBay does not allow it in an auction's last 12 hours. The next sync no longer puts that product back to 1. An auction eBay refused to end is no longer recorded as ended.
+* An auction you listed from WooCommerce goes back on sale on your website once eBay reports it ended unsold, and the product follows eBay's relist of it. An auction started on eBay does not go back on sale, as its price is eBay's opening bid. To sell one of those here, set your own price, then push it as Fixed Price or unlink it.
+
+**Staging copies stay off your eBay listings**
+* FIX: Staging and development copies were treated as the live shop: copies at staging.yourshop.com, staging1.yourshop.com or dev.yourshop.com, and at Kinsta's and WP Engine's staging addresses. They ended live listings, changed live quantities, relisted, and marked real buyers' orders shipped. They now send nothing to eBay, though they still read from it. The FAQ lists every rule. A copy at an address no rule matches still looks live, such as a host's temporary address. On such a copy, set WP_ENVIRONMENT_TYPE to staging, or TCGIANT_SYNC_IS_STAGING to true.
+* FIX: Live shops whose address merely contained "dev-", "staging-", ".local" or ".test.", such as webdev-supplies.com, were treated as copies and sent nothing to eBay. They now send changes, and a notice says so once. Sales made on your website while sending was off never reached eBay, so check those orders against eBay and your stock. Nothing is pushed for you.
+* FIX: On a copy, eBay's Inventory API stock update used to go out regardless. And a sale that took stock to 0 recorded the listing as ended in the copy's database, which a host pushing staging to live then carried over. Neither happens now.
+* FIX: WP-CLI and server cron now judge a site by its address, the saved one or --url, as pages do. Only a WP-CLI run with no address to go by (Bitnami's wp-config.php, no --url) follows what the last admin page load decided.
+* NEW: If your live shop has an address that looks like a copy, an administrator can press "This is my live shop" in the notice. It applies to that address only. Changes refused before the press are not sent afterwards. On a copy, Bulk Push, End and Relist are refused with one message, and Auto-Relist does not run.
+* A copy no longer asks eBay to host your photos. Where a push or Check with eBay would upload one ("Host listing images on eBay?" on, or a photo already on eBay), a copy decides the listing's photos as if the upload had been refused, and the log gives the copy as the reason. Photos the live shop already put on eBay are still used.
+
+**The clean-up after a full sync**
+* FIX: The clean-up after a full sync, and Prune Inventory, moved to the Trash every product whose listing eBay confirmed had ended. That included products you pushed, listings that ended unsold, and everything when "Remove products when their eBay listing sells out" was off. Products in Preserve categories were set to 0 and unlinked. An ended listing is now settled the way the sync settles any ended listing: stock is lowered to what eBay says is left, never raised. The product goes to the Trash only if it sold out and the setting allows it. A product you pushed, or one in a Preserve category, is never trashed.
+* FIX: The clean-up now does more with what eBay says:
+  - A live listing the scan missed has its stock lowered if eBay has sold more than the shop knew.
+  - A listing eBay has relisted moves its product on to the relist, for one more call.
+  - A listing eBay no longer has is recorded as ended with its stock unchanged, and Auto-Relist stops trying to relist it every day.
+  - Listings the scan misses time after time are asked about first. Once 40 have been asked about, if 9 in 10 are still live, as is normal on a large Good 'Til Cancelled store, the rest wait for the next full sync. That is logged as information, not as an error.
+  - It stops after eBay fails to answer 5 times in a row.
+
+  Cost, as in 3.27.6: up to 300 calls a run, with the rest an hour later.
+* FIX: An Emergency Stop pressed during a full sync could be undone by a queued import that wrote back its own copy of the sync's state. It now holds. A clean-up still working through an older full sync's list stops when a newer full sync starts.
+* FIX: Resume Import on a paused delta sync now carries on the delta at once, instead of starting a scan of pages.
+* FIX: A queued import, or "Sync specific items", could reach a listing that had ended since it was queued. It saved the listing as live, with its stock set from eBay's figures, which put a coin sold on the website back up for sale. It is now settled. An ended listing with no product now says so in the log instead of counting as imported.
+* FIX: On the Import page, a shop that had hit the free limit and then upgraded had its running scan stopped, as if Emergency Stop had been pressed.
+* Prune Inventory now says what it does. A full sync that imported every listing during its scan now says that the clean-up did not run.
+
+**The weekly stock check reads every page**
+* FIX: The weekly stock check stopped after 25 pages of listings (5,000), so in a larger shop the rest were never checked; the log said "Stopped at the 25-page cap". It now reads every page, up to 25 at a time, fewer if the server is short of time or memory. It carries on in the background from where it got to, and logs one line with the totals at the end. Cost: one call per page of 200 listings, so 10,000 listings take 50 calls a week. It only reports, as before: it never changes stock.
+* If the day's eBay calls run out, it waits until just after 00:05 UTC. Under eBay's 518 it asks again hourly. If eBay cannot be reached, it tries again every 15 minutes, 5 tries in all.
+  - Only one check runs at a time, and one that stops is picked up again within two hours.
+  - One not finished after three days starts again. If eBay's 518 still holds by then, it stops instead, until the next weekly run.
+  - A page that stops the check three times in a row, usually at a memory or time limit, is skipped and counted in the end line.
+* FIX: Listings with variations are no longer compared, which had reported them as mismatches every week. The end line says how many were skipped.
+
+**The eBay call count**
+* FIX: The count of today's eBay calls could read 0 all day. It always did on hosts with a persistent object cache: Redis, Memcached, LiteSpeed's object cache, WordPress.com. On any host it went back to 0 after a cache or "delete all transients" clean-up (WP Rocket, LiteSpeed, WP-Optimize, `wp transient delete --all`). Those shops reported 0 calls to the TCGiant service, and their own 80% ceiling never applied. The count now has a row of its own that clean-ups leave alone, and counts over a week old are tidied away. On the day of the update, it can miss calls made by jobs that were already running when the update landed.
+* FIX: Between token refreshes, for up to two hours, the shared daily ceiling counted only the figure the TCGiant service sent at the last refresh. It did not count the calls this site had made since. It now adds them, so a busy site stops at the ceiling instead of running past it. What stops an oversell still goes past it.
+* FIX: The daily summary and the sync status always said 0 eBay calls today; they now give the day's count. When the ceiling stops a call, the log gives the figure that stopped it: every shop's together, or this site's own.
+* Improved: catching up on a long backlog costs fewer calls. Each batch of eBay changes used to re-read the last five minutes of the batch before. It still does near the present, where eBay can record a change late, but not for changes more than an hour old, judged by eBay's clock. On a server whose clock runs ahead of eBay's, changes eBay recorded in between are no longer missed.
+
+**Settings and your connection**
+* FIX: Each Settings form now changes only its own settings. Saving either form cleared the record of the last order import and of the last weekly stock check. And when the list of WooCommerce categories could not be loaded, saving Import Settings cleared your WooCommerce Sync Categories and Preserve Categories. They are now kept.
+* CHANGED: The Settings page now leaves out the App ID, the token's expiry and the redirect address too. 3.27.8 took the eBay tokens and the relay's key out of the page, but those three still went with the forms. Now no form carries them, and a form that posts them is ignored, so a page opened before you reconnected cannot put an old expiry back.
+* FIX: A token refreshed while the dashboard was fetching your store name, or while orders were being imported, could be put back to the old one. So could pressing Disconnect during an order import. Those now write only their own settings onto what is stored. A token refreshed while the connection changed is not saved over it.
+
+**Photos**
+* FIX: Some products already showed their main photo twice, once as the main image and again in the gallery. 3.27.2 put those right only when their photos were fetched again. Now they are all put right once, in the background, after the update. Only the gallery list changes. No photo is deleted and nothing is sent to eBay. Galleries you arranged yourself, or that you change while it runs, are left alone. The log says how many were put right.
+
+**For developers**
+* "Send website stock changes to eBay?" is push_stock_to_ebay in tcgiant_sync_ebay_settings. The upgrade's record is the option tcgiant_sync_push_switch, with held: 'wplister' where WP-Lister for eBay kept sending off. TCGiant_Sync_Inventory::FLIP_LEGACY_ZERO (true in this build) decides shops that never chose. On Pro, the usage ping adds stock_push: on, off or on_by_upgrade.
+* Stock pushes run on the Action Scheduler hook tcgiant_sync_push_stock (group tcgiant_sync_stock), one product per action and no quantity. The push reads the stock and the product's own listing when it runs. Actions queued before 3.28.0 on tcgiant_sync_update_ebay_stock still run. Pushes eBay never took are kept in the option tcgiant_sync_push_failures, the last 200.
+* New product meta:
+  - _ebay_sold_seen: eBay's QuantitySold already in the stock, per listing and variation SKU;
+  - _ebay_push_pending;
+  - _ebay_variation_sku;
+  - _ebay_end_reason and _ebay_end_reason_item;
+  - _ebay_previous_item_id: the listing a product moved on from;
+  - for auctions: _ebay_start_price, _ebay_current_price, _ebay_bid_count, _ebay_buy_it_now_price and _ebay_auction_listed_item.
+* The day's call count is the option tcgiant_sync_api_calls_<UTC date>. It is not autoloaded and is kept 7 days; it was the transient tcgiant_api_calls_<date>.
+  - The weekly check keeps its place in tcgiant_sync_reconcile_pass. It carries on through tcgiant_sync_reconcile_continue (Action Scheduler) and tcgiant_sync_reconcile_stall (WP-Cron).
+  - tcgiant_sync_settle_item, the stock check after a sale, now takes the listing and the try.
+  - The gallery pass is tcgiant_sync_gallery_heal.
+* TCGiant_Sync_Environment makes the staging decision once, as the plugin loads. define( 'TCGIANT_SYNC_IS_STAGING', ... ) in wp-config.php still wins either way.
 
 = 3.27.8 - 2026-10-28 =
 **New: eBay listing templates. Nothing changes until you pick one.**
@@ -1246,6 +1449,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.28.0 =
+If "Reduce WooCommerce stock on eBay sale?" was saved as No, website stock changes now go to eBay: a website sale updates or ends the eBay listing. Not if WP-Lister for eBay is active: then they stay off. To stop them, set "Send website stock changes to eBay?" to No in Settings. Each website sale now costs 2 eBay calls. See the changelog first.
 
 = 3.12.0 =
 Sold items now leave your shop automatically instead of waiting for a manual full sync. Removed products go to the Trash, and there is a setting to turn it off.

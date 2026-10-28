@@ -140,6 +140,8 @@ if ( null !== scenario( 'fake_clock' ) ) {
 
 class TCGiant_Sync_Mapper {
 	public static $last_skipped = false;
+	public static $last_deferred = null;
+	public $relist_parent_error = null;
 	public static function instance() { static $i; return $i ?: ( $i = new self() ); }
 	public function map_ebay_to_woo( $item ) { return array( 'id' => $item['ItemID'], 'price' => '1.00', 'stock_quantity' => 1, 'attributes' => array(), 'images' => array(), 'variations' => array() ); }
 	public function save_as_product( &$data ) {
@@ -347,6 +349,7 @@ check( '  first a retry', log_has( 'The last delta run stopped while importing e
 check( '  then an error that names it', log_has( 'stopped 2 times in a row while importing eBay item ' . $poison ), true );
 check( 'it is queued for a stock check of its own', in_array( $poison, jget( 'settled', array() ), true ), true );
 check( '  and listed for the shop', isset( jget( 'options', array() )['tcgiant_sync_delta_held'][ $poison ] ), true );
+check( '  as one that stopped the sync (3.28.0)', jget( 'options', array() )['tcgiant_sync_delta_held'][ $poison ]['why'] ?? null, 'killed' );
 check( 'no stale lock left behind by the deaths', is_file( $WORLD . '/data/tcgiant_sync.lock' ), false );
 check( 'eBay asked for the window once, not once per batch', stuck_reads(), 1 );
 check( 'all of it inside the first hour - the death hands straight on', true, true );

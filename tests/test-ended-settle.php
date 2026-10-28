@@ -65,7 +65,8 @@ function do_action( $hook, ...$args ) {
 }
 // Never at checkout here: every stock change is either a hand edit or a settle.
 function did_action( $hook ) { return 0; }
-function get_option( $name, $default = false ) { return $default; }
+// A shop connected to eBay: a push is queued only for one holding both tokens (3.28.0).
+function get_option( $name, $default = false ) { return 'tcgiant_sync_ebay_settings' === $name ? array( 'access_token' => 'harness-access', 'refresh_token' => 'harness-refresh' ) : $default; }
 function current_time( $type, $gmt = 0 ) { return gmdate( 'Y-m-d H:i:s' ); }
 function get_transient( $key ) { return $GLOBALS['TRANSIENTS'][ $key ] ?? false; }
 function set_transient( $key, $value, $ttl = 0 ) { $GLOBALS['TRANSIENTS'][ $key ] = $value; return true; }
@@ -94,6 +95,16 @@ function as_enqueue_async_action( $hook, $args = array(), $group = '' ) {
 	return 1;
 }
 
+// What the push says when a product has nothing it can push (3.28.0).
+class WP_Error {
+	private $code;
+	private $message;
+	public function __construct( $code = '', $message = '' ) { $this->code = $code; $this->message = $message; }
+	public function get_error_code() { return $this->code; }
+	public function get_error_message() { return $this->message; }
+}
+function is_wp_error( $thing ) { return $thing instanceof WP_Error; }
+
 class TCGiant_Sync_Logger {
 	public static function log( $message, $level = 'info' ) { $GLOBALS['LOG'][] = array( $level, $message ); }
 	public static function warning( $message ) { self::log( $message, 'warning' ); }
@@ -110,7 +121,16 @@ class Fake_Product {
 	public function get_stock_status() { return $this->row['status']; }
 	public function is_in_stock() { return 'outofstock' !== $this->row['status']; }
 	public function is_type( $type ) { return $this->row['type'] === $type; }
-	public function get_sku() { return $this->row['sku']; }
+	// A variation with no SKU of its own shows its parent's, except in 'edit'.
+	public function get_sku( $context = 'view' ) {
+		if ( '' === (string) $this->row['sku'] && 'view' === $context && ! empty( $this->row['parent'] ) ) {
+			return (string) ( $GLOBALS['SHOP'][ $this->row['parent'] ]['sku'] ?? '' );
+		}
+		return $this->row['sku'];
+	}
+	public function get_parent_id() { return (int) ( $this->row['parent'] ?? 0 ); }
+	// Every product here keeps its own stock.
+	public function get_stock_managed_by_id() { return $this->row['id']; }
 	public function get_meta( $key, $single = true ) { return get_post_meta( $this->row['id'], $key, true ); }
 }
 
@@ -438,15 +458,20 @@ echo "\nNOTHING A SETTLE WRITES IS PUSHED BACK TO eBAY\n" . str_repeat( '=', 124
 
 // First, that the harness has teeth: a hand edit on a linked product fires the
 // stock action, the real class hears it, and a push to eBay is queued.
+//
+// Since 3.28.0 the push names the product and reads its stock when it runs,
+// on a hook of its own; the quantity is not queued.
 fresh_shop( array( linked( product( 1300, 5 ) ) ) );
 wc_update_product_stock( 1300, 4, 'set' );
 check( 'a hand edit on a linked product is pushed to eBay, as it should be', count( $PUSHES ), 1 );
-check( '  as a stock update', $PUSHES[0][0] ?? null, 'tcgiant_sync_update_ebay_stock' );
-check( '  with its new quantity', $PUSHES[0][1]['quantity'] ?? null, 4 );
+check( '  as a stock push', $PUSHES[0][0] ?? null, 'tcgiant_sync_push_stock' );
+check( '  for that product, as a change made in WooCommerce', array( $PUSHES[0][1][0]['product_id'] ?? null, $PUSHES[0][1][0]['reason'] ?? null ), array( 1300, 'edit' ) );
+check( '  with no quantity or SKU to go stale', array( isset( $PUSHES[0][1][0]['quantity'] ), isset( $PUSHES[0][1][0]['sku'] ) ), array( false, false ) );
 
-fresh_shop( array( linked( product( 1301, 2, array( 'type' => 'variation' ) ) ) ) );
+// A variation has no listing of its own: its parent holds it.
+fresh_shop( array( linked( product( 1302, null, array( 'type' => 'variable', 'manage' => false ) ) ), product( 1301, 2, array( 'type' => 'variation', 'parent' => 1302 ) ) ) );
 wc_update_product_stock( 1301, 1, 'set' );
-check( '  and so is one on a variation', count( $PUSHES ), 1 );
+check( '  and so is one on a variation, through its parent', array( count( $PUSHES ), $PUSHES[0][1][0]['product_id'] ?? null ), array( 1, 1301 ) );
 
 // Then every write a settle makes. Each case must really write something, or
 // "nothing pushed" would prove nothing.

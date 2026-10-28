@@ -20,14 +20,77 @@ class TCGiant_Sync_Admin {
 	 * for this site, and an eBay Cert ID (a developer key's secret half),
 	 * kept from an older version that let a shop use its own keys. The
 	 * Settings screen's forms do not carry them, and a save from one keeps
-	 * them as stored (sanitize_settings()). app_id, the public half, and
-	 * redirect_uri and token_expiry, which are not secrets, still go with
-	 * the forms.
+	 * them as stored (sanitize_settings()). Since 3.28.0 a form carries only
+	 * its own settings (SETTINGS_FORMS), so the App ID, the redirect address
+	 * and the token's expiry stay out of the page too.
 	 */
 	const SECRET_SETTINGS = array( 'access_token', 'refresh_token', 'relay_secret', 'cert_id' );
 
 	/** The field each Settings form posts, so that a save from one is known. */
 	const SETTINGS_FORM_MARKER = '_tcg_form';
+
+	/**
+	 * The field naming each checkbox list a form drew. A list with every box
+	 * unticked sends nothing at all, so this is how a save tells "all
+	 * unticked" from "not on this form" (SETTINGS_LISTS).
+	 */
+	const SETTINGS_LISTS_MARKER = '_tcg_lists';
+
+	/**
+	 * The settings each form on the Settings screen holds, by the name its
+	 * marker posts (3.28.0). A save from one changes these and nothing else:
+	 * every other stored setting is kept as it is - the other form's, the
+	 * connection, and the plugin's own records (last_order_import,
+	 * last_reconciliation). Until 3.28.0 each form replaced the whole option,
+	 * and the other form's settings went with it unless the page carried
+	 * them back in hidden fields; one that was missed was reset. A field
+	 * added to a form must be added here, or its save is ignored
+	 * (tests/test-push-switch.php compares the two).
+	 */
+	const SETTINGS_FORMS = array(
+		'import' => array(
+			'marketplace', 'custom_saved_categories', 'import_sites', 'category_ids', 'import_standard_category_ids',
+			'woo_category_ids', 'import_specs_as_tags', 'bake_shipping_into_price', 'import_auctions', 'sku_maps_to',
+			'sku_prefix', 'preserve_woo_category_ids', 'sync_interval', 'host_images_on_ebay', 'import_image_width',
+			'log_level', 'push_stock_to_ebay', 'push_stock_to_ebay_drawn', 'enable_order_sync', 'enable_reconciliation', 'enable_order_import',
+			'auto_end_zero_stock', 'disable_image_localization', 'remove_sold_products', 'auto_relist_enabled',
+			'overwrite_title', 'overwrite_desc', 'overwrite_price', 'overwrite_images', 'overwrite_taxonomy',
+			'overwrite_attributes', 'overwrite_weight_dims', 'delete_data_on_uninstall',
+		),
+		'export' => array(
+			'export_category_id', 'export_category_name', 'export_condition_type', 'export_grader_id', 'export_grade_value',
+			'export_cert_number', 'export_ungraded_condition', 'export_condition_id', 'export_location', 'export_postal_code',
+			'export_fulfillment_policy', 'export_return_policy', 'export_payment_policy', 'export_listing_type',
+			'export_listing_duration', 'export_default_quantity', 'export_send_package_details', 'best_offer_enabled',
+			'best_offer_auto_accept', 'best_offer_auto_decline', 'gpsr_enabled', 'gpsr_manufacturer_name',
+			'gpsr_manufacturer_address', 'gpsr_eu_responsible',
+		),
+	);
+
+	/**
+	 * A setting a form draws from a default when it was never chosen, and
+	 * the hidden field that posts the value it was drawn with (never stored).
+	 * Left as drawn, it is not stored, so the shop stays decided by the
+	 * release: "Send website stock changes to eBay?" follows FLIP_LEGACY_ZERO
+	 * until the shop changes it once.
+	 */
+	const DRAWN_SETTINGS = array( 'push_stock_to_ebay' => 'push_stock_to_ebay_drawn' );
+
+	/** The settings a form draws as a list of checkboxes. */
+	const SETTINGS_LISTS = array( 'import_standard_category_ids', 'woo_category_ids', 'preserve_woo_category_ids' );
+
+	/**
+	 * Settings a form never sets, whatever it posts: the connection and the
+	 * plugin's own records. A page drawn by 3.27 or earlier, saved after the
+	 * update, still carries some of them in hidden fields - old tokens among
+	 * them, from before a reconnect - and the rest of its fields are taken
+	 * without these.
+	 */
+	const NEVER_FROM_POST = array(
+		'access_token', 'refresh_token', 'token_expiry', 'relay_secret', 'cert_id', 'app_id', 'redirect_uri',
+		'store_name', 'store_username', 'store_id', 'import_status', 'last_order_import', 'last_reconciliation',
+		'last_reconciliation_mismatches',
+	);
 
 	/**
 	 * Instance of this class.
@@ -106,10 +169,18 @@ class TCGiant_Sync_Admin {
 		add_filter( 'handle_bulk_actions-edit-product', array( $this, 'handle_bulk_push_action' ), 10, 3 );
 		add_action( 'admin_notices', array( $this, 'bulk_push_admin_notice' ) );
 		add_action( 'admin_notices', array( $this, 'staging_admin_notice' ) );
+		add_action( 'admin_notices', array( $this, 'environment_change_notice' ) );
+		add_action( 'admin_post_tcgiant_confirm_live', array( $this, 'handle_confirm_live' ) );
+		add_action( 'admin_post_tcgiant_dismiss_env_notice', array( $this, 'handle_dismiss_env_notice' ) );
+		add_action( 'admin_init', array( 'TCGiant_Sync_Environment', 'record_verdict' ) );
 		add_action( 'admin_notices', array( $this, 'stale_coin_listings_notice' ) );
 		add_action( 'admin_notices', array( $this, 'unsettled_stock_notice' ) );
 		add_action( 'admin_notices', array( $this, 'sync_health_notice' ) );
 		add_action( 'admin_notices', array( $this, 'connect_failed_notice' ) );
+		add_action( 'admin_notices', array( $this, 'push_switch_notice' ) );
+		add_action( 'admin_post_tcgiant_dismiss_push_notice', array( $this, 'handle_dismiss_push_notice' ) );
+		add_action( 'admin_notices', array( $this, 'auction_import_notice' ) );
+		add_action( 'admin_post_tcgiant_dismiss_auction_notice', array( $this, 'handle_dismiss_auction_notice' ) );
 		add_action( 'admin_notices', array( $this, 'other_sites_notice' ) );
 		add_action( 'admin_post_tcgiant_dismiss_sites_notice', array( $this, 'handle_dismiss_sites_notice' ) );
 		add_action( 'admin_post_tcgiant_refresh_coin_listings', array( $this, 'handle_refresh_coin_listings' ) );
@@ -340,9 +411,12 @@ class TCGiant_Sync_Admin {
 	/**
 	 * AJAX: Sync a specific WooCommerce order's stock directly to eBay.
 	 *
-	 * This bypasses Action Scheduler and WP-Cron entirely — it reads the
-	 * order items, gets their current WooCommerce stock, and calls the eBay
-	 * API directly and synchronously. Nothing else runs as a side effect.
+	 * This bypasses Action Scheduler and WP-Cron entirely — each line of the
+	 * order is pushed in this request, the same way a queued push is
+	 * (TCGiant_Sync_Inventory::push_now()): by the listing the product itself
+	 * follows, never more than eBay already has, and nothing for a product
+	 * whose stock WooCommerce does not track - which used to read as 0 and
+	 * end its listing.
 	 */
 	public function ajax_sync_order_to_ebay() {
 		check_ajax_referer( 'tcgiant_sync_ajax' );
@@ -361,7 +435,6 @@ class TCGiant_Sync_Admin {
 			wp_send_json_error( array( 'message' => 'Order not found.' ) );
 		}
 
-		$api     = TCGiant_Sync_API::instance();
 		$results = array();
 
 		foreach ( $order->get_items() as $item ) {
@@ -375,61 +448,22 @@ class TCGiant_Sync_Admin {
 				continue;
 			}
 
-			$sku      = $product->get_meta( '_ebay_sku' ) ?: $product->get_sku();
-			$new_qty  = $product->get_stock_quantity();
-			$name     = $product->get_name();
-
-			if ( empty( $sku ) ) {
-				$results[] = array(
-					'product' => $name,
-					'status'  => 'skipped',
-					'message' => 'No SKU set — cannot identify on eBay.',
-				);
-				continue;
-			}
-
 			TCGiant_Sync_Logger::log( sprintf(
-				'Manual order sync: Pushing stock for SKU %s (Order #%d) → Qty %d',
-				$sku, $order_id, (int) $new_qty
+				'Manual order sync: pushing the stock of WC #%d (Order #%d) to eBay.',
+				$product->get_id(),
+				$order_id
 			) );
 
-			// Direct API call — no queue, no cron, no side effects.
-			$result = $api->update_inventory_item_availability( $sku, (int) $new_qty );
+			// The push's own rules decide - an auction among them: no quantity
+			// sent, and ended at 0 only when nobody has bid.
+			$pushed = TCGiant_Sync_Inventory::instance()->push_now( $product, 'manual' );
 
-			if ( is_wp_error( $result ) ) {
-				if ( 'not_found_on_ebay' === $result->get_error_code() ) {
-					$results[] = array(
-						'product' => $name,
-						'sku'     => $sku,
-						'status'  => 'skipped',
-						'message' => 'Not linked to an eBay listing.',
-					);
-				} else {
-					TCGiant_Sync_Logger::error( sprintf(
-						'Manual order sync failed for SKU %s: %s',
-						$sku, $result->get_error_message()
-					) );
-					$results[] = array(
-						'product' => $name,
-						'sku'     => $sku,
-						'status'  => 'error',
-						'message' => $result->get_error_message(),
-					);
-				}
-			} else {
-				TCGiant_Sync_Logger::log( sprintf(
-					'Manual order sync success: SKU %s set to Qty %d on eBay.',
-					$sku, (int) $new_qty
-				), 'success' );
-				$results[] = array(
-					'product' => $name,
-					'sku'     => $sku,
-					'status'  => 'success',
-					'message' => (int) $new_qty === 0
-						? 'eBay listing ended (sold out)'
-						: 'eBay stock set to ' . (int) $new_qty,
-				);
-			}
+			$results[] = array(
+				'product' => $product->get_name(),
+				'sku'     => (string) $product->get_sku(),
+				'status'  => (string) $pushed['status'],
+				'message' => (string) $pushed['message'],
+			);
 		}
 
 		$has_errors = false;
@@ -549,6 +583,7 @@ class TCGiant_Sync_Admin {
 		}
 
 		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
+		$settings = is_array( $settings ) ? $settings : array();
 		// And an eBay Cert ID an older version kept, which nothing reads now.
 		unset( $settings['access_token'], $settings['refresh_token'], $settings['token_expiry'], $settings['store_name'], $settings['store_username'], $settings['store_id'], $settings['cert_id'] );
 		update_option( 'tcgiant_sync_ebay_settings', $settings );
@@ -879,15 +914,16 @@ class TCGiant_Sync_Admin {
 			wp_die( esc_html__( 'Unauthorized.', 'tcgiant-sync' ) );
 		}
 
-		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
-		$fields   = array( 'marketplace', 'sync_interval', 'enable_order_import', 'disable_image_localization' );
-		foreach ( $fields as $field ) {
+		// Only the step's own settings, onto the settings as the database
+		// holds them now.
+		$fields = array();
+		foreach ( array( 'marketplace', 'sync_interval', 'enable_order_import', 'disable_image_localization' ) as $field ) {
 			if ( isset( $_POST[ $field ] ) ) {
-				$settings[ $field ] = sanitize_text_field( wp_unslash( $_POST[ $field ] ) );
+				$fields[ $field ] = sanitize_text_field( wp_unslash( $_POST[ $field ] ) );
 			}
 		}
 
-		update_option( 'tcgiant_sync_ebay_settings', $settings );
+		TCGiant_Sync_Inventory::save_settings_keys( $fields );
 
 		wp_safe_redirect( admin_url( 'admin.php?page=tcgiant-wizard&step=3' ) );
 		exit;
@@ -1193,8 +1229,22 @@ class TCGiant_Sync_Admin {
 		// Every other write of the option - the connection, a token refresh,
 		// Disconnect - carries no marker and is kept exactly as written.
 		$from_form = is_array( $input ) && isset( $input[ self::SETTINGS_FORM_MARKER ] );
+
+		// Which form, and the checkbox lists it drew. A save from a form
+		// changes that form's settings only, and keeps every other as stored
+		// (SETTINGS_FORMS). A page drawn by 3.27 or earlier and saved after
+		// the update says neither, but comes from options.php: what it sent
+		// is taken, but never the connection or the plugin's own records.
+		$form  = $from_form && is_string( $input[ self::SETTINGS_FORM_MARKER ] ) ? sanitize_key( $input[ self::SETTINGS_FORM_MARKER ] ) : '';
+		$lists = is_array( $input ) && isset( $input[ self::SETTINGS_LISTS_MARKER ] ) ? array_map( 'sanitize_key', array_filter( (array) $input[ self::SETTINGS_LISTS_MARKER ], 'is_string' ) ) : array();
+		$merge = $from_form || self::is_settings_form_post( $input );
+
 		if ( $from_form ) {
 			unset( $input[ self::SETTINGS_FORM_MARKER ] );
+		}
+
+		if ( $merge ) {
+			$input = self::form_settings( $input, $form );
 		}
 
 		if ( is_array( $input ) ) {
@@ -1221,6 +1271,9 @@ class TCGiant_Sync_Admin {
 				}
 			}
 
+			// (3.28.0: S1's skip above and restore below now guard nothing - the
+			// form's whitelist keeps the secrets out, and the merge takes them
+			// from the row. Kept as they are, as defence in depth.)
 			if ( $from_form ) {
 				$stored = get_option( 'tcgiant_sync_ebay_settings', array() );
 				foreach ( self::SECRET_SETTINGS as $key ) {
@@ -1230,11 +1283,116 @@ class TCGiant_Sync_Admin {
 				}
 			}
 
+			if ( $merge ) {
+				// Everything the form does not set, as the database holds it now:
+				// the connection and the records always from the row, never from
+				// this request's copy, so a save that began before a token
+				// refresh does not put the old token back.
+				$kept      = self::kept_settings( $form, $lists );
+				$sanitized = array_replace( $kept, array_diff_key( self::left_as_drawn( $sanitized ), array_flip( self::NEVER_FROM_POST ) ) );
+
+				// The shop has seen "Send website stock changes to eBay?" and
+				// saved it as it wants it.
+				if ( 'import' === $form ) {
+					TCGiant_Sync_Inventory::dismiss_push_notice();
+				}
+			}
+
 			// A new marketplace, or a new choice of sites, answers the warning
 			// that the last full sync found nothing on the old one.
 			TCGiant_Sync_Sites::settings_changed( get_option( 'tcgiant_sync_ebay_settings', array() ), $sanitized );
 		}
 		return $sanitized;
+	}
+
+	/**
+	 * Whether this is options.php saving the posted Settings form: the value
+	 * it hands the option is the form's, unslashed, as it unslashes it. It has
+	 * checked the nonce and the capability by then. Any other write of the
+	 * option - in the same request, or anywhere else: the connection, a token
+	 * refresh, Disconnect, the wizard, order import - is not, and is kept
+	 * exactly as written.
+	 *
+	 * @param mixed $input What the option is being set to.
+	 * @return bool
+	 */
+	private static function is_settings_form_post( $input ) {
+		// phpcs:disable WordPress.Security.NonceVerification.Missing, WordPress.Security.ValidatedSanitizedInput -- options.php checked the nonce; compared here, never stored.
+		return is_array( $input )
+			&& isset( $_POST['option_page'], $_POST['tcgiant_sync_ebay_settings'] )
+			&& 'tcgiant_sync_ebay_group' === $_POST['option_page']
+			&& wp_unslash( $_POST['tcgiant_sync_ebay_settings'] ) === $input;
+		// phpcs:enable
+	}
+
+	/**
+	 * What a form's save may change, keyed as stored: a known form's own
+	 * settings; for a form that does not say which it is, everything it sent
+	 * but the lists marker. (The connection and the plugin's records,
+	 * NEVER_FROM_POST, the merge in sanitize_settings() takes from the row
+	 * for every form's save.)
+	 *
+	 * @param array  $input What the form sent, its marker taken off.
+	 * @param string $form  The form's name, or ''.
+	 * @return array
+	 */
+	private static function form_settings( array $input, $form ) {
+		$own = self::SETTINGS_FORMS[ $form ] ?? null;
+		$out = array();
+
+		foreach ( $input as $key => $value ) {
+			$key = sanitize_key( $key );
+			$ok  = null !== $own
+				? in_array( $key, $own, true )
+				: self::SETTINGS_LISTS_MARKER !== $key;
+			if ( $ok ) {
+				$out[ $key ] = $value;
+			}
+		}
+
+		return $out;
+	}
+
+	/**
+	 * The stored settings a form's save keeps, as the database holds them
+	 * now (TCGiant_Sync_Inventory::settings_row()): all of them, but for the
+	 * lists the form drew, which are what it sent - nothing at all for a list
+	 * with every box unticked. A list it did not draw (no WooCommerce
+	 * categories to show, say) is kept.
+	 *
+	 * @param string $form  The form's name, or ''.
+	 * @param array  $lists The lists it drew.
+	 * @return array
+	 */
+	private static function kept_settings( $form, array $lists ) {
+		$stored = TCGiant_Sync_Inventory::settings_row();
+
+		if ( isset( self::SETTINGS_FORMS[ $form ] ) ) {
+			foreach ( array_intersect( $lists, self::SETTINGS_LISTS, self::SETTINGS_FORMS[ $form ] ) as $list ) {
+				unset( $stored[ $list ] );
+			}
+		}
+
+		return $stored;
+	}
+
+	/**
+	 * A setting the shop left as the form drew it is not written
+	 * (DRAWN_SETTINGS): never chosen, it stays unstored; chosen before, its
+	 * stored value stands. Changed, it is stored as posted. The drawn values
+	 * themselves are never stored.
+	 *
+	 * @param array $posted What the form sent, sanitised.
+	 * @return array
+	 */
+	private static function left_as_drawn( array $posted ) {
+		foreach ( self::DRAWN_SETTINGS as $key => $drawn ) {
+			if ( ( $posted[ $key ] ?? null ) === ( $posted[ $drawn ] ?? null ) ) {
+				unset( $posted[ $key ] );
+			}
+			unset( $posted[ $drawn ] );
+		}
+		return $posted;
 	}
 
 	/**
@@ -1412,7 +1570,11 @@ class TCGiant_Sync_Admin {
 			} else {
 				$settings['store_name'] = 'Authenticated Account';
 			}
-			update_option( 'tcgiant_sync_ebay_settings', $settings );
+			// Only the name, onto the settings as the database holds them now:
+			// the call above may have refreshed the token, here or in another
+			// request, and writing back the copy read before it put the old
+			// token back.
+			TCGiant_Sync_Inventory::save_settings_keys( array( 'store_name' => $settings['store_name'] ) );
 		}
 
 		$health['connection'] = array(
@@ -1428,6 +1590,24 @@ class TCGiant_Sync_Admin {
 				'text'   => $settings['store_name'] ?? 'Unknown',
 			);
 		}
+
+		// "Send website stock changes to eBay?", so the dashboard says whether
+		// a website sale reaches eBay.
+		$pushing = TCGiant_Sync_Inventory::pushes_enabled();
+		$on      = __( 'On', 'tcgiant-sync' );
+		$status  = 'active';
+		if ( $pushing && TCGiant_Sync_Environment::write_block() ) {
+			$on     = __( 'On (this copy is blocked from writing to eBay)', 'tcgiant-sync' );
+			$status = 'warning';
+		} elseif ( $pushing && ! TCGiant_Sync_Inventory::connected( TCGiant_Sync_OAuth::instance()->get_settings() ) ) {
+			$on     = __( 'On (not connected)', 'tcgiant-sync' );
+			$status = 'warning';
+		}
+		$health['stock_push'] = array(
+			'label'  => __( 'Website stock to eBay', 'tcgiant-sync' ),
+			'status' => $pushing ? $status : 'inactive',
+			'text'   => $pushing ? $on : __( 'Off', 'tcgiant-sync' ),
+		);
 
 		// Proactively refresh the token if needed before checking health.
 		if ( $oauth->is_authenticated() ) {
@@ -1523,7 +1703,7 @@ class TCGiant_Sync_Admin {
 			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 			$pending_jobs = (int) $wpdb->get_var(
 				"SELECT COUNT(*) FROM {$wpdb->prefix}actionscheduler_actions
-				 WHERE `group_id` IN (SELECT group_id FROM {$wpdb->prefix}actionscheduler_groups WHERE slug IN ('tcgiant_sync_group', 'tcgiant_sync_imports', 'tcgiant_sync_images'))
+				 WHERE `group_id` IN (SELECT group_id FROM {$wpdb->prefix}actionscheduler_groups WHERE slug IN ('tcgiant_sync_group', 'tcgiant_sync_imports', 'tcgiant_sync_images', 'tcgiant_sync_stock'))
 				 AND status = 'pending'"
 			);
 		}
@@ -2032,6 +2212,16 @@ class TCGiant_Sync_Admin {
 		}
 
 		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		// Nothing queued on a copy: say why, not "0 products queued".
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		if ( isset( $_REQUEST['tcgiant_pushed'] ) && 0 === (int) $_REQUEST['tcgiant_pushed'] ) {
+			$blocked = TCGiant_Sync_Environment::write_block();
+			if ( $blocked ) {
+				echo '<div class="notice notice-error is-dismissible"><p>' . esc_html( $blocked->get_error_message() ) . '</p></div>';
+				return;
+			}
+		}
+
 		if ( ! isset( $_REQUEST['tcgiant_pushed'] ) ) {
 			return;
 		}
@@ -2067,9 +2257,6 @@ class TCGiant_Sync_Admin {
 		echo ' <a href="' . esc_url( admin_url( 'admin.php?page=tcgiant-sync' ) ) . '">' . esc_html__( 'View progress →', 'tcgiant-sync' ) . '</a></p></div>';
 	}
 
-	/**
-	 * Show admin notice on staging/dev environments.
-	 */
 	/**
 	 * Offer to re-push coin listings that went to eBay before the category fix.
 	 *
@@ -2334,20 +2521,49 @@ class TCGiant_Sync_Admin {
 				<?php endif; ?>
 			<?php endif; ?>
 			<?php if ( ! empty( $held ) ) : ?>
+				<?php
+				// The listings the sync moved past, and the stock checks after
+				// an eBay sale that gave up (3.28.0), said apart: a check that
+				// gave up is not queued for anything - including the check of
+				// a listing the sync moved past, which then gave up too.
+				$gave_up = count( array_filter( $held, function ( $entry ) {
+					return TCGiant_Sync_Importer::is_check_reason( $entry['why'] ?? '' )
+						|| TCGiant_Sync_Importer::is_check_reason( $entry['check'] ?? '' );
+				} ) );
+				$moved   = count( $held ) - $gave_up;
+				?>
 				<p>
-					<strong><?php esc_html_e( 'TCGiant Sync — listings the sync had to step over', 'tcgiant-sync' ); ?></strong><br>
-					<?php
-					printf(
-						/* translators: %d: number of listings */
-						esc_html( _n(
-							'%d eBay listing stopped the sync every time it was imported, so the sync moved past it. Its stock has been checked separately, but its other details may be out of date.',
-							'%d eBay listings stopped the sync every time they were imported, so the sync moved past them. Their stock has been checked separately, but their other details may be out of date.',
-							count( $held ),
-							'tcgiant-sync'
-						) ),
-						count( $held )
-					);
-					?>
+					<strong><?php esc_html_e( 'TCGiant Sync — listings to check by hand', 'tcgiant-sync' ); ?></strong>
+					<?php if ( $moved > 0 ) : ?>
+						<br>
+						<?php
+						printf(
+							/* translators: %d: number of listings */
+							esc_html( _n(
+								'%d eBay listing could not be imported, so the sync moved past it. It was queued for a stock check of its own, but its other details may be out of date; the Activity Log says how the check went.',
+								'%d eBay listings could not be imported, so the sync moved past them. Each was queued for a stock check of its own, but their other details may be out of date; the Activity Log says how each check went.',
+								$moved,
+								'tcgiant-sync'
+							) ),
+							(int) $moved
+						);
+						?>
+					<?php endif; ?>
+					<?php if ( $gave_up > 0 ) : ?>
+						<br>
+						<?php
+						printf(
+							/* translators: %d: number of listings */
+							esc_html( _n(
+								'%d stock check after an eBay sale could not reach eBay, so its stock here is unchanged; check it on Stock Review.',
+								'%d stock checks after an eBay sale could not reach eBay, so their stock here is unchanged; check them on Stock Review.',
+								$gave_up,
+								'tcgiant-sync'
+							) ),
+							(int) $gave_up
+						);
+						?>
+					<?php endif; ?>
 				</p>
 			<?php endif; ?>
 			<p>
@@ -2531,23 +2747,303 @@ class TCGiant_Sync_Admin {
 		exit;
 	}
 
+	/**
+	 * Say plainly, on a staging copy, that nothing goes to eBay from it.
+	 *
+	 * The old wording promised that every write was disabled while the
+	 * Inventory API quantity update was still going out. This is built from
+	 * the same decision the API class acts on, so it cannot say one thing
+	 * while the plugin does another.
+	 *
+	 * Normally shown on the plugin's own screens and the product screens. A
+	 * shop that was sending changes before 3.28.0 and has now stopped sees it
+	 * on every admin screen until someone answers it: if that shop is in fact
+	 * the live one, every sale from now on is a quantity eBay never hears of.
+	 */
 	public function staging_admin_notice() {
-		if ( ! defined( 'TCGIANT_SYNC_IS_STAGING' ) || ! TCGIANT_SYNC_IS_STAGING ) {
+		if ( ! TCGiant_Sync_Environment::write_block() ) {
 			return;
 		}
-		// Only show on TCGiant Sync pages or WooCommerce product pages.
+
+		$can_answer = current_user_can( 'manage_options' );
+		$was_live   = $can_answer && 'now_copy' === TCGiant_Sync_Environment::pending_notice();
+
+		if ( ! $was_live ) {
+			$screen = get_current_screen();
+			if ( ! $screen ) {
+				return;
+			}
+			$show_on = array( 'toplevel_page_tcgiant-sync', 'edit-product', 'product' );
+			if ( ! in_array( $screen->id, $show_on, true ) && strpos( $screen->id, 'tcgiant' ) === false ) {
+				return;
+			}
+		}
+
+		$reason  = TCGiant_Sync_Environment::reason();
+		$address = TCGiant_Sync_Environment::address( TCGiant_Sync_Environment::current_url() );
+		$held    = TCGiant_Sync_Environment::blocked_count();
+		?>
+		<div class="notice notice-warning">
+			<p>
+				<strong><?php esc_html_e( 'TCGiant Sync - this site is treated as a staging copy', 'tcgiant-sync' ); ?></strong><br>
+				<?php
+				printf(
+					/* translators: %s: why the site looks like a copy */
+					esc_html__( 'Nothing is sent to eBay from this site: no stock, listing, relist or tracking changes. Reason: %s.', 'tcgiant-sync' ),
+					esc_html( TCGiant_Sync_Environment::describe( $reason ) )
+				);
+				?>
+				<?php if ( $held > 0 ) : ?>
+					<?php
+					printf(
+						/* translators: %d: number of changes */
+						esc_html( _n( '%d change was not sent in the last day.', '%d changes were not sent in the last day.', $held, 'tcgiant-sync' ) ),
+						(int) $held
+					);
+					?>
+				<?php endif; ?>
+				<?php esc_html_e( 'Reading from eBay carries on as normal.', 'tcgiant-sync' ); ?>
+			</p>
+			<?php if ( $was_live ) : ?>
+				<p><?php esc_html_e( 'Until this update, TCGiant Sync did send changes to eBay from this site.', 'tcgiant-sync' ); ?></p>
+			<?php endif; ?>
+			<?php if ( $can_answer && TCGiant_Sync_Environment::is_address_reason( $reason ) && '' !== $address ) : ?>
+				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+					<input type="hidden" name="action" value="tcgiant_confirm_live">
+					<?php wp_nonce_field( 'tcgiant_confirm_live' ); ?>
+					<p>
+						<button type="submit" class="button button-primary">
+							<?php
+							printf(
+								/* translators: %s: the site's address, e.g. dev.example.com */
+								esc_html__( 'This is my live shop - send changes to eBay from %s', 'tcgiant-sync' ),
+								esc_html( $address )
+							);
+							?>
+						</button>
+						<?php esc_html_e( 'If this site is a copy of your shop, leave this alone. It applies to this address only; a copy made at any other address is judged afresh.', 'tcgiant-sync' ); ?>
+					</p>
+				</form>
+			<?php elseif ( 0 === strpos( $reason, 'environment:' ) ) : ?>
+				<p><?php esc_html_e( 'WordPress itself says this is not a production site. Only a change to WP_ENVIRONMENT_TYPE, in wp-config.php or your host\'s settings, changes that.', 'tcgiant-sync' ); ?></p>
+			<?php elseif ( 'wp-config' === $reason ) : ?>
+				<p><?php esc_html_e( 'wp-config.php says so, with define( \'TCGIANT_SYNC_IS_STAGING\', true ). Remove it, or set it to false, to send changes from this site.', 'tcgiant-sync' ); ?></p>
+			<?php endif; ?>
+			<?php if ( $was_live ) : ?>
+				<p><a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin-post.php?action=tcgiant_dismiss_env_notice' ), 'tcgiant_dismiss_env_notice' ) ); ?>"><?php esc_html_e( 'This is a copy - show this only on TCGiant Sync screens', 'tcgiant-sync' ); ?></a></p>
+			<?php endif; ?>
+		</div>
+		<?php
+	}
+
+	/**
+	 * Tell a shop that was wrongly kept off eBay that it no longer is.
+	 *
+	 * Before 3.28.0 a live shop whose address merely contained 'dev-', '.local'
+	 * or the like was judged a staging copy and sent nothing. It sends now, but
+	 * nothing from before has been sent - deliberately: pushing every product
+	 * at once from figures nobody has looked at could do more harm than the
+	 * gap. Stock Review cannot show what was missed, so the shop is told what
+	 * to check.
+	 */
+	public function environment_change_notice() {
+		if ( ! current_user_can( 'manage_options' ) || 'now_live' !== TCGiant_Sync_Environment::pending_notice() ) {
+			return;
+		}
+
+		// Not true any more if the site has since become a copy again.
+		if ( TCGiant_Sync_Environment::write_block() ) {
+			return;
+		}
+		?>
+		<div class="notice notice-warning">
+			<p>
+				<strong><?php esc_html_e( 'TCGiant Sync now sends changes to eBay from this shop', 'tcgiant-sync' ); ?></strong><br>
+				<?php esc_html_e( 'TCGiant Sync had been treating this shop as a staging copy and sent nothing to eBay. It now sends changes, but nothing from before has been sent: an item sold on this website in that time may still be for sale on eBay, and the weekly full sync may have put it back in stock here, from the quantity eBay still showed. Check the website orders from that time against your eBay listings and against the stock here: end or correct those on eBay, and set the stock here to what you hold.', 'tcgiant-sync' ); ?>
+			</p>
+			<p>
+				<a class="button button-primary" href="<?php echo esc_url( class_exists( '\Automattic\WooCommerce\Utilities\OrderUtil' ) && \Automattic\WooCommerce\Utilities\OrderUtil::custom_orders_table_usage_is_enabled() ? admin_url( 'admin.php?page=wc-orders' ) : admin_url( 'edit.php?post_type=shop_order' ) ); ?>"><?php esc_html_e( 'Open orders', 'tcgiant-sync' ); ?></a>
+				<a class="button" href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin-post.php?action=tcgiant_dismiss_env_notice' ), 'tcgiant_dismiss_env_notice' ) ); ?>"><?php esc_html_e( 'Dismiss', 'tcgiant-sync' ); ?></a>
+			</p>
+		</div>
+		<?php
+	}
+
+	/**
+	 * "This is my live shop": overrule an address rule for this address.
+	 *
+	 * Only an address rule. A WP_ENVIRONMENT_TYPE that is not production, or
+	 * TCGIANT_SYNC_IS_STAGING in wp-config.php, was set by someone on purpose
+	 * and is changed where it was set.
+	 */
+	public function handle_confirm_live() {
+		check_admin_referer( 'tcgiant_confirm_live' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'Unauthorized.', 'tcgiant-sync' ) );
+		}
+
+		$was     = TCGiant_Sync_Environment::copy_reason();
+		$user    = wp_get_current_user();
+		$address = TCGiant_Sync_Environment::confirm_live( (int) $user->ID );
+
+		if ( '' !== $address ) {
+			TCGiant_Sync_Logger::log( sprintf(
+				'%s (user #%d) confirmed that %s is the live shop. It had looked like a staging copy (%s); changes are sent to eBay from this address from now on. A copy at any other address is still judged by its own address.',
+				$user->user_login,
+				(int) $user->ID,
+				$address,
+				TCGiant_Sync_Environment::describe( $was )
+			), 'warning' );
+		}
+
+		$back = wp_get_referer();
+		wp_safe_redirect( $back ? $back : admin_url( 'admin.php?page=tcgiant-sync' ) );
+		exit;
+	}
+
+	/**
+	 * Put away the one-time notice about the staging check changing.
+	 */
+	public function handle_dismiss_env_notice() {
+		check_admin_referer( 'tcgiant_dismiss_env_notice' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'Unauthorized.', 'tcgiant-sync' ) );
+		}
+
+		TCGiant_Sync_Environment::dismiss_notice();
+
+		$back = wp_get_referer();
+		wp_safe_redirect( $back ? $back : admin_url( 'admin.php?page=tcgiant-sync' ) );
+		exit;
+	}
+
+	/**
+	 * Tell a shop that imports eBay auctions how its shop front changed.
+	 *
+	 * Shown once the one-time step at upgrade has turned "Import eBay
+	 * auctions" on - see TCGiant_Sync_Mapper::upgrade_auction_import() - until
+	 * someone dismisses it. Its auction products lost Add to cart at the same
+	 * moment, and nothing else would say why.
+	 */
+	public function auction_import_notice() {
+		if ( ! current_user_can( 'manage_options' ) || 'on' !== get_option( TCGiant_Sync_Mapper::AUCTION_NOTICE_OPTION, '' ) ) {
+			return;
+		}
+
 		$screen = get_current_screen();
-		if ( ! $screen ) {
+		if ( ! $screen || ( ! in_array( $screen->id, array( 'dashboard', 'edit-product', 'product' ), true ) && false === strpos( $screen->id, 'tcgiant' ) ) ) {
 			return;
 		}
-		$show_on = array( 'toplevel_page_tcgiant-sync', 'edit-product', 'product' );
-		if ( ! in_array( $screen->id, $show_on, true ) && strpos( $screen->id, 'tcgiant' ) === false ) {
+		?>
+		<div class="notice notice-info">
+			<p>
+				<strong><?php esc_html_e( 'TCGiant Sync - eBay auctions can no longer be bought on your website while they run', 'tcgiant-sync' ); ?></strong><br>
+				<?php esc_html_e( 'A website sale used to take an auction item at whatever the bidding had reached, and then sold it twice or ended the auction and cancelled its bids. A product on a running auction now shows the opening bid or the current bid, with a link to the listing on eBay, instead of Add to cart. A product imported from an eBay auction also stays off sale here after the auction ends unsold, because its price is the opening bid on eBay rather than one you set. To sell one here, first set your own price, then push it as Fixed Price or unlink it on its eBay Listing tab. Your auction products are kept.', 'tcgiant-sync' ); ?>
+			</p>
+			<p><?php esc_html_e( 'Your shop already had products imported from eBay auctions, so Import eBay auctions has been turned on and new auctions keep arriving. Turn it off if you would rather not import them.', 'tcgiant-sync' ); ?></p>
+			<p>
+				<a class="button button-primary" href="<?php echo esc_url( admin_url( 'admin.php?page=tcgiant-settings#tc-import-auctions' ) ); ?>"><?php esc_html_e( 'Open the setting', 'tcgiant-sync' ); ?></a>
+				<a class="button" href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin-post.php?action=tcgiant_dismiss_auction_notice' ), 'tcgiant_dismiss_auction_notice' ) ); ?>"><?php esc_html_e( 'Dismiss', 'tcgiant-sync' ); ?></a>
+			</p>
+		</div>
+		<?php
+	}
+
+	/**
+	 * Admin notice, once, after the update to 3.28.0, for a shop whose stock
+	 * pushes "Reduce WooCommerce stock on eBay sale?" had switched off - turned
+	 * on, or left off because WP-Lister for eBay was active: see
+	 * TCGiant_Sync_Inventory::maybe_upgrade_push_switch(). Until the shop says
+	 * Got it or saves Import Settings; and put away at once if the shop has
+	 * already chosen otherwise.
+	 */
+	public function push_switch_notice() {
+		if ( ! current_user_can( 'manage_options' ) || ! TCGiant_Sync_Inventory::push_notice_pending() ) {
 			return;
 		}
-		echo '<div class="notice notice-warning"><p>';
-		echo '<strong>⚠ TCGiant Sync — Staging Mode:</strong> ';
-		esc_html_e( 'This appears to be a staging or development environment. eBay write operations (push, revise, end listing) are disabled to prevent accidental changes to live listings.', 'tcgiant-sync' );
-		echo '</p></div>';
+
+		$screen = get_current_screen();
+		if ( ! $screen || ( ! in_array( $screen->id, array( 'dashboard', 'edit-product', 'product' ), true ) && false === strpos( $screen->id, 'tcgiant' ) ) ) {
+			return;
+		}
+
+		// Nothing can reach eBay from here yet - not connected, or a staging
+		// copy: the notice waits, still due, for the shop it is true of.
+		if ( ! TCGiant_Sync_Inventory::connected( TCGiant_Sync_OAuth::instance()->get_settings() ) || TCGiant_Sync_Environment::write_block() ) {
+			return;
+		}
+
+		$flipped = ! empty( TCGiant_Sync_Inventory::push_switch_record()['flipped'] );
+		// Decided again by a later release (redecide_push_switch()): what this
+		// version does, plainly - the upgrade's story is not this shop's.
+		$again = ! empty( TCGiant_Sync_Inventory::push_switch_record()['redecided'] );
+		// Left off at the upgrade because WP-Lister for eBay was active.
+		$held = 'wplister' === ( TCGiant_Sync_Inventory::push_switch_record()['held'] ?? '' );
+
+		// Turned on at the upgrade and since switched off, or left off and since
+		// switched on: the shop has decided, and there is nothing to tell it.
+		if ( TCGiant_Sync_Inventory::pushes_enabled() !== $flipped ) {
+			TCGiant_Sync_Inventory::dismiss_push_notice();
+			return;
+		}
+		?>
+		<div class="notice notice-warning">
+			<?php if ( $flipped && $again ) : ?>
+				<p><strong><?php esc_html_e( 'TCGiant Sync now sends your website\'s stock changes to eBay', 'tcgiant-sync' ); ?></strong></p>
+				<p><?php esc_html_e( 'This version of TCGiant Sync sends this site\'s website stock changes to eBay, as "Send website stock changes to eBay?" has never been chosen here. A website sale, a cancelled order, or a stock change made by hand, by import or by another plugin updates the linked eBay listing, and ends it at 0 if "Auto-end listing" is on. To stop it, set "Send website stock changes to eBay?" to No.', 'tcgiant-sync' ); ?></p>
+			<?php elseif ( $again ) : ?>
+				<p><strong><?php esc_html_e( 'TCGiant Sync is not sending your website\'s stock changes to eBay', 'tcgiant-sync' ); ?></strong></p>
+				<p><?php esc_html_e( 'Website stock changes are not being sent to eBay on this site: this version of TCGiant Sync does not send them, as "Send website stock changes to eBay?" has never been chosen here. So an item sold on your website stays for sale on eBay. To keep eBay up to date, set "Send website stock changes to eBay?" to Yes.', 'tcgiant-sync' ); ?></p>
+			<?php elseif ( $held ) : ?>
+				<p><strong><?php esc_html_e( 'TCGiant Sync is not sending your website\'s stock changes to eBay', 'tcgiant-sync' ); ?></strong></p>
+				<p><?php esc_html_e( 'WP-Lister for eBay was active on this site when TCGiant Sync updated, so sending them was left off. Two plugins sending stock to the same eBay listings overwrite each other\'s quantities, so let only one of them do it. To use TCGiant Sync\'s, turn off WP-Lister\'s stock sync, then set "Send website stock changes to eBay?" to Yes in Settings.', 'tcgiant-sync' ); ?></p>
+			<?php elseif ( $flipped ) : ?>
+				<p><strong><?php esc_html_e( 'TCGiant Sync now sends your website\'s stock changes to eBay', 'tcgiant-sync' ); ?></strong></p>
+				<p><?php esc_html_e( 'They were switched off on this site because "Reduce WooCommerce stock on eBay sale?" was saved as No, and that setting was wrongly turning them off too. Now a website sale, a cancelled order, or a stock change made by hand, by import or by another plugin updates the linked eBay listing, and ends it at 0 if "Auto-end listing" is on.', 'tcgiant-sync' ); ?></p>
+			<?php else : ?>
+				<p><strong><?php esc_html_e( 'TCGiant Sync is not sending your website\'s stock changes to eBay', 'tcgiant-sync' ); ?></strong></p>
+				<p><?php esc_html_e( 'Website stock changes are not being sent to eBay on this site, because "Reduce WooCommerce stock on eBay sale?" was saved as No, and that setting was wrongly turning them off too. So an item sold on your website stays for sale on eBay. To keep eBay up to date, turn on "Send website stock changes to eBay?".', 'tcgiant-sync' ); ?></p>
+			<?php endif; ?>
+			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin:0 0 10px;">
+				<input type="hidden" name="action" value="tcgiant_dismiss_push_notice">
+				<?php wp_nonce_field( 'tcgiant_dismiss_push_notice' ); ?>
+				<button type="submit" class="button button-primary"><?php esc_html_e( 'Got it', 'tcgiant-sync' ); ?></button>
+				<a class="button" href="<?php echo esc_url( admin_url( 'admin.php?page=tcgiant-settings#tc-push-stock' ) ); ?>"><?php esc_html_e( 'Change this in Settings', 'tcgiant-sync' ); ?></a>
+			</form>
+		</div>
+		<?php
+	}
+
+	/**
+	 * Put away the notice about the stock push switch.
+	 */
+	public function handle_dismiss_push_notice() {
+		check_admin_referer( 'tcgiant_dismiss_push_notice' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'Unauthorized.', 'tcgiant-sync' ) );
+		}
+
+		TCGiant_Sync_Inventory::dismiss_push_notice();
+
+		$back = wp_get_referer();
+		wp_safe_redirect( $back ? $back : admin_url( 'admin.php?page=tcgiant-sync' ) );
+		exit;
+	}
+
+	/**
+	 * Put away the notice about auctions.
+	 */
+	public function handle_dismiss_auction_notice() {
+		check_admin_referer( 'tcgiant_dismiss_auction_notice' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'Unauthorized.', 'tcgiant-sync' ) );
+		}
+
+		update_option( TCGiant_Sync_Mapper::AUCTION_NOTICE_OPTION, 'dismissed' );
+
+		$back = wp_get_referer();
+		wp_safe_redirect( $back ? $back : admin_url( 'admin.php?page=tcgiant-sync' ) );
+		exit;
 	}
 
 	/**
@@ -2795,7 +3291,9 @@ class TCGiant_Sync_Admin {
 
 		$item   = $response['Item'];
 		$title  = (string) ( $item['Title'] ?? '' );
-		$type   = (string) ( $item['ListingType'] ?? 'FixedPriceItem' );
+		// eBay's word for the format, or none: a FixedPriceItem eBay never
+		// gave would let the stock push end an auction with no read.
+		$type   = is_scalar( $item['ListingType'] ?? '' ) ? (string) ( $item['ListingType'] ?? '' ) : '';
 		$status = (string) ( $item['SellingStatus']['ListingStatus'] ?? 'Active' );
 
 
@@ -2858,6 +3356,12 @@ class TCGiant_Sync_Admin {
 		$end_time   = (string) ( $item['ListingDetails']['EndTime'] ?? '' );
 		$start_time = (string) ( $item['ListingDetails']['StartTime'] ?? '' );
 
+		// Another listing's bids and prices would be shown on this one until
+		// it is next imported.
+		foreach ( TCGiant_Sync_Inventory::AUCTION_FIGURE_KEYS as $figure_key ) {
+			$product->delete_meta_data( $figure_key );
+		}
+
 		// A listing linked by hand is not the one a push sent a description
 		// to: what the product records of that send goes.
 		if ( class_exists( 'TCGiant_Sync_Templates' ) && (string) $product->get_meta( '_tcgiant_tpl_item' ) !== (string) $item_id ) {
@@ -2866,8 +3370,13 @@ class TCGiant_Sync_Admin {
 			}
 		}
 		$product->update_meta_data( '_ebay_item_id', $item_id );
-		$product->update_meta_data( '_ebay_listing_type', $type );
 		$product->update_meta_data( '_ebay_listing_status', $local_status );
+		// The type itself is noted after the save (note_listing_type()); one
+		// recorded for another listing says nothing about this one.
+		if ( '' === $type ) {
+			$product->delete_meta_data( '_ebay_listing_type' );
+			$product->delete_meta_data( '_ebay_listing_type_item' );
+		}
 
 		// The eBay site this listing is on, from the answer in hand, or none
 		// when eBay gave none (TCGiant_Sync_Sites). A product linked by hand
@@ -2902,10 +3411,16 @@ class TCGiant_Sync_Admin {
 			TCGiant_Sync_Runtime::unguard_loops();
 		}
 
-		TCGiant_Sync_DB::upsert( array(
+		// The type, with the listing it was read for, and the shop's note that
+		// it has an auction when it is one - the stock push reads both before
+		// an EndItem (3.28.0). After the save, so it is this listing's.
+		if ( '' !== $type ) {
+			TCGiant_Sync_Inventory::note_listing_type( $product_id, $item_id, $type );
+		}
+
+		TCGiant_Sync_DB::upsert( ( '' !== $type ? array( 'listing_type' => $type ) : array() ) + array(
 			'product_id'     => $product_id,
 			'ebay_item_id'   => $item_id,
-			'listing_type'   => $type,
 			'listing_status' => $local_status,
 			'ebay_price'     => $price,
 			'ebay_quantity'  => $available,

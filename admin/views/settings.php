@@ -19,10 +19,18 @@ $auth_url         = TCGiant_Sync_OAuth::instance()->get_authorization_url();
 $license          = TCGiant_Sync_Entitlements::instance();
 $license_ui       = $license->get_status_for_ui();
 
-// Not the tokens or the relay's key (TCGiant_Sync_Admin::SECRET_SETTINGS):
-// they are never put in the page, and a save from these forms keeps them.
-$preserve_keys = array( 'token_expiry', 'redirect_uri', 'app_id', 'store_name', 'import_status', 'marketplace' );
-$form_marker   = '<input type="hidden" name="tcgiant_sync_ebay_settings[' . esc_attr( TCGiant_Sync_Admin::SETTINGS_FORM_MARKER ) . ']" value="1">';
+// Each form carries only its own settings, and says which form it is: a save
+// from it changes those and keeps every other setting as stored
+// (TCGiant_Sync_Admin::SETTINGS_FORMS). So nothing else - not the tokens or
+// the relay's key (TCGiant_Sync_Admin::SECRET_SETTINGS), nor the other form's
+// settings - is put in the page to be carried back.
+$form_marker = function ( $form ) {
+	return '<input type="hidden" name="tcgiant_sync_ebay_settings[' . esc_attr( TCGiant_Sync_Admin::SETTINGS_FORM_MARKER ) . ']" value="' . esc_attr( $form ) . '">';
+};
+// A checkbox list with every box unticked sends nothing: this says it was drawn.
+$list_marker = function ( $key ) {
+	return '<input type="hidden" name="tcgiant_sync_ebay_settings[' . esc_attr( TCGiant_Sync_Admin::SETTINGS_LISTS_MARKER ) . '][]" value="' . esc_attr( $key ) . '">';
+};
 
 // TCG-relevant eBay category map (ID => label).
 $tcg_categories = TCGiant_Sync_Catalog::get_categories();
@@ -259,21 +267,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 			<form method="post" action="options.php">
 				<?php settings_fields( 'tcgiant_sync_ebay_group' ); ?>
 				<?php
-				echo $form_marker; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- built above from esc_attr().
-				foreach ( $preserve_keys as $key ) {
-					if ( ! empty( $settings[ $key ] ) ) {
-						echo '<input type="hidden" name="tcgiant_sync_ebay_settings[' . esc_attr( $key ) . ']" value="' . esc_attr( $settings[ $key ] ) . '">';
-					}
-				}
-				// Preserve export settings too so they aren't wiped by this form.
-				// All of them: Best Offer and the GPSR fields were missing, so
-				// saving the import settings switched both off for every push.
-				$export_preserve = array( 'best_offer_enabled', 'best_offer_auto_accept', 'best_offer_auto_decline', 'gpsr_enabled', 'gpsr_manufacturer_name', 'gpsr_manufacturer_address', 'gpsr_eu_responsible', 'export_category_id', 'export_category_name', 'export_condition_id', 'export_condition_type', 'export_grader_id', 'export_grade_value', 'export_cert_number', 'export_ungraded_condition', 'export_location', 'export_postal_code', 'export_fulfillment_policy', 'export_return_policy', 'export_payment_policy', 'export_listing_type', 'export_listing_duration', 'export_default_quantity', 'export_send_package_details' );
-				foreach ( $export_preserve as $key ) {
-					if ( ! empty( $settings[ $key ] ) ) {
-						echo '<input type="hidden" name="tcgiant_sync_ebay_settings[' . esc_attr( $key ) . ']" value="' . esc_attr( $settings[ $key ] ) . '">';
-					}
-				}
+				echo $form_marker( 'import' ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- built above from esc_attr().
 				?>
 
 				<!-- General Settings -->
@@ -414,6 +408,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 							$selected_standard_cats = isset( $settings['import_standard_category_ids'] ) && is_array( $settings['import_standard_category_ids'] ) ? $settings['import_standard_category_ids'] : array();
 							?>
 							<div class="tc-checkbox-group" style="max-height:160px;overflow-y:auto;border:1px solid var(--tc-border);padding:12px;border-radius:4px;background:#fff;">
+								<?php echo $list_marker( 'import_standard_category_ids' ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- built above from esc_attr(). ?>
 								<?php foreach ( $standard_cats as $id => $label ) : 
 									if ( '' === $id || 'custom' === $id ) continue;
 								?>
@@ -435,6 +430,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						?>
 						<div class="tc-checkbox-group" style="max-height:160px;overflow-y:auto;border:1px solid var(--tc-border);padding:12px;border-radius:4px;background:#fff;">
 							<?php if ( ! empty( $woo_cats ) && ! is_wp_error( $woo_cats ) ) : ?>
+								<?php echo $list_marker( 'woo_category_ids' ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- built above from esc_attr(). ?>
 								<?php foreach ( $woo_cats as $cat ) : ?>
 									<label style="display:block;margin-bottom:6px;font-weight:normal;cursor:pointer;">
 										<input type="checkbox" name="tcgiant_sync_ebay_settings[woo_category_ids][]" value="<?php echo esc_attr( $cat->term_id ); ?>" <?php checked( in_array( $cat->term_id, $selected_woo_cats ) ); ?>>
@@ -467,6 +463,17 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						<p class="tc-hint" style="margin-top:6px;"><strong><?php esc_html_e( '💡 Free Shipping Tip:', 'tcgiant-sync' ); ?></strong> <?php esc_html_e( 'Since shipping is baked into the price, you probably want to offer free shipping at checkout. Go to WooCommerce → Settings → Shipping → your zone → Add Shipping Method → "Free Shipping". Customers see one all-inclusive price with no separate shipping charge.', 'tcgiant-sync' ); ?></p>
 					</div>
 
+					<?php // Off unless chosen, or turned on at upgrade for a shop that already
+					// had imported auctions (TCGiant_Sync_Mapper::upgrade_auction_import()). ?>
+					<div class="tc-field" id="tc-import-auctions" style="margin-top:24px;">
+						<label class="tc-label"><?php esc_html_e( 'Import eBay auctions', 'tcgiant-sync' ); ?></label>
+						<div class="tc-radio-group">
+							<label><input type="radio" name="tcgiant_sync_ebay_settings[import_auctions]" value="1" <?php checked( $settings['import_auctions'] ?? '0', '1' ); ?>> Yes</label>
+							<label><input type="radio" name="tcgiant_sync_ebay_settings[import_auctions]" value="0" <?php checked( $settings['import_auctions'] ?? '0', '0' ); ?>> No</label>
+						</div>
+						<p class="tc-hint"><?php esc_html_e( 'Off: auctions you start on eBay do not become products. On: they are imported, show their opening bid or current bid with a link to the auction on eBay, and cannot be bought on your website. Either way, a product already linked to an auction keeps syncing and cannot be bought on your website while the auction runs. One you listed at auction from WooCommerce goes back on sale here once eBay reports the auction ended unsold.', 'tcgiant-sync' ); ?></p>
+					</div>
+
 					<div class="tc-field" style="margin-top:24px;">
 						<label class="tc-label" for="ebay_sku_maps_to"><?php esc_html_e( 'eBay SKU Maps To', 'tcgiant-sync' ); ?></label>
 						<select name="tcgiant_sync_ebay_settings[sku_maps_to]" id="ebay_sku_maps_to" class="tc-select">
@@ -493,6 +500,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						?>
 						<div class="tc-checkbox-group" style="max-height:160px;overflow-y:auto;border:1px solid var(--tc-border);padding:12px;border-radius:4px;background:#fff;">
 							<?php if ( ! empty( $woo_cats ) && ! is_wp_error( $woo_cats ) ) : ?>
+								<?php echo $list_marker( 'preserve_woo_category_ids' ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- built above from esc_attr(). ?>
 								<?php foreach ( $woo_cats as $cat ) : ?>
 									<label style="display:block;margin-bottom:6px;font-weight:normal;cursor:pointer;">
 										<input type="checkbox" name="tcgiant_sync_ebay_settings[preserve_woo_category_ids][]" value="<?php echo esc_attr( $cat->term_id ); ?>" <?php checked( in_array( $cat->term_id, $selected_preserve_cats ) ); ?>>
@@ -503,7 +511,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 								<p style="margin:0;font-size:13px;color:#666;"><?php esc_html_e( 'No WooCommerce categories found.', 'tcgiant-sync' ); ?></p>
 							<?php endif; ?>
 						</div>
-						<p class="tc-hint" style="margin-top:8px;"><?php esc_html_e( 'Items in these categories will not be trashed when they end on eBay. Instead, their stock will be set to 0 and they will be unlinked from the old eBay listing.', 'tcgiant-sync' ); ?></p>
+						<p class="tc-hint" style="margin-top:8px;"><?php esc_html_e( 'Items in these categories are never moved to the Trash. When their eBay listing ends, stock is lowered to what eBay says is left on that listing, never raised, and they stay linked to the listing so it can be relisted.', 'tcgiant-sync' ); ?></p>
 					</div>
 				</div>
 
@@ -551,13 +559,26 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						</select>
 						<p class="description"><?php esc_html_e( 'Every imported product writes a log line. On stores with thousands of listings, switching to "Warnings and errors only" noticeably reduces disk activity during a sync.', 'tcgiant-sync' ); ?></p>
 					</div>
+					<?php // What is actually happening, chosen or not - see
+					// TCGiant_Sync_Inventory::pushes_enabled(). ?>
+					<?php $tc_push_stock = TCGiant_Sync_Inventory::pushes_enabled( $settings ) ? '1' : '0'; ?>
+					<div class="tc-field" id="tc-push-stock">
+						<?php // What it was drawn with: left as it is, a never-chosen switch stays unstored (TCGiant_Sync_Admin::DRAWN_SETTINGS). ?>
+						<input type="hidden" name="tcgiant_sync_ebay_settings[push_stock_to_ebay_drawn]" value="<?php echo esc_attr( $tc_push_stock ); ?>">
+						<label class="tc-label"><?php esc_html_e( 'Send website stock changes to eBay?', 'tcgiant-sync' ); ?></label>
+						<div class="tc-radio-group">
+							<label><input type="radio" name="tcgiant_sync_ebay_settings[push_stock_to_ebay]" value="1" <?php checked( $tc_push_stock, '1' ); ?>> Yes</label>
+							<label><input type="radio" name="tcgiant_sync_ebay_settings[push_stock_to_ebay]" value="0" <?php checked( $tc_push_stock, '0' ); ?>> No</label>
+						</div>
+						<p class="tc-hint"><?php esc_html_e( 'When stock changes here - a website sale, a cancelled order, or an edit by hand, import or another plugin - the linked eBay listing is updated to match. A product that allows backorders is treated the same: at 0 or below, its eBay listing is ended, as "Auto-end listing" below decides. Turn this off only if something else keeps eBay\'s quantities up to date.', 'tcgiant-sync' ); ?></p>
+					</div>
 					<div class="tc-field">
-						<label class="tc-label"><?php esc_html_e( 'Reduce WooCommerce stock on eBay sale?', 'tcgiant-sync' ); ?></label>
+						<label class="tc-label"><?php esc_html_e( 'Take eBay sales off stock for products not linked to a listing?', 'tcgiant-sync' ); ?></label>
 						<div class="tc-radio-group">
 							<label><input type="radio" name="tcgiant_sync_ebay_settings[enable_order_sync]" value="1" <?php checked( $settings['enable_order_sync'] ?? '0', '1' ); ?>> Yes</label>
 							<label><input type="radio" name="tcgiant_sync_ebay_settings[enable_order_sync]" value="0" <?php checked( $settings['enable_order_sync'] ?? '0', '0' ); ?>> No</label>
 						</div>
-						<p class="tc-hint"><?php esc_html_e( 'Only applies to products that are not linked to an eBay listing. Linked products always take their quantity from eBay directly, and each eBay sale of one is checked against eBay whatever this is set to.', 'tcgiant-sync' ); ?></p>
+						<p class="tc-hint"><?php esc_html_e( 'For products an eBay sale matches by SKU that are not linked to an eBay listing. Linked products follow eBay whatever this says, and each eBay sale of one is checked against eBay. It has no effect on what is sent to eBay.', 'tcgiant-sync' ); ?></p>
 					</div>
 					<div class="tc-field">
 						<label class="tc-label"><?php esc_html_e( 'Check stock against eBay weekly?', 'tcgiant-sync' ); ?></label>
@@ -581,7 +602,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 							<label><input type="radio" name="tcgiant_sync_ebay_settings[auto_end_zero_stock]" value="1" <?php checked( $settings['auto_end_zero_stock'] ?? '1', '1' ); ?>> Yes</label>
 							<label><input type="radio" name="tcgiant_sync_ebay_settings[auto_end_zero_stock]" value="0" <?php checked( $settings['auto_end_zero_stock'] ?? '1', '0' ); ?>> No</label>
 						</div>
-						<p class="tc-hint"><?php esc_html_e( 'Automatically ends the eBay listing when WooCommerce stock hits 0 (eBay rejects quantity=0 via API).', 'tcgiant-sync' ); ?></p>
+						<p class="tc-hint"><?php esc_html_e( 'Yes ends the eBay listing when WooCommerce stock reaches 0. No keeps it live at 0, hidden from search, using eBay\'s Out-of-Stock control - turn that on in eBay\'s selling preferences. Without it eBay will not accept 0, and the listing is ended anyway so it cannot oversell. Listings with variations never end because one variation sold out.', 'tcgiant-sync' ); ?></p>
 					</div>
 					<div class="tc-field">
 						<label class="tc-label"><?php esc_html_e( 'Disable background image localization?', 'tcgiant-sync' ); ?></label>
@@ -696,33 +717,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 			<form method="post" action="options.php">
 				<?php settings_fields( 'tcgiant_sync_ebay_group' ); ?>
 				<?php
-				echo $form_marker; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- built above from esc_attr().
-				// Preserve all non-export fields.
-				//
-				// Every Import Settings field must be here: this form replaces the
-				// whole settings option, and one left out is quietly reset. Saving
-				// export settings used to drop the Standard Categories import
-				// filter this way, so every listing began importing again without
-				// anyone having touched the import settings - and image hosting,
-				// image size and log detail went back to their defaults with it.
-				// import_sites likewise, or saving this form would go back to
-				// importing every eBay site.
-				$all_preserve = array_merge( $preserve_keys, array( 'import_standard_category_ids', 'import_sites', 'host_images_on_ebay', 'import_image_width', 'log_level', 'custom_saved_categories', 'category_ids', 'woo_category_ids', 'preserve_woo_category_ids', 'import_specs_as_tags', 'bake_shipping_into_price', 'sku_maps_to', 'sku_prefix', 'sync_interval', 'enable_order_sync', 'enable_order_import', 'enable_reconciliation', 'remove_sold_products', 'auto_end_zero_stock', 'disable_image_localization', 'auto_relist_enabled', 'overwrite_title', 'overwrite_desc', 'overwrite_price', 'overwrite_images', 'overwrite_taxonomy', 'overwrite_attributes', 'overwrite_weight_dims', 'delete_data_on_uninstall' ) );
-				// Note: export condition descriptor fields are handled by the export form itself.
-				foreach ( $all_preserve as $key ) {
-					$val = $settings[ $key ] ?? null;
-					if ( null !== $val ) {
-						if ( is_array( $val ) ) {
-							foreach ( $val as $v ) {
-								echo '<input type="hidden" name="tcgiant_sync_ebay_settings[' . esc_attr( $key ) . '][]" value="' . esc_attr( $v ) . '">';
-							}
-						} elseif ( 'custom_saved_categories' === $key ) {
-							echo '<textarea name="tcgiant_sync_ebay_settings[' . esc_attr( $key ) . ']" style="display:none;">' . esc_textarea( $val ) . '</textarea>';
-						} else {
-							echo '<input type="hidden" name="tcgiant_sync_ebay_settings[' . esc_attr( $key ) . ']" value="' . esc_attr( $val ) . '">';
-						}
-					}
-				}
+				echo $form_marker( 'export' ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- built above from esc_attr().
 				?>
 
 				<!-- Default Category -->

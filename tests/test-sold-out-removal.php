@@ -305,6 +305,11 @@ class TCGiant_Sync_OAuth {
 	public function get_settings() { return array(); }
 }
 
+// A live shop, by wp-config, for TCGiant_Sync_Environment (3.28.0), which
+// the push, Relist and auto-relist ask before anything goes to eBay.
+// Staging copies are test-staging-detect.php's.
+define( 'TCGIANT_SYNC_IS_STAGING', false );
+require $root . '/includes/class-tcgiant-sync-environment.php';
 require $root . '/includes/class-tcgiant-sync-catalog.php';
 // Removal, the push and Link and Clear save the product, which turns on the
 // save-loop breaker, which lives in the runtime.

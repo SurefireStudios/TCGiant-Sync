@@ -62,6 +62,8 @@ class Harness_Wpdb {
 	public $options = 'wp_options';
 	public function prepare( $query ) { return $query; }
 	public function query( $query ) { return 1; }
+	// The day's call count, read from its row since 3.28.0: none counted here.
+	public function get_var( $query ) { return null; }
 }
 $wpdb = new Harness_Wpdb();
 
@@ -74,6 +76,11 @@ function get_option( $name, $default = false ) {
 	return array_key_exists( $name, $OPTIONS ) ? $OPTIONS[ $name ] : $default;
 }
 function add_option( $name, $value = '' ) {
+	global $OPTIONS;
+	$OPTIONS[ $name ] = $value;
+	return true;
+}
+function update_option( $name, $value, $autoload = null ) {
 	global $OPTIONS;
 	$OPTIONS[ $name ] = $value;
 	return true;
@@ -126,6 +133,14 @@ class TCGiant_Sync_OAuth {
 	public function get_settings() { return array( 'marketplace' => 'EBAY_DE' ); }
 }
 
+// The live shop. Since 3.28.0 the API class asks TCGiant_Sync_Environment
+// before anything that changes eBay. GetSellerEvents only reads, so it is
+// never asked here, but the class is loaded as it is on a real site.
+function wp_load_alloptions() { return array( 'home' => 'https://numismax.com', 'siteurl' => 'https://numismax.com' ); }
+function wp_get_environment_type() { return 'production'; }
+function wp_parse_url( $url, $component = -1 ) { return parse_url( $url, $component ); }
+
+require dirname( __DIR__ ) . '/includes/class-tcgiant-sync-environment.php';
 require dirname( __DIR__ ) . '/includes/class-tcgiant-sync-api.php';
 
 $api = TCGiant_Sync_API::instance();

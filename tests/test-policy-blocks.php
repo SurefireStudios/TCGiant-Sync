@@ -143,7 +143,7 @@ update_post_meta( 71, TCGiant_Sync_Templates::OVERRIDE_META, (string) $tpl );
 echo "\nAN IMPORTED LISTING, AND ANOTHER LANGUAGE\n" . str_repeat( '=', 124 ) . "\n";
 
 // The import records the listing's own return policy (RP9, 14 days). A
-// 3.27.8 push sends the shop's (RP1), so the block says what is sent; 3.28.0's
+// 3.27.8 push sends the shop's (RP1), so the block says what is sent; 3.28.1's
 // item 13, which leaves SellerProfiles alone, will render the listing's own.
 update_post_meta( 71, '_ebay_return_policy_id', 'RP9' );
 update_post_meta( 71, '_ebay_item_id', '110000000071' );

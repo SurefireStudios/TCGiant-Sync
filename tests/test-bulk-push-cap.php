@@ -137,7 +137,8 @@ update_option( TCGiant_Sync_Exporter::BULK_PUSHED_OPTION, array( 'day' => gmdate
 check( 'yesterday\'s count does not hold today', TCGiant_Sync_Exporter::bulk_pushed_today(), 0 );
 $fresh();
 check( '  so today\'s pushes go', $x->bulk_push_products( $ids( 1, 5 ) ), 5 );
-check( 'the day is the UTC date, as the eBay call counter\'s is', array( get_option( TCGiant_Sync_Exporter::BULK_PUSHED_OPTION )['day'], false !== strpos( file_get_contents( dirname( __DIR__ ) . '/includes/class-tcgiant-sync-api.php' ), "\$key = 'tcgiant_api_calls_' . gmdate( 'Y-m-d' );" ) ), array( gmdate( 'Y-m-d' ), true ) );
+// Since 3.28.0 the call count is a row of its own per UTC day (CALL_COUNT_PREFIX).
+check( 'the day is the UTC date, as the eBay call counter\'s is', array( get_option( TCGiant_Sync_Exporter::BULK_PUSHED_OPTION )['day'], false !== strpos( file_get_contents( dirname( __DIR__ ) . '/includes/class-tcgiant-sync-api.php' ), "self::CALL_COUNT_PREFIX . gmdate( 'Y-m-d' )" ) ), array( gmdate( 'Y-m-d' ), true ) );
 
 // ─────────────────────────────────────────────────────────────────────────────
 echo "\nA PRODUCT'S OWN PUSH DOES NOT COUNT; THE LISTINGS SCREEN'S BULK PUSH DOES\n" . str_repeat( '=', 124 ) . "\n";

@@ -556,7 +556,9 @@ check( '  counted for the warning a full sync gives', array( state()['site_other
 world( array( 'pages' => 1, 'per_page' => 8 ), array( 'options' => array( 'tcgiant_sync_state' => array( 'status' => 'stopped', 'sync_mode' => 'delta', 'delta_mod_from' => '2026-10-21T00:00:00.000Z', 'current_page' => 1, 'total_pages' => 0, 'last_successful_sync_at' => '2026-10-21T00:05:00.000Z', 'total_found' => 0, 'total_queued' => 0, 'total_processed' => 0, 'total_errors' => 0 ) ) ) );
 request( 'resume' );
 as_run( 'tcgiant_sync_scan_all_pages' );
-check( 'Resume Import\'s page scan of a delta: read to its end, but never authorising the clean-up', array( state()['status'], state()['scan_complete_clean'] ), array( 'importing', false ) );
+// Since 3.28.0 Resume Import resumes a delta as a delta: no page scan of it
+// at all, and so, again, no clean-up authorised.
+check( 'Resume Import on a delta: resumed as a delta, no page scan, never authorising the clean-up', array( state()['status'], state()['scan_complete_clean'], count( pending( 'tcgiant_sync_fetch_delta_events' ) ), count( ever_queued( 'tcgiant_sync_scan_all_pages' ) ) ), array( 'scanning', false, 1, 0 ) );
 
 // The host ends a batch while it writes the list of live listings: the
 // list is written over, never deleted first, so nothing on it is lost.
@@ -724,11 +726,18 @@ $before  = requests();
 request( 'prune' );
 $trashed = lines( 'trashed' );
 sort( $trashed );
+// Since 3.28.0 the pruner trashes nothing itself: what eBay says has ended is
+// settled as the delta settles it, and one eBay gives no figures for, or no
+// longer has, is marked ended with its stock left (TCGiant_Sync_Importer::
+// check_prune_candidate()). "Retired" below is that mark.
+$ended = lines( 'ended' );
+sort( $ended );
+$missed_products = array_map( 'strval', array_keys( array_intersect( $linked, $missed ) ) );
 check( 'GTC listings renewing while a full sync ran: live listings missing from its pages', array( state()['scan_complete_clean'], count( $missed ) >= 10, count( lines( 'renewed' ) ) > 0 ), array( true, true, true ) );
-check( '  the clean-up asks eBay first: those live listings\' products are not trashed', count( array_intersect( $trashed, array_map( 'strval', array_keys( array_intersect( $linked, $missed ) ) ) ) ), 0 );
-check( '  saying so, with some of their item numbers', array( logged( count( $missed ) . ' listings missing from the scan are still live on eBay (' . implode( ', ', array_slice( $missed, 0, 5 ) ) ), logged( 'Inventory Pruning: Trashed 3 products' ) ), array( 1, 1 ) );
-check( '  those that ended before the sync began, and the one eBay no longer has, trashed as before', $trashed, array( '9901', '9902', '9903' ) );
-check( '  one GetItem call for each product it would have retired, and nothing left over', array( count( getitems_after( $before ) ), option( 'tcgiant_sync_prune_pending' ), option( 'tcgiant_sync_active_ids' ) ), array( count( $missed ) + 3, null, null ) );
+check( '  the clean-up asks eBay first: those live listings\' products are neither trashed nor marked ended', array( count( array_intersect( $trashed, $missed_products ) ), count( array_intersect( $ended, $missed_products ) ) ), array( 0, 0 ) );
+check( '  saying so, with some of their item numbers', array( logged( count( $missed ) . ' listings missing from the scan are still live on eBay (' . implode( ', ', array_slice( $missed, 0, 5 ) ) ), logged( '3 no longer on eBay, marked ended with stock unchanged' ) ), array( 1, 1 ) );
+check( '  those that ended before the sync began, and the one eBay no longer has, retired as 3.28.0 retires them', array( $ended, $trashed ), array( array( '9901', '9902', '9903' ), array() ) );
+check( '  one GetItem call for each product it would have retired, and nothing left over', array( count( getitems_after( $before ) ), option( 'tcgiant_sync_prune_queue' ), option( 'tcgiant_sync_prune_pending' ), option( 'tcgiant_sync_active_ids' ) ), array( count( $missed ) + 3, null, null, null ) );
 
 // eBay does not answer about one, and its rate limit stops the rest: those are
 // kept, and asked about again an hour on.
@@ -748,10 +757,17 @@ world(
 	array( 'linked' => $linked, 'options' => array( 'tcgiant_sync_state' => $clean_sync, 'tcgiant_sync_active_ids' => array_values( array_slice( $linked, 0, 40 ) ) ) )
 );
 request( 'prune' );
-$pending_prune = (array) option( 'tcgiant_sync_prune_pending' );
-check( 'one gone, one eBay will not answer about, one live, then eBay\'s rate limit: only the gone one trashed', array( lines( 'trashed' ), count( getitems_after( 0 ) ) ), array( array( '6001' ), 4 ) );
-check( '  the live one kept and put on the list of live listings', in_array( '990000000003', (array) option( 'tcgiant_sync_active_ids' ), true ), true );
-check( '  the three not confirmed kept for now, for this sync, to be asked about again an hour on', array( $pending_prune['scan'] ?? null, $pending_prune['rows'] ?? null, count( array_filter( pending( 'tcgiant_sync_prune_orphans' ), function ( $a ) { return ! empty( $a['args']['follow_up'] ); } ) ), logged( '3 products kept for now, their listings not yet confirmed as ended on eBay (eBay\'s call limit, or the day\'s API budget, was reached). They are checked again in an hour.' ) ), array( $clean_sync['full_started_at'], array( 6002 => '990000000002', 6004 => '990000000004', 6005 => '990000000005' ), 1, 1 ) );
+// What a run leaves is kept in the pruner's own list since 3.28.0, waiting for
+// its follow-up (TCGiant_Sync_Importer::PRUNE_QUEUE_OPTION).
+$pending_prune = (array) option( 'tcgiant_sync_prune_queue' );
+$waiting       = array();
+foreach ( (array) ( $pending_prune['items'] ?? array() ) as $pair ) {
+	$waiting[ (int) $pair[0] ] = (string) $pair[1];
+}
+ksort( $waiting );
+check( 'one gone, one eBay will not answer about, one live, then eBay\'s rate limit: only the gone one retired', array( lines( 'ended' ), lines( 'trashed' ), count( getitems_after( 0 ) ) ), array( array( '6001' ), array(), 4 ) );
+check( '  the live one kept, not marked ended, and not waiting to be asked again', array( (string) ( wl( 'meta', array() )[6003]['_ebay_listing_status'] ?? '' ), isset( $waiting[6003] ) ), array( '', false ) );
+check( '  the three not confirmed kept for now, for this sync, to be asked about again an hour on', array( $pending_prune['scan'] ?? null, $waiting, ! empty( $pending_prune['waiting'] ), count( array_filter( pending( 'tcgiant_sync_prune_orphans' ), function ( $a ) { return ! empty( $a['args']['follow_up'] ); } ) ), logged( '3 products kept for now, their listings not yet confirmed as ended on eBay (eBay\'s call limit, or the day\'s API budget, was reached). They are checked again in an hour.' ) ), array( $clean_sync['full_started_at'], array( 6002 => '990000000002', 6004 => '990000000004', 6005 => '990000000005' ), true, 1, 1 ) );
 // An hour on eBay answers; meanwhile 6005 was linked to another listing by hand.
 ws( 'scenario', array( 'pages' => 5, 'per_page' => 8 ) );
 $relinked         = wl( 'linked', array() );
@@ -759,8 +775,10 @@ $relinked[6005]   = '2001';
 ws( 'linked', $relinked );
 $before = requests();
 request( 'prune_follow_up' );
-check( 'the follow-up run: the two eBay no longer has trashed; the one linked since left alone', array( lines( 'trashed' ), count( getitems_after( $before ) ) ), array( array( '6001', '6002', '6004' ), 2 ) );
-check( '  and nothing left waiting', array( option( 'tcgiant_sync_prune_pending' ), option( 'tcgiant_sync_active_ids' ), logged( 'checking again what an earlier run left (follow-up 1 of at most 24); 2 listings checked with eBay' ) ), array( null, null, 1 ) );
+$ended = lines( 'ended' );
+sort( $ended );
+check( 'the follow-up run: the two eBay no longer has retired; the one linked since left alone', array( $ended, lines( 'trashed' ), count( getitems_after( $before ) ) ), array( array( '6001', '6002', '6004' ), array(), 2 ) );
+check( '  and nothing left waiting', array( option( 'tcgiant_sync_prune_queue' ), option( 'tcgiant_sync_prune_pending' ), option( 'tcgiant_sync_active_ids' ), logged( 'checking again what an earlier run left (follow-up 1 of at most 24)' ), logged( '1 changed since the list was made' ) ), array( null, null, null, 1, 1 ) );
 
 // No more than 300 GetItem calls a run: 310 to retire among 1,710 products.
 $linked = array();
@@ -777,10 +795,10 @@ for ( $n = 1; $n <= 310; $n++ ) {
 }
 world( array( 'pages' => 7, 'per_page' => 200 ), array( 'linked' => $linked, 'options' => array( 'tcgiant_sync_state' => $clean_sync, 'tcgiant_sync_active_ids' => $active ) ) );
 request( 'prune' );
-check( '310 products to retire: 300 asked about and trashed, the other 10 kept for the next run', array( count( lines( 'trashed' ) ), count( getitems_after( 0 ) ), count( (array) ( option( 'tcgiant_sync_prune_pending' )['rows'] ?? array() ) ), logged( '10 products kept for now, their listings not yet confirmed as ended on eBay (eBay is asked about 300 a run). They are checked again in an hour.' ) ), array( 300, 300, 10, 1 ) );
+check( '310 products to retire: 300 asked about and retired, the other 10 kept for the next run', array( count( lines( 'ended' ) ), count( lines( 'trashed' ) ), count( getitems_after( 0 ) ), count( (array) ( option( 'tcgiant_sync_prune_queue' )['items'] ?? array() ) ), logged( '10 products kept for now, their listings not yet confirmed as ended on eBay (eBay is asked about 300 a run). They are checked again in an hour.' ) ), array( 300, 0, 300, 10, 1 ) );
 $before = requests();
 request( 'prune_follow_up' );
-check( '  the follow-up run asks about those 10, and trashes them', array( count( lines( 'trashed' ) ), count( getitems_after( $before ) ), option( 'tcgiant_sync_prune_pending' ) ), array( 310, 10, null ) );
+check( '  the follow-up run asks about those 10, and retires them', array( count( lines( 'ended' ) ), count( array_unique( lines( 'ended' ) ) ), count( getitems_after( $before ) ), option( 'tcgiant_sync_prune_queue' ) ), array( 310, 310, 10, null ) );
 
 // What a run left waiting is decided afresh by the next full sync: its own
 // clean-up, even one skipped, and its start.
@@ -788,7 +806,7 @@ $left_over = array( 'rows' => array( 6001 => '990000000001' ), 'round' => 0, 'sc
 world( array( 'pages' => 1, 'per_page' => 8 ), array( 'linked' => array( 6001 => '990000000001' ), 'options' => array( 'tcgiant_sync_state' => array_merge( $clean_sync, array( 'scan_complete_clean' => false ) ), 'tcgiant_sync_prune_pending' => $left_over ) ) );
 request( 'prune' );
 request( 'prune_follow_up' );
-check( 'a full sync\'s clean-up, skipped, takes what an earlier run left with it: the follow-up finds nothing to do', array( option( 'tcgiant_sync_prune_pending' ), lines( 'trashed' ), count( getitems_after( 0 ) ) ), array( null, array(), 0 ) );
+check( 'a full sync\'s clean-up, skipped, takes what an earlier run left with it: the follow-up finds nothing to do', array( option( 'tcgiant_sync_prune_pending' ), lines( 'trashed' ), lines( 'ended' ), count( getitems_after( 0 ) ) ), array( null, array(), array(), 0 ) );
 world( array( 'pages' => 1, 'per_page' => 8 ), array( 'options' => array( 'tcgiant_sync_state' => $clean_sync, 'tcgiant_sync_prune_pending' => $left_over ) ) );
 fetch();
 check( '  and so does Fetch Inventory', option( 'tcgiant_sync_prune_pending' ), null );
@@ -809,9 +827,9 @@ run_by_itself( 200 );
 ws( 'queue', array_values( array_filter( wl( 'queue', array() ), function ( $a ) { return 'tcgiant_sync_prune_orphans' !== $a['hook']; } ) ) );
 request( 'prune' );
 $first = state()['full_started_at'];
-check( 'a clean-up that could not ask eBay about one listing: kept for a follow-up an hour on, for that sync', array( ( option( 'tcgiant_sync_prune_pending' ) ?? array() )['scan'] ?? null, count( pending( 'tcgiant_sync_prune_orphans' ) ) ), array( $first, 1 ) );
+check( 'a clean-up that could not ask eBay about one listing: kept for a follow-up an hour on, for that sync', array( ( option( 'tcgiant_sync_prune_queue' ) ?? array() )['scan'] ?? null, count( pending( 'tcgiant_sync_prune_orphans' ) ) ), array( $first, 1 ) );
 fetch();
-check( '  Fetch Inventory within the hour: the follow-up goes with the list it would act on', array( count( pending( 'tcgiant_sync_prune_orphans' ) ), option( 'tcgiant_sync_prune_pending' ) ), array( 0, null ) );
+check( '  Fetch Inventory within the hour: the follow-up goes with the list it would act on', array( count( pending( 'tcgiant_sync_prune_orphans' ) ), option( 'tcgiant_sync_prune_queue' ), option( 'tcgiant_sync_prune_pending' ) ), array( 0, null, null ) );
 as_run( 'tcgiant_sync_scan_all_pages' );
 as_run( 'tcgiant_sync_scan_all_pages' );
 as_run( 'tcgiant_sync_scan_all_pages' );

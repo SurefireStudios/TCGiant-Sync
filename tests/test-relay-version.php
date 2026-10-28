@@ -93,6 +93,15 @@ class TCGiant_Sync_License {
 	public function get_pushed_product_count() { return 30; }
 	public function get_pulled_product_count() { return 90; }
 }
+// 3.28.0: the refresh reads the connection from the settings' row and writes
+// only its own two keys back onto it; the ping says the push switch's state.
+class TCGiant_Sync_Inventory {
+	public static function settings_row() { $v = get_option( 'tcgiant_sync_ebay_settings', array() ); return is_array( $v ) ? $v : array(); }
+	public static function forget_settings_copy() {}
+	public static function connected( $settings ) { return ! empty( $settings['access_token'] ) && ! empty( $settings['refresh_token'] ); }
+	public static function save_settings_keys( array $keys ) { update_option( 'tcgiant_sync_ebay_settings', array_replace( self::settings_row(), $keys ) ); }
+	public static function push_switch_state() { return 'on'; }
+}
 
 require dirname( __DIR__ ) . '/includes/class-tcgiant-sync-oauth.php';
 require dirname( __DIR__ ) . '/includes/class-tcgiant-sync-telemetry.php';
@@ -151,7 +160,8 @@ list( $url, $args ) = $GLOBALS['posts'][0];
 $ping = json_decode( (string) $args['body'], true );
 check( 'the ping goes as before', array( count( $GLOBALS['posts'] ), $url, $args['headers']['Content-Type'] ?? null ), array( 1, 'https://tcgiant.com/syncconnect/telemetry.php', 'application/json' ) );
 check( '  carrying version: this version', $ping['version'] ?? null, TCGIANT_SYNC_VERSION );
-check( '  and nothing else new: 3.27.7\'s fields, then version', array_keys( (array) $ping ), array( 'site_url', 'synced_total', 'pushed_total', 'pulled_total', 'license_type', 'version' ) );
+// 3.28.0's stock_push (item 17) sits between them.
+check( '  and nothing else new: 3.27.7\'s fields, 3.28.0\'s stock_push, then version', array_keys( (array) $ping ), array( 'site_url', 'synced_total', 'pushed_total', 'pulled_total', 'license_type', 'stock_push', 'version' ) );
 check( '  signed over the body exactly as sent, the version inside it', hash_hmac( 'sha256', $args['body'] . $args['headers']['X-TCGiant-Timestamp'], 'per-site-key' ), $args['headers']['X-TCGiant-Signature'] );
 
 printf( "\n  %d passed, %d failed\n\n", $pass, $fail );

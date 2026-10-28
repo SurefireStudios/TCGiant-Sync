@@ -34,11 +34,50 @@ class TCGiant_Sync_API {
 	 *
 	 * eBay approved our Application Growth Check on 2026-07-21, raising
 	 * the Trading API limit from 5K to 50K calls/day for our production
-	 * AppID. We use 80% of this as a soft ceiling so that manual
-	 * operations and delta syncs still have room.
+	 * AppID. The fleet shares it.
+	 *
+	 * Past 80% of it - the soft ceiling - calls are refused here before they
+	 * are sent, so that what is left goes to the calls that stop a sale
+	 * happening twice. Until 3.28.0 nothing was kept back: the ceiling
+	 * refused every call alike, a website sale's EndItem included, and a coin
+	 * sold on the website stayed for sale on eBay until the next day. Now
+	 * these go past it:
+	 *
+	 * - CompleteSale, which tells eBay a real buyer's order has shipped;
+	 * - the reads and writes of a stock push that prevents an oversell - a
+	 *   website sale, a manual push, anything going to 0 - made inside
+	 *   with_stock_priority().
+	 *
+	 * A hand edit or a CSV import raising stock still waits for the next day.
+	 * eBay's own limit (518, HTTP 429) is never bypassed.
 	 */
 	const DAILY_CALL_LIMIT = 50000;
 	const DAILY_CALL_SOFT_CEILING = 0.80;
+
+	/**
+	 * The calls a stock push may make past the soft ceiling, inside
+	 * with_stock_priority(). GeteBayOfficialTime is the outage question a
+	 * sale check or a push asks before it gives up - one call per five
+	 * minutes, shared (3.28.0 release fix round 1).
+	 */
+	const STOCK_PRIORITY_CALLS = array( 'GetItem', 'ReviseInventoryStatus', 'EndItem', 'GeteBayOfficialTime' );
+
+	/**
+	 * Depth of with_stock_priority() calls under way.
+	 *
+	 * @var int
+	 */
+	private $stock_priority = 0;
+
+	/**
+	 * eBay's own Timestamp on the latest Trading answer this request read,
+	 * as a Unix time; 0 before any. Stamps a record of eBay's sales, so
+	 * order sync can tell whether a read has seen a sale yet by eBay's clock
+	 * alone (3.28.0 release fix round 2). Never the server's clock.
+	 *
+	 * @var int
+	 */
+	private $ebay_time = 0;
 
 	/**
 	 * How large a GetSellerEvents answer may be, as a share of the memory limit.
@@ -151,6 +190,19 @@ class TCGiant_Sync_API {
 	 * @param boolean $log_errors Whether to log errors automatically.
 	 */
 	public function request( $endpoint, $method = 'GET', $body = array(), $params = array(), $log_errors = true ) {
+		// Anything but a read changes something on eBay - the Inventory API's
+		// quantity update is a PUT that eBay applies to the live listing at
+		// once - so a staging copy stops here. Before the token, so a refused
+		// write never sets off a token refresh either.
+		$method = strtoupper( (string) $method );
+		if ( 'GET' !== $method && 'HEAD' !== $method ) {
+			$path    = explode( '?', (string) $endpoint, 2 );
+			$blocked = $this->blocked_write( $method . ' ' . $path[0] );
+			if ( $blocked ) {
+				return $blocked;
+			}
+		}
+
 		$token = TCGiant_Sync_OAuth::instance()->get_access_token();
 
 		if ( ! $token ) {
@@ -209,34 +261,34 @@ class TCGiant_Sync_API {
 	 * @return array|WP_Error Parsed API response or error.
 	 */
 	public function trading_api_request( $call_name, $xml_body, $allow_retry = true, $max_body_bytes = 0 ) {
-		// Block write operations on staging environments.
-		// CompleteSale is included: it marks an order shipped and pushes a
-		// tracking number to the seller's LIVE eBay account, so a staging clone
-		// completing an order would notify the real buyer.
-		$write_calls = array(
-			'AddItem',
-			'AddFixedPriceItem',
-			'ReviseItem',
-			'ReviseFixedPriceItem',
-			'ReviseInventoryStatus',
-			'EndItem',
-			'RelistItem',
-			'RelistFixedPriceItem',
-			'CompleteSale',
-			'SetNotificationPreferences',
-			'SetUserPreferences',
-		);
-		if ( defined( 'TCGIANT_SYNC_IS_STAGING' ) && TCGIANT_SYNC_IS_STAGING && in_array( $call_name, $write_calls, true ) ) {
-			TCGiant_Sync_Logger::log( sprintf( 'Blocked %s on staging environment.', $call_name ), 'warning' );
-			return new WP_Error( 'staging_blocked', __( 'eBay write operations are disabled on staging/dev environments.', 'tcgiant-sync' ) );
+		// A staging copy may read from eBay but not change anything there.
+		//
+		// Every call that is not plainly a read is treated as a write, rather
+		// than writes being listed: a list has to be remembered whenever a new
+		// call is added, and the one that is forgotten - as CompleteSale once
+		// was, which marks a real buyer's order shipped - goes out from every
+		// copy. First in the method, ahead of the budget check and the call
+		// counter, so a refused call is not counted against the day's budget.
+		if ( ! self::is_read_call( $call_name ) ) {
+			$blocked = $this->blocked_write( $call_name );
+			if ( $blocked ) {
+				return $blocked;
+			}
 		}
 
-		// Pre-flight: check if we're approaching the daily call limit.
-		if ( $this->is_daily_budget_exhausted() ) {
-			$used = $this->get_daily_call_count();
+		// Pre-flight: check if we're approaching the daily call limit. What
+		// stops an oversell goes past it - see DAILY_CALL_LIMIT.
+		if ( ! $this->bypasses_soft_ceiling( $call_name ) && $this->is_daily_budget_exhausted() ) {
+			// The figure that stopped it: every shop's, when the relay's is
+			// in use, or this site's own.
+			$relay = $this->get_relay_budget();
 			TCGiant_Sync_Logger::log( sprintf(
-				'eBay daily API budget reached (%d/%d calls used today, %d%% ceiling). Blocking %s to preserve remaining quota.',
-				$used, self::DAILY_CALL_LIMIT, (int) ( self::DAILY_CALL_SOFT_CEILING * 100 ), $call_name
+				'eBay daily API budget reached (%d/%d calls used today %s, %d%% ceiling). Blocking %s to preserve remaining quota.',
+				false !== $relay ? $this->fleet_calls_now( $relay ) : $this->get_daily_call_count(),
+				false !== $relay ? (int) $relay['daily_limit'] : self::DAILY_CALL_LIMIT,
+				false !== $relay ? 'by every shop together' : 'by this site',
+				(int) ( self::DAILY_CALL_SOFT_CEILING * 100 ),
+				$call_name
 			), 'warning' );
 			return new WP_Error( 'rate_limited', 'Daily API call budget exhausted. Will resume tomorrow.', array( 'daily_budget' => true ) );
 		}
@@ -332,6 +384,13 @@ class TCGiant_Sync_API {
 		$array = json_decode( $json, true );
 		unset( $json );
 
+		if ( is_array( $array ) && isset( $array['Timestamp'] ) && is_string( $array['Timestamp'] ) ) {
+			$stamp = strtotime( $array['Timestamp'] );
+			if ( false !== $stamp && $stamp > $this->ebay_time ) {
+				$this->ebay_time = (int) $stamp;
+			}
+		}
+
 		if ( isset( $array['Ack'] ) && 'Failure' === $array['Ack'] ) {
 			// Normalize: eBay may return a single error object or an indexed array of errors.
 			if ( isset( $array['Errors'][0] ) ) {
@@ -421,51 +480,302 @@ class TCGiant_Sync_API {
 	}
 
 	/**
+	 * Whether a Trading API call only reads.
+	 *
+	 * eBay names every call that only reads Get... or Verify... (VerifyAddItem
+	 * checks a listing and quotes its fees without creating it). Anything else
+	 * may change the seller's account.
+	 *
+	 * @param string $name Trading API call name.
+	 * @return bool
+	 */
+	public static function is_read_call( $name ) {
+		return 1 === preg_match( '/^(Get|Verify)[A-Za-z]+$/', (string) $name );
+	}
+
+	/**
+	 * eBay's own Timestamp on the latest Trading answer this request read,
+	 * as a Unix time; 0 before any (3.28.0 release fix round 2).
+	 *
+	 * @return int
+	 */
+	public function ebay_time() {
+		return $this->ebay_time;
+	}
+
+	/**
+	 * Run a stock push's calls with the soft ceiling lifted for them.
+	 *
+	 * For the pushes that stop an oversell: a website sale, a manual push,
+	 * and anything going to 0. Only the calls in STOCK_PRIORITY_CALLS go
+	 * past it; any other call made inside is gated as usual, and eBay's own
+	 * limit still applies to all of them. The staging guard comes before
+	 * any of this.
+	 *
+	 * A counter, not a flag, so a nested call cannot end the outer one's
+	 * priority; and parameters are not added to trading_api_request() or
+	 * get_item(), which harnesses and other plugins override.
+	 *
+	 * @param callable $fn What to run.
+	 * @return mixed What it returns.
+	 */
+	public function with_stock_priority( callable $fn ) {
+		$this->stock_priority++;
+
+		try {
+			return $fn();
+		} finally {
+			$this->stock_priority--;
+		}
+	}
+
+	/**
+	 * Whether a call goes past the 80% soft ceiling.
+	 *
+	 * @param string $call_name Trading API call.
+	 * @return bool
+	 */
+	private function bypasses_soft_ceiling( $call_name ) {
+		return 'CompleteSale' === $call_name
+			|| ( $this->stock_priority > 0 && in_array( $call_name, self::STOCK_PRIORITY_CALLS, true ) );
+	}
+
+	/**
+	 * eBay's error codes in a Trading API refusal.
+	 *
+	 * trading_api_request() hands back eBay's decoded answer as the error's
+	 * data; Errors holds one error, or a list of them.
+	 *
+	 * @param mixed $error WP_Error from a Trading call.
+	 * @return string[] ErrorCode of each, in eBay's order.
+	 */
+	public static function error_codes( $error ) {
+		if ( ! is_wp_error( $error ) ) {
+			return array();
+		}
+
+		$data   = $error->get_error_data();
+		$errors = is_array( $data ) && isset( $data['Errors'] ) && is_array( $data['Errors'] ) ? $data['Errors'] : array();
+
+		if ( isset( $errors['ErrorCode'] ) || isset( $errors['ShortMessage'] ) || isset( $errors['LongMessage'] ) ) {
+			$errors = array( $errors );
+		}
+
+		$codes = array();
+		foreach ( $errors as $one ) {
+			if ( is_array( $one ) && isset( $one['ErrorCode'] ) ) {
+				$code = self::scalar_value( $one['ErrorCode'] );
+				if ( '' !== $code ) {
+					$codes[] = $code;
+				}
+			}
+		}
+
+		return $codes;
+	}
+
+	/**
+	 * Whether a failed call is worth trying again later, as opposed to an
+	 * answer from eBay about the listing.
+	 *
+	 * Out of calls, no token, a timeout, an answer that could not be read,
+	 * or anything that never reached eBay at all. A copy's refusal
+	 * (staging_blocked) is final: it will be refused again, and is never
+	 * tried again.
+	 *
+	 * @param mixed $error WP_Error.
+	 * @return bool
+	 */
+	public static function is_transient_error( $error ) {
+		if ( ! is_wp_error( $error ) ) {
+			return false;
+		}
+
+		$code = (string) $error->get_error_code();
+
+		if ( 'staging_blocked' === $code ) {
+			return false;
+		}
+
+		if ( in_array( $code, array( 'rate_limited', 'no_token', 'invalid_xml', 'http_request_failed', 'response_too_large' ), true ) ) {
+			return true;
+		}
+
+		$codes = self::error_codes( $error );
+
+		// No answer from eBay at all: the request did not get through.
+		if ( ! $codes ) {
+			$data = $error->get_error_data();
+			return ! ( is_array( $data ) && isset( $data['Errors'] ) );
+		}
+
+		return (bool) array_intersect( $codes, array( '518', '10007' ) );
+	}
+
+	/**
+	 * The refusal for a change this site may not send to eBay, or null.
+	 *
+	 * @param string $what What was asked for, for the log.
+	 * @return WP_Error|null
+	 */
+	private function blocked_write( $what ) {
+		$blocked = TCGiant_Sync_Environment::write_block();
+		if ( $blocked ) {
+			TCGiant_Sync_Environment::note_blocked( $what, $blocked );
+		}
+		return $blocked;
+	}
+
+	/**
+	 * Whether an HTTP request on its way to eBay would change something there.
+	 *
+	 * A Trading API call is always a POST, reads included, so it is judged by
+	 * the call it names; judging it by its method would stop every read.
+	 *
+	 * @param array $args wp_remote_request() arguments.
+	 * @return bool
+	 */
+	private static function is_write_request( $args ) {
+		if ( isset( $args['headers']['X-EBAY-API-CALL-NAME'] ) ) {
+			return ! self::is_read_call( $args['headers']['X-EBAY-API-CALL-NAME'] );
+		}
+
+		$method = strtoupper( (string) ( $args['method'] ?? 'GET' ) );
+		return 'GET' !== $method && 'HEAD' !== $method;
+	}
+
+	/**
+	 * The day's Trading API call count: one wp_options row per UTC day, named
+	 * this and the date, never autoloaded (3.28.0).
+	 *
+	 * It was a transient, _transient_tcgiant_api_calls_<date>. A transient is
+	 * fair game for any clean-up - WP Rocket's, LiteSpeed's, WP-Optimize's,
+	 * `wp transient delete --all` - and once its row was deleted on a host
+	 * with a persistent object cache, add_option() found the value it had
+	 * cached and refused to add the row again: the count read 0 until UTC
+	 * midnight.
+	 */
+	const CALL_COUNT_PREFIX = 'tcgiant_sync_api_calls_';
+
+	/**
+	 * 3.27's name for the count, for carrying the update's day over and
+	 * clearing what it left.
+	 */
+	const CALL_COUNT_OLD_PREFIX = '_transient_tcgiant_api_calls_';
+
+	/**
+	 * The UTC day the counts were last tidied - see tidy_call_counts().
+	 */
+	const CALL_COUNT_TIDIED_OPTION = 'tcgiant_sync_call_count_tidied';
+
+	/**
+	 * Days' counts kept before the day of the call that tidies. A week: the
+	 * rows are tiny, and a server clock running up to a week ahead, even for
+	 * one call, then cannot take today's count with the old ones.
+	 */
+	const CALL_COUNT_KEEP_DAYS = 7;
+
+	/**
 	 * Get the number of Trading API calls made today.
+	 *
+	 * Read from the row increment_daily_call_count() writes, in the table
+	 * itself. It was read with get_transient(), which on a site with a
+	 * persistent object cache - Redis, Memcached, LiteSpeed's, WordPress.com -
+	 * reads the cache and never the table, and the increment empties that
+	 * cache key: those sites counted 0 all day, reported 0 to the relay, and
+	 * their own 80% ceiling never came into play. The day is the UTC day, as
+	 * the increment's.
 	 *
 	 * @return int Number of calls made today.
 	 */
 	public function get_daily_call_count() {
-		$key = 'tcgiant_api_calls_' . gmdate( 'Y-m-d' );
-		return (int) get_transient( $key );
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		return (int) $wpdb->get_var( $wpdb->prepare(
+			"SELECT option_value FROM {$wpdb->options} WHERE option_name = %s LIMIT 1",
+			self::CALL_COUNT_PREFIX . gmdate( 'Y-m-d' )
+		) );
 	}
 
 	/**
 	 * Increment the daily Trading API call counter.
 	 *
-	 * Uses an atomic DB increment rather than read-modify-write on a transient.
-	 * Several Action Scheduler workers run concurrently, and the old
-	 * get-then-set pattern lost every increment that interleaved — so the
-	 * counter under-reported usage and the daily budget guard fired late.
+	 * One statement, which the database makes atomic whoever else is counting:
+	 * a new row at 1 for the first call of the day, or 1 more. It never asks
+	 * the object cache, so neither a value cached elsewhere nor a row deleted
+	 * under it can stop it counting. The first call of the day used to try an
+	 * UPDATE and then add_option(), and two workers there at once each wrote
+	 * 1, losing a call.
 	 */
 	private function increment_daily_call_count() {
 		global $wpdb;
 
-		$key         = 'tcgiant_api_calls_' . gmdate( 'Y-m-d' );
-		$option_name = '_transient_' . $key;
-		$timeout_key = '_transient_timeout_' . $key;
+		$date = gmdate( 'Y-m-d' );
 
-		// Ensure the timeout row exists so WordPress expires the counter.
-		if ( false === get_option( $timeout_key, false ) ) {
-			add_option( $timeout_key, time() + DAY_IN_SECONDS, '', false );
-		}
-
-		// Single-statement increment; concurrent callers serialise on the row.
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-		$updated = $wpdb->query( $wpdb->prepare(
-			"UPDATE {$wpdb->options}
-			 SET option_value = option_value + 1
-			 WHERE option_name = %s",
-			$option_name
+		$wpdb->query( $wpdb->prepare(
+			"INSERT INTO {$wpdb->options} ( option_name, option_value, autoload ) VALUES ( %s, '1', 'no' )
+			 ON DUPLICATE KEY UPDATE option_value = option_value + 1",
+			self::CALL_COUNT_PREFIX . $date
 		) );
 
-		if ( ! $updated ) {
-			// First call of the day (or an object cache is in play) — fall back.
-			add_option( $option_name, 1, '', false );
+		if ( get_option( self::CALL_COUNT_TIDIED_OPTION, '' ) !== $date ) {
+			$this->tidy_call_counts( $date );
+		}
+	}
+
+	/**
+	 * Once a day, at its first call: carry over the count 3.27 kept for the
+	 * day the plugin was updated, and delete counts no longer read - those
+	 * older than CALL_COUNT_KEEP_DAYS, and every one 3.27 kept. On a host with
+	 * a persistent object cache WordPress never deletes an expired transient's
+	 * rows, so 3.27's counts piled up there, two rows a day.
+	 *
+	 * @param string $date Today, UTC, Y-m-d.
+	 * @return void
+	 */
+	private function tidy_call_counts( $date ) {
+		global $wpdb;
+
+		// First, so the requests after this one have nothing to do.
+		update_option( self::CALL_COUNT_TIDIED_OPTION, $date, true );
+
+		// Taken out of 3.27's row in one statement, only while the row still
+		// holds at least what was read: so two requests tidying at once
+		// cannot both add it, nor one add a row 3.27 started again. A 3.27
+		// job still counting into the row meanwhile no longer stops the
+		// carry: it used to make the DELETE match nothing, and the whole
+		// count was lost with the row below. Only its own calls since the
+		// read are left in the row (fix round 2).
+		$old = self::CALL_COUNT_OLD_PREFIX . $date;
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$kept = (int) $wpdb->get_var( $wpdb->prepare( "SELECT option_value FROM {$wpdb->options} WHERE option_name = %s LIMIT 1", $old ) );
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		if ( $kept > 0 && $wpdb->query( $wpdb->prepare( "UPDATE {$wpdb->options} SET option_value = option_value - %d WHERE option_name = %s AND option_value + 0 >= %d", $kept, $old, $kept ) ) ) {
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			$wpdb->query( $wpdb->prepare(
+				"UPDATE {$wpdb->options} SET option_value = option_value + %d WHERE option_name = %s",
+				(int) $kept,
+				self::CALL_COUNT_PREFIX . $date
+			) );
 		}
 
-		// Keep any persistent object cache in step with the row we just wrote.
-		wp_cache_delete( $key, 'transient' );
+		$oldest = gmdate( 'Y-m-d', (int) strtotime( $date . ' 00:00:00 UTC' ) - self::CALL_COUNT_KEEP_DAYS * DAY_IN_SECONDS );
+
+		// The LIKE patterns escaped as wpdb::esc_like() escapes them.
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$wpdb->query( $wpdb->prepare(
+			"DELETE FROM {$wpdb->options}
+			 WHERE ( option_name LIKE %s AND option_name < %s )
+			    OR option_name LIKE %s
+			    OR option_name LIKE %s",
+			addcslashes( self::CALL_COUNT_PREFIX, '_%\\' ) . '%',
+			self::CALL_COUNT_PREFIX . $oldest,
+			addcslashes( self::CALL_COUNT_OLD_PREFIX, '_%\\' ) . '%',
+			addcslashes( '_transient_timeout_tcgiant_api_calls_', '_%\\' ) . '%'
+		) );
 	}
 
 	/**
@@ -480,6 +790,16 @@ class TCGiant_Sync_API {
 	 * @return array|WP_Error Response array, or WP_Error after the final attempt.
 	 */
 	private function request_with_retry( $url, $args ) {
+		// The last door to eBay. Every method that changes something already
+		// asks before it gets here, and logs why; this only makes sure a method
+		// added later that forgets to cannot send from a staging copy.
+		if ( self::is_write_request( $args ) ) {
+			$blocked = TCGiant_Sync_Environment::write_block();
+			if ( $blocked ) {
+				return $blocked;
+			}
+		}
+
 		$max_attempts = 3;
 		$response     = null;
 
@@ -542,7 +862,7 @@ class TCGiant_Sync_API {
 		$relay = $this->get_relay_budget();
 		if ( false !== $relay ) {
 			$global_ceiling   = (int) ( $relay['daily_limit'] * self::DAILY_CALL_SOFT_CEILING );
-			$global_used      = (int) $relay['global_calls'];
+			$global_used      = $this->fleet_calls_now( $relay );
 			return $global_used >= $global_ceiling;
 		}
 
@@ -564,7 +884,7 @@ class TCGiant_Sync_API {
 		$relay = $this->get_relay_budget();
 		if ( false !== $relay ) {
 			$ceiling = (int) ( $relay['daily_limit'] * self::DAILY_CALL_SOFT_CEILING );
-			$used    = (int) $relay['global_calls'];
+			$used    = $this->fleet_calls_now( $relay );
 			return max( 0, $ceiling - $used );
 		}
 
@@ -572,6 +892,28 @@ class TCGiant_Sync_API {
 		$count   = $this->get_daily_call_count();
 		$ceiling = (int) ( self::DAILY_CALL_LIMIT * self::DAILY_CALL_SOFT_CEILING );
 		return max( 0, $ceiling - $count );
+	}
+
+	/**
+	 * Every shop's calls today as far as this site can tell: the relay's
+	 * figure from the last token refresh, plus this site's own calls since.
+	 *
+	 * The relay's figure can be two hours old, and a busy site spent
+	 * thousands of calls in that time with nothing counting them against the
+	 * ceiling. The refresh keeps this site's own count at the moment it was
+	 * sent (local_calls). A figure kept by 3.27, without it, is used as it was.
+	 *
+	 * @param array $relay get_relay_budget()'s answer.
+	 * @return int
+	 */
+	private function fleet_calls_now( array $relay ) {
+		$used = (int) $relay['global_calls'];
+
+		if ( isset( $relay['local_calls'] ) ) {
+			$used += max( 0, $this->get_daily_call_count() - (int) $relay['local_calls'] );
+		}
+
+		return $used;
 	}
 
 	/**
@@ -772,8 +1114,10 @@ class TCGiant_Sync_API {
 	 * @param string $sku The SKU.
 	 */
 	public function get_offers( $sku ) {
+		// add_query_arg() does not encode what it is given: a SKU with a space,
+		// a plus or an ampersand would ask for another SKU, or for nothing.
 		return $this->request( 'sell/inventory/v1/offer', 'GET', array(), array(
-			'sku' => $sku,
+			'sku' => rawurlencode( (string) $sku ),
 		) );
 	}
 
@@ -781,12 +1125,34 @@ class TCGiant_Sync_API {
 	 * Update inventory item quantity.
 	 * 
 	 * Note: Inventory API uses SKU to manage availability.
+	 *
+	 * @deprecated 3.28.0 The plugin no longer calls this: stock changes go
+	 *             through TCGiant_Sync_Inventory::process_stock_push(), which
+	 *             finds the listing from the product itself. Kept for other
+	 *             code that calls it, including its old end-at-0 behaviour.
+	 *
+	 * @param string $sku      The SKU eBay knows the product by.
+	 * @param int    $quantity New quantity.
+	 * @param string $item_id  The listing the product follows, when the caller
+	 *                         knows it.
 	 */
-	public function update_inventory_item_availability( $sku, $quantity ) {
+	public function update_inventory_item_availability( $sku, $quantity, $item_id = '' ) {
 		// Check if this is a Trading API listing (EBAY-{ItemID} SKU pattern).
 		// These listings don't exist in the Inventory (REST) API and will always 404.
+		//
+		// The number names the listing the SKU was made from. A product that
+		// has moved on to a relist can still carry it - eBay copies the SKU on
+		// to the relist, and the import writes eBay's SKU back - and the change
+		// then went to the listing that had ended. The listing the product
+		// follows decides: the one the caller names, else the one the product
+		// with this SKU follows (its parent's, for a variation), and the number
+		// in the SKU only when no product has it.
 		if ( preg_match( '/^EBAY-(\d+)$/', $sku, $matches ) ) {
-			return $this->update_trading_api_stock( $matches[1], $quantity, $sku );
+			$item_id = (string) $item_id;
+			if ( 1 !== preg_match( '/^[1-9]\d{0,18}$/', $item_id ) ) {
+				$item_id = (string) $this->resolve_ebay_item_id_from_sku( $sku );
+			}
+			return $this->update_trading_api_stock( 1 === preg_match( '/^[1-9]\d{0,18}$/', $item_id ) ? $item_id : $matches[1], $quantity, $sku );
 		}
 
 		// Try the Inventory API first.
@@ -799,8 +1165,9 @@ class TCGiant_Sync_API {
 			$is_not_found = ( isset( $error_data['errors'][0]['errorId'] ) && 25710 === $error_data['errors'][0]['errorId'] );
 
 			if ( $is_not_found ) {
-				// Look up the eBay Item ID from WooCommerce product meta.
-				$item_id = $this->resolve_ebay_item_id_from_sku( $sku );
+				// The listing the caller names, else the one the product with
+				// this SKU follows.
+				$item_id = 1 === preg_match( '/^[1-9]\d{0,18}$/', (string) $item_id ) ? (string) $item_id : $this->resolve_ebay_item_id_from_sku( $sku );
 				if ( $item_id ) {
 					return $this->update_trading_api_stock( $item_id, $quantity, $sku );
 				}
@@ -821,8 +1188,13 @@ class TCGiant_Sync_API {
 	 * This works for listings created through the Trading API (legacy listings)
 	 * that don't exist in the Inventory (REST) API.
 	 *
+	 * @deprecated 3.28.0 Use revise_inventory_status(), which never turns 0
+	 *             into EndItem and leaves the caller to say which variation.
+	 *             Kept, with its end-at-0 behaviour, for other code calling it.
+	 *
 	 * @param string $item_id  The eBay Item ID (numeric).
 	 * @param int    $quantity New stock quantity.
+	 * @param string $sku      The SKU, sent only for a variation.
 	 * @return array|WP_Error API response or error.
 	 */
 	public function update_trading_api_stock( $item_id, $quantity, $sku = '' ) {
@@ -851,6 +1223,59 @@ class TCGiant_Sync_API {
 	<ItemID>' . esc_attr( $item_id ) . '</ItemID>
 ' . $sku_xml . '	<Quantity>' . (int) $quantity . '</Quantity>
 </InventoryStatus>';
+
+		return $this->trading_api_request( 'ReviseInventoryStatus', $xml );
+	}
+
+	/**
+	 * Set what a listing, or one variation of it, has available.
+	 *
+	 * One ReviseInventoryStatus. Quantity is what is AVAILABLE, not the total
+	 * listed. 0 is sent as 0: eBay keeps the listing at 0, hidden from search,
+	 * when the seller has Out-of-Stock control on, and refuses it otherwise -
+	 * the caller reads the listing back to find out which, rather than
+	 * trusting any one error code. Nothing here decides to end a listing.
+	 *
+	 * A SKU is sent only when the caller gives one: a variation listing needs
+	 * it to say which variation, and a listing tracked by SKU needs it too.
+	 *
+	 * @param string $item_id  The listing.
+	 * @param int    $quantity Available quantity; below 0 is sent as 0.
+	 * @param string $sku      eBay's SKU for the variation, or ''.
+	 * @return array|WP_Error
+	 */
+	public function revise_inventory_status( $item_id, $quantity, $sku = '' ) {
+		$sku_xml = '' !== (string) $sku ? "\t<SKU>" . esc_xml( (string) $sku ) . "</SKU>\n" : '';
+
+		$xml = '
+<InventoryStatus>
+	<ItemID>' . esc_attr( $item_id ) . '</ItemID>
+' . $sku_xml . '	<Quantity>' . max( 0, (int) $quantity ) . '</Quantity>
+</InventoryStatus>';
+
+		return $this->trading_api_request( 'ReviseInventoryStatus', $xml );
+	}
+
+	/**
+	 * Set what several variations of one listing have available, in one
+	 * call: eBay takes up to four InventoryStatus entries in a
+	 * ReviseInventoryStatus.
+	 *
+	 * @param string $item_id    The listing.
+	 * @param array  $quantities eBay variation SKU => available quantity; at
+	 *                           most four (the rest are not sent).
+	 * @return array|WP_Error
+	 */
+	public function revise_inventory_statuses( $item_id, array $quantities ) {
+		$xml = '';
+		foreach ( array_slice( $quantities, 0, 4, true ) as $sku => $quantity ) {
+			$xml .= '
+<InventoryStatus>
+	<ItemID>' . esc_attr( $item_id ) . '</ItemID>
+	<SKU>' . esc_xml( (string) $sku ) . '</SKU>
+	<Quantity>' . max( 0, (int) $quantity ) . '</Quantity>
+</InventoryStatus>';
+		}
 
 		return $this->trading_api_request( 'ReviseInventoryStatus', $xml );
 	}
@@ -1024,18 +1449,27 @@ class TCGiant_Sync_API {
 	 * relists the item and drops the variations, so an auto-relist would quietly
 	 * turn a multi-variation listing into an empty one.
 	 *
-	 * @param string $item_id Ended eBay Item ID.
+	 * @param string   $item_id        Ended eBay Item ID.
+	 * @param int|null $quantity       The shop's quantity, for a listing
+	 *                                 without variations.
+	 * @param string   $variations_xml A Variations block giving every
+	 *                                 variation's quantity, for one with.
 	 * @return array|WP_Error
 	 */
-	public function relist_fixed_price_item( $item_id, $quantity = null ) {
-		// Without a quantity eBay relists at what was left available - which
-		// for a listing that sold out is nothing - so the shop's own figure
-		// is sent when there is one.
+	public function relist_fixed_price_item( $item_id, $quantity = null, $variations_xml = '' ) {
+		// Without a quantity eBay relists at the quantity the listing was
+		// first given, whatever sold since, so the shop's own figure is sent
+		// when there is one.
+		//
+		// A variation listing takes its quantities per variation instead: a
+		// variation that had none left when the listing ended comes back at
+		// the quantity it was first listed with unless one is sent.
 		$xml = '
 <Item>
 <ItemID>' . esc_attr( $item_id ) . '</ItemID>
 <UUID>' . self::generate_ebay_uuid() . '</UUID>'
-			. ( null !== $quantity ? "\n<Quantity>" . max( 1, (int) $quantity ) . '</Quantity>' : '' ) . '
+			. ( null !== $quantity ? "\n<Quantity>" . max( 1, (int) $quantity ) . '</Quantity>' : '' )
+			. ( '' !== (string) $variations_xml ? "\n" . $variations_xml : '' ) . '
 </Item>';
 
 		$result = $this->trading_api_request( 'RelistFixedPriceItem', $xml );
@@ -1075,10 +1509,20 @@ class TCGiant_Sync_API {
 	/**
 	 * Look up the eBay Item ID from a WooCommerce product by its SKU.
 	 *
+	 * A variation's listing is its parent's: only the parent holds the link.
+	 *
+	 * @deprecated 3.28.0 Only update_inventory_item_availability() uses it. A
+	 *             SKU two products share finds either; stock pushes are now
+	 *             routed by the product they are about.
+	 *
 	 * @param string $sku The product SKU.
 	 * @return string|false The eBay Item ID, or false if not found.
 	 */
 	private function resolve_ebay_item_id_from_sku( $sku ) {
+		if ( ! function_exists( 'wc_get_product_id_by_sku' ) ) {
+			return false;
+		}
+
 		$product_id = wc_get_product_id_by_sku( $sku );
 		if ( ! $product_id ) {
 			return false;
@@ -1090,6 +1534,10 @@ class TCGiant_Sync_API {
 		}
 
 		$item_id = $product->get_meta( '_ebay_item_id' );
+		if ( empty( $item_id ) && $product->get_parent_id() ) {
+			$item_id = get_post_meta( (int) $product->get_parent_id(), '_ebay_item_id', true );
+		}
+
 		return ! empty( $item_id ) ? $item_id : false;
 	}
 	/**
@@ -1355,6 +1803,18 @@ class TCGiant_Sync_API {
 	 * @return string|WP_Error EPS FullURL on success.
 	 */
 	public function upload_picture( $file_path, $name = '' ) {
+		// Uploading puts a picture into the seller's eBay account. First, so a
+		// staging copy does not read the file or spend a token refresh on it.
+		// The exporter does not ask on a copy at all: it decides the photo as
+		// one eBay would not take (TCGiant_Sync_Exporter::eps_picture_url()) -
+		// with the setting on and no photo on eBay, the listing's photos all go
+		// as their addresses on the site; beside a photo already on eBay, a new
+		// listing goes without it and a revise keeps the listing's own.
+		$blocked = $this->blocked_write( 'UploadSiteHostedPictures' );
+		if ( $blocked ) {
+			return $blocked;
+		}
+
 		if ( ! file_exists( $file_path ) || ! is_readable( $file_path ) ) {
 			return new WP_Error( 'file_missing', __( 'Image file could not be read.', 'tcgiant-sync' ) );
 		}
@@ -1366,10 +1826,6 @@ class TCGiant_Sync_API {
 
 		if ( $this->is_daily_budget_exhausted() ) {
 			return new WP_Error( 'rate_limited', 'Daily API call budget exhausted.' );
-		}
-
-		if ( defined( 'TCGIANT_SYNC_IS_STAGING' ) && TCGIANT_SYNC_IS_STAGING ) {
-			return new WP_Error( 'staging_blocked', __( 'eBay write operations are disabled on staging/dev environments.', 'tcgiant-sync' ) );
 		}
 
 		$config   = $this->get_marketplace_config();

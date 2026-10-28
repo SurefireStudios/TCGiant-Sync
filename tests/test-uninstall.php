@@ -187,6 +187,9 @@ run( array( 'delete_data_on_uninstall' => '1' ), false );
 check( 'answered Yes: connection deleted', in_array( 'tcgiant_sync_ebay_settings', $DELETED, true ), true );
 check( 'answered Yes: table dropped', dropped_table(), true );
 check( 'answered Yes: hooks still cleared', count( $CLEARED ) > 0, true );
+// The 3.28.0 upgrade's record of the stock push switch, read from the class.
+preg_match( "/const PUSH_SWITCH_OPTION = '(tcgiant_[a-z_]+)'/", (string) file_get_contents( __DIR__ . '/../includes/class-tcgiant-sync-inventory.php' ), $tcg_switch );
+check( 'answered Yes: the push switch record deleted', in_array( $tcg_switch[1] ?? '?', $DELETED, true ), true );
 
 // Photos waiting to be removed (3.27.4): unmarked, so they stay where they
 // are - but one WordPress had been asked to delete keeps the mark that stops
@@ -294,6 +297,20 @@ foreach ( $tcg_prefixes[1] as $tcg_prefix ) {
 	}
 }
 check( '  and its transients, by the plugin\'s transient sweep', array( count( $tcg_prefixes[1] ), $tcg_left ), array( 3, array() ) );
+
+// Item D's options (3.28.0), each named by a class constant and written out by
+// hand in uninstall.php: the gallery pass and its batch in hand, the stock
+// checks waiting to try again, and the day the call counts were last tidied.
+// Two of them were missing from the list until fix round 1.
+$tcg_d_opts = array();
+foreach ( array( 'image-localizer' => '(GALLERY_HEAL(?:_OPEN)?_OPTION)', 'importer' => '(SETTLE_CHAINS_OPTION)', 'api' => '(CALL_COUNT_TIDIED_OPTION)' ) as $tcg_file => $tcg_const ) {
+	preg_match_all( "/const $tcg_const = '(tcgiant_[a-z_]+)'/", file_get_contents( __DIR__ . "/../includes/class-tcgiant-sync-$tcg_file.php" ), $tcg_m );
+	$tcg_d_opts = array_merge( $tcg_d_opts, $tcg_m[2] );
+}
+check( 'answered Yes: every option item D added is deleted', array( count( $tcg_d_opts ), array_values( array_diff( $tcg_d_opts, $DELETED ) ) ), array( 4, array() ) );
+// And each stock check's join, a row per listing (fix round 2).
+preg_match( "/const SETTLE_JOINED_PREFIX = '(tcgiant_[a-z_]+)'/", file_get_contents( __DIR__ . '/../includes/class-tcgiant-sync-importer.php' ), $tcg_join );
+check( '  and the stock checks\' joins, by their prefix', count( array_filter( $QUERIES, function ( $q ) use ( $tcg_join ) { return false !== strpos( $q, "option_name LIKE '" . ( $tcg_join[1] ?? 'none' ) . "%'" ); } ) ), 1 );
 
 // Listing templates (3.27.8): their two options and the bulk-push cap's two,
 // read from their classes; the template and block posts with their meta;

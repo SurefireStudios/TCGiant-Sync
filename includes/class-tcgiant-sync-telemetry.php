@@ -91,6 +91,10 @@ class TCGiant_Sync_Telemetry {
 			'pushed_total' => TCGiant_Sync_License::instance()->get_pushed_product_count(),
 			'pulled_total' => TCGiant_Sync_License::instance()->get_pulled_product_count(),
 			'license_type' => $license_type,
+			// "Send website stock changes to eBay?": on, off, or on_by_upgrade
+			// (turned on by the 3.28.0 upgrade, which tells how many shops it
+			// changed). The state only.
+			'stock_push'   => TCGiant_Sync_Inventory::push_switch_state(),
 			// Which version this shop runs. In the body, so the signature
 			// below covers it.
 			'version'      => TCGIANT_SYNC_VERSION,

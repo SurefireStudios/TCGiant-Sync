@@ -24,3 +24,6 @@ AUDIT-*.md
 # Server access logs pulled in for debugging. Contain client domains and IPs.
 *ssl_log*
 *access_log*
+
+# Claude Code worktrees and session files.
+/.claude/

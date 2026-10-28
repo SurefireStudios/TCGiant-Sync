@@ -4,7 +4,7 @@
  * Plugin URI:  https://tcgiant.com/pro/
  * Update URI:  https://github.com/SurefireStudios/TCGiant-Sync
  * Description: Sync your eBay store to WooCommerce — import listings, images, and inventory with automated stock updates.
- * Version:     3.27.8
+ * Version:     3.28.0
  * Author:      TCGiant Team
  * Author URI:  https://tcgiant.com/pro/
  * Text Domain: tcgiant-sync
@@ -12,7 +12,7 @@
  * Requires at least: 5.8
  * Requires PHP: 7.4
  * WC requires at least: 5.0
- * WC tested up to: 10.0
+ * WC tested up to: 11.2
  * License:     GPL-2.0-or-later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
  *
@@ -62,33 +62,21 @@ if ( defined( 'TCGIANT_SYNC_VERSION' ) ) {
 }
 
 // Define constants.
-define('TCGIANT_SYNC_VERSION', '3.27.8');
+define('TCGIANT_SYNC_VERSION', '3.28.0');
 define('TCGIANT_SYNC_FILE', __FILE__);
 define('TCGIANT_SYNC_PATH', plugin_dir_path(__FILE__));
 define('TCGIANT_SYNC_URL', plugin_dir_url(__FILE__));
 define('TCGIANT_SYNC_BASENAME', plugin_basename(__FILE__));
 
-// Staging environment detection.
-// Prevents sync/push operations from running on staging or dev copies.
-if ( ! defined( 'TCGIANT_SYNC_IS_STAGING' ) ) {
-	$tcgiant_env  = function_exists( 'wp_get_environment_type' ) ? wp_get_environment_type() : 'production';
-	$tcgiant_host = isset( $_SERVER['HTTP_HOST'] ) ? strtolower( $_SERVER['HTTP_HOST'] ) : '';
-	$is_staging   = ! in_array( $tcgiant_env, array( 'production', 'live' ), true );
-
-	// Common staging URL patterns.
-	if ( ! $is_staging ) {
-		$staging_patterns = array( '.staging.', '.test.', '.dev.', '.local', 'staging-', 'dev-', 'localhost' );
-		foreach ( $staging_patterns as $pattern ) {
-			if ( strpos( $tcgiant_host, $pattern ) !== false ) {
-				$is_staging = true;
-				break;
-			}
-		}
-	}
-
-	define( 'TCGIANT_SYNC_IS_STAGING', $is_staging );
-	unset( $tcgiant_env, $tcgiant_host, $is_staging, $staging_patterns );
-}
+// Whether this site is a staging or development copy, which must not send
+// changes to eBay. Decided here, once, from the site's stored address and
+// WordPress's environment type, and kept in TCGIANT_SYNC_IS_STAGING. A define
+// of that constant in wp-config.php still wins, either way.
+//
+// Required directly because the autoloader does not exist yet, and below the
+// duplicate-copy return above so that a second copy never declares the class.
+require_once TCGIANT_SYNC_PATH . 'includes/class-tcgiant-sync-environment.php';
+TCGiant_Sync_Environment::boot();
 
 /**
  * Declare HPOS compatibility.

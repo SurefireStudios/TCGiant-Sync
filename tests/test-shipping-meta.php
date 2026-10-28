@@ -17,7 +17,7 @@
  *
  * From 3.27.8 the listing's return and payment policies are kept beside its
  * shipping one, by the same rule (_ebay_return_policy_id and _name,
- * _ebay_payment_policy_id and _name), for 3.28.0's revise of imported
+ * _ebay_payment_policy_id and _name), for 3.28.1's revise of imported
  * listings; nothing reads them yet.
  *
  * The listings are eBay's XML, turned into arrays exactly as the API class
@@ -195,6 +195,9 @@ class TCGiant_Sync_OAuth {
 }
 class TCGiant_Sync_Inventory {
 	const SETTLE_KEYS = array();
+	// The import's record writer (3.28.0 release fix round 5): nothing to arm here.
+	public static function arm_record( $product, $before, $record, $holds = null ) { return null; }
+	public static function disarm_record( $armed ) { return false; }
 	public static function begin_ebay_origin() {}
 	public static function end_ebay_origin() {}
 }

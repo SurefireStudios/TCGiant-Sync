@@ -392,5 +392,25 @@ check( '  and gives the page back as its item after the last listing', 1 === pre
 check( 'the delta does not count reading the window against the first listing', 1 === preg_match( '/TCGiant_Sync_Runtime::cache_guard_take\(\);\s*foreach \( \$items as \$ebay_item \) \{/', $delta ), true );
 check( 'a single import starts from a released cache', 1 === preg_match( '/release_memory\(\);\s*TCGiant_Sync_Runtime::guard_cache\(\);\s*try \{\s*\$product_id = \$mapper->save_as_product/', $single ), true );
 
+echo "\n3.28.0'S OWN LOOPS AND READS, WITH 3.27.3'S GUARD AND DEATH DETAIL\n" . str_repeat( '=', 122 ) . "\n";
+
+// The pruner saves products as the delta does - settled, trashed when sold
+// out, moved on to a relist - and the delta, the sale check and the prune ask
+// eBay about a relist before moving a product on to it. A death in any of
+// those names the step, and the prune's products are each an item of their own.
+$prune  = method_body( $importer, 'prune_orphaned_items' );
+$run    = method_body( $importer, 'run_prune' );
+$cand   = method_body( $importer, 'check_prune_candidate' );
+$unseen = method_body( $importer, 'adopt_unseen_relist' );
+$parent = method_body( $mapper, 'relist_parent_state' );
+check( 'the prune is watched and guarded, the guard off in its finally', 1 === preg_match( "/Runtime::watch\\( 'Inventory pruning', array\\( __CLASS__, 'on_prune_death' \\) \\);.*?Runtime::guard_cache\\(\\);\\s*try \\{\\s*\\\$this->run_prune\\([^;]*\\);\\s*\\} finally \\{\\s*TCGiant_Sync_Runtime::unguard_cache\\(\\);.*?TCGiant_Sync_Runtime::unwatch\\(\\);/s", $prune ), true );
+check( '  each product it asks about is its own item, named, and reported on', false !== strpos( $run, "TCGiant_Sync_Runtime::context( sprintf( 'eBay item %s, WC #%d', \$item_id, \$product_id ) );" ) && 1 === substr_count( $run, "self::report_cache_guard( (string) \$item_id, 'Inventory pruning' );" ), true );
+foreach ( array( 'asking eBay about the listing (GetItem)', 'asking eBay about its relist (GetItem)', 'moving the product on to its relist', 'bringing the stock down to what eBay has left' ) as $stage ) {
+	check( 'the prune says when it is ' . $stage, false !== strpos( $cand, "TCGiant_Sync_Runtime::stage( '" . $stage . "' );" ), true );
+}
+check( 'the delta says when it asks eBay whether an ended listing is a relist, before the call', 1 === preg_match( "/Runtime::stage\\( 'asking eBay whether the ended listing is a relist \\(GetItem\\)' \\);\\s*\\\$detail = TCGiant_Sync_API::instance\\(\\)->get_item/", $unseen ), true );
+check( '  and when it moves a product on to it', 1 === preg_match( "/Runtime::stage\\( 'moving a product on to it from the listing it was relisted from' \\);\\s*\\\$adopted = \\(int\\) \\\$mapper->adopt_relist\\(/", $unseen ), true );
+check( 'the mapper says when it asks how a relist\'s old listing ended, before the call', 1 === preg_match( "/Runtime::stage\\( 'asking eBay how the listing it was relisted from ended \\(GetItem\\)' \\);\\s*\\\$response = TCGiant_Sync_API::instance\\(\\)->get_item\\( \\\$parent_id \\);/", $parent ), true );
+
 printf( "\n  %d passed, %d failed\n\n", $pass, $fail );
 exit( $fail > 0 ? 1 : 0 );

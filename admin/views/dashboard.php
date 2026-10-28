@@ -29,7 +29,8 @@ $tc_resumable     = $tc_screen['can_resume'] && 'rate_limited' !== $sync_state['
 
 if ( empty( $settings['redirect_uri'] ) ) {
 	$settings['redirect_uri'] = admin_url( 'admin.php?page=tcgiant-sync' );
-	update_option( 'tcgiant_sync_ebay_settings', $settings );
+	// Only this key, onto the settings as the database holds them now.
+	TCGiant_Sync_Inventory::save_settings_keys( array( 'redirect_uri' => $settings['redirect_uri'] ) );
 }
 ?>
 

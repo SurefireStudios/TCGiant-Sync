@@ -99,7 +99,17 @@ function wp_next_scheduled( $hook ) { return in_array( $hook, $GLOBALS['CRON'], 
 function get_transient( $name ) { return array( 'synced_products' => 0, 'pending_jobs' => 0 ); }
 function apply_filters( $hook, $value ) { return $value; }
 function has_term() { return false; }
-function get_post_meta( $id, $key = '', $single = false ) { return $GLOBALS['PMETA'][ (int) $id ][ $key ] ?? ''; }
+function get_post_meta( $id, $key = '', $single = false ) {
+	// A linked product's listing is its item number.
+	if ( '_ebay_item_id' === $key && isset( $GLOBALS['LINKED'][ (int) $id ] ) ) {
+		return (string) $GLOBALS['LINKED'][ (int) $id ];
+	}
+	return $GLOBALS['PMETA'][ (int) $id ][ $key ] ?? '';
+}
+function update_post_meta( $id, $key, $value ) { $GLOBALS['PMETA'][ (int) $id ][ $key ] = $value; return true; }
+function delete_post_meta( $id, $key ) { unset( $GLOBALS['PMETA'][ (int) $id ][ $key ] ); return true; }
+function get_post_status( $id ) { return in_array( (int) $id, $GLOBALS['TRASHED'], true ) ? 'trash' : 'publish'; }
+function wc_get_product( $id ) { return false; }
 function wp_trash_post( $id ) { $GLOBALS['TRASHED'][] = (int) $id; return true; }
 function check_ajax_referer( $action ) { return 1; }
 function current_user_can( $capability ) { return true; }
@@ -114,12 +124,23 @@ class Harness_wpdb {
 	public function prepare( $query ) { return $query; }
 	public function get_var( $query ) { return null; }
 	public function get_row( $query ) { return null; }
-	/** The pruner's question: every product linked to a listing, by item number. */
+	/**
+	 * The pruner's question: every product linked to a listing, by item
+	 * number, with the marks the 3.28.0 pruner reads beside each.
+	 */
 	public function get_results( $query ) {
 		$rows = array();
 		foreach ( $GLOBALS['LINKED'] as $product_id => $item_id ) {
 			if ( ! in_array( $product_id, $GLOBALS['TRASHED'], true ) ) {
-				$rows[] = (object) array( 'post_id' => $product_id, 'ebay_id' => $item_id );
+				$m      = $GLOBALS['PMETA'][ (int) $product_id ] ?? array();
+				$rows[] = (object) array(
+					'post_id'        => $product_id,
+					'ebay_id'        => $item_id,
+					'listing_status' => (string) ( $m['_ebay_listing_status'] ?? '' ),
+					'stock_status'   => (string) ( $m['_stock_status'] ?? '' ),
+					'checked'        => (string) ( $m['_ebay_prune_checked'] ?? '0' ),
+					'missed'         => (string) ( $m['_ebay_prune_missed'] ?? '0' ),
+				);
 			}
 		}
 		return $rows;
@@ -210,6 +231,18 @@ class TCGiant_Sync_Sites {
 	public static function record_site() {}
 	public static function leaves_out( $site ) { return false; }
 }
+/**
+ * The ended-listing settle the pruner hands an ended listing to (3.28.0), as
+ * far as these paths go: each settle is recorded, and nothing is trashed.
+ */
+class TCGiant_Sync_Inventory {
+	public static function listing_already_settled( $id, $item_id ) { return false; }
+	public static function variations_already_settled( $id, $item_id ) { return true; }
+	public static function apply_ended_listing_stock( $id, $listed, $sold ) { $GLOBALS['SETTLED'][] = (int) $id; return 0; }
+	public static function maybe_remove_sold_out( $id, $listed, $sold ) { return false; }
+	public static function settle_variations() { return array(); }
+	public static function lower_stock_to( $id, $quantity ) { return null; }
+}
 class TCGiant_Sync_Mapper {
 	public static $last_skipped = false;
 	public static function instance() { return new self(); }
@@ -222,10 +255,11 @@ class TCGiant_Sync_Mapper {
  * imported inline. Each page read notes how old the lock was then.
  */
 class TCGiant_Sync_API {
-	const DAILY_CALL_LIMIT = 50000;
+	const DAILY_CALL_LIMIT        = 50000;
+	const DAILY_CALL_SOFT_CEILING = 0.80;
 	public static function instance() { return new self(); }
 	public function get_remaining_daily_budget() { return 40000; }
-	public function get_item( $item_id ) { return array( 'Item' => array( 'ItemID' => $item_id, 'Title' => 'GetItem ' . $item_id, 'SellingStatus' => array( 'ListingStatus' => $GLOBALS['EBAY_STATUS'][ (string) $item_id ] ?? 'Active' ), 'ItemSpecifics' => array(), 'PictureDetails' => array( 'PictureURL' => 'u' ) ) ); }
+	public function get_item( $item_id ) { $GLOBALS['GOT_ITEMS'][] = (string) $item_id; return array( 'Item' => array( 'ItemID' => $item_id, 'Title' => 'GetItem ' . $item_id, 'SellingStatus' => array( 'ListingStatus' => $GLOBALS['EBAY_STATUS'][ (string) $item_id ] ?? 'Active' ), 'ItemSpecifics' => array(), 'PictureDetails' => array( 'PictureURL' => 'u' ) ) ); }
 	public function get_active_listings( $page, $per_page = 200, $mod_from = '', $end_from = '' ) {
 		$GLOBALS['LOCK_AGE_AT_READ'][] = lock_age();
 		if ( isset( $GLOBALS['ON_PAGE'] ) ) {
@@ -270,6 +304,8 @@ function fresh_site( $pages, $per_page, array $state = array() ) {
 	$GLOBALS['LINKED']           = array();
 	$GLOBALS['PMETA']            = array();
 	$GLOBALS['TRASHED']          = array();
+	$GLOBALS['SETTLED']          = array();
+	$GLOBALS['GOT_ITEMS']        = array();
 	$GLOBALS['RUNNING']          = array();
 	$GLOBALS['PAGES']            = $pages;
 	$GLOBALS['PER_PAGE']         = $per_page;
@@ -402,7 +438,12 @@ as_unschedule_all_actions( 'tcgiant_sync_prune_orphans' );
 $IMP->prune_orphaned_items();
 check( '  the pruner keeps the product pushed meanwhile, and the one relisted', array( in_array( 777, $TRASHED, true ), in_array( 778, $TRASHED, true ) ), array( false, false ) );
 check( '  and the one pushed in the hour before the sync began', in_array( 779, $TRASHED, true ), false );
-check( '  but still trashes those whose listings have gone', array( in_array( 880, $TRASHED, true ), in_array( 881, $TRASHED, true ), count( $TRASHED ) ), array( true, true, 2 ) );
+// Since 3.28.0 the pruner settles what eBay says has ended, as the delta
+// does, and has no trash of its own; and the three are not even asked about.
+check( '  none of the three asked about, or settled', array( array_values( array_intersect( array( 777, 778, 779 ), $SETTLED ) ), array_values( array_intersect( array( '990000000777', '990000000778', '990000000779' ), $GOT_ITEMS ) ) ), array( array(), array() ) );
+// eBay's answer here gives no figures to settle by, so they are marked ended
+// with their stock left as it is - see check_prune_candidate().
+check( '  but still acts on those whose listings have gone - marked ended, nothing trashed', array( get_post_meta( 880, '_ebay_listing_status' ), get_post_meta( 881, '_ebay_listing_status' ), count( $TRASHED ) ), array( 'Ended', 'Ended', 0 ) );
 check( '  and says what it kept', logged( 'Kept 3 listed or pushed since the full sync began, which its scan could not have seen.' ), 1 );
 
 // The same while the scan itself is reading pages, as 3.27.4 already could.
@@ -419,7 +460,7 @@ foreach ( (array) get_option( TCGiant_Sync_Importer::ACTIVE_IDS_OPTION, array() 
 	$LINKED[ 3001 + $i ] = (string) $item;
 }
 $IMP->prune_orphaned_items();
-check( 'a product pushed while the scan read its pages: kept too', array( count( $LINKED ), in_array( 777, $TRASHED, true ), $TRASHED ), array( 13, false, array() ) );
+check( 'a product pushed while the scan read its pages: kept too', array( count( $LINKED ), in_array( 777, $TRASHED, true ), $TRASHED, $SETTLED ), array( 13, false, array(), array() ) );
 
 // ─────────────────────────────────────────────────────────────────────────────
 echo "\nTHE DELTA SYNC AND RESUME IMPORT LEAVE THE QUEUED IMPORTS TO RUN\n" . str_repeat( '=', 124 ) . "\n";

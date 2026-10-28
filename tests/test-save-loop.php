@@ -1416,7 +1416,10 @@ check( 'the delta run, off in its finally', 1 === preg_match( '/Runtime::guard_l
 check( 'the full sync scan, off in its finally', 1 === preg_match( '/Runtime::guard_loops\(\);\s*TCGiant_Sync_Runtime::guard_cache\(\);\s*try \{\s*\$this->run_scan_all_pages\(\);\s*\} finally \{\s*TCGiant_Sync_Runtime::unguard_cache\(\);\s*TCGiant_Sync_Runtime::unguard_loops\(\);/', method_body( $importer, 'scan_all_pages' ) ), true );
 check( 'a single listing\'s import, round its save', 1 === preg_match( '/Runtime::guard_loops\(\);\s*TCGiant_Sync_Runtime::release_memory\(\);\s*TCGiant_Sync_Runtime::guard_cache\(\);\s*try \{\s*\$product_id = \$mapper->save_as_product\( \$product_data \);\s*\} finally \{[^}]*TCGiant_Sync_Runtime::unguard_loops\(\);\s*\}/', method_body( $importer, 'process_item_import' ) ), true );
 check( 'order sync\'s stock write for an unlinked product', 1 === preg_match( '/Runtime::guard_loops\(\);\s*try \{\s*\$stock_reduced = wc_update_product_stock\([^;]*;\s*\} finally \{\s*TCGiant_Sync_Runtime::unguard_loops\(\);/', method_body( $importer, 'sync_recent_orders' ) ), true );
-check( 'the pruner, round every product it zeroes or trashes', 1 === preg_match( '/Runtime::guard_loops\(\);\s*try \{\s*foreach \( \$prune_rows as \$row \) \{.*?wp_trash_post\( \$product_id \);.*?\} finally \{\s*TCGiant_Sync_Runtime::unguard_loops\(\);/s', method_body( $importer, 'prune_orphaned_items' ) ), true );
+// Since 3.28.0 the pruner has no trash or zeroing loop of its own: it settles
+// each product as the delta does, trashing only what sold out, or moves it on
+// to a relist. The whole run is round the breaker, off in its finally.
+check( 'the pruner, round every product it settles, trashes or moves', 1 === preg_match( '/Runtime::guard_loops\(\);\s*TCGiant_Sync_Runtime::guard_cache\(\);\s*try \{\s*\$this->run_prune\([^;]*\);\s*\} finally \{\s*TCGiant_Sync_Runtime::unguard_cache\(\);\s*TCGiant_Sync_Runtime::unguard_loops\(\);/', method_body( $importer, 'prune_orphaned_items' ) ), true );
 foreach ( array( 'apply_ended_listing_stock', 'lower_stock_to', 'zero_stock', 'use_ebay_figure' ) as $writer ) {
 	check( 'the stock write ' . $writer . '(), for every caller', 1 === preg_match( '/self::begin_ebay_origin\(\);\s*(?:\/\/[^\n]*\s*)*TCGiant_Sync_Runtime::guard_loops\(\);\s*try \{.*?\} finally \{\s*TCGiant_Sync_Runtime::unguard_loops\(\);\s*self::end_ebay_origin\(\);/s', method_body( $inventory, $writer ) ), true );
 }
@@ -1433,6 +1436,9 @@ check( 'a push queued from the product screen, round its save', 1 === preg_match
 check( 'the push itself, round each of its saves', array( preg_match_all( $guarded, $push ), substr_count( $push, '->save()' ) ), array( 2, 2 ) );
 check( 'clearing a product\'s export error, round its save', 1 === preg_match( $guarded, method_body( $admin, 'ajax_clear_export_error' ) ), true );
 check( 'linking a product to a listing, round its save', 1 === preg_match( $guarded, method_body( $admin, 'ajax_link_ebay' ) ), true );
+// 3.28.0: a product moved on to a relist takes the relist's number as its
+// SKU when its SKU was the old one's - from a push, a relist, the sale check.
+check( 'moving an item-number SKU on to a relist, round its save, for every caller', 1 === preg_match( $guarded, method_body( $inventory, 'follow_item_number_sku' ) ), true );
 check( 'the sale check\'s stock writes go through those', array( false !== strpos( method_body( $importer, 'settle_item' ), 'TCGiant_Sync_Inventory::lower_stock_to(' ), false !== strpos( method_body( $importer, 'settle_ended_listing' ), 'TCGiant_Sync_Inventory::apply_ended_listing_stock(' ), false !== strpos( method_body( $importer, 'settle_ended_listing' ), 'TCGiant_Sync_Inventory::maybe_remove_sold_out(' ) ), array( true, true, true ) );
 
 check( 'five rounds', TCGiant_Sync_Runtime::LOOP_DEPTH, 5 );

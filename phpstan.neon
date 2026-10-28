@@ -50,6 +50,9 @@ parameters:
         - TCGIANT_SYNC_IS_STAGING
         - WP_DEBUG
         - WP_UNINSTALL_PLUGIN
+        # A release switch (3.28.0): the build that ships it decides, so
+        # neither of its values is dead code.
+        - TCGiant_Sync_Inventory::FLIP_LEGACY_ZERO
 
     # Action Scheduler ships inside WooCommerce rather than as a stub package,
     # and ActionScheduler_Store is referenced for its status constants.

@@ -135,6 +135,9 @@ class TCGiant_Sync_Importer {
 		// A stopped sync starts its next window cleanly.
 		self::clear_delta_progress();
 
+		// And a stopped prune does not pick up where it was.
+		delete_option( self::PRUNE_QUEUE_OPTION );
+
 		// Otherwise the next sync is blocked until the lock goes stale.
 		self::release_lock();
 	}
@@ -160,7 +163,7 @@ class TCGiant_Sync_Importer {
 		add_action( 'tcgiant_sync_scan_resume', array( $this, 'scan_all_pages' ) ); // WP-Cron resume hook.
 		add_action( 'tcgiant_sync_fetch_delta_events', array( $this, 'fetch_delta_events' ) );
 		add_action( 'tcgiant_sync_prune_orphans', array( $this, 'prune_orphaned_items' ) );
-		add_action( 'tcgiant_sync_settle_item', array( $this, 'settle_item' ), 10, 1 );
+		add_action( 'tcgiant_sync_settle_item', array( $this, 'settle_queued' ), 10, 2 );
 
 		// Note: 'tcgiant_sync_fetch_listings' (per-page scanning, superseded by
 		// scan_all_pages in 2.0.0) and 'tcgiant_sync_download_images' (the
@@ -209,19 +212,45 @@ class TCGiant_Sync_Importer {
 	const PRUNE_MAX_RATIO = 0.20;
 
 	/**
-	 * GetItem calls a prune run may make, confirming that each listing whose
-	 * product it would retire has ended (confirm_prune_candidates()). The
-	 * rest are kept, and wait for a run of their own an hour on.
+	 * The pruner's list of products to ask eBay about in the run under way,
+	 * and how far it has got. Never autoloaded. Holds: scan, items ([product,
+	 * ItemID] pairs), pos, counts, asked (GetItem calls this run), left (those
+	 * eBay did not answer about), round (0, or which follow-up run),
+	 * candidates, linked, known_ended.
+	 */
+	const PRUNE_QUEUE_OPTION = 'tcgiant_sync_prune_queue';
+
+	/**
+	 * Listings checked before the share still live may stop a prune, and that
+	 * share. A list of live listings this wrong is not worth paying to read
+	 * through; nothing is changed for a live listing either way.
+	 */
+	const PRUNE_STOP_SAMPLE     = 40;
+	const PRUNE_STOP_LIVE_SHARE = 0.9;
+
+	/**
+	 * Failed answers in a row that stop a prune run: eBay is down, or the
+	 * relay is. What is left is asked about again by the follow-up run.
+	 */
+	const PRUNE_UNREAD_STOP = 5;
+
+	/**
+	 * eBay's "This item cannot be accessed because the listing has been deleted
+	 * or you are not the seller."
+	 */
+	const EBAY_ITEM_NOT_ACCESSIBLE = '17';
+
+	/**
+	 * GetItem calls a prune run may make: one for each product the full sync
+	 * did not see, and one more for the relist of one eBay says was relisted
+	 * (check_prune_candidate()). Every call the pruner makes counts, from an
+	 * allowance every shop shares. The rest are kept, and wait for a run of
+	 * their own an hour on.
 	 */
 	const PRUNE_CONFIRM_PER_RUN = 300;
 
 	/**
-	 * Failed GetItem calls in a row after which a prune run asks no more.
-	 */
-	const PRUNE_CONFIRM_ERRORS = 5;
-
-	/**
-	 * Products a prune run kept because eBay was not asked, or did not answer,
+	 * Products a prune run left because eBay was not asked, or did not answer,
 	 * about their listings: rows (post ID => item ID), round, and scan - the
 	 * full sync whose clean-up it was (full_started_at). Never autoloaded.
 	 * Deleted by the next full run, by a full sync's start, and by a
@@ -315,12 +344,97 @@ class TCGiant_Sync_Importer {
 	const DELTA_HELD_MAX = 50;
 
 	/**
+	 * Why a listing is on the held-back list, for Stock Review: importing it
+	 * stopped the sync each time; eBay could not be read for it, run after
+	 * run, while it answered other calls; its stock check gave up after the
+	 * last of SETTLE_RETRY_DELAYS; or the day's eBay calls ran out on its
+	 * stock check SETTLE_OUT_DAYS days running. One held back by 3.27 has no
+	 * reason. The last two are the stock checks' own, kept to DELTA_HELD_MAX
+	 * apart from the delta's, so neither can push the other off the list.
+	 */
+	const HELD_KILLED     = 'killed';
+	const HELD_UNREAD     = 'unread';
+	const HELD_SALE_CHECK = 'sale_check';
+	const HELD_NO_CALLS   = 'no_calls';
+
+	/**
+	 * Stock checks being tried again, and where each has got to - see
+	 * settle_chains(). Rewritten whole by every failed check, so not
+	 * autoloaded.
+	 */
+	const SETTLE_CHAINS_OPTION = 'tcgiant_sync_settle_chains';
+
+	/**
+	 * Followed by an ItemID: when the last failed check of the listing that
+	 * relies on its waiting try - the one that started the chain, or one that
+	 * found the try waiting - gave up on reading eBay. A row of its own, so
+	 * that another listing's check rewriting the chains option from an older
+	 * copy cannot take it back: see settle_chain_answered().
+	 */
+	const SETTLE_JOINED_PREFIX = 'tcgiant_sync_settle_joined_';
+
+	/**
+	 * How long a stock check may go on waiting for eBay to answer at all,
+	 * from its first try, before it is given up on anyway.
+	 */
+	const SETTLE_CHAIN_DAYS = 3;
+
+	/**
+	 * A chain with no try waiting - its action deleted, say - is forgotten
+	 * once it is this many days old. One with a try waiting never is: the
+	 * try ends it.
+	 */
+	const SETTLE_ORPHAN_DAYS = 5;
+
+	/**
+	 * Whether eBay answers at all, as GeteBayOfficialTime last said, before a
+	 * stock check is given up on: kept for EBAY_ANSWERS_SECONDS and shared by
+	 * every check, so a long outage asks once every five minutes rather than
+	 * once per waiting sale.
+	 */
+	const EBAY_ANSWERS_TRANSIENT = 'tcgiant_sync_ebay_answers';
+	const EBAY_ANSWERS_SECONDS   = 300;
+
+	/**
+	 * eBay's 518 last met, and until when nothing waiting on it is sent
+	 * (note_ebay_518(); 3.28.0 release fix round 2).
+	 */
+	const EBAY_518_TRANSIENT = 'tcgiant_sync_ebay_518';
+
+	/**
+	 * Days a stock check may wait for the day's calls to start again before
+	 * it is given up on.
+	 */
+	const SETTLE_OUT_DAYS = 3;
+
+	/**
+	 * When a stock check eBay could not be read for is tried again, after each
+	 * failed try in turn: 15 minutes, an hour, 4 hours, 12 hours. It gives up
+	 * when the try after the last of these fails too.
+	 */
+	const SETTLE_RETRY_DELAYS = array( 900, 3600, 14400, 43200 );
+
+	/**
+	 * A stock check stopped by the day's own call budget, or eBay's 518, waits
+	 * for the next UTC day: until this many seconds past midnight, 00:05:30.
+	 */
+	const SETTLE_AFTER_MIDNIGHT = 330;
+
+	/**
 	 * Whether the delta is part way through importing a listing, for the
 	 * shutdown handler.
 	 *
 	 * @var bool
 	 */
 	private static $slice_in_flight = false;
+
+	/**
+	 * Why the last ended listing's variations could not be read from eBay,
+	 * when it is a failure that passes - for the delta to stop on.
+	 *
+	 * @var WP_Error|null
+	 */
+	private static $ended_read_error = null;
 
 	/**
 	 * Widest delta window, in minutes. eBay refuses more than 48 hours.
@@ -354,6 +468,24 @@ class TCGiant_Sync_Importer {
 	 * for eBay recording a change a little after it happened.
 	 */
 	const DELTA_OVERLAP_SECONDS = 300;
+
+	/**
+	 * How far behind the clock a window's end may be, when eBay is read for
+	 * it, for the next window still to reach back DELTA_OVERLAP_SECONDS over
+	 * it. A change recorded late is recorded minutes late, not hours, so a
+	 * window already this far in the past when it was read missed nothing at
+	 * its end. On a catch-up the overlap read a third of every 15-minute
+	 * window again, and the windows went forward 10 minutes at a time: half
+	 * as many GetSellerEvents again, and up to a third more GetItems.
+	 */
+	const DELTA_OVERLAP_NEAR_SECONDS = 3600;
+
+	/**
+	 * How far the window after one wholly in the past reaches back over it.
+	 * eBay does not say whether ModTimeFrom and ModTimeTo are themselves in
+	 * the period, so a listing changed on the boundary is read whichever way.
+	 */
+	const DELTA_BOUNDARY_SECONDS = 1;
 
 	/**
 	 * How many windows one sync may read back to back before leaving the rest
@@ -413,7 +545,24 @@ class TCGiant_Sync_Importer {
 	 *                       figures, and an Emergency Stop pressed meanwhile.
 	 */
 	public static function update_sync_state( $updates, $fresh = false ) {
-		$state = $fresh ? self::state_from_table() : self::get_sync_state();
+		// Other requests change the state while this one runs, and this one
+		// writes back its own copy, read before they did. Two things are taken
+		// from the table unless this write says otherwise:
+		// - Emergency Stop. A write that does not say what the status is now
+		//   keeps a Stop the table already has; one that does - a sync being
+		//   started, a window finished - decides for itself.
+		// - Which full sync is running. Only starting one sets it, and a batch
+		//   of an older scan, overtaken by a newer one, used to put its own
+		//   back - after which nothing could tell the two apart.
+		$table = self::state_from_table();
+		if ( ! array_key_exists( 'status', $updates ) && 'stopped' === ( $table['status'] ?? '' ) ) {
+			$updates['status'] = 'stopped';
+		}
+		if ( ! array_key_exists( 'full_started_at', $updates ) && isset( $table['full_started_at'] ) ) {
+			$updates['full_started_at'] = $table['full_started_at'];
+		}
+
+		$state = $fresh ? $table : self::get_sync_state();
 
 		// When the delta last moved its position, for telling a sync working
 		// through a backlog from one that has stopped.
@@ -848,8 +997,13 @@ class TCGiant_Sync_Importer {
 			'scan_page_at'        => time(),
 		) );
 
-		// Clear active IDs list for pruning orphaned items.
+		// Clear active IDs list for pruning orphaned items, and any prune still
+		// working through the last scan's list: this scan makes a new one.
 		delete_option( self::ACTIVE_IDS_OPTION );
+		delete_option( self::PRUNE_QUEUE_OPTION );
+		if ( function_exists( 'as_unschedule_all_actions' ) ) {
+			as_unschedule_all_actions( 'tcgiant_sync_prune_orphans', null, self::GROUP_SCAN );
+		}
 		// And what the last clean-up kept to ask eBay about again: this sync's decides afresh.
 		delete_option( self::PRUNE_PENDING_OPTION );
 
@@ -955,10 +1109,11 @@ class TCGiant_Sync_Importer {
 		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
 		$filter_name = ! empty( $settings['category_ids'] ) ? $settings['category_ids'] : 'All Categories';
 
-		// Add a small overlap buffer (5 min) to avoid missing items due to clock skew.
-		$buffer_seconds = self::DELTA_OVERLAP_SECONDS;
-		$mod_from_ts = strtotime( $last_sync ) - $buffer_seconds;
-		$mod_from_iso = gmdate( 'Y-m-d\TH:i:s.000\Z', $mod_from_ts );
+		// Back over the end of the last window: five minutes if it was read
+		// near the present, a second if it was wholly in the past - see
+		// delta_start_after(). From the state alone, so a restart of the same
+		// window starts it at the same moment and keeps its place.
+		$mod_from_iso = self::delta_start_after( $last_sync, (string) ( $state['delta_settled_end'] ?? '' ) );
 
 		// Restarting the same window keeps its place. A restart used to begin
 		// again from the first listing, so a window whose runs kept dying was
@@ -1039,6 +1194,11 @@ class TCGiant_Sync_Importer {
 		self::update_sync_state( $update );
 
 		foreach ( $item_ids as $item_id ) {
+			// Asked for by number: an auction left out of the import says why
+			// again, and a relist is looked at afresh, rather than staying
+			// quiet because a sync met it earlier.
+			delete_transient( 'tcgiant_auction_skip_' . $item_id );
+			delete_transient( 'tcgiant_relist_declined_' . $item_id );
 			// Asked for by hand, so a listing on another eBay site says why it
 			// is not imported, even if it said so in the last few days.
 			delete_transient( TCGiant_Sync_Sites::SKIP_TRANSIENT . $item_id );
@@ -1414,6 +1574,7 @@ class TCGiant_Sync_Importer {
 			// Shaped as eBay's answer, so everything below reads it the same way.
 			$response   = array( 'Ack' => 'Success', 'ItemArray' => array( 'Item' => $cached ) );
 			$body_bytes = (int) ( $progress['body_bytes'] ?? 0 );
+			$settled    = ! empty( $progress['settled'] );
 			unset( $cached );
 		} else {
 			self::update_sync_state( array(
@@ -1424,6 +1585,31 @@ class TCGiant_Sync_Importer {
 
 			$response   = $api->get_seller_events( $mod_from, $mod_to, $byte_limit );
 			$body_bytes = $api->get_last_body_bytes();
+
+			// Whether this window was wholly in the past as eBay was read for
+			// it, so the next one need not reach back five minutes over its
+			// end - by eBay's clock, the Timestamp of its answer, as this
+			// server's can be wrong; by the server's only when the answer has
+			// none. A window read near the present before stays near it: its
+			// listings already done came from that read.
+			$read_at = is_array( $response ) && isset( $response['Timestamp'] ) && is_string( $response['Timestamp'] ) ? strtotime( $response['Timestamp'] ) : false;
+
+			// A window whose end eBay's clock had not reached - this server's
+			// clock ahead of eBay's - holds only what eBay had recorded by its
+			// now, so it is taken as read that far, and the next starts from
+			// there. It was taken as read to its end, and whatever eBay
+			// recorded in between was never read: with a clock 90 minutes
+			// fast, every change. Even when eBay's now is before the window's
+			// start - the first window after the update, starting from where
+			// 3.27 took its last as read - so the next reaches back over the
+			// changes that one never read.
+			if ( false !== $read_at && $read_at < strtotime( $mod_to ) ) {
+				$mod_to  = gmdate( 'Y-m-d\TH:i:s.000\Z', $read_at );
+				$clamped = ( strtotime( $mod_to ) - $from_ts ) >= $window;
+			}
+
+			$settled = ( ( false !== $read_at ? $read_at : time() ) - strtotime( $mod_to ) ) >= self::DELTA_OVERLAP_NEAR_SECONDS
+				&& ( ! $resuming || ! empty( $progress['settled'] ) );
 
 			// Answered, one way or another, so this request was not killed reading it.
 			$answered = array(
@@ -1599,7 +1785,7 @@ class TCGiant_Sync_Importer {
 		if ( empty( $items ) ) {
 			TCGiant_Sync_Logger::log( 'Delta sync complete. No items modified since last sync.' );
 
-			$chase = self::delta_chase_state( $state, $mod_to, $clamped );
+			$chase = self::delta_chase_state( $state, $mod_to, $clamped, $settled );
 
 			// fresh_delta_window() matters here: a window can come back empty
 			// part way through, once everything left in it has changed again
@@ -1608,6 +1794,7 @@ class TCGiant_Sync_Importer {
 				'status'                  => 'complete',
 				'last_completed'          => current_time( 'mysql' ),
 				'last_successful_sync_at' => $mod_to,
+				'delta_settled_end'       => $settled ? $mod_to : '',
 				'delta_window_minutes'    => self::next_delta_window_minutes( $window_minutes, $mod_to, 0, $body_bytes, $ceiling ),
 				'rate_limit_retries'      => 0,
 			), $chase ) );
@@ -1706,6 +1893,7 @@ class TCGiant_Sync_Importer {
 			'done'       => $done,
 			'in_flight'  => '',
 			'body_bytes' => $body_bytes,
+			'settled'    => $settled,
 			'ts'         => time(),
 		) );
 		self::save_delta_progress( $progress );
@@ -1817,6 +2005,10 @@ class TCGiant_Sync_Importer {
 			) );
 			self::$slice_in_flight = true;
 
+			// Whether $ebay_item is eBay's whole answer for the listing rather
+			// than the brief row from the list of changes.
+			$whole_item = false;
+
 			try {
 				// A listing on another eBay site, when the shop imports only its
 				// own (TCGiant_Sync_Sites). First, before any GetItem - so these
@@ -1871,7 +2063,9 @@ class TCGiant_Sync_Importer {
 					&& ( self::$limit_reported || ! $license->can_import() ) ) {
 					if ( ! self::$limit_reported ) {
 						self::$limit_reported = true;
-						self::update_sync_state( array( 'status' => 'limit_reached' ) );
+						if ( ! self::stop_pressed() ) {
+							self::update_sync_state( array( 'status' => 'limit_reached' ) );
+						}
 						TCGiant_Sync_Logger::log( sprintf(
 							'Import limit reached (%d/%d products). New listings will not be imported; products already imported carry on syncing normally.',
 							$license->get_active_product_count(),
@@ -1910,6 +2104,7 @@ class TCGiant_Sync_Importer {
 						$full_for_filter = TCGiant_Sync_API::instance()->get_item( $item_id );
 						if ( ! is_wp_error( $full_for_filter ) && isset( $full_for_filter['Item'] ) ) {
 							$ebay_item   = $full_for_filter['Item'];
+							$whole_item  = true;
 							$fallback_count++;
 							if ( $sites_on && '' === $row_site ) {
 								TCGiant_Sync_Sites::remember_site( $item_id, TCGiant_Sync_Sites::site_of( $ebay_item ) );
@@ -1972,8 +2167,51 @@ class TCGiant_Sync_Importer {
 				if ( '' !== $listing_status && 'Active' !== $listing_status ) {
 					$existing_id = self::find_live_product_for_item( $item_id );
 
-					if ( $existing_id && self::settle_ended_listing( $existing_id, $ebay_item, $listing_status, 'Delta' ) ) {
+					// Nothing follows it - but it may be a relist of a listing
+					// something does, made and sold since the last sync. Then
+					// that product moves on to it and is settled from it here,
+					// rather than staying in stock for a coin eBay has sold.
+					if ( ! $existing_id ) {
+						$existing_id = self::adopt_unseen_relist( $ebay_item, $whole_item ? '' : $mod_from, 'Delta', $fallback_count, $read_error, $read_item );
+
+						// eBay could not say whether it is a relist, or how the
+						// old listing ended. Passed by, a relist that sold would
+						// leave its coin on sale here for good - nothing reads
+						// a finished window again - so pause, as for any listing
+						// that could not be read.
+						if ( null !== $read_error ) {
+							$read_stop = self::delta_read_stop( $read_error, $item_id, $progress, $mod_from, $read_item );
+							if ( null !== $read_stop ) {
+								$current = null;
+								break;
+							}
+							$errors++;
+							continue;
+						}
+
+						if ( $existing_id ) {
+							$listing_status = (string) ( $ebay_item['SellingStatus']['ListingStatus'] ?? $listing_status );
+						}
+					}
+
+					self::$ended_read_error = null;
+					if ( $existing_id && '' !== $listing_status && 'Active' !== $listing_status
+						&& self::settle_ended_listing( $existing_id, $ebay_item, $listing_status, 'Delta' ) ) {
 						$fallback_count++;
+					}
+
+					// Its variations could not be read: pause on it, as for any
+					// listing that could not be read. The parent is settled, so
+					// only they are asked for again.
+					if ( null !== self::$ended_read_error ) {
+						$read_stop              = self::delta_read_stop( self::$ended_read_error, $item_id, $progress, $mod_from );
+						self::$ended_read_error = null;
+						if ( null !== $read_stop ) {
+							$current = null;
+							break;
+						}
+						$errors++;
+						continue;
 					}
 
 					$skipped++;
@@ -2025,42 +2263,12 @@ class TCGiant_Sync_Importer {
 						// and with every call failing a whole window went that
 						// way in seconds. So stop here and keep the place.
 						if ( self::is_passing_read_failure( $full_response ) ) {
-							// Never this listing's doing: out of calls, or no
-							// token to ask with - decided before eBay is asked.
-							$out_of_calls = self::is_out_of_calls( $full_response );
-							$not_its_own  = $out_of_calls || 'no_token' === $full_response->get_error_code();
-							$before       = (string) ( $progress['stop_item'] ?? '' ) === (string) $item_id ? (int) ( $progress['stops'] ?? 0 ) : 0;
-							$stops        = $not_its_own ? $before : $before + 1;
-
-							// A timeout or an eBay error page, run after run, may
-							// be eBay or the way to it being down rather than this
-							// listing. Before blaming the listing, see whether
-							// eBay answers anything at all.
-							if ( ! $not_its_own && $stops >= self::DELTA_READ_STOPS
-								&& self::is_passing_read_failure( TCGiant_Sync_API::instance()->get_official_time() ) ) {
-								$stops = self::DELTA_READ_STOPS - 1;
-							}
-
-							if ( $not_its_own || $stops < self::DELTA_READ_STOPS ) {
-								$read_stop = array(
-									'item'   => (string) $item_id,
-									'stops'  => $stops,
-									'reason' => $full_response->get_error_message(),
-									'code'   => $out_of_calls ? 'out_of_calls' : (string) $full_response->get_error_code(),
-								);
+							$read_stop = self::delta_read_stop( $full_response, $item_id, $progress, $mod_from );
+							if ( null !== $read_stop ) {
 								// Not handled, so the next run starts with it.
 								$current = null;
 								break;
 							}
-
-							TCGiant_Sync_Logger::error( sprintf(
-								'Delta: eBay item %s could not be read %d runs in a row (%s). Moving past it so the rest can be read. It is queued for a stock check of its own and listed on the Stock Review page.',
-								$item_id,
-								$stops,
-								$full_response->get_error_message()
-							) );
-							self::hold_back_listing( $item_id, $mod_from );
-							self::queue_settle( $item_id );
 							$errors++;
 							continue;
 						}
@@ -2078,6 +2286,24 @@ class TCGiant_Sync_Importer {
 					$now_status = (string) ( $ebay_item['SellingStatus']['ListingStatus'] ?? '' );
 					if ( '' !== $now_status && 'Active' !== $now_status ) {
 						$existing_id = self::find_live_product_for_item( $item_id );
+
+						// A relist that ended since the window was read, before
+						// anything followed it: as above, with eBay's answer
+						// already in hand.
+						if ( ! $existing_id ) {
+							$existing_id = self::adopt_unseen_relist( $ebay_item, '', 'Delta', $fallback_count, $read_error, $read_item );
+
+							if ( null !== $read_error ) {
+								$read_stop = self::delta_read_stop( $read_error, $item_id, $progress, $mod_from, $read_item );
+								if ( null !== $read_stop ) {
+									$current = null;
+									break;
+								}
+								$errors++;
+								continue;
+							}
+						}
+
 						if ( $existing_id ) {
 							self::settle_ended_listing( $existing_id, $ebay_item, $now_status, 'Delta' );
 						}
@@ -2100,6 +2326,19 @@ class TCGiant_Sync_Importer {
 				$product_data = $mapper->map_ebay_to_woo( $ebay_item );
 				TCGiant_Sync_Runtime::stage( 'saving the product' );
 				$product_id = $mapper->save_as_product( $product_data );
+
+				// A relist, whose old listing eBay could not be asked about -
+				// out of calls, or no token. Saved now, it would be a product
+				// of its own for good; it waits with the rest instead.
+				if ( ! $product_id && TCGiant_Sync_Mapper::$last_deferred ) {
+					$read_stop = self::delta_read_stop( TCGiant_Sync_Mapper::$last_deferred, $item_id, $progress, $mod_from );
+					if ( null !== $read_stop ) {
+						$current = null;
+						break;
+					}
+					$errors++;
+					continue;
+				}
 
 				if ( $product_id ) {
 					// Append variation images to the download queue
@@ -2279,10 +2518,11 @@ class TCGiant_Sync_Importer {
 		// skipped instead, despite the log promising the next sync would
 		// continue. It also closes a small gap where anything modified between
 		// the API call and this line was stepped over.
-		$chase = self::delta_chase_state( $state, $mod_to, $clamped );
+		$chase = self::delta_chase_state( $state, $mod_to, $clamped, $settled );
 
 		self::update_sync_state( array_merge( self::fresh_delta_window(), array(
 			'status'                  => 'complete',
+			'delta_settled_end'       => $settled ? $mod_to : '',
 			'delta_window_minutes'    => self::next_delta_window_minutes( $window_minutes, $mod_to, $total_items, $body_bytes, $ceiling ),
 			'total_found'             => $total_items,
 			'total_queued'            => $processed + $errors,
@@ -2398,7 +2638,7 @@ class TCGiant_Sync_Importer {
 				$mod_from
 			) );
 
-			self::hold_back_listing( $dead_on, $mod_from );
+			self::hold_back_listing( $dead_on, $mod_from, self::HELD_KILLED );
 			self::queue_settle( $dead_on );
 
 			$progress['cursor']    = $dead_on;
@@ -2422,25 +2662,119 @@ class TCGiant_Sync_Importer {
 	}
 
 	/**
-	 * Add a listing to the held-back list.
+	 * What the delta does about a listing eBay could not be read for.
 	 *
-	 * @param string $item_id  eBay ItemID.
-	 * @param string $mod_from Start of the window it was in.
+	 * eBay, or the way to it, was out of action - which says nothing about
+	 * this listing. Moving past it lost its changes, since nothing reads a
+	 * finished window again, and with every call failing a whole window went
+	 * that way in seconds. So the delta stops on it and keeps its place.
+	 * Only a listing that fails DELTA_READ_STOPS runs in a row, while eBay
+	 * answers otherwise, is moved past - held back for the Stock Review page
+	 * and queued for a stock check of its own.
+	 *
+	 * @param WP_Error $error     The failed call.
+	 * @param string   $item_id   The listing.
+	 * @param array    $progress  The delta's record of where it stopped before.
+	 * @param string   $mod_from  Start of the window it is in.
+	 * @param string   $read_item The listing that could not be read, when not
+	 *                            $item_id itself - the one it was relisted from.
+	 * @return array|null Where to stop, or null when it has been moved past.
 	 */
-	private static function hold_back_listing( $item_id, $mod_from ) {
-		$held = self::held_back_listings();
+	private static function delta_read_stop( WP_Error $error, $item_id, array $progress, $mod_from, $read_item = '' ) {
+		// Never this listing's doing: out of calls, or no token to ask with -
+		// decided before eBay is asked.
+		$out_of_calls = self::is_out_of_calls( $error );
+		$not_its_own  = $out_of_calls || 'no_token' === $error->get_error_code();
+		$before       = (string) ( $progress['stop_item'] ?? '' ) === (string) $item_id ? (int) ( $progress['stops'] ?? 0 ) : 0;
+		$stops        = $not_its_own ? $before : $before + 1;
 
-		$held[ (string) $item_id ] = array(
-			'item_id' => (string) $item_id,
-			'from'    => (string) $mod_from,
-			'at'      => time(),
-		);
-
-		if ( count( $held ) > self::DELTA_HELD_MAX ) {
-			$held = array_slice( $held, -self::DELTA_HELD_MAX, null, true );
+		// A timeout or an eBay error page, run after run, may be eBay or the
+		// way to it being down rather than this listing. Before blaming the
+		// listing, see whether eBay answers anything at all.
+		if ( ! $not_its_own && $stops >= self::DELTA_READ_STOPS
+			&& self::is_passing_read_failure( TCGiant_Sync_API::instance()->get_official_time() ) ) {
+			$stops = self::DELTA_READ_STOPS - 1;
 		}
 
+		if ( $not_its_own || $stops < self::DELTA_READ_STOPS ) {
+			return array(
+				'item'   => (string) $item_id,
+				'stops'  => $stops,
+				'reason' => $error->get_error_message(),
+				'code'   => $out_of_calls ? 'out_of_calls' : (string) $error->get_error_code(),
+			);
+		}
+
+		if ( '' !== (string) $read_item && (string) $read_item !== (string) $item_id ) {
+			TCGiant_Sync_Logger::error( sprintf(
+				'Delta: eBay item %1$s is a relist of %2$s, and %2$s could not be read %3$d runs in a row (%4$s). Moving past %1$s so the rest can be read. It is queued for a stock check of its own and listed on the Stock Review page.',
+				$item_id,
+				$read_item,
+				$stops,
+				$error->get_error_message()
+			) );
+		} else {
+			TCGiant_Sync_Logger::error( sprintf(
+				'Delta: eBay item %s could not be read %d runs in a row (%s). Moving past it so the rest can be read. It is queued for a stock check of its own and listed on the Stock Review page.',
+				$item_id,
+				$stops,
+				$error->get_error_message()
+			) );
+		}
+		self::hold_back_listing( $item_id, $mod_from, self::HELD_UNREAD );
+		self::queue_settle( $item_id );
+
+		return null;
+	}
+
+	/**
+	 * Add a listing to the held-back list.
+	 *
+	 * A stock check giving up on a listing the delta has already stepped over
+	 * keeps the delta's entry - its reason, its window - and adds that the
+	 * check gave up too (check, check_at).
+	 *
+	 * @param string $item_id  eBay ItemID.
+	 * @param string $mod_from Start of the window it was in, or '' for a stock check's.
+	 * @param string $why      HELD_KILLED, HELD_UNREAD, HELD_SALE_CHECK or HELD_NO_CALLS.
+	 * @param array  $more     More to keep: product and parent, for a relist.
+	 */
+	private static function hold_back_listing( $item_id, $mod_from, $why = '', array $more = array() ) {
+		$held    = self::held_back_listings();
+		$item_id = (string) $item_id;
+
+		if ( self::is_check_reason( $why ) && isset( $held[ $item_id ] ) && ! self::is_check_reason( $held[ $item_id ]['why'] ?? '' ) ) {
+			$held[ $item_id ]['check']    = (string) $why;
+			$held[ $item_id ]['check_at'] = time();
+			$held[ $item_id ]            += $more;
+		} else {
+			$held[ $item_id ] = array_merge( array(
+				'item_id' => $item_id,
+				'from'    => (string) $mod_from,
+				'at'      => time(),
+				'why'     => (string) $why,
+			), $more );
+		}
+
+		// Each kind kept to DELTA_HELD_MAX, the newest, in the list's order.
+		$checks = array_filter( $held, function ( $entry ) {
+			return self::is_check_reason( $entry['why'] ?? '' );
+		} );
+		$keep   = array_slice( $checks, -self::DELTA_HELD_MAX, null, true )
+			+ array_slice( array_diff_key( $held, $checks ), -self::DELTA_HELD_MAX, null, true );
+		$held   = array_intersect_key( $held, $keep );
+
 		update_option( self::DELTA_HELD_OPTION, $held, false );
+	}
+
+	/**
+	 * Whether a held-back reason is a stock check's own.
+	 *
+	 * @param mixed $why An entry's why.
+	 * @return bool
+	 */
+	public static function is_check_reason( $why ) {
+		return in_array( $why, array( self::HELD_SALE_CHECK, self::HELD_NO_CALLS ), true );
 	}
 
 	/**
@@ -2597,6 +2931,13 @@ class TCGiant_Sync_Importer {
 		// Marks it as a variation listing, which makes the loop fetch it whole.
 		if ( ! empty( $item['Variations'] ) ) {
 			$row['Variations'] = array( 'Variation' => array() );
+		}
+
+		// The listing this one was relisted from. eBay does not document it in
+		// the list of changes, so nothing relies on it being here - but when it
+		// is, a relist that started long before the window is still looked at.
+		if ( ! empty( $item['RelistParentID'] ) && ! is_array( $item['RelistParentID'] ) ) {
+			$row['RelistParentID'] = (string) $item['RelistParentID'];
 		}
 
 		// The listing's site, so a window carried on from here can still leave
@@ -2811,7 +3152,7 @@ class TCGiant_Sync_Importer {
 	 * @param mixed $error What the call returned.
 	 * @return bool
 	 */
-	private static function is_out_of_calls( $error ) {
+	public static function is_out_of_calls( $error ) {
 		if ( ! is_wp_error( $error ) || 'rate_limited' !== $error->get_error_code() ) {
 			return false;
 		}
@@ -2985,9 +3326,10 @@ class TCGiant_Sync_Importer {
 	 * @param array  $state   Sync state as this run found it.
 	 * @param string $mod_to  End of the window just finished.
 	 * @param bool   $clamped Whether that window stopped short of the present.
+	 * @param bool   $settled Whether it was wholly in the past when read.
 	 * @return array
 	 */
-	private static function delta_chase_state( $state, $mod_to, $clamped ) {
+	private static function delta_chase_state( $state, $mod_to, $clamped, $settled = false ) {
 		if ( ! $clamped ) {
 			return array();
 		}
@@ -3023,9 +3365,33 @@ class TCGiant_Sync_Importer {
 		return array(
 			'status'         => 'scanning',
 			// Exactly where start_delta_sync() would put it, overlap included.
-			'delta_mod_from' => gmdate( 'Y-m-d\TH:i:s.000\Z', strtotime( $mod_to ) - self::DELTA_OVERLAP_SECONDS ),
+			'delta_mod_from' => self::delta_start_after( $mod_to, $settled ? $mod_to : '' ),
 			'delta_chain'    => $chain + 1,
 		);
+	}
+
+	/**
+	 * Where the window after one that ended at $end starts.
+	 *
+	 * Five minutes back over it (DELTA_OVERLAP_SECONDS), for eBay recording a
+	 * change a little after it happened - unless that window was wholly in
+	 * the past when eBay was read for it (DELTA_OVERLAP_NEAR_SECONDS), which
+	 * the state records as delta_settled_end. Then a second back
+	 * (DELTA_BOUNDARY_SECONDS). An end with no such record - a window read
+	 * near the present, anything else that moved the position, a sync updated
+	 * from 3.27 - keeps the five minutes.
+	 *
+	 * @param string $end         End of the last window, ISO 8601 UTC.
+	 * @param string $settled_end delta_settled_end: the end of the last
+	 *                            window read wholly in the past, or ''.
+	 * @return string ISO 8601 UTC.
+	 */
+	private static function delta_start_after( $end, $settled_end ) {
+		$back = '' !== (string) $settled_end && (string) $settled_end === (string) $end
+			? self::DELTA_BOUNDARY_SECONDS
+			: self::DELTA_OVERLAP_SECONDS;
+
+		return gmdate( 'Y-m-d\TH:i:s.000\Z', strtotime( $end ) - $back );
 	}
 
 	/**
@@ -3071,6 +3437,30 @@ class TCGiant_Sync_Importer {
 		// No licence check here. A scan that stopped part way through has
 		// products of its own still to update, and refusing to resume left it
 		// stranded with no way to finish.
+
+		// A delta resumes as a delta. It has no pages, so the code below
+		// started a full scan for it - one that read only the listings changed
+		// since the delta's window, and then authorised the pruner on that.
+		if ( 'delta' === ( $state['sync_mode'] ?? 'full' ) ) {
+			self::update_sync_state( array(
+				'status'              => 'scanning',
+				'rate_limit_retries'  => 0,
+				'scan_complete_clean' => false,
+				'delta_paused_for'    => '',
+				'delta_paused_code'   => '',
+				'delta_paused_until'  => 0,
+			) );
+			// A retry waiting for later is brought forward - Resume means now.
+			// One running now carries on, and no second is queued beside it.
+			if ( self::delta_run_pending() && function_exists( 'as_unschedule_all_actions' ) ) {
+				as_unschedule_all_actions( 'tcgiant_sync_fetch_delta_events', null, self::GROUP_SCAN );
+			}
+			if ( ! self::delta_run_queued() ) {
+				as_enqueue_async_action( 'tcgiant_sync_fetch_delta_events', array(), self::GROUP_SCAN );
+			}
+			TCGiant_Sync_Logger::log( 'Resuming the delta sync where it stopped.', 'success' );
+			return;
+		}
 
 		// Clear any stale scheduled actions.
 		//
@@ -4860,6 +5250,13 @@ class TCGiant_Sync_Importer {
 				'Scan complete. %d found, %d imported inline, %d queued for GetItem across %d pages.',
 				$state['total_found'], $state['total_processed'], $state['total_queued'], $state['total_pages']
 			) );
+
+			// The prune runs when the last queued import finishes. With none
+			// queued it does not run at all - say so, rather than leave a shop
+			// to think its products were checked.
+			if ( $clean && 0 === (int) $state['total_queued'] ) {
+				TCGiant_Sync_Logger::log( 'Inventory pruning: not started. Every listing was imported during the scan, and pruning runs only after a full sync that queued listings for import.' );
+			}
 		} else {
 			self::update_sync_state( array_merge( array(
 				'status'                  => 'complete',
@@ -5053,11 +5450,16 @@ class TCGiant_Sync_Importer {
 			// A listing that has ended since the scan began. It is in eBay's
 			// answer because the scan asks for listings ending from then
 			// (scan_end_from()). Not saved - as live, its stock would be set
-			// from eBay's figures - nor counted; the delta settles it, as it
-			// settles every ended listing. Its ItemID is on the list of live
-			// listings above, so this sync's clean-up leaves its product to
-			// that, as it would a listing still live.
+			// from eBay's listed-minus-sold, putting a coin sold on the
+			// website back up for sale - nor counted. Its product is settled
+			// here, as the delta settles every ended listing. Its ItemID is on
+			// the list of live listings above, so this sync's clean-up leaves
+			// its product alone.
 			if ( ! self::is_live_listing( $item ) ) {
+				$existing_id = self::find_live_product_for_item( $item_id );
+				if ( $existing_id ) {
+					self::settle_ended_listing( $existing_id, $item, (string) $item['SellingStatus']['ListingStatus'], 'Full sync' );
+				}
 				continue;
 			}
 
@@ -5133,7 +5535,11 @@ class TCGiant_Sync_Importer {
 				&& ( self::$limit_reported || ! $license->can_import() ) ) {
 				if ( ! self::$limit_reported ) {
 					self::$limit_reported = true;
-					self::update_sync_state( array( 'status' => 'limit_reached' ), true );
+					// Not over an Emergency Stop pressed while the page was
+					// being saved.
+					if ( ! self::stop_pressed() ) {
+						self::update_sync_state( array( 'status' => 'limit_reached' ), true );
+					}
 					TCGiant_Sync_Logger::log( sprintf(
 						'Import limit reached (%d/%d products). New listings will not be imported; products already imported carry on syncing normally.',
 						$license->get_active_product_count(),
@@ -5159,6 +5565,19 @@ class TCGiant_Sync_Importer {
 					$title = $item['Title'] ?? 'Unknown';
 					$product_data = $mapper->map_ebay_to_woo( $item );
 					$product_id = $mapper->save_as_product( $product_data );
+
+					// A relist whose old listing eBay could not be asked
+					// about yet: imported on its own, where a rate limit
+					// waits and tries again - once, as for any queued import.
+					if ( ! $product_id && TCGiant_Sync_Mapper::$last_deferred ) {
+						if ( ! function_exists( 'as_next_scheduled_action' )
+							|| false === as_next_scheduled_action( 'tcgiant_sync_process_item_import', array( 'item_id' => $item_id ), 'tcgiant_sync_imports' ) ) {
+							$delay = min( (int) ( $progress['tally']['queued'] ?? 0 ), 60 );
+							as_schedule_single_action( time() + $delay, 'tcgiant_sync_process_item_import', array( 'item_id' => $item_id ), 'tcgiant_sync_imports' );
+							self::scan_count( $progress, 'queued' );
+						}
+						continue;
+					}
 
 					if ( $product_id ) {
 						if ( ! empty( $product_data['variations'] ) ) {
@@ -5341,6 +5760,113 @@ class TCGiant_Sync_Importer {
 	}
 
 	/**
+	 * Any product linked to an eBay listing, the trash included.
+	 *
+	 * A product in the trash for a listing was deleted on purpose, so it still
+	 * answers "this listing has a product": nothing may move another product on
+	 * to that listing, or bring it back.
+	 *
+	 * @param string $item_id eBay ItemID.
+	 * @return int Product ID, or 0.
+	 */
+	public static function find_any_product_for_item( $item_id ) {
+		global $wpdb;
+
+		if ( '' === (string) $item_id ) {
+			return 0;
+		}
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		return (int) $wpdb->get_var( $wpdb->prepare(
+			"SELECT pm.post_id FROM {$wpdb->postmeta} pm
+			 INNER JOIN {$wpdb->posts} p ON pm.post_id = p.ID
+			 WHERE pm.meta_key = '_ebay_item_id' AND pm.meta_value = %s
+			   AND p.post_type = 'product'
+			 LIMIT 1",
+			(string) $item_id
+		) );
+	}
+
+	/**
+	 * Move a product on to an ended listing the sync never saw live, when that
+	 * listing is a relist of the one the product follows.
+	 *
+	 * A coin relisted on eBay and sold before the next delta sync is only ever
+	 * seen ended. No product follows the new listing, so it used to be passed
+	 * over - and the product following the old listing stayed in stock for a
+	 * coin eBay had already sold.
+	 *
+	 * Costs at most one GetItem, and only for an ended listing nothing follows
+	 * that started no more than a day before the changes being read. One that
+	 * started earlier than that cannot be a relist made since the last sync,
+	 * and is left alone, as before - unless eBay's row itself names the
+	 * listing it was relisted from, which it is not documented to do.
+	 *
+	 * @param array  $ebay_item The listing. Replaced with eBay's whole answer
+	 *                          when one is fetched, so nothing asks again.
+	 * @param string $since     Start of the changes being read, or '' when
+	 *                          $ebay_item is already eBay's whole answer.
+	 * @param string $source    For the log.
+	 * @param int    $asked     Counts the GetItem, when one is made.
+	 * @param mixed  $read_error Set to the failed call when eBay could not
+	 *                           be read - this listing, or the one it was
+	 *                           relisted from - for a reason that may pass;
+	 *                           null otherwise.
+	 * @param string $read_item  Set to the listing that could not be read.
+	 * @return int The product now following the listing, or 0.
+	 */
+	private static function adopt_unseen_relist( array &$ebay_item, $since, $source, &$asked, &$read_error = null, &$read_item = '' ) {
+		$read_error = null;
+		$read_item  = '';
+		$item_id    = (string) ( $ebay_item['ItemID'] ?? '' );
+
+		if ( '' === $item_id || self::find_any_product_for_item( $item_id ) ) {
+			return 0;
+		}
+
+		if ( '' !== (string) $since ) {
+			// eBay's list of changes does not say what a listing was relisted
+			// from, so only the start time can rule one out without asking.
+			$started = $ebay_item['ListingDetails']['StartTime'] ?? '';
+			$started = is_scalar( $started ) ? strtotime( (string) $started ) : false;
+			$from    = strtotime( (string) $since );
+
+			if ( empty( $ebay_item['RelistParentID'] ) && $started && $from && $started < $from - DAY_IN_SECONDS ) {
+				return 0;
+			}
+
+			$asked++;
+			TCGiant_Sync_Runtime::stage( 'asking eBay whether the ended listing is a relist (GetItem)' );
+			$detail = TCGiant_Sync_API::instance()->get_item( $item_id );
+
+			if ( is_wp_error( $detail ) || empty( $detail['Item'] ) ) {
+				if ( self::is_passing_read_failure( $detail ) ) {
+					$read_error = $detail;
+					$read_item  = $item_id;
+				}
+				return 0;
+			}
+
+			$ebay_item = $detail['Item'];
+		}
+
+		if ( empty( $ebay_item['RelistParentID'] ) ) {
+			return 0;
+		}
+
+		$mapper  = TCGiant_Sync_Mapper::instance();
+		TCGiant_Sync_Runtime::stage( 'moving a product on to it from the listing it was relisted from' );
+		$adopted = (int) $mapper->adopt_relist( $ebay_item, $source );
+
+		if ( ! $adopted && self::is_passing_read_failure( $mapper->relist_parent_error ) ) {
+			$read_error = $mapper->relist_parent_error;
+			$read_item  = (string) $ebay_item['RelistParentID'];
+		}
+
+		return $adopted;
+	}
+
+	/**
 	 * Record that a product's eBay listing is over, settle its stock, and decide
 	 * whether the product should still be here.
 	 *
@@ -5370,11 +5896,19 @@ class TCGiant_Sync_Importer {
 		$existing_id = (int) $existing_id;
 		$item_id     = (string) ( $ebay_item['ItemID'] ?? '' );
 		$used_get    = false;
+		$read_error  = null;
 
 		update_post_meta( $existing_id, '_ebay_listing_status', 'Ended' );
 		if ( ! empty( $ebay_item['ListingDetails']['EndTime'] ) ) {
 			update_post_meta( $existing_id, '_ebay_end_time', $ebay_item['ListingDetails']['EndTime'] );
 		}
+
+		// Over on eBay: a website sale whose push never got there can no
+		// longer sell twice, so imports need not be held back for it.
+		TCGiant_Sync_Inventory::forget_unsent_sale( $existing_id );
+
+		// Its type, from the answer in hand, for the listing it is about.
+		TCGiant_Sync_Inventory::note_listing_type( $existing_id, $item_id, $ebay_item['ListingType'] ?? '' );
 
 		// Its site too, when eBay said. An ended listing is settled here and
 		// never saved again, so this is the only place a product whose listing
@@ -5392,7 +5926,15 @@ class TCGiant_Sync_Importer {
 		// check, or when the plugin ended it at 0. Whatever the product holds
 		// now was entered since, and applying the old figures again would wipe
 		// a restock.
-		if ( TCGiant_Sync_Inventory::listing_already_settled( $existing_id, $item_id ) ) {
+		// A variable product's variations are settled on their own: the
+		// listing's figures can be in the parent while a variation still holds
+		// a unit eBay sold - as every settle before 3.28.0 left it.
+		$product     = wc_get_product( $existing_id );
+		$is_variable = $product && $product->is_type( 'variable' );
+		$whole_done  = TCGiant_Sync_Inventory::listing_already_settled( $existing_id, $item_id );
+		$vars_done   = ! $is_variable || TCGiant_Sync_Inventory::variations_already_settled( $existing_id, $item_id );
+
+		if ( $whole_done && $vars_done ) {
 			TCGiant_Sync_Logger::log( sprintf(
 				'%s: eBay item %s is %s — WC #%d marked ended; its sales were already in the stock, so the stock is left as it is.',
 				$source, $item_id, $listing_status, $existing_id
@@ -5403,15 +5945,46 @@ class TCGiant_Sync_Importer {
 		$listed = $ebay_item['Quantity'] ?? null;
 		$sold   = $ebay_item['SellingStatus']['QuantitySold'] ?? null;
 
-		// The events feed is often partial. Ask for the item outright rather
-		// than guess at a quantity.
-		if ( null === $listed || null === $sold ) {
+		// The events feed is often partial, and never carries a variation's
+		// figures. Ask for the item outright rather than guess at a quantity.
+		if ( null === $listed || null === $sold || ( $is_variable && ! $vars_done && empty( $ebay_item['Variations']['Variation'] ) ) ) {
 			$ended_detail = TCGiant_Sync_API::instance()->get_item( $item_id );
-			if ( ! is_wp_error( $ended_detail ) && isset( $ended_detail['Item'] ) ) {
-				$used_get = true;
-				$listed   = $ended_detail['Item']['Quantity'] ?? null;
-				$sold     = $ended_detail['Item']['SellingStatus']['QuantitySold'] ?? null;
+			if ( ! is_wp_error( $ended_detail ) && isset( $ended_detail['Item'] ) && is_array( $ended_detail['Item'] ) ) {
+				$used_get  = true;
+				$ebay_item = $ended_detail['Item'] + array( 'ItemID' => $item_id );
+				$listed    = $ebay_item['Quantity'] ?? null;
+				$sold      = $ebay_item['SellingStatus']['QuantitySold'] ?? null;
+			} elseif ( is_wp_error( $ended_detail ) ) {
+				$read_error = $ended_detail;
 			}
+		}
+
+		// Each variation from its own figures, before the parent: a variation
+		// keeps its own stock, and WooCommerce sells it whatever the parent says.
+		if ( $is_variable && ! $vars_done
+			&& null === TCGiant_Sync_Inventory::settle_variations( $existing_id, $ebay_item, $source ) ) {
+			if ( null !== $read_error ) {
+				// Out of calls, no token, a timeout: the delta stops here and
+				// comes back to it - nothing else settles an ended listing's
+				// variations once it is passed.
+				if ( self::is_passing_read_failure( $read_error ) ) {
+					self::$ended_read_error = $read_error;
+				}
+				TCGiant_Sync_Logger::warning( sprintf(
+					'%s: eBay item %s is %s — its variations could not be read from eBay (%s), so the variations of WC #%d are not settled yet.',
+					$source, $item_id, $listing_status, $read_error->get_error_message(), $existing_id
+				) );
+			} else {
+				TCGiant_Sync_Logger::warning( sprintf(
+					'%s: eBay item %s is %s — eBay did not report its variations, so the variations of WC #%d were not settled.',
+					$source, $item_id, $listing_status, $existing_id
+				) );
+			}
+		}
+
+		// The parent was settled already - by 3.27, before its variations were.
+		if ( $whole_done ) {
+			return $used_get;
 		}
 
 		$remaining = TCGiant_Sync_Inventory::apply_ended_listing_stock( (int) $existing_id, $listed, $sold );
@@ -5444,7 +6017,33 @@ class TCGiant_Sync_Importer {
 	}
 
 	/**
+	 * Settle an ended listing from an answer the caller already holds.
+	 *
+	 * For the stock push, which reads the listing with GetItem before it
+	 * sends anything and finds it over: it goes through the same settle as
+	 * the delta and the sale check - only lowering stock, short-circuited
+	 * when already settled, variations one by one, sold-out removal - and a
+	 * second GetItem is not spent asking again.
+	 *
+	 * @param int    $product_id Product linked to the listing.
+	 * @param array  $item       GetItem's Item.
+	 * @param string $source     For the log.
+	 * @return void
+	 */
+	public static function settle_ended_from_item( $product_id, array $item, $source ) {
+		$status = TCGiant_Sync_API::scalar_value( $item['SellingStatus']['ListingStatus'] ?? '' );
+
+		self::settle_ended_listing( (int) $product_id, $item, '' !== $status ? $status : 'Completed', (string) $source );
+	}
+
+	/**
 	 * Queue a stock check for one eBay listing, unless one is already waiting.
+	 *
+	 * Waiting means pending, not running (3.28.0 fix round 3).
+	 * as_next_scheduled_action() counts a running check too, so a sale seen
+	 * while its listing's check was running - its GetItem already answered,
+	 * without that sale - was refused, and its order line marked processed:
+	 * the sale never reached the website. That was so since 3.27.
 	 *
 	 * @param string $item_id eBay ItemID.
 	 * @return bool Whether one was queued.
@@ -5456,7 +6055,19 @@ class TCGiant_Sync_Importer {
 			return false;
 		}
 
-		if ( function_exists( 'as_next_scheduled_action' )
+		if ( function_exists( 'as_get_scheduled_actions' ) ) {
+			$waiting = as_get_scheduled_actions( array(
+				'hook'     => 'tcgiant_sync_settle_item',
+				'args'     => array( $item_id ),
+				'group'    => self::GROUP_SETTLE,
+				'status'   => 'pending',
+				'per_page' => 1,
+			), 'ids' );
+
+			if ( ! empty( $waiting ) ) {
+				return false;
+			}
+		} elseif ( function_exists( 'as_next_scheduled_action' )
 			&& false !== as_next_scheduled_action( 'tcgiant_sync_settle_item', array( $item_id ), self::GROUP_SETTLE ) ) {
 			return false;
 		}
@@ -5464,6 +6075,646 @@ class TCGiant_Sync_Importer {
 		as_enqueue_async_action( 'tcgiant_sync_settle_item', array( $item_id ), self::GROUP_SETTLE );
 
 		return true;
+	}
+
+	/**
+	 * A queued stock check, as Action Scheduler runs it.
+	 *
+	 * A later try whose listing a check read eBay for after the last failed
+	 * check that relies on this try ends here, quietly: that read had eBay's
+	 * figures after every sale this try is for, and asking again would only
+	 * spend a call. See settle_chain_answered().
+	 *
+	 * @param string $item_id eBay ItemID.
+	 * @param int    $try     Which try this is. One queued by queue_settle(),
+	 *                        or by 3.27, carries none: a first check.
+	 */
+	public function settle_queued( $item_id, $try = 0 ) {
+		$try = (int) $try;
+
+		if ( $try > 0 && self::settle_chain_answered( (string) $item_id ) ) {
+			return;
+		}
+
+		$this->settle_item( $item_id, 'Sale check', null, $try );
+	}
+
+	/**
+	 * Where the stock checks being tried again have got to, by ItemID: since
+	 * (when the chain began), out (days waited for the day's calls to start
+	 * again), out_day (the UTC day the last of those waited for) and
+	 * answered (when a first check of the listing sent the read eBay
+	 * answered, while the chain was waiting).
+	 *
+	 * Every failed check rewrites the option whole, so two at once can lose
+	 * one's change, or put back an older copy of another listing's chain.
+	 * Neither can end a try quietly that is still needed: a chain lost runs
+	 * its try, which starts the chain again if it fails, and the join that
+	 * decides a quiet end has a row of its own (SETTLE_JOINED_PREFIX).
+	 *
+	 * @return array
+	 */
+	private static function settle_chains() {
+		$chains = get_option( self::SETTLE_CHAINS_OPTION, array() );
+
+		return is_array( $chains ) ? $chains : array();
+	}
+
+	/**
+	 * Write the chains, forgetting any over SETTLE_ORPHAN_DAYS old with no try
+	 * waiting. A chain whose try waits stays until that try ends it, however
+	 * old: forgetting it would start it again, past its three days.
+	 *
+	 * @param array $chains By ItemID.
+	 */
+	private static function save_settle_chains( array $chains ) {
+		$oldest = time() - self::SETTLE_ORPHAN_DAYS * DAY_IN_SECONDS;
+
+		foreach ( $chains as $id => $chain ) {
+			if ( (int) ( $chain['since'] ?? 0 ) < $oldest && ! self::settle_check_waiting( (string) $id ) ) {
+				unset( $chains[ $id ] );
+				self::forget_settle_join( (string) $id );
+			}
+		}
+
+		if ( empty( $chains ) ) {
+			delete_option( self::SETTLE_CHAINS_OPTION );
+			return;
+		}
+
+		update_option( self::SETTLE_CHAINS_OPTION, $chains, false );
+	}
+
+	/**
+	 * A failed check of this listing that relies on its chain's waiting try:
+	 * the one that starts the chain, or one that finds the try waiting and
+	 * so queues nothing of its own. Kept as the latest such time.
+	 *
+	 * Written in one statement that keeps the later of the two times, so two
+	 * checks of the listing failing at once cannot leave the earlier: read
+	 * and then written, the slower one wrote its time over the other's
+	 * (fix round 3). GREATEST() with the time given twice, rather than
+	 * VALUES(), which MySQL 8.0.20+ deprecates, and the row alias, which
+	 * MariaDB lacks: the same statement on MySQL 5.7, 8 and MariaDB. The row
+	 * is read and written past the options cache, as the call counter's is;
+	 * the cache's entry for it is dropped after, for anything that reads it
+	 * with get_option().
+	 *
+	 * @param string $item_id eBay ItemID.
+	 */
+	private static function note_settle_join( $item_id ) {
+		global $wpdb;
+
+		$name = self::SETTLE_JOINED_PREFIX . $item_id;
+		$now  = time();
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$wpdb->query( $wpdb->prepare(
+			"INSERT INTO {$wpdb->options} ( option_name, option_value, autoload ) VALUES ( %s, %d, 'no' )
+			 ON DUPLICATE KEY UPDATE option_value = GREATEST( option_value + 0, %d )",
+			$name,
+			$now,
+			$now
+		) );
+
+		wp_cache_delete( $name, 'options' );
+	}
+
+	/**
+	 * When the last failed check that relies on the listing's waiting try
+	 * was noted (note_settle_join()), read from the table; null for none.
+	 *
+	 * @param string $item_id eBay ItemID.
+	 * @return int|null
+	 */
+	private static function settle_join( $item_id ) {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$joined = $wpdb->get_var( $wpdb->prepare(
+			"SELECT option_value FROM {$wpdb->options} WHERE option_name = %s LIMIT 1",
+			self::SETTLE_JOINED_PREFIX . $item_id
+		) );
+
+		return null === $joined ? null : (int) $joined;
+	}
+
+	/**
+	 * The chain is over: its join is no longer needed.
+	 *
+	 * @param string $item_id eBay ItemID.
+	 */
+	private static function forget_settle_join( $item_id ) {
+		global $wpdb;
+
+		$name = self::SETTLE_JOINED_PREFIX . $item_id;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->options} WHERE option_name = %s", $name ) );
+
+		wp_cache_delete( $name, 'options' );
+	}
+
+	/**
+	 * Whether a waiting try of this listing can end without asking eBay: a
+	 * first check sent a read eBay answered after the last failed check that
+	 * relies on the try (note_settle_join()). Then the chain is over.
+	 *
+	 * A failed check that finds the try waiting queues nothing of its own and
+	 * relies on it, so a read before that check - however recent - is not
+	 * enough: the sale it was for may have come after the read. With no join
+	 * noted, it always asks.
+	 *
+	 * @param string $item_id eBay ItemID.
+	 * @return bool
+	 */
+	private static function settle_chain_answered( $item_id ) {
+		$chains = self::settle_chains();
+		$chain  = $chains[ $item_id ] ?? null;
+		$joined = self::settle_join( $item_id );
+
+		if ( ! is_array( $chain ) || empty( $chain['answered'] ) || null === $joined || (int) $chain['answered'] <= $joined ) {
+			return false;
+		}
+
+		unset( $chains[ $item_id ] );
+		self::save_settle_chains( $chains );
+		self::forget_settle_join( $item_id );
+
+		TCGiant_Sync_Logger::log( sprintf(
+			'Sale check: eBay item %s was read and settled by a later check, so the one waiting to try again is not needed.',
+			$item_id
+		) );
+
+		return true;
+	}
+
+	/**
+	 * eBay answered for this listing. A chain still waiting to try again is
+	 * told when the read was sent (settle_chain_answered()); one this check
+	 * was a try of is over.
+	 *
+	 * @param string $item_id eBay ItemID.
+	 * @param bool   $fresh   Whether this was a first check rather than a try of a chain.
+	 * @param int    $asked   When the read eBay answered was sent.
+	 */
+	private static function settle_check_answered( $item_id, $fresh, $asked ) {
+		$chains = self::settle_chains();
+
+		// A try that read ends its chain. With no chain, a join noted is a
+		// stray - left by a check that found a first check waiting - and
+		// without it a try still waiting simply asks.
+		if ( ! $fresh || ! isset( $chains[ $item_id ] ) ) {
+			self::forget_settle_join( $item_id );
+		}
+
+		if ( ! isset( $chains[ $item_id ] ) ) {
+			return;
+		}
+
+		if ( $fresh ) {
+			$chains[ $item_id ]['answered'] = max( (int) $asked, (int) ( $chains[ $item_id ]['answered'] ?? 0 ) );
+		} else {
+			unset( $chains[ $item_id ] );
+		}
+
+		self::save_settle_chains( $chains );
+	}
+
+	/**
+	 * Whether a stock check out of calls waits for the next 00:05:30 UTC: the
+	 * plugin's own day budget, or eBay's 518. Not HTTP 429, a moment's
+	 * throttle, which is tried again as any other failure is.
+	 *
+	 * Also asked by a stock push before it gives up (3.28.0 release fix
+	 * round 1).
+	 *
+	 * @param WP_Error $error What the read returned.
+	 * @return bool
+	 */
+	public static function out_for_the_day( $error ) {
+		if ( ! self::is_out_of_calls( $error ) ) {
+			return false;
+		}
+
+		$data = $error->get_error_data();
+
+		return ! empty( $data['daily_budget'] ) || ! array_key_exists( 'retry_after', $data );
+	}
+
+	/**
+	 * Whether a call met eBay's own call limit, its 518: not the plugin's
+	 * day budget, and not HTTP 429. eBay's limit lifts when it lifts, not
+	 * at 00:05:30 UTC: a check, a push or the weekly pass waiting on it is
+	 * tried again hourly (after_ebay_518()), each time only once the shared
+	 * question says it has lifted (ebay_limit_lifted(); 3.28.0 release fix
+	 * round 2).
+	 *
+	 * @param mixed $error What the call returned.
+	 * @return bool
+	 */
+	public static function ebay_out_of_calls( $error ) {
+		if ( ! self::is_out_of_calls( $error ) ) {
+			return false;
+		}
+
+		$data = $error->get_error_data();
+
+		return empty( $data['daily_budget'] ) && ! array_key_exists( 'retry_after', $data );
+	}
+
+	/**
+	 * Whether this listing's stock check is waiting on eBay's 518, within
+	 * SETTLE_CHAIN_DAYS of its chain's start.
+	 *
+	 * @param string $item_id eBay ItemID.
+	 * @return bool
+	 */
+	private static function settle_waits_on_518( $item_id ) {
+		$chains = self::settle_chains();
+		$chain  = $chains[ (string) $item_id ] ?? null;
+
+		return is_array( $chain ) && ! empty( $chain['e518'] )
+			&& time() - (int) ( $chain['since'] ?? 0 ) < self::SETTLE_CHAIN_DAYS * DAY_IN_SECONDS;
+	}
+
+	/**
+	 * When something that met eBay's 518 is tried again: every 15 minutes in
+	 * the hour after 00:05:30 UTC, when the day's calls start again; hourly
+	 * otherwise, and never later than that next 00:05:30.
+	 *
+	 * @return int
+	 */
+	public static function after_ebay_518() {
+		$reset = gmmktime( 0, 0, 0, (int) gmdate( 'n' ), (int) gmdate( 'j' ), (int) gmdate( 'Y' ) ) + self::SETTLE_AFTER_MIDNIGHT;
+
+		if ( time() >= $reset && time() < $reset + HOUR_IN_SECONDS ) {
+			return time() + self::SETTLE_RETRY_DELAYS[0];
+		}
+
+		return min( time() + HOUR_IN_SECONDS, self::after_budget_resets() );
+	}
+
+	/**
+	 * eBay's 518 was met: nothing waiting on it is sent before $until - one
+	 * question in that time for every check, push and pass together.
+	 *
+	 * @param int $until When to ask again.
+	 * @return void
+	 */
+	public static function note_ebay_518( $until ) {
+		$until = max( time() + MINUTE_IN_SECONDS, (int) $until );
+		set_transient( self::EBAY_518_TRANSIENT, array( 'until' => $until ), $until - time() );
+	}
+
+	/**
+	 * Until when a check, push or pass waiting on eBay's 518 sends nothing:
+	 * the time the last 518 was met for, or the next slot.
+	 *
+	 * @return int
+	 */
+	public static function ebay_518_until() {
+		$kept = get_transient( self::EBAY_518_TRANSIENT );
+
+		return is_array( $kept ) && (int) ( $kept['until'] ?? 0 ) > time() ? (int) $kept['until'] : self::after_ebay_518();
+	}
+
+	/**
+	 * Whether eBay's 518 has lifted, asked by a check, a push or the weekly
+	 * pass that is waiting on it, before it sends anything. Never before the
+	 * time the last 518 was met for (note_ebay_518()); then GeteBayOfficialTime,
+	 * past the 80% ceiling, asks once for all of them. A 518 to that too is
+	 * kept till the next slot, and nothing else is sent meanwhile. Anything
+	 * else it gets - an answer, the plugin's own budget, a timeout - lets the
+	 * waiting call go, and that call's own answer decides.
+	 *
+	 * An answer is kept too, for the slot it was asked in: the rest waiting
+	 * in that slot go without asking again - one question as the limit lifts,
+	 * not one each (3.28.0 release fix round 3). A 518 any of them meets
+	 * replaces it (note_ebay_518()).
+	 *
+	 * @return bool
+	 */
+	public static function ebay_limit_lifted() {
+		$kept = get_transient( self::EBAY_518_TRANSIENT );
+		if ( is_array( $kept ) && time() < (int) ( $kept['until'] ?? 0 ) ) {
+			return false;
+		}
+		if ( is_array( $kept ) && time() < (int) ( $kept['lifted'] ?? 0 ) ) {
+			return true;
+		}
+
+		$api   = TCGiant_Sync_API::instance();
+		$probe = $api->with_stock_priority( function () use ( $api ) {
+			return $api->get_official_time();
+		} );
+
+		if ( self::ebay_out_of_calls( $probe ) ) {
+			self::note_ebay_518( self::after_ebay_518() );
+			return false;
+		}
+
+		if ( ! is_wp_error( $probe ) ) {
+			$slot = self::after_ebay_518();
+			set_transient( self::EBAY_518_TRANSIENT, array( 'lifted' => $slot ), max( MINUTE_IN_SECONDS, $slot - time() ) );
+		}
+
+		return true;
+	}
+
+	/**
+	 * Whether eBay is not answering at all, before a stock check is given up
+	 * on: GeteBayOfficialTime, as the delta asks before it moves past a
+	 * listing.
+	 *
+	 * Only "not answering" is kept, for EBAY_ANSWERS_SECONDS and every check:
+	 * it only ever makes a check wait, and it is what spares a long outage a
+	 * question per waiting sale. "Answering" is never kept, so a check is
+	 * only given up on after a question of its own (fix round 3) - a check
+	 * failing just as eBay goes down is not given up on by an answer from
+	 * before.
+	 *
+	 * Refused by this plugin's own ceiling, the question was never put: that
+	 * is not eBay down, and the check gives up as it would have.
+	 *
+	 * Also asked by a stock push before it gives up (3.28.0 release fix
+	 * round 1).
+	 *
+	 * @return bool
+	 */
+	public static function ebay_not_answering() {
+		$kept = get_transient( self::EBAY_ANSWERS_TRANSIENT );
+
+		if ( is_array( $kept ) && ! empty( $kept['down'] ) && isset( $kept['at'] )
+			&& time() >= (int) $kept['at'] && time() - (int) $kept['at'] < self::EBAY_ANSWERS_SECONDS ) {
+			return true;
+		}
+
+		// Past the 80% ceiling too: it stops a sold item staying for sale
+		// (TCGiant_Sync_API::STOCK_PRIORITY_CALLS, 3.28.0 release fix round 1).
+		$api   = TCGiant_Sync_API::instance();
+		$probe = $api->with_stock_priority( function () use ( $api ) {
+			return $api->get_official_time();
+		} );
+
+		if ( is_wp_error( $probe ) ) {
+			$data = $probe->get_error_data();
+			if ( is_array( $data ) && ! empty( $data['daily_budget'] ) ) {
+				return false;
+			}
+		}
+
+		if ( ! self::is_passing_read_failure( $probe ) ) {
+			return false;
+		}
+
+		set_transient( self::EBAY_ANSWERS_TRANSIENT, array( 'at' => time(), 'down' => true ), self::EBAY_ANSWERS_SECONDS );
+
+		return true;
+	}
+
+	/**
+	 * A stock check eBay could not be read for, for a reason that passes - the
+	 * calls used up, no token, a timeout, an answer that was not eBay's (see
+	 * is_passing_read_failure()): queue it again.
+	 *
+	 * It used to say the delta would settle the sale when it reached it, and
+	 * stop. A delta that is behind - one shop's was eleven days behind - does
+	 * not reach it, and the item stayed for sale on the website.
+	 *
+	 * - Tried again after each of SETTLE_RETRY_DELAYS in turn.
+	 * - Before the last try is given up on, eBay is asked whether it answers
+	 *   at all (ebay_not_answering()), as the delta does before it moves past
+	 *   a listing. If it does not, the check waits again, uncounted, for up to
+	 *   SETTLE_CHAIN_DAYS from the chain's start.
+	 * - Out of calls for the day - the day's own budget, or eBay's 518
+	 *   (out_for_the_day()) - it waits for the next 00:05:30 UTC, uncounted;
+	 *   blocked again within the hour after that, 15 minutes. After
+	 *   SETTLE_OUT_DAYS such days it gives up. HTTP 429 is tried again as
+	 *   any other failure is.
+	 * - Giving up says so, naming the product and the listing, and lists the
+	 *   listing on Stock Review (HELD_SALE_CHECK, or HELD_NO_CALLS).
+	 * - A check is never queued while another of the same listing is waiting;
+	 *   one that finds it waiting is noted as relying on it
+	 *   (note_settle_join()).
+	 *
+	 * @param string   $item_id    eBay ItemID.
+	 * @param int      $try        The try that failed (a first check is 1).
+	 * @param bool     $fresh      Whether it was a first check, which starts a chain.
+	 * @param WP_Error $error      What the read returned.
+	 * @param int      $product_id The product it is for; 0 when none follows the listing.
+	 * @param string   $source     For the log.
+	 * @param array    $relist     For a relist whose old listing could not be
+	 *                             read: parent, holder (the product that
+	 *                             follows it) and sold.
+	 * @return void
+	 */
+	private static function retry_settle( $item_id, $try, $fresh, WP_Error $error, $product_id, $source, array $relist = array() ) {
+		$item_id = (string) $item_id;
+		$try     = max( 1, (int) $try );
+		$for     = $product_id > 0 ? sprintf( ' for WC #%d', $product_id ) : ' for the product it may be a relist of';
+		$tries   = count( self::SETTLE_RETRY_DELAYS ) + 1;
+		$why     = $error->get_error_message();
+
+		if ( ! function_exists( 'as_schedule_single_action' ) ) {
+			TCGiant_Sync_Logger::warning( sprintf(
+				'%1$s: could not read eBay item %2$s%3$s (%4$s), and without Action Scheduler it cannot be tried again by itself.',
+				$source,
+				$item_id,
+				$for,
+				$why
+			) );
+			return;
+		}
+
+		if ( self::settle_check_waiting( $item_id ) ) {
+			// This sale is now the waiting try's to settle too: it may end
+			// quietly only after a read sent from now on.
+			self::note_settle_join( $item_id );
+
+			TCGiant_Sync_Logger::log( sprintf(
+				'%1$s: could not read eBay item %2$s%3$s (%4$s). A check of it is already waiting.',
+				$source,
+				$item_id,
+				$for,
+				$why
+			) );
+			return;
+		}
+
+		$chains = self::settle_chains();
+		$chain  = ! $fresh && isset( $chains[ $item_id ] ) && is_array( $chains[ $item_id ] )
+			? $chains[ $item_id ]
+			: null;
+
+		// A chain starts: with a first check, or with a try whose chain was
+		// lost (a rewrite of the option from an older copy) - which then
+		// counts its three days from now.
+		if ( null === $chain ) {
+			$chain = array( 'since' => time(), 'out' => 0, 'out_day' => '' );
+			self::note_settle_join( $item_id );
+		}
+
+		$next = $try;
+
+		// Anything but a 518: no longer waiting on it, so the next try asks
+		// nothing first.
+		if ( ! self::ebay_out_of_calls( $error ) ) {
+			unset( $chain['e518'] );
+		}
+
+		if ( self::ebay_out_of_calls( $error ) ) {
+			// eBay's own 518: it lifts when it lifts. Hourly, uncounted, for up
+			// to SETTLE_CHAIN_DAYS from the chain's start; each try asks the
+			// shared question first (ebay_limit_lifted(); release fix round 2).
+			if ( time() - (int) $chain['since'] >= self::SETTLE_CHAIN_DAYS * DAY_IN_SECONDS ) {
+				self::give_up_settle( $item_id, $for, $source, sprintf( 'after eBay\'s call limit held for %d days (%s)', self::SETTLE_CHAIN_DAYS, $why ), $why, self::HELD_NO_CALLS, $relist, $chains );
+				return;
+			}
+			$data          = $error->get_error_data();
+			$kept          = is_array( $data ) ? (int) ( $data['kept_until'] ?? 0 ) : 0;
+			$when          = $kept > time() ? $kept : self::after_ebay_518();
+			$chain['e518'] = 1;
+			// The kept slot noted again is the same slot.
+			self::note_ebay_518( $when );
+			$again          = sprintf( 'in %d minutes, once eBay\'s call limit (518) has lifted', (int) round( ( $when - time() ) / MINUTE_IN_SECONDS ) );
+		} elseif ( self::out_for_the_day( $error ) ) {
+			$today = gmdate( 'Y-m-d' );
+			$reset = gmmktime( 0, 0, 0, (int) gmdate( 'n' ), (int) gmdate( 'j' ), (int) gmdate( 'Y' ) ) + self::SETTLE_AFTER_MIDNIGHT;
+
+			if ( $today === (string) ( $chain['out_day'] ?? '' ) && time() < $reset + HOUR_IN_SECONDS ) {
+				// Waited for today's start, and blocked again just after it.
+				$when  = time() + self::SETTLE_RETRY_DELAYS[0];
+				$again = 'in 15 minutes: the day\'s eBay calls have only just started again';
+			} elseif ( (int) ( $chain['out'] ?? 0 ) >= self::SETTLE_OUT_DAYS ) {
+				self::give_up_settle( $item_id, $for, $source, sprintf( 'after the day\'s eBay calls ran out %d days running (%s)', (int) $chain['out'], $why ), $why, self::HELD_NO_CALLS, $relist, $chains );
+				return;
+			} else {
+				$when             = self::after_budget_resets();
+				$chain['out']     = (int) ( $chain['out'] ?? 0 ) + 1;
+				$chain['out_day'] = gmdate( 'Y-m-d', $when );
+				$again            = 'just after 00:05 UTC, once the day\'s eBay calls start again';
+			}
+		} elseif ( $try >= $tries ) {
+			// Before giving up on the listing, see whether eBay answers at all.
+			if ( time() - (int) $chain['since'] < self::SETTLE_CHAIN_DAYS * DAY_IN_SECONDS
+				&& self::ebay_not_answering() ) {
+				$when  = time() + self::SETTLE_RETRY_DELAYS[ $tries - 2 ];
+				$again = 'in 12 hours: eBay is not answering other calls either';
+			} else {
+				self::give_up_settle( $item_id, $for, $source, sprintf( 'after %d tries: eBay could not be read for it (%s)', $try, $why ), $why, self::HELD_SALE_CHECK, $relist, $chains );
+				return;
+			}
+		} else {
+			$next  = $try + 1;
+			$delay = self::SETTLE_RETRY_DELAYS[ $try - 1 ];
+			$when  = time() + $delay;
+			$again = sprintf( 'in %s (try %d of %d)', $delay >= HOUR_IN_SECONDS ? sprintf( '%d hour%s', $delay / HOUR_IN_SECONDS, HOUR_IN_SECONDS === $delay ? '' : 's' ) : sprintf( '%d minutes', $delay / MINUTE_IN_SECONDS ), $next, $tries );
+		}
+
+		$chains[ $item_id ] = $chain;
+		self::save_settle_chains( $chains );
+
+		as_schedule_single_action( $when, 'tcgiant_sync_settle_item', array( $item_id, $next ), self::GROUP_SETTLE );
+
+		TCGiant_Sync_Logger::warning( sprintf(
+			'%1$s: could not read eBay item %2$s%3$s (%4$s). Trying again %5$s.',
+			$source,
+			$item_id,
+			$for,
+			$why,
+			$again
+		) );
+	}
+
+	/**
+	 * A stock check given up on: said, and listed on Stock Review.
+	 *
+	 * @param string $item_id eBay ItemID.
+	 * @param string $for     " for WC #n", or the relist's wording.
+	 * @param string $source  For the log.
+	 * @param string $how     How it came to this, for the log.
+	 * @param string $error   What the last read returned.
+	 * @param string $why     HELD_SALE_CHECK or HELD_NO_CALLS.
+	 * @param array  $relist  See retry_settle().
+	 * @param array  $chains  settle_chains(), to end this listing's.
+	 */
+	private static function give_up_settle( $item_id, $for, $source, $how, $error, $why, array $relist, array $chains ) {
+		unset( $chains[ $item_id ] );
+		self::save_settle_chains( $chains );
+		self::forget_settle_join( $item_id );
+
+		$holder = (int) ( $relist['holder'] ?? 0 );
+
+		if ( $holder > 0 ) {
+			// A relist that sold, whose old listing - the one a product follows - could not be read.
+			TCGiant_Sync_Logger::warning( sprintf(
+				'%1$s: eBay listing %2$s sold %3$d. It was relisted from %4$s, which WC #%5$d follows, but %4$s could not be read to confirm they are the same item (%6$s), so the stock of WC #%5$d is unchanged. If they are, set that stock on the website. It is listed on the Stock Review page.',
+				$source,
+				$item_id,
+				(int) ( $relist['sold'] ?? 0 ),
+				(string) ( $relist['parent'] ?? '' ),
+				$holder,
+				$error
+			) );
+		} else {
+			TCGiant_Sync_Logger::warning( sprintf(
+				'%1$s: gave up on eBay item %2$s%3$s %4$s. The stock here is unchanged. It is listed on the Stock Review page; check the listing on eBay.',
+				$source,
+				$item_id,
+				$for,
+				$how
+			) );
+		}
+
+		self::hold_back_listing( $item_id, '', $why, $holder > 0 ? array( 'product' => $holder, 'parent' => (string) ( $relist['parent'] ?? '' ) ) : array() );
+	}
+
+	/**
+	 * Whether a stock check of this listing is waiting to run: the first, or
+	 * a later try. Not the one running now, which Action Scheduler marks as
+	 * running rather than pending.
+	 *
+	 * @param string $item_id eBay ItemID.
+	 * @return bool
+	 */
+	private static function settle_check_waiting( $item_id ) {
+		if ( ! function_exists( 'as_get_scheduled_actions' ) ) {
+			return false;
+		}
+
+		$shapes = array( array( (string) $item_id ) );
+		for ( $try = 1; $try <= count( self::SETTLE_RETRY_DELAYS ) + 1; $try++ ) {
+			$shapes[] = array( (string) $item_id, $try );
+		}
+
+		foreach ( $shapes as $args ) {
+			$waiting = as_get_scheduled_actions( array(
+				'hook'     => 'tcgiant_sync_settle_item',
+				'args'     => $args,
+				'group'    => self::GROUP_SETTLE,
+				'status'   => 'pending',
+				'per_page' => 1,
+			), 'ids' );
+
+			if ( ! empty( $waiting ) ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * The next 00:05:30 UTC: the day's call budget is counted by the UTC day.
+	 * Also a stock push's, out of calls (3.28.0 release fix round 1).
+	 *
+	 * @return int
+	 */
+	public static function after_budget_resets() {
+		$today = gmmktime( 0, 0, 0, (int) gmdate( 'n' ), (int) gmdate( 'j' ), (int) gmdate( 'Y' ) ) + self::SETTLE_AFTER_MIDNIGHT;
+
+		return $today > time() ? $today : $today + DAY_IN_SECONDS;
 	}
 
 	/**
@@ -5480,21 +6731,132 @@ class TCGiant_Sync_Importer {
 	 * one only has its stock lowered to what eBay says is left, never raised -
 	 * the delta and the mapper own everything else about a live listing.
 	 *
-	 * @param string $item_id eBay ItemID.
+	 * A listing no product follows costs one GetItem: if it is a relist of a
+	 * listing a product does follow, that product moves on to it first.
+	 *
+	 * Its reads stop an oversell on the website, so they go past the shared
+	 * 80% ceiling, as a sale's stock push does (with_stock_priority()); eBay's
+	 * own limit still applies. eBay not answering for a reason that passes -
+	 * see retry_settle() - queues the check again, later each time, rather
+	 * than leaving the sale to a delta that may be days behind.
+	 *
+	 * @param string     $item_id     eBay ItemID.
+	 * @param string     $source      For the log.
+	 * @param array|null $parent_item eBay's answer for the listing it was
+	 *                                relisted from, when the caller has it.
+	 * @param int        $try         Which try of a chain this is; 0 for a
+	 *                                first check.
 	 */
-	public function settle_item( $item_id ) {
+	public function settle_item( $item_id, $source = 'Sale check', $parent_item = null, $try = 0 ) {
+		$source      = (string) $source;
 		$item_id     = (string) $item_id;
+		$fresh       = (int) $try < 1;
+		$try         = max( 1, (int) $try );
+		$api         = TCGiant_Sync_API::instance();
 		$existing_id = self::find_live_product_for_item( $item_id );
+		$detail      = null;
+		$asked       = time(); // When the read that answered was sent - see settle_chain_answered().
 
-		if ( ! $existing_id ) {
+		// A try again waiting on eBay's 518: nothing is sent until the
+		// shared question says it has lifted (3.28.0 release fix round 2).
+		if ( ! $fresh && self::settle_waits_on_518( $item_id ) && ! self::ebay_limit_lifted() ) {
+			// Put off to the slot already kept for every waiting one, not a
+			// new one of its own, which moved everyone's question later
+			// (release fix round 3).
+			self::retry_settle( $item_id, $try, false, new WP_Error( 'rate_limited', 'eBay\'s call limit (518) has not lifted yet.', array( 'Errors' => array( 'ErrorCode' => '518' ), 'kept_until' => self::ebay_518_until() ) ), (int) $existing_id, $source );
 			return;
 		}
 
-		$detail = TCGiant_Sync_API::instance()->get_item( $item_id );
+		if ( ! $existing_id ) {
+			// A product in the trash for it was deleted on purpose.
+			if ( '' === $item_id || self::find_any_product_for_item( $item_id ) ) {
+				return;
+			}
 
+			// Nothing follows this listing, but it may be a relist of one that
+			// something does: order sync queues the listing that sold, and a
+			// seller SKU can tie that sale to the product of the listing before
+			// it. Then the product moves on to it, and is checked against it
+			// below. Anything else is no business of ours, and is left without
+			// a word.
+			$asked  = time();
+			$detail = $api->with_stock_priority( function () use ( $api, $item_id ) {
+				return $api->get_item( $item_id );
+			} );
+
+			// eBay could not be read just now, which says nothing about the
+			// listing - and if it is a relist of a followed product, this is
+			// that product's sale.
+			if ( self::is_passing_read_failure( $detail ) ) {
+				self::retry_settle( $item_id, $try, $fresh, $detail, 0, $source );
+				return;
+			}
+
+			if ( is_wp_error( $detail ) || empty( $detail['Item'] ) || empty( $detail['Item']['RelistParentID'] ) ) {
+				if ( ! is_wp_error( $detail ) && ! empty( $detail['Item'] ) ) {
+					self::settle_check_answered( $item_id, $fresh, $asked );
+				}
+				return;
+			}
+
+			// The old listing is read in there: past the ceiling too.
+			$mapper      = TCGiant_Sync_Mapper::instance();
+			$existing_id = (int) $api->with_stock_priority( function () use ( $mapper, $detail, $source, $parent_item ) {
+				return $mapper->adopt_relist( $detail['Item'], $source, is_array( $parent_item ) ? $parent_item : null );
+			} );
+
+			if ( ! $existing_id ) {
+				// eBay could not say how the old listing ended, so the product
+				// that follows it was not moved on - but if the relist sold, the
+				// shop has to hear it, or the item stays for sale here.
+				$parent_id = (string) $detail['Item']['RelistParentID'];
+				$sold      = (int) TCGiant_Sync_API::scalar_value( $detail['Item']['SellingStatus']['QuantitySold'] ?? '0' );
+				$holder    = is_wp_error( $mapper->relist_parent_error ) && $sold > 0 ? self::find_live_product_for_item( $parent_id ) : 0;
+
+				// The old listing could not be read just now: tried again as
+				// the listing itself is, and the shop told only if that gives up.
+				if ( self::is_passing_read_failure( $mapper->relist_parent_error ) ) {
+					self::retry_settle( $item_id, $try, $fresh, $mapper->relist_parent_error, 0, $source, array(
+						'parent' => $parent_id,
+						'holder' => (int) $holder,
+						'sold'   => $sold,
+					) );
+					return;
+				}
+
+				if ( $holder ) {
+					TCGiant_Sync_Logger::warning( sprintf(
+						'%1$s: eBay listing %2$s sold %3$d. It was relisted from %4$s, which WC #%5$d follows, but %4$s could not be read to confirm they are the same item (%6$s), so the stock of WC #%5$d is unchanged. If they are, set that stock on the website.',
+						$source,
+						$item_id,
+						$sold,
+						$parent_id,
+						$holder,
+						$mapper->relist_parent_error->get_error_message()
+					) );
+				}
+				return;
+			}
+		}
+
+		if ( null === $detail ) {
+			$asked  = time();
+			$detail = $api->with_stock_priority( function () use ( $api, $item_id ) {
+				return $api->get_item( $item_id );
+			} );
+		}
+
+		if ( self::is_passing_read_failure( $detail ) ) {
+			self::retry_settle( $item_id, $try, $fresh, $detail, (int) $existing_id, $source );
+			return;
+		}
+
+		// eBay answered, without the listing: the delta settles it when it
+		// reaches the sale, as before.
 		if ( is_wp_error( $detail ) || empty( $detail['Item'] ) ) {
 			TCGiant_Sync_Logger::warning( sprintf(
-				'Sale check: could not read eBay item %s for WC #%d (%s). The delta sync will settle it when it reaches the sale.',
+				'%s: could not read eBay item %s for WC #%d (%s). The delta sync will settle it when it reaches the sale.',
+				$source,
 				$item_id,
 				$existing_id,
 				is_wp_error( $detail ) ? $detail->get_error_message() : 'eBay returned nothing'
@@ -5502,33 +6864,82 @@ class TCGiant_Sync_Importer {
 			return;
 		}
 
+		self::settle_check_answered( $item_id, $fresh, $asked );
+
 		$item   = $detail['Item'];
 		$status = (string) ( $item['SellingStatus']['ListingStatus'] ?? '' );
 
-		if ( '' !== $status && 'Active' !== $status ) {
-			self::settle_ended_listing( $existing_id, $item, $status, 'Sale check' );
-			return;
-		}
+		// Its type, from this answer, for the listing it is about (3.28.0).
+		TCGiant_Sync_Inventory::note_listing_type( $existing_id, $item_id, $item['ListingType'] ?? '' );
 
-		// A variation listing's Quantity is the whole listing's, which says
-		// nothing about any one variation. The delta handles those.
-		if ( ! empty( $item['Variations'] ) ) {
+		if ( '' !== $status && 'Active' !== $status ) {
+			self::settle_ended_listing( $existing_id, $item, $status, $source );
 			return;
 		}
 
 		$listed = $item['Quantity'] ?? null;
 		$sold   = $item['SellingStatus']['QuantitySold'] ?? null;
 
+		// A variation listing: each variation from its own figures. The item's
+		// Quantity is the whole listing's, which only the parent takes, as the
+		// import gives it the listing's total.
+		if ( ! empty( $item['Variations'] ) ) {
+			TCGiant_Sync_Inventory::settle_variations( $existing_id, $item + array( 'ItemID' => $item_id ), $source, false, true );
+		}
+
 		if ( null === $listed || null === $sold ) {
 			return;
 		}
 
-		$now = TCGiant_Sync_Inventory::lower_stock_to( $existing_id, max( 0, (int) $listed - (int) $sold ) );
+		// A website sale's push still on its way, and no record of eBay's
+		// sales for this product: the stock here is already lower by that
+		// sale, which eBay's figure does not have yet, so eBay's figure cannot
+		// say which of its own sales the stock has not taken off. Lowered to
+		// it, both took the same sales (3.28.0 release fix round 1). The push
+		// reads eBay itself and takes them off; with a record, they are known.
+		// Only a live sale's push (TCGiant_Sync_Inventory::sale_hold_of()): a sale
+		// that never got there, its unsent mark, held the stock up for 30
+		// days. Its units come off eBay's figure instead, as the import takes
+		// them (release fix round 2).
+		$hold = TCGiant_Sync_Inventory::sale_hold_of( $existing_id );
+		if ( 'sale' === $hold && null === TCGiant_Sync_Inventory::sold_seen( $existing_id, $item_id ) ) {
+			TCGiant_Sync_Logger::log( sprintf( '%s: eBay item %s - WC #%d left at its stock: a website sale of it is on its way to eBay, and its push takes off eBay\'s sales.', $source, $item_id, $existing_id ) );
+			return;
+		}
+		$unsent    = is_int( $hold ) ? max( 0, $hold ) : 0;
+		$ebay_left = max( 0, (int) $listed - (int) $sold );
+
+		$was = wc_get_product( $existing_id );
+		$was = $was && $was->managing_stock() ? (int) $was->get_stock_quantity() : null;
+		// What this takes off is eBay's sales reaching the stock: the stock
+		// push must not take them off again (TCGiant_Sync_Inventory::sold_seen()).
+		// Written with the stock, and once: absorbing is relative (3.28.0
+		// release fix round 4).
+		$done   = (object) array( 'absorbed' => false );
+		$absorb = function ( $now ) use ( $done, $existing_id, $item_id, $sold, $was, $ebay_left ) {
+			$done->absorbed = true;
+			TCGiant_Sync_Inventory::absorb_sold( $existing_id, $item_id, '', (int) $sold, (int) $was - (int) $now, $ebay_left );
+		};
+		$now = TCGiant_Sync_Inventory::lower_stock_to( $existing_id, max( 0, $ebay_left - $unsent ), null === $was ? null : $absorb );
 
 		if ( null !== $now ) {
+			// Nothing to lower: the record moves on all the same.
+			if ( null !== $was && ! $done->absorbed ) {
+				$absorb( $now );
+			}
+
+			// eBay still above WooCommerce with a sale that never got there:
+			// the push that tells it, as the import queues (fix round 4) -
+			// whether or not this lowered anything. WooCommerce may already be
+			// lower for another change eBay never got, an edit whose push gave
+			// up (release fix round 3).
+			if ( $unsent > 0 && $ebay_left > $now ) {
+				TCGiant_Sync_Inventory::queue_after_ebay_sale( $existing_id );
+			}
+
 			TCGiant_Sync_Logger::log( sprintf(
-				'Sale check: eBay item %s - WC #%d stock now %d (eBay: %d listed, %d sold).',
-				$item_id, $existing_id, $now, (int) $listed, (int) $sold
+				'%s: eBay item %s - WC #%d stock now %d (eBay: %d listed, %d sold).',
+				$source, $item_id, $existing_id, $now, (int) $listed, (int) $sold
 			) );
 		}
 	}
@@ -5593,6 +7004,27 @@ class TCGiant_Sync_Importer {
 					continue;
 				}
 
+				// A variation carries no link of its own: its parent holds the
+				// listing. Treated as unlinked, a variation sale was taken off
+				// here, and again by the delta, which sets it from eBay. The
+				// same rule the stock push routes a variation by.
+				$found       = wc_get_product( $product_id );
+				$link_owner  = $found ? TCGiant_Sync_Inventory::link_owner( $found ) : (int) $product_id;
+				$linked_item = (string) get_post_meta( $link_owner, '_ebay_item_id', true );
+				$sku_found   = $product_id;
+
+				// The SKU found a product that is not on eBay, but the listing that
+				// sold is linked to one: a SKU the import had to make unique, or
+				// one the shop also gave a product of its own. The sale is the
+				// listing's, not that product's.
+				if ( '' === $linked_item && '' !== (string) $legacy_item_id ) {
+					$by_listing = self::find_live_product_for_item( (string) $legacy_item_id );
+					if ( $by_listing ) {
+						$product_id  = $by_listing;
+						$linked_item = (string) $legacy_item_id;
+					}
+				}
+
 				$processed = get_post_meta( $product_id, '_ebay_order_processed_' . $line_item_id, true );
 				if ( $processed ) {
 					continue;
@@ -5608,14 +7040,74 @@ class TCGiant_Sync_Importer {
 				// brought no eBay sale to the site at all. So each sale of a linked
 				// product now queues a stock check for its listing: it reads eBay's
 				// own figures and only ever lowers stock, so it cannot deduct twice.
-				$linked_item = (string) get_post_meta( $product_id, '_ebay_item_id', true );
 				if ( '' !== $linked_item ) {
 					// The listing that sold, which is not always the one this
 					// product's SKU happened to match.
-					if ( self::queue_settle( '' !== (string) $legacy_item_id ? (string) $legacy_item_id : $linked_item ) ) {
+					$sold_item = '' !== (string) $legacy_item_id ? (string) $legacy_item_id : $linked_item;
+
+					// A copy on another eBay site, when the shop imports only its
+					// own (TCGiant_Sync_Sites): its SKU is the eBay.com listing's,
+					// so it finds that product, but nothing follows the copy. Its
+					// sale is not taken off here - not even off stock a variation
+					// shares with its parent - and no stock check is queued for it,
+					// which would only ask eBay whether the copy is a relist to
+					// move a product on to (3.28.0). A product linked to the copy
+					// itself, imported from it before the shop chose this, is
+					// checked as before. Left unmarked, as an unlinked product's
+					// is below, so going back to all sites still reduces it.
+					if ( $sold_item !== $linked_item && TCGiant_Sync_Sites::leaves_out_marketplace( $line['listingMarketplaceId'] ?? '' ) ) {
+						$other_sales++;
+						continue;
+					}
+
+					// A variation whose stock is its parent's, shared with the
+					// others: see below.
+					$pooled = $found && $found->get_parent_id() && (int) $found->get_id() === (int) $product_id
+						&& TCGiant_Sync_Inventory::stock_held_by_parent( $found );
+
+					if ( ! $pooled && self::queue_settle( $sold_item ) ) {
 						$settle_count++;
 					}
 					update_post_meta( $product_id, '_ebay_order_processed_' . $line_item_id, current_time( 'mysql' ) );
+
+					// Marked on the product the SKU found too: once the listing's
+					// product is trashed or moves to a relist, the line is no longer
+					// sent there, and that product would take the sale off itself.
+					if ( (int) $sku_found !== (int) $product_id ) {
+						update_post_meta( $sku_found, '_ebay_order_processed_' . $line_item_id, current_time( 'mysql' ) );
+					}
+
+					// A variation whose stock is its parent's, shared with the
+					// others: every read of the listing takes its eBay sales off
+					// that shared stock (TCGiant_Sync_Inventory::settle_pool()),
+					// from the variation's record. Taken off here as well, a sale
+					// a read had already seen came off twice (3.28.0 release fix
+					// round 1); left to the check, the website went on offering
+					// it until eBay could be read - for a day and more in an
+					// outage. Now it is taken off here at once, but only when the
+					// record says by eBay's own clock that no read has seen it
+					// yet (take_order_sale(); release fix round 2). Marked first,
+					// so a request that dies part way can only ever take a sale
+					// off twice, never not at all. Its check is queued after the
+					// take, even one that throws: a check already running
+					// elsewhere could otherwise read eBay between the take's
+					// read of the record and its write, and have its record
+					// written over (release fix round 3).
+					if ( $pooled ) {
+						try {
+							$created = isset( $order['creationDate'] ) && is_string( $order['creationDate'] ) ? strtotime( $order['creationDate'] ) : false;
+							if ( TCGiant_Sync_Inventory::take_order_sale( $link_owner, $product_id, $sold_item, (string) ( $line['sku'] ?? '' ), $quantity, false === $created ? 0 : (int) $created ) ) {
+								TCGiant_Sync_Logger::log( sprintf( 'Reduced the stock WC #%d shares with its variations by %d (eBay order of variation #%d), and queued the push that tells eBay\'s other variations.', $link_owner, $quantity, $product_id ), 'success' );
+								$order_count++;
+							} else {
+								TCGiant_Sync_Logger::log( sprintf( 'eBay order of %d of variation #%d, whose stock WC #%d shares with its variations: its stock check takes it off the shared stock.', $quantity, $product_id, $link_owner ) );
+							}
+						} finally {
+							if ( self::queue_settle( $sold_item ) ) {
+								$settle_count++;
+							}
+						}
+					}
 					continue;
 				}
 
@@ -5691,7 +7183,9 @@ class TCGiant_Sync_Importer {
 				&& ( self::$limit_reported || ! $license->can_import() ) ) {
 				if ( ! self::$limit_reported ) {
 					self::$limit_reported = true;
-					self::update_sync_state( array( 'status' => 'limit_reached' ) );
+					if ( ! self::stop_pressed() ) {
+						self::update_sync_state( array( 'status' => 'limit_reached' ) );
+					}
 					TCGiant_Sync_Logger::log(
 						sprintf(
 							'Import limit reached (%d/%d products). New listings will not be imported; products already imported carry on syncing normally. Upgrade to Pro for unlimited.',
@@ -5709,27 +7203,7 @@ class TCGiant_Sync_Importer {
 
 			// Handle rate limiting: reschedule this item for later with escalating backoff.
 			if ( is_wp_error( $ebay_response ) && 'rate_limited' === $ebay_response->get_error_code() ) {
-				$state_for_retry = self::state_from_table();
-				$retries = (int) ( $state_for_retry['rate_limit_retries'] ?? 0 );
-				$retry_delay = $this->get_rate_limit_backoff_delay( $retries );
-				$paused = array( 'rate_limit_retries' => $retries + 1 );
-				// Not the sync's status while its scan still has pages to read:
-				// this import is put off, the scan is not. Said "rate_limited",
-				// the scan read on under it, and nothing kept Fetch Inventory or
-				// the hourly sync off a scan at work. Once every page is read,
-				// it is what the sync is waiting on, as before.
-				if ( ! ( in_array( (string) ( $state_for_retry['status'] ?? '' ), array( 'scanning', 'limit_reached' ), true )
-					&& self::scan_unfinished( $state_for_retry ) ) ) {
-					$paused['status'] = 'rate_limited';
-				}
-				self::update_sync_state( $paused, true );
-				TCGiant_Sync_Logger::log( sprintf(
-					'eBay API rate limit hit while importing item %s (attempt %d). Rescheduled for %d minutes later.',
-					$item_id,
-					$retries + 1,
-					$retry_delay / 60
-				), 'warning' );
-				as_schedule_single_action( time() + $retry_delay, 'tcgiant_sync_process_item_import', array( 'item_id' => $item_id ), 'tcgiant_sync_imports' );
+				$this->retry_import_later( $item_id );
 				return;
 			}
 
@@ -5745,6 +7219,40 @@ class TCGiant_Sync_Importer {
 			$ebay_item = $ebay_response['Item'];
 			$title = $ebay_item['Title'] ?? 'Unknown';
 
+			// What eBay says now. An import queued by a scan runs minutes or
+			// hours later, and "Sync specific items" takes whatever it is given:
+			// a listing that has ended since is settled, never saved as live.
+			if ( ! self::is_live_listing( $ebay_item ) ) {
+				$existing_id = self::find_live_product_for_item( $item_id );
+				$ended_item  = $ebay_item + array( 'ItemID' => $item_id );
+
+				// A relist that ended before any sync saw it live: the product
+				// following the listing it was relisted from moves on to it, as
+				// the delta and the stock check would have, from eBay's answer
+				// already in hand. A relist the delta moved past because that
+				// old listing could not be read is retried this way.
+				if ( ! $existing_id && ! empty( $ended_item['RelistParentID'] ) ) {
+					$asked       = 0;
+					$existing_id = self::adopt_unseen_relist( $ended_item, '', 'Import', $asked );
+				}
+
+				if ( $existing_id ) {
+					self::settle_ended_listing( $existing_id, $ended_item, (string) $ebay_item['SellingStatus']['ListingStatus'], 'Import' );
+				} else {
+					TCGiant_Sync_Logger::log( sprintf(
+						'Import: eBay item %s ("%s") has ended (%s), so no product was created for it.',
+						$item_id,
+						$title,
+						(string) $ebay_item['SellingStatus']['ListingStatus']
+					), 'warning' );
+				}
+				self::update_sync_state( array(
+					'total_processed' => self::get_sync_state()['total_processed'] + 1,
+				) );
+				$this->check_sync_completion();
+				return;
+			}
+
 			$mapper = TCGiant_Sync_Mapper::instance();
 			$product_data = $mapper->map_ebay_to_woo( $ebay_item );
 
@@ -5759,6 +7267,13 @@ class TCGiant_Sync_Importer {
 				self::report_cache_guard( (string) $item_id, 'Import' );
 				TCGiant_Sync_Runtime::unguard_cache();
 				TCGiant_Sync_Runtime::unguard_loops();
+			}
+
+			// A relist whose old listing eBay could not be asked about - out
+			// of calls, or no token: tried again later, as for a rate limit.
+			if ( ! $product_id && TCGiant_Sync_Mapper::$last_deferred ) {
+				$this->retry_import_later( $item_id );
+				return;
 			}
 
 			if ( $product_id ) {
@@ -5811,6 +7326,36 @@ class TCGiant_Sync_Importer {
 			TCGiant_Sync_Logger::error( 'Fatal error importing item ' . $item_id . ': ' . $e->getMessage() );
 			$this->check_sync_completion();
 		}
+	}
+
+	/**
+	 * Queue one listing's import again, later each time the call limit stops
+	 * it, and say so.
+	 *
+	 * @param string $item_id eBay ItemID.
+	 */
+	private function retry_import_later( $item_id ) {
+		$state_for_retry = self::state_from_table();
+		$retries = (int) ( $state_for_retry['rate_limit_retries'] ?? 0 );
+		$retry_delay = $this->get_rate_limit_backoff_delay( $retries );
+		$paused = array( 'rate_limit_retries' => $retries + 1 );
+		// Not the sync's status while its scan still has pages to read:
+		// this import is put off, the scan is not. Said "rate_limited",
+		// the scan read on under it, and nothing kept Fetch Inventory or
+		// the hourly sync off a scan at work. Once every page is read,
+		// it is what the sync is waiting on, as before.
+		if ( ! ( in_array( (string) ( $state_for_retry['status'] ?? '' ), array( 'scanning', 'limit_reached' ), true )
+			&& self::scan_unfinished( $state_for_retry ) ) ) {
+			$paused['status'] = 'rate_limited';
+		}
+		self::update_sync_state( $paused, true );
+		TCGiant_Sync_Logger::log( sprintf(
+			'eBay API rate limit hit while importing item %s (attempt %d). Rescheduled for %d minutes later.',
+			$item_id,
+			$retries + 1,
+			$retry_delay / 60
+		), 'warning' );
+		as_schedule_single_action( time() + $retry_delay, 'tcgiant_sync_process_item_import', array( 'item_id' => $item_id ), 'tcgiant_sync_imports' );
 	}
 
 	/**
@@ -5905,368 +7450,865 @@ class TCGiant_Sync_Importer {
 	}
 
 	/**
-	 * Remove WooCommerce products that are no longer active on eBay.
+	 * Settle the listings a clean full sync did not see - after asking eBay.
 	 *
-	 * This is the single most destructive operation in the plugin, so it is
-	 * gated four ways:
+	 * A product whose listing is missing from the full scan's list is a
+	 * question, not an answer. The scan misses live listings: eBay sorts it by
+	 * end time, and a Good 'Til Cancelled listing that renews while the scan
+	 * runs moves to the back, pulling one the scan had not read onto a page it
+	 * already had. On a large catalogue that is dozens a week, and every one of
+	 * them used to be trashed while it was still selling on eBay. So each
+	 * product is asked about with GetItem first, and only what eBay says is
+	 * over is touched.
 	 *
-	 *   1. The last scan must have completed cleanly (scan_complete_clean).
-	 *      A scan aborted by an API error leaves a partial active-ID list, and
-	 *      pruning against that trashes every product on the pages we never
-	 *      reached.
-	 *   2. The active-ID list must be non-empty. An empty list cannot be
-	 *      distinguished from a failure.
-	 *   3. The prune set must not exceed PRUNE_MAX_RATIO of the catalogue.
-	 *   4. Since 3.27.6, eBay must confirm, listing by listing, that each one
-	 *      has ended (confirm_prune_candidates()). A listing missing from the
-	 *      list is not proof: GetSellerList orders listings by when they end,
-	 *      and a Good 'Til Cancelled listing that renews while the scan runs
-	 *      moves from the front of that order to the back, so the first
-	 *      listing still to be read slips onto a page already read and is
-	 *      never seen. On a large catalogue that was hundreds of live
-	 *      listings' products, well under the 20% guard. A product whose
-	 *      listing is still live is never retired.
+	 * What is over is settled exactly as the delta, the hourly check and the
+	 * sale check settle an ended listing - settle_ended_listing(): stock is
+	 * only ever lowered, to what eBay says the listing has left, and a product leaves only when its
+	 * listing sold out and "Remove products when their eBay listing sells out"
+	 * allows it, which it never does for a product the shop pushed or one in a
+	 * Preserve category. The pruner used to trash everything missing, pushed
+	 * or not, setting or not, and zero and unlink preserved products. It has
+	 * no trash of its own now.
+	 *
+	 * Not asked about: products already recorded as ended. Something has
+	 * already settled those, or the shop ended them, and a listing that ended
+	 * unsold keeps its product and its stock. Nor a product given its listing
+	 * since the full sync began, which its scan could not have seen.
+	 *
+	 * Runs as a chain of short requests, at most PRUNE_CONFIRM_PER_RUN GetItem
+	 * calls a run (3.27.6); what a run leaves - not asked yet, or eBay did not
+	 * answer - is asked about again by a follow-up run an hour on, up to
+	 * PRUNE_FOLLOW_UP_ROUNDS of them. Gated as before on a clean scan, a
+	 * non-empty list and the PRUNE_MAX_RATIO share - now of the products it
+	 * would have to ask about.
 	 *
 	 * Called with $follow_up by its own Action Scheduler action, for the
-	 * products an earlier run could not confirm yet (PRUNE_PENDING_OPTION).
+	 * products an earlier run left (PRUNE_PENDING_OPTION).
 	 *
 	 * @param bool $follow_up Whether this is a follow-up run.
 	 */
 	public function prune_orphaned_items( $follow_up = false ) {
-		$state = self::get_sync_state();
+		TCGiant_Sync_Runtime::raise_time_limit( 300 );
+		TCGiant_Sync_Runtime::watch( 'Inventory pruning', array( __CLASS__, 'on_prune_death' ) );
+		// Products are saved here - settled, trashed when sold out, or moved
+		// on to a relist - as the delta saves them, so the save-loop breaker
+		// (3.27.4) and the cache guard (3.27.3) are on for all of it.
+		TCGiant_Sync_Runtime::guard_loops();
+		TCGiant_Sync_Runtime::guard_cache();
 
-		global $wpdb;
-		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
-		$preserve_cats = isset( $settings['preserve_woo_category_ids'] ) && is_array( $settings['preserve_woo_category_ids'] ) ? $settings['preserve_woo_category_ids'] : array();
+		try {
+			$this->run_prune( (bool) $follow_up );
+		} finally {
+			TCGiant_Sync_Runtime::unguard_cache();
+			TCGiant_Sync_Runtime::unguard_loops();
+			TCGiant_Sync_Runtime::unwatch();
+		}
+	}
 
-		$total_linked = 0;
-		$kept_new     = 0;
-		$round        = 0;
+	/**
+	 * PHP has killed a prune. Its list is saved before every check, so the
+	 * next request carries on from the listing after the one it died on.
+	 *
+	 * @param string $message What the death record said.
+	 */
+	public static function on_prune_death( $message ) {
+		$queue = get_option( self::PRUNE_QUEUE_OPTION, array() );
 
-		if ( $follow_up ) {
-			// Nothing waiting: done, or a newer full sync has taken it. The
-			// list of live listings is left alone - it may be that newer
-			// sync's, part way through its pages. Deleted here, its clean-up
-			// found most of the shop missing from it and gave up over the
-			// ratio guard, or asked eBay about live listings for hours.
-			$pending = get_option( self::PRUNE_PENDING_OPTION, array() );
-			if ( ! is_array( $pending ) || empty( $pending['rows'] ) ) {
-				return;
-			}
-
-			// Only for the full sync whose clean-up left them, while it is
-			// still the last one and every page of it is read: its list of
-			// live listings is the one these were missing from. Any other,
-			// they are dropped, and that sync's own clean-up decides.
-			$made_by = (string) ( $pending['scan'] ?? '' );
-			if ( '' === $made_by || $made_by !== (string) ( $state['full_started_at'] ?? '' ) || $made_by !== (string) ( $state['scan_finished'] ?? '' ) ) {
-				delete_option( self::PRUNE_PENDING_OPTION );
-				TCGiant_Sync_Logger::log( 'Inventory Pruning: the products an earlier clean-up left to check again were from a full sync since replaced, so they are left to the newer one\'s clean-up.' );
-				return;
-			}
-
-			// Products that run left, still linked to the listing it asked
-			// about. The checks it passed - a clean scan, the ratio guard,
-			// nothing listed since - stand; eBay's answer below decides.
-			$round      = (int) ( $pending['round'] ?? 0 ) + 1;
-			$prune_rows = self::pending_prune_rows( $pending );
-			if ( empty( $prune_rows ) ) {
-				delete_option( self::PRUNE_PENDING_OPTION );
-				delete_option( self::ACTIVE_IDS_OPTION );
-				return;
-			}
-		} else {
-			// A full run decides afresh: what an earlier one left goes with it.
-			delete_option( self::PRUNE_PENDING_OPTION );
-
-			if ( empty( $state['scan_complete_clean'] ) ) {
-				TCGiant_Sync_Logger::warning(
-					'Inventory Pruning: Skipped — the last scan did not complete cleanly. '
-					. 'Run a full sync to completion before orphaned products can be retired.'
-				);
-				return;
-			}
-
-			$active_ids = get_option( self::ACTIVE_IDS_OPTION, array() );
-			if ( ! is_array( $active_ids ) || empty( $active_ids ) ) {
-				TCGiant_Sync_Logger::warning(
-					'Inventory Pruning: Skipped — no active eBay Item IDs were recorded during the scan. '
-					. 'Refusing to prune, since an empty list is indistinguishable from a failed scan.'
-				);
-				return;
-			}
-
-			// O(1) membership test. in_array() over a 10k-element list, once per
-			// product, is 100M string comparisons on a large catalogue.
-			$active_lookup = array_flip( array_map( 'strval', $active_ids ) );
-
-			// Get all products that have an _ebay_item_id.
-			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-			$ebay_linked_products = $wpdb->get_results(
-				"SELECT post_id, meta_value as ebay_id
-				FROM {$wpdb->postmeta} pm
-				JOIN {$wpdb->posts} p ON p.ID = pm.post_id
-				WHERE pm.meta_key = '_ebay_item_id' AND pm.meta_value != '' AND p.post_type = 'product' AND p.post_status != 'trash'"
-			);
-
-			$total_linked = count( $ebay_linked_products );
-
-			// Decide the prune set up front so we can sanity-check its size before
-			// touching anything.
-			$prune_rows = array();
-			foreach ( $ebay_linked_products as $row ) {
-				if ( ! isset( $active_lookup[ (string) $row->ebay_id ] ) ) {
-					$prune_rows[] = $row;
-				}
-			}
-
-			$prune_count = count( $prune_rows );
-
-			if ( 0 === $prune_count ) {
-				TCGiant_Sync_Logger::log( 'Inventory Pruning: No orphaned products found.' );
-				delete_option( self::ACTIVE_IDS_OPTION );
-				return;
-			}
-
-			/**
-			 * Filter the maximum share of eBay-linked products a single prune may retire.
-			 *
-			 * @param float $ratio        Between 0 and 1. Default self::PRUNE_MAX_RATIO.
-			 * @param int   $prune_count  Number of products this run would retire.
-			 * @param int   $total_linked Total eBay-linked products.
-			 */
-			$max_ratio = (float) apply_filters( 'tcgiant_sync_prune_max_ratio', self::PRUNE_MAX_RATIO, $prune_count, $total_linked );
-
-			if ( $total_linked > 0 && $max_ratio > 0 && ( $prune_count / $total_linked ) > $max_ratio ) {
-				TCGiant_Sync_Logger::error( sprintf(
-					'Inventory Pruning: ABORTED — would have trashed %d of %d eBay-linked products (%.1f%%, limit %.0f%%). '
-					. 'This normally means the scan was incomplete. Nothing was changed. '
-					. 'Re-run a full sync; if the removal is genuine, raise the limit with the '
-					. 'tcgiant_sync_prune_max_ratio filter.',
-					$prune_count,
-					$total_linked,
-					( $prune_count / $total_linked ) * 100,
-					$max_ratio * 100
-				) );
-				return;
-			}
-
-			// Not a product given its listing since this full sync began. The
-			// pruner runs once the last import the sync queued has run, hours after
-			// the scan on a large catalogue, and the active list holds only what
-			// the scan's pages held: a product pushed, relisted by hand or by
-			// Auto-Relist, or linked to a new listing in the meantime - or during
-			// the scan, after its page was read - has an item number that list
-			// never saw, and was trashed with its new listing live.
-			//
-			// Kept by when it was listed, _ebay_start_time against the sync's
-			// start in UTC (full_started_at), or pushed, _ebay_export_last_pushed
-			// against started_at - both the site's local time, as WordPress writes
-			// them - from an hour before, for the hour a clock going back repeats.
-			// A product with neither date is judged as before.
-			$listed_since = strtotime( (string) ( $state['full_started_at'] ?? '' ) );
-			$local_start  = date_create( (string) ( $state['started_at'] ?? '' ), new DateTimeZone( 'UTC' ) );
-			$pushed_since = ( '' !== (string) ( $state['started_at'] ?? '' ) && $local_start ) ? $local_start->modify( '-1 hour' )->format( 'Y-m-d H:i:s' ) : '';
-			foreach ( $prune_rows as $key => $row ) {
-				$listed = strtotime( (string) get_post_meta( (int) $row->post_id, '_ebay_start_time', true ) );
-				$pushed = (string) get_post_meta( (int) $row->post_id, '_ebay_export_last_pushed', true );
-				if ( ( false !== $listed_since && false !== $listed && $listed >= $listed_since )
-					|| ( '' !== $pushed_since && '' !== $pushed && $pushed >= $pushed_since ) ) {
-					unset( $prune_rows[ $key ] );
-					$kept_new++;
-				}
-			}
+		if ( ! is_array( $queue ) || empty( $queue['items'] ) || self::stop_pressed() || self::prune_superseded( $queue ) || ! function_exists( 'as_enqueue_async_action' ) ) {
+			return;
 		}
 
-		// Only what eBay says has ended. A listing still live is kept, and goes
-		// on the list of live listings; one eBay could not be asked about - a
-		// rate limit, the day's budget, an error, or more than one run asks -
-		// is kept for now and asked about again by the next run.
-		$confirmed  = $this->confirm_prune_candidates( array_values( $prune_rows ) );
-		$prune_rows = $confirmed['ended'];
+		// Step over the one it died on: a listing that kills a request once
+		// will do so again, and the sync settles it when it next changes.
+		$queue['pos'] = (int) $queue['pos'] + 1;
+		$queue['counts']['unread'] = (int) ( $queue['counts']['unread'] ?? 0 ) + 1;
+		self::save_prune_queue( $queue );
+		as_enqueue_async_action( 'tcgiant_sync_prune_orphans', array(), self::GROUP_SCAN );
+	}
 
-		if ( ! empty( $confirmed['live'] ) ) {
-			self::append_active_ids( $confirmed['live'] );
-			TCGiant_Sync_Logger::warning( sprintf(
-				'Inventory Pruning: %d listings missing from the scan are still live on eBay (%s%s), so their products are kept. A listing that renews while a full sync reads the listings can drop out of its pages.',
-				count( $confirmed['live'] ),
-				implode( ', ', array_slice( $confirmed['live'], 0, 5 ) ),
-				count( $confirmed['live'] ) > 5 ? ', ...' : ''
+	/**
+	 * The body of prune_orphaned_items(), watched by it.
+	 *
+	 * @param bool $follow_up Whether this is a follow-up run.
+	 */
+	private function run_prune( $follow_up = false ) {
+		$queue = get_option( self::PRUNE_QUEUE_OPTION, array() );
+
+		// A list from an earlier full sync, one a newer full sync has since
+		// replaced, is not carried on: this one makes its own.
+		if ( is_array( $queue ) && isset( $queue['items'], $queue['pos'] ) && self::prune_superseded( $queue ) ) {
+			delete_option( self::PRUNE_QUEUE_OPTION );
+			$queue = array();
+		}
+
+		// Waiting for its follow-up run an hour on (finish_prune()): only that
+		// run carries it on. Any other - a sync's completion, say - leaves it.
+		if ( is_array( $queue ) && isset( $queue['items'], $queue['pos'] ) && ! empty( $queue['waiting'] ) ) {
+			if ( ! $follow_up ) {
+				return;
+			}
+			$queue['waiting'] = 0;
+			self::save_prune_queue( $queue );
+			TCGiant_Sync_Logger::log( sprintf(
+				'Inventory pruning: checking again what an earlier run left (follow-up %d of at most %d): %d listings.',
+				(int) ( $queue['round'] ?? 0 ),
+				self::PRUNE_FOLLOW_UP_ROUNDS,
+				count( (array) $queue['items'] )
 			) );
 		}
 
-		$trashed_count   = 0;
-		$preserved_count = 0;
+		// Whether this request has moved the list on. Each one must before it
+		// may hand on: a request that started over its budget - late in a busy
+		// cron run, or on a host already near its memory limit - used to hand
+		// on at once, and the next did the same, round and round with nothing
+		// checked. As in the delta, every request does at least one.
+		$progressed = false;
 
-		// Zeroing stock and trashing both save the product: see guard_loops().
-		TCGiant_Sync_Runtime::guard_loops();
-
-		try {
-			foreach ( $prune_rows as $row ) {
-				$product_id = (int) $row->post_id;
-
-				$is_preserved = ! empty( $preserve_cats ) && has_term( $preserve_cats, 'product_cat', $product_id );
-
-				if ( $is_preserved ) {
-					// The listing is already gone from eBay; zeroing WC stock must
-					// not trigger a push (which would try to end an already-ended
-					// listing and burn an API call per product).
-					TCGiant_Sync_Inventory::begin_ebay_origin();
-					try {
-						wc_update_product_stock( $product_id, 0, 'set' );
-						wc_update_product_stock_status( $product_id, 'outofstock' );
-					} finally {
-						TCGiant_Sync_Inventory::end_ebay_origin();
-					}
-					delete_post_meta( $product_id, '_ebay_item_id' );
-					// Its listing's site goes with the listing. Left behind, a product
-					// kept from another site's copy and later linked to the shop's
-					// own listing would still read as from that site.
-					delete_post_meta( $product_id, '_ebay_site' );
-					$preserved_count++;
-				} else {
-					wp_trash_post( $product_id );
-					$trashed_count++;
-				}
+		if ( ! is_array( $queue ) || ! isset( $queue['items'], $queue['pos'] ) ) {
+			// Nothing under way. A follow-up takes up what an earlier run
+			// left; any other run decides afresh.
+			$queue = $follow_up ? $this->follow_up_prune_queue() : $this->build_prune_queue();
+			if ( null === $queue ) {
+				return;
 			}
-		} finally {
-			TCGiant_Sync_Runtime::unguard_loops();
+			$progressed = true;
 		}
 
-		TCGiant_Sync_Logger::log( sprintf(
-			'Inventory Pruning: Trashed %d products, preserved %d products (set to out of stock), %s; %d listings checked with eBay.%s',
-			$trashed_count,
-			$preserved_count,
-			$follow_up ? sprintf( 'checking again what an earlier run left (follow-up %d of at most %d)', $round, self::PRUNE_FOLLOW_UP_ROUNDS ) : sprintf( 'out of %d eBay-linked', $total_linked ),
-			$confirmed['asked'],
-			$kept_new > 0 ? sprintf( ' Kept %d listed or pushed since the full sync began, which its scan could not have seen.', $kept_new ) : ''
-		), 'success' );
+		$api     = TCGiant_Sync_API::instance();
+		$reserve = (int) ( TCGiant_Sync_API::DAILY_CALL_LIMIT * TCGiant_Sync_API::DAILY_CALL_SOFT_CEILING * self::DELTA_CHASE_BUDGET_SHARE );
+		$total   = count( $queue['items'] );
 
-		if ( empty( $confirmed['left'] ) ) {
-			delete_option( self::PRUNE_PENDING_OPTION );
-			delete_option( self::ACTIVE_IDS_OPTION );
-			return;
+		while ( $queue['pos'] < $total ) {
+			if ( self::stop_pressed() ) {
+				TCGiant_Sync_Logger::log( sprintf( 'Inventory pruning: stopped as requested after checking %d of %d.', $queue['pos'], $total ) );
+				delete_option( self::PRUNE_QUEUE_OPTION );
+				return;
+			}
+
+			if ( self::prune_superseded( $queue ) ) {
+				TCGiant_Sync_Logger::log( 'Inventory pruning: a newer full sync has started, which makes its own list. This one stops here.' );
+				return;
+			}
+
+			$why = '';
+			if ( $progressed ) {
+				TCGiant_Sync_Runtime::release_memory();
+				$why = TCGiant_Sync_Runtime::over_budget();
+			}
+			if ( '' !== $why ) {
+				self::save_prune_queue( $queue );
+				as_enqueue_async_action( 'tcgiant_sync_prune_orphans', array(), self::GROUP_SCAN );
+				TCGiant_Sync_Logger::log( sprintf( 'Inventory pruning: %d of %d checked; carrying on in a fresh request (%s).', $queue['pos'], $total, $why ) );
+				return;
+			}
+
+			if ( $api->get_remaining_daily_budget() < $reserve ) {
+				TCGiant_Sync_Logger::warning( sprintf(
+					'Inventory pruning: stopped with %d of %d still to check, to leave the day\'s eBay calls for the sync itself. They are checked after the next full sync.',
+					$total - $queue['pos'],
+					$total
+				) );
+				$this->finish_prune( $queue );
+				return;
+			}
+
+			// So many GetItem calls a run, every one the pruner makes counted;
+			// the rest wait for a run of their own an hour on.
+			if ( (int) ( $queue['asked'] ?? 0 ) >= self::PRUNE_CONFIRM_PER_RUN ) {
+				$this->finish_prune( $queue, sprintf( 'eBay is asked about %d a run', self::PRUNE_CONFIRM_PER_RUN ) );
+				return;
+			}
+
+			list( $product_id, $item_id ) = $queue['items'][ $queue['pos'] ];
+			TCGiant_Sync_Runtime::context( sprintf( 'eBay item %s, WC #%d', $item_id, $product_id ) );
+
+			// Saved before the call, so a request killed during it is known.
+			self::save_prune_queue( $queue );
+
+			$calls   = 0;
+			$verdict = $this->check_prune_candidate( (int) $product_id, (string) $item_id, $calls );
+			self::report_cache_guard( (string) $item_id, 'Inventory pruning' );
+
+			$queue['asked'] = (int) ( $queue['asked'] ?? 0 ) + $calls;
+
+			// eBay's call limit or the day's budget, or no token to ask with:
+			// nothing more is asked this run. This one and the rest are asked
+			// about again by the follow-up an hour on.
+			if ( 'halt' === $verdict || 'no_token' === $verdict ) {
+				TCGiant_Sync_Logger::warning( sprintf(
+					'halt' === $verdict
+						? 'Inventory pruning: eBay\'s call limit reached after %d of %d.'
+						: 'Inventory pruning: there is no valid eBay token, after %d of %d.',
+					$queue['pos'],
+					$total
+				) );
+				$this->finish_prune( $queue, 'halt' === $verdict ? 'eBay\'s call limit, or the day\'s API budget, was reached' : 'there is no valid eBay token' );
+				return;
+			}
+
+			$progressed = true;
+			$queue['pos']++;
+			$queue['counts'][ $verdict ] = ( $queue['counts'][ $verdict ] ?? 0 ) + 1;
+			$queue['unread_run']         = 'unread' === $verdict ? (int) ( $queue['unread_run'] ?? 0 ) + 1 : 0;
+
+			// eBay did not answer about it: kept, and asked about again by the
+			// follow-up an hour on.
+			if ( 'unread' === $verdict ) {
+				$queue['left'][] = array( (int) $product_id, (string) $item_id );
+			}
+
+			// Live, missed by the scan: the first few named in what the run
+			// says (3.27.6), so the shop can look one up on eBay.
+			if ( 'live' === $verdict && count( (array) ( $queue['live_ids'] ?? array() ) ) < 5 ) {
+				$queue['live_ids'][] = (string) $item_id;
+			}
+
+			if ( $queue['unread_run'] >= self::PRUNE_UNREAD_STOP ) {
+				TCGiant_Sync_Logger::warning( sprintf(
+					'Inventory pruning: stopped after eBay failed to answer %d times in a row. Nothing was changed for those.',
+					$queue['unread_run']
+				) );
+				$this->finish_prune( $queue, sprintf( 'eBay did not answer %d times in a row', $queue['unread_run'] ) );
+				return;
+			}
+
+			$live  = (int) ( $queue['counts']['live'] ?? 0 );
+			$asked = $queue['pos'] - (int) ( $queue['counts']['skipped'] ?? 0 );
+
+			if ( $asked >= self::PRUNE_STOP_SAMPLE && $live >= $asked * self::PRUNE_STOP_LIVE_SHARE ) {
+				// A large Good 'Til Cancelled store sees this most weeks: the
+				// scan misses listings that renew while it runs, and they are
+				// all still live. Listings missed scan after scan - the ones
+				// that have really ended - are asked about first, so stopping
+				// here costs little. Not an error.
+				TCGiant_Sync_Logger::log( sprintf(
+					'Inventory pruning: %d of the first %d listings the full sync did not see are still live on eBay - the scan missed them while it ran - so the rest are left for a later full sync rather than spending eBay calls on them now.',
+					$live,
+					$asked
+				) );
+				$this->finish_prune( $queue );
+				return;
+			}
 		}
 
-		// The rest wait for a run of their own, an hour on, while there are
-		// runs left; after that, for the next full sync's clean-up.
-		$left = array();
-		foreach ( $confirmed['left'] as $row ) {
-			$left[ (int) $row->post_id ] = (string) $row->ebay_id;
-		}
-		$again = $round < self::PRUNE_FOLLOW_UP_ROUNDS && function_exists( 'as_schedule_single_action' );
-
-		TCGiant_Sync_Logger::log( sprintf(
-			'Inventory Pruning: %d products kept for now, their listings not yet confirmed as ended on eBay (%s). %s',
-			count( $left ),
-			$confirmed['why'],
-			$again ? 'They are checked again in an hour.' : 'They are left for the clean-up after the next full sync.'
-		), 'warning' );
-
-		if ( ! $again ) {
-			delete_option( self::PRUNE_PENDING_OPTION );
-			delete_option( self::ACTIVE_IDS_OPTION );
-			return;
-		}
-
-		update_option( self::PRUNE_PENDING_OPTION, array( 'rows' => $left, 'round' => $round, 'scan' => (string) ( $state['full_started_at'] ?? '' ) ), false );
-		as_schedule_single_action( time() + self::PRUNE_FOLLOW_UP_SECONDS, 'tcgiant_sync_prune_orphans', array( 'follow_up' => true ), 'tcgiant_sync_group' );
+		$this->finish_prune( $queue, '' );
 	}
 
 	/**
-	 * Ask eBay whether each listing the pruner would retire has ended.
+	 * Work out which products to ask eBay about, or null when there is nothing
+	 * the pruner may do.
 	 *
-	 * GetItem, as the hourly ended-listing check asks it ("verified via
-	 * GetItem"), up to PRUNE_CONFIRM_PER_RUN a run. Ended or Completed - sold
-	 * out among them - or no longer there at all: retired, as before. Active,
-	 * or anything else: kept. No answer - eBay's rate limit, the day's API
-	 * budget, no token, an error - is never taken for ended: kept, and asked
-	 * again next run; after the rate limit or the budget, or
-	 * PRUNE_CONFIRM_ERRORS failures in a row, nothing more is asked this run.
-	 *
-	 * @param array $rows Candidates: objects with post_id and ebay_id.
-	 * @return array ended (rows), live (item IDs), left (rows), asked (calls), why (why any were left).
+	 * @return array|null
 	 */
-	private function confirm_prune_candidates( array $rows ) {
-		$out    = array(
-			'ended' => array(),
-			'live'  => array(),
-			'left'  => array(),
-			'asked' => 0,
-			'why'   => '',
+	private function build_prune_queue() {
+		$state = self::get_sync_state();
+
+		// A full run decides afresh: what a 3.27.6 clean-up left to ask about
+		// again goes with it (PRUNE_PENDING_OPTION).
+		delete_option( self::PRUNE_PENDING_OPTION );
+
+		if ( empty( $state['scan_complete_clean'] ) || 'full' !== ( $state['sync_mode'] ?? 'full' ) ) {
+			TCGiant_Sync_Logger::warning(
+				'Inventory Pruning: Skipped — the last scan did not complete cleanly. '
+				. 'Run a full sync to completion before orphaned products can be retired.'
+			);
+			return null;
+		}
+
+		$active_ids = get_option( self::ACTIVE_IDS_OPTION, array() );
+		if ( ! is_array( $active_ids ) || empty( $active_ids ) ) {
+			TCGiant_Sync_Logger::warning(
+				'Inventory Pruning: Skipped — no active eBay Item IDs were recorded during the scan. '
+				. 'Refusing to prune, since an empty list is indistinguishable from a failed scan.'
+			);
+			return null;
+		}
+
+		// O(1) membership test. in_array() over a 10k-element list, once per
+		// product, is 100M string comparisons on a large catalogue.
+		$active_lookup = array_flip( array_map( 'strval', $active_ids ) );
+
+		global $wpdb;
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		// One row per product and listing, however many copies of each meta
+		// key a product has collected: MAX() picks the one value
+		// update_post_meta() writes to them all.
+		$rows = $wpdb->get_results(
+			"SELECT pm.post_id, pm.meta_value AS ebay_id,
+			        COALESCE( MAX( st.meta_value ), '' ) AS listing_status,
+			        COALESCE( MAX( ss.meta_value ), '' ) AS stock_status,
+			        COALESCE( MAX( ck.meta_value ), '0' ) AS checked,
+			        COALESCE( MAX( mi.meta_value ), '0' ) AS missed
+			 FROM {$wpdb->postmeta} pm
+			 JOIN {$wpdb->posts} p ON p.ID = pm.post_id
+			 LEFT JOIN {$wpdb->postmeta} st ON st.post_id = pm.post_id AND st.meta_key = '_ebay_listing_status'
+			 LEFT JOIN {$wpdb->postmeta} ss ON ss.post_id = pm.post_id AND ss.meta_key = '_stock_status'
+			 LEFT JOIN {$wpdb->postmeta} ck ON ck.post_id = pm.post_id AND ck.meta_key = '_ebay_prune_checked'
+			 LEFT JOIN {$wpdb->postmeta} mi ON mi.post_id = pm.post_id AND mi.meta_key = '_ebay_prune_missed'
+			 WHERE pm.meta_key = '_ebay_item_id' AND pm.meta_value != ''
+			   AND p.post_type = 'product' AND p.post_status NOT IN ( 'trash', 'auto-draft' )
+			 GROUP BY pm.post_id, pm.meta_value"
 		);
-		$api    = TCGiant_Sync_API::instance();
-		$failed = 0;
-		$stop   = '';
+
+		$total_linked = count( $rows );
+		$candidates   = array();
+		$known_ended  = 0;
 
 		foreach ( $rows as $row ) {
-			if ( '' === $stop && $out['asked'] >= self::PRUNE_CONFIRM_PER_RUN ) {
-				$stop = sprintf( 'eBay is asked about %d a run', self::PRUNE_CONFIRM_PER_RUN );
-			}
-			if ( '' !== $stop ) {
-				$out['left'][] = $row;
+			if ( isset( $active_lookup[ (string) $row->ebay_id ] ) ) {
+				// Seen this time: a miss last time was the scan's, not eBay's.
+				if ( (int) $row->missed > 0 ) {
+					delete_post_meta( (int) $row->post_id, '_ebay_prune_missed' );
+				}
 				continue;
 			}
+			if ( 'Ended' === (string) $row->listing_status ) {
+				$known_ended++;
+				continue;
+			}
+			$candidates[] = $row;
+		}
 
-			$out['asked']++;
-			$verdict = self::listing_verdict( $api->get_item( (string) $row->ebay_id ) );
+		$count = count( $candidates );
 
-			if ( 'ended' === $verdict || 'gone' === $verdict ) {
-				$out['ended'][] = $row;
-				$failed         = 0;
-			} elseif ( 'live' === $verdict ) {
-				$out['live'][] = (string) $row->ebay_id;
-				$failed        = 0;
-			} else {
-				$out['left'][] = $row;
-				$failed++;
-				if ( 'rate_limited' === $verdict || 'no_token' === $verdict ) {
-					$stop = 'rate_limited' === $verdict ? 'eBay\'s call limit, or the day\'s API budget, was reached' : 'there is no valid eBay token';
-				} elseif ( $failed >= self::PRUNE_CONFIRM_ERRORS ) {
-					$stop = sprintf( 'eBay did not answer %d times in a row', $failed );
-				} elseif ( '' === $out['why'] ) {
-					$out['why'] = 'eBay did not answer for some';
-				}
+		if ( 0 === $count ) {
+			TCGiant_Sync_Logger::log( sprintf(
+				'Inventory Pruning: No orphaned products found. Every linked product\'s listing was seen live, or is already recorded as ended (%d), so eBay is not asked about any.',
+				$known_ended
+			) );
+			delete_option( self::ACTIVE_IDS_OPTION );
+			return null;
+		}
+
+		/** Documented at its first use; the share is now of the products asked about. */
+		$max_ratio = (float) apply_filters( 'tcgiant_sync_prune_max_ratio', self::PRUNE_MAX_RATIO, $count, $total_linked );
+
+		if ( $total_linked > 0 && $max_ratio > 0 && ( $count / $total_linked ) > $max_ratio ) {
+			TCGiant_Sync_Logger::error( sprintf(
+				'Inventory Pruning: ABORTED — the full sync did not see the listings of %d of %d eBay-linked products (%.1f%%, limit %.0f%%). '
+				. 'This normally means the scan was incomplete. Nothing was changed and eBay was not asked about them. '
+				. 'Re-run a full sync; if that many really have ended, raise the limit with the tcgiant_sync_prune_max_ratio filter.',
+				$count,
+				$total_linked,
+				( $count / $total_linked ) * 100,
+				$max_ratio * 100
+			) );
+			return null;
+		}
+
+		// Not a product given its listing since this full sync began (3.27.5).
+		// The pruner runs once the last import the sync queued has run, hours
+		// after the scan on a large catalogue, and the active list holds only
+		// what the scan's pages held: a product pushed, relisted by hand or by
+		// Auto-Relist, or linked to a new listing in the meantime - or during
+		// the scan, after its page was read - has an item number that list
+		// never saw. Left alone, without a call: its listing is new.
+		//
+		// Kept by when it was listed, _ebay_start_time against the sync's
+		// start in UTC (full_started_at), or pushed, _ebay_export_last_pushed
+		// against started_at - both the site's local time, as WordPress writes
+		// them - from an hour before, for the hour a clock going back repeats.
+		// A product with neither date is judged as before.
+		$kept_new     = 0;
+		$listed_since = strtotime( (string) ( $state['full_started_at'] ?? '' ) );
+		$local_start  = date_create( (string) ( $state['started_at'] ?? '' ), new DateTimeZone( 'UTC' ) );
+		$pushed_since = ( '' !== (string) ( $state['started_at'] ?? '' ) && $local_start ) ? $local_start->modify( '-1 hour' )->format( 'Y-m-d H:i:s' ) : '';
+		foreach ( $candidates as $key => $row ) {
+			$listed = strtotime( (string) get_post_meta( (int) $row->post_id, '_ebay_start_time', true ) );
+			$pushed = (string) get_post_meta( (int) $row->post_id, '_ebay_export_last_pushed', true );
+			if ( ( false !== $listed_since && false !== $listed && $listed >= $listed_since )
+				|| ( '' !== $pushed_since && '' !== $pushed && $pushed >= $pushed_since ) ) {
+				unset( $candidates[ $key ] );
+				$kept_new++;
+			}
+		}
+		$candidates = array_values( $candidates );
+
+		if ( empty( $candidates ) ) {
+			TCGiant_Sync_Logger::log( sprintf(
+				'Inventory pruning: nothing to check. Kept %d listed or pushed since the full sync began, which its scan could not have seen.',
+				$kept_new
+			) );
+			delete_option( self::ACTIVE_IDS_OPTION );
+			return null;
+		}
+
+		// When each product's current run of misses began. A listing the scan
+		// misses because it renewed mid-scan is seen again next time; one that
+		// has really ended is missed every time.
+		foreach ( $candidates as $row ) {
+			if ( (int) $row->missed <= 0 ) {
+				$row->missed = time();
+				update_post_meta( (int) $row->post_id, '_ebay_prune_missed', $row->missed );
 			}
 		}
 
-		if ( '' !== $stop ) {
-			$out['why'] = $stop;
-		}
+		// In stock first: those are the ones that can be sold on the website
+		// after eBay has sold them. Then those not yet checked during their
+		// run of misses, longest run first - so a listing missed scan after
+		// scan, which has most likely ended, is asked about before one the
+		// scan missed once while it renewed. Then least recently checked.
+		usort( $candidates, function ( $a, $b ) {
+			$a_out = 'outofstock' === (string) $a->stock_status ? 1 : 0;
+			$b_out = 'outofstock' === (string) $b->stock_status ? 1 : 0;
+			if ( $a_out !== $b_out ) {
+				return $a_out <=> $b_out;
+			}
+			$a_done = (int) $a->checked >= (int) $a->missed ? 1 : 0;
+			$b_done = (int) $b->checked >= (int) $b->missed ? 1 : 0;
+			if ( $a_done !== $b_done ) {
+				return $a_done <=> $b_done;
+			}
+			if ( 0 === $a_done && (int) $a->missed !== (int) $b->missed ) {
+				return (int) $a->missed <=> (int) $b->missed;
+			}
+			$by_check = (int) $a->checked <=> (int) $b->checked;
+			return 0 !== $by_check ? $by_check : ( (int) $a->post_id <=> (int) $b->post_id );
+		} );
 
-		return $out;
+		$queue = array(
+			'scan'        => (string) ( $state['full_started_at'] ?? '' ),
+			'items'       => array_map( function ( $row ) {
+				return array( (int) $row->post_id, (string) $row->ebay_id );
+			}, $candidates ),
+			'pos'         => 0,
+			'counts'      => array(),
+			'unread_run'  => 0,
+			'asked'       => 0,
+			'left'        => array(),
+			'round'       => 0,
+			'waiting'     => 0,
+			'candidates'  => count( $candidates ),
+			'linked'      => $total_linked,
+			'known_ended' => $known_ended,
+		);
+
+		self::save_prune_queue( $queue );
+		delete_option( self::ACTIVE_IDS_OPTION );
+
+		TCGiant_Sync_Logger::log( sprintf(
+			'Inventory pruning: the full sync did not see the listings of %d of %d linked products (%d more are already recorded as ended). Asking eBay about %d before anything is changed, %d a run.%s',
+			$count,
+			$total_linked,
+			$known_ended,
+			count( $queue['items'] ),
+			self::PRUNE_CONFIRM_PER_RUN,
+			$kept_new > 0 ? sprintf( ' Kept %d listed or pushed since the full sync began, which its scan could not have seen.', $kept_new ) : ''
+		) );
+
+		return $queue;
 	}
 
 	/**
-	 * What GetItem's answer says of a listing, for the pruner.
+	 * Ask eBay about one product the full sync did not see, and act on the
+	 * answer.
 	 *
-	 * @param array|WP_Error $response get_item()'s answer.
-	 * @return string ended, gone (eBay no longer has it), live, or why it said
-	 *                neither: the error's code, or 'no_item'.
+	 * Every GetItem it makes is added to $calls - the candidate's own, which
+	 * is also the old listing's answer an adoption needs (handed to
+	 * adopt_relist(), so eBay is not asked again), and its relist's - for the
+	 * run's PRUNE_CONFIRM_PER_RUN.
+	 *
+	 * @param int    $product_id Product.
+	 * @param string $item_id    The listing it was linked to when the list was made.
+	 * @param int    $calls      GetItem calls made, added to.
+	 * @return string skipped|live|ended|relisted|gone|unread|halt|no_token
 	 */
-	private static function listing_verdict( $response ) {
+	private function check_prune_candidate( $product_id, $item_id, &$calls = 0 ) {
+		// The list was made at the start; things move while it is worked
+		// through. A product trashed, relinked or settled since is not ours.
+		if ( 'trash' === get_post_status( $product_id )
+			|| (string) get_post_meta( $product_id, '_ebay_item_id', true ) !== $item_id
+			|| 'Ended' === (string) get_post_meta( $product_id, '_ebay_listing_status', true ) ) {
+			return 'skipped';
+		}
+
+		TCGiant_Sync_Runtime::stage( 'asking eBay about the listing (GetItem)' );
+		$calls++;
+		$response = TCGiant_Sync_API::instance()->get_item( $item_id );
+
 		if ( is_wp_error( $response ) ) {
-			// Error 17: "This item cannot be accessed because the listing has
-			// been deleted, is a Half.com listing, or you are not the seller."
-			// What eBay answers for a listing it no longer keeps.
-			$data   = $response->get_error_data();
-			$errors = is_array( $data ) && isset( $data['Errors'] ) ? $data['Errors'] : array();
-			$errors = isset( $errors['ErrorCode'] ) ? array( $errors ) : ( is_array( $errors ) ? $errors : array() );
-			foreach ( $errors as $error ) {
-				if ( is_array( $error ) && '17' === (string) ( $error['ErrorCode'] ?? '' ) ) {
-					return 'gone';
+			// The day's calls, or eBay's limit: try this one again later. Not
+			// eBay's 10007, which comes back as a rate limit too but can be
+			// one listing's for good, and waiting for it would hold the prune
+			// on the same listing until the next full sync.
+			if ( self::is_out_of_calls( $response ) ) {
+				return 'halt';
+			}
+
+			// No token to ask with: every other call would fail the same way.
+			if ( 'no_token' === $response->get_error_code() ) {
+				return 'no_token';
+			}
+
+			// eBay never answered about this listing - no token, no connection,
+			// an error page - so it has not really been checked, and keeps its
+			// place near the front for next time.
+			if ( ! in_array( $response->get_error_code(), array( 'no_token', 'http_request_failed', 'invalid_xml' ), true ) ) {
+				update_post_meta( $product_id, '_ebay_prune_checked', time() );
+			}
+
+			// 17: "This item cannot be accessed because the listing has been
+			// deleted or you are not the seller." Anything else may be passing.
+			if ( self::EBAY_ITEM_NOT_ACCESSIBLE !== self::ebay_error_code( $response ) ) {
+				return 'unread';
+			}
+
+			return $this->retire_unreadable( $product_id, $item_id, 'eBay says the listing has been deleted or is not this seller\'s' );
+		}
+
+		$item = isset( $response['Item'] ) && is_array( $response['Item'] ) ? $response['Item'] : null;
+		update_post_meta( $product_id, '_ebay_prune_checked', time() );
+
+		if ( null === $item ) {
+			return 'unread';
+		}
+
+		$status = (string) ( $item['SellingStatus']['ListingStatus'] ?? '' );
+
+		// Live. The scan missed it while it ran. Note when it next renews, as
+		// the hourly check does - and, since a scan that missed it may have
+		// missed a sale on it too, lower the stock to what eBay says is left,
+		// never raise it, as the sale check does. A variation listing's
+		// figures cover the whole listing, so those are left to the delta.
+		if ( 'Active' === $status ) {
+			if ( ! empty( $item['ListingDetails']['EndTime'] ) ) {
+				update_post_meta( $product_id, '_ebay_end_time', $item['ListingDetails']['EndTime'] );
+			}
+			TCGiant_Sync_Inventory::note_listing_type( $product_id, $item_id, $item['ListingType'] ?? '' );
+			if ( empty( $item['Variations'] ) && isset( $item['Quantity'], $item['SellingStatus']['QuantitySold'] ) ) {
+				TCGiant_Sync_Runtime::stage( 'bringing the stock down to what eBay has left' );
+				$before = wc_get_product( $product_id );
+				$before = $before ? $before->get_stock_quantity() : null;
+				// eBay's sales reaching the stock, as order sync's settle: the
+				// stock push must not take them off again (3.28.0). Written
+				// with the stock, and once (release fix round 4).
+				$left   = max( 0, (int) $item['Quantity'] - (int) $item['SellingStatus']['QuantitySold'] );
+				$sold_n = (int) $item['SellingStatus']['QuantitySold'];
+				$done   = (object) array( 'absorbed' => false );
+				$absorb = function ( $now ) use ( $done, $product_id, $item_id, $sold_n, $before, $left ) {
+					$done->absorbed = true;
+					TCGiant_Sync_Inventory::absorb_sold( $product_id, $item_id, '', $sold_n, (int) $before - (int) $now, $left );
+				};
+				$now    = TCGiant_Sync_Inventory::lower_stock_to( $product_id, (int) $item['Quantity'] - (int) $item['SellingStatus']['QuantitySold'], null === $before ? null : $absorb );
+				if ( null !== $before && null !== $now && ! $done->absorbed ) {
+					$absorb( $now );
+				}
+				if ( null !== $before && null !== $now && $now < (int) $before ) {
+					TCGiant_Sync_Logger::log( sprintf(
+						'Inventory pruning: WC #%d lowered from %d to %d, which is what eBay item %s has left.',
+						$product_id,
+						(int) $before,
+						$now,
+						$item_id
+					) );
 				}
 			}
-			return (string) $response->get_error_code();
+			return 'live';
 		}
 
-		if ( ! is_array( $response ) || ! isset( $response['Item'] ) || ! is_array( $response['Item'] ) ) {
-			return 'no_item';
+		// Relisted on eBay as a new listing. If no product has the relist yet -
+		// the scan did not see it, or it has not been imported - the product
+		// is moved on to it here, with the same checks as anywhere else, and
+		// then checked against it, as the sale check would. If the relist
+		// cannot be read, the product is left for the next full sync.
+		//
+		// Otherwise nothing will ever move this product on to the relist:
+		// another product has it, or the checks decline it. Then its own
+		// listing is settled below, like any other that ended. So is a single
+		// item that sold, without asking about the relist at all: one of those
+		// is never moved on - see TCGiant_Sync_Mapper::relist_parent_product().
+		$new_id      = ! empty( $item['ListingDetails']['RelistedItemID'] ) && is_scalar( $item['ListingDetails']['RelistedItemID'] )
+			? (string) $item['ListingDetails']['RelistedItemID']
+			: '';
+		$sold_single = isset( $item['Quantity'], $item['SellingStatus']['QuantitySold'] )
+			&& (int) $item['Quantity'] <= 1 && (int) $item['SellingStatus']['QuantitySold'] >= 1;
+
+		// Nor for a listing on another eBay site, when the shop imports only
+		// its own: its relist is on that site too, and nothing is moved on to
+		// it (TCGiant_Sync_Mapper::adopt_relist()), so it is not asked about.
+		if ( '' !== $new_id && TCGiant_Sync_Sites::leaves_out( TCGiant_Sync_Sites::site_of( $item ) ) ) {
+			$new_id = '';
 		}
 
-		$status = (string) ( $response['Item']['SellingStatus']['ListingStatus'] ?? '' );
+		if ( '' !== $new_id && ! $sold_single ) {
+			$holder = self::find_any_product_for_item( $new_id );
 
-		return in_array( $status, array( 'Completed', 'Ended' ), true ) ? 'ended' : 'live';
+			if ( ! $holder ) {
+				TCGiant_Sync_Runtime::stage( 'asking eBay about its relist (GetItem)' );
+				$calls++;
+				$relist = TCGiant_Sync_API::instance()->get_item( $new_id );
+
+				if ( is_wp_error( $relist ) || empty( $relist['Item'] ) || ! is_array( $relist['Item'] ) ) {
+					if ( self::is_out_of_calls( $relist ) ) {
+						return 'halt';
+					}
+
+					TCGiant_Sync_Logger::log( sprintf(
+						'Inventory pruning: eBay item %s was relisted as %s, which could not be read (%s). WC #%d is left as it is for now.',
+						$item_id,
+						$new_id,
+						is_wp_error( $relist ) ? $relist->get_error_message() : 'eBay returned nothing',
+						$product_id
+					) );
+					return 'unread';
+				}
+
+				$new     = $relist['Item'] + array( 'ItemID' => $new_id );
+				TCGiant_Sync_Runtime::stage( 'moving the product on to its relist' );
+				$adopted = (int) TCGiant_Sync_Mapper::instance()->adopt_relist( $new, 'Inventory pruning', $item + array( 'ItemID' => $item_id ) );
+
+				if ( $adopted ) {
+					if ( ! self::is_live_listing( $new ) ) {
+						self::settle_ended_listing( $adopted, $new, (string) $new['SellingStatus']['ListingStatus'], 'Inventory pruning' );
+					} elseif ( empty( $new['Variations'] ) && isset( $new['Quantity'], $new['SellingStatus']['QuantitySold'] ) ) {
+						$now = TCGiant_Sync_Inventory::lower_stock_to( $adopted, (int) $new['Quantity'] - (int) $new['SellingStatus']['QuantitySold'] );
+						if ( null !== $now ) {
+							TCGiant_Sync_Logger::log( sprintf(
+								'Inventory pruning: eBay item %s - WC #%d stock now %d (eBay: %d listed, %d sold).',
+								$new_id,
+								$adopted,
+								$now,
+								(int) $new['Quantity'],
+								(int) $new['SellingStatus']['QuantitySold']
+							) );
+						}
+					}
+					return 'relisted';
+				}
+			} else {
+				TCGiant_Sync_Logger::log( sprintf(
+					'Inventory pruning: eBay item %s was relisted as %s, which WC #%d follows, so WC #%d is settled from its own listing.',
+					$item_id,
+					$new_id,
+					$holder,
+					$product_id
+				) );
+			}
+		}
+
+		// eBay keeps a listing's details for 90 days after it ends, then
+		// answers without them.
+		if ( '' === $status ) {
+			return $this->retire_unreadable( $product_id, $item_id, 'eBay no longer reports its details, which it drops 90 days after a listing ends' );
+		}
+
+		// Over, but without the figures to settle it: asking again would only
+		// spend another call for the same answer.
+		if ( ! isset( $item['Quantity'], $item['SellingStatus']['QuantitySold'] ) ) {
+			return $this->retire_unreadable( $product_id, $item_id, 'eBay no longer reports how many sold' );
+		}
+
+		$item['ItemID'] = $item_id;
+		self::settle_ended_listing( $product_id, $item, $status, 'Inventory pruning' );
+
+		return 'ended';
+	}
+
+	/**
+	 * A listing eBay will not describe: recorded as ended, stock untouched.
+	 *
+	 * With no figures there is nothing to settle, and the hourly check makes
+	 * the same call for the same answer. In stock, it shows on Stock Review.
+	 *
+	 * @param int    $product_id Product.
+	 * @param string $item_id    Listing.
+	 * @param string $because    For the log.
+	 * @return string 'gone'
+	 */
+	private function retire_unreadable( $product_id, $item_id, $because ) {
+		update_post_meta( $product_id, '_ebay_listing_status', 'Ended' );
+		// Which listing it was, so Auto-Relist does not try a listing eBay no
+		// longer has, every day. A relist or relink changes _ebay_item_id, and
+		// the mark no longer matches.
+		update_post_meta( $product_id, '_ebay_unreadable_item', (string) $item_id );
+
+		TCGiant_Sync_Logger::warning( sprintf(
+			'Inventory pruning: WC #%d is linked to eBay item %s, which the full sync did not see and %s. Marked ended with its stock unchanged; if it is still in stock, Stock Review lists it.',
+			$product_id,
+			$item_id,
+			$because
+		) );
+
+		return 'gone';
+	}
+
+	/**
+	 * The first eBay error number in an API error, or ''.
+	 *
+	 * @param WP_Error $error From TCGiant_Sync_API.
+	 * @return string
+	 */
+	private static function ebay_error_code( $error ) {
+		$data   = $error->get_error_data();
+		$errors = is_array( $data ) && isset( $data['Errors'] ) ? $data['Errors'] : array();
+
+		if ( isset( $errors[0] ) && is_array( $errors[0] ) ) {
+			$errors = $errors[0];
+		}
+
+		return isset( $errors['ErrorCode'] ) ? (string) $errors['ErrorCode'] : '';
+	}
+
+	/**
+	 * Say what a prune run did, and either forget its list or keep what it
+	 * left for the follow-up run an hour on (3.27.6).
+	 *
+	 * Left: the products not asked about yet, when the run stopped for its
+	 * PRUNE_CONFIRM_PER_RUN, eBay's call limit, no token or eBay not
+	 * answering, and those eBay did not answer about. They stay in the list,
+	 * waiting for the follow-up, while there are PRUNE_FOLLOW_UP_ROUNDS left;
+	 * after that, for the next full sync's clean-up. A run stopped to keep the
+	 * day's calls for the sync, or because nearly everything it asked about
+	 * was live, leaves the rest to the next full sync.
+	 *
+	 * @param array       $queue The prune's list and counts.
+	 * @param string|null $why   Why the run stopped with some left - '' when
+	 *                           it reached the end of its list - or null when
+	 *                           the rest wait for the next full sync.
+	 */
+	private function finish_prune( array $queue, $why = null ) {
+		$c      = isset( $queue['counts'] ) && is_array( $queue['counts'] ) ? $queue['counts'] : array();
+		$items  = isset( $queue['items'] ) && is_array( $queue['items'] ) ? array_values( $queue['items'] ) : array();
+		$pos    = min( count( $items ), (int) ( $queue['pos'] ?? 0 ) );
+		$unread = isset( $queue['left'] ) && is_array( $queue['left'] ) ? array_values( $queue['left'] ) : array();
+		$round  = (int) ( $queue['round'] ?? 0 );
+
+		$left = array();
+		if ( null !== $why ) {
+			$left = array_merge( array_slice( $items, $pos ), $unread );
+			if ( '' === $why ) {
+				$why = 'eBay did not answer for some';
+			}
+		}
+		$again = ! empty( $left ) && $round < self::PRUNE_FOLLOW_UP_ROUNDS && function_exists( 'as_schedule_single_action' );
+
+		// Live listings the scan missed, kept: said as 3.27.6 says it, with
+		// the first few item numbers.
+		$live = (int) ( $c['live'] ?? 0 );
+		if ( $live > 0 ) {
+			$named = array_slice( (array) ( $queue['live_ids'] ?? array() ), 0, 5 );
+			TCGiant_Sync_Logger::warning( sprintf(
+				'Inventory Pruning: %d listings missing from the scan are still live on eBay (%s%s), so their products are kept. A listing that renews while a full sync reads the listings can drop out of its pages.',
+				$live,
+				implode( ', ', $named ),
+				$live > count( $named ) ? ', ...' : ''
+			) );
+		}
+
+		TCGiant_Sync_Logger::log( sprintf(
+			'Inventory pruning%s: asked eBay about %d of the %d listings %s. %d had ended and were settled as any ended listing is; %d still live (missed by the scan while it ran) and left alone; %d no longer on eBay, marked ended with stock unchanged; %d relisted; %d could not be read; %d changed since the list was made. %s',
+			$round > 0 ? sprintf( ' (follow-up %d of at most %d)', $round, self::PRUNE_FOLLOW_UP_ROUNDS ) : '',
+			$pos,
+			count( $items ),
+			$round > 0 ? 'an earlier run left to check again' : 'the full sync did not see',
+			(int) ( $c['ended'] ?? 0 ),
+			(int) ( $c['live'] ?? 0 ),
+			(int) ( $c['gone'] ?? 0 ),
+			(int) ( $c['relisted'] ?? 0 ),
+			(int) ( $c['unread'] ?? 0 ),
+			(int) ( $c['skipped'] ?? 0 ),
+			$again
+				? sprintf( '%d are asked about again in an hour.', count( $left ) )
+				: sprintf( '%d wait for the next full sync.', count( $items ) - $pos + count( $unread ) )
+		), 'success' );
+
+		if ( $again ) {
+			$queue = array_merge( $queue, array(
+				'items'      => $left,
+				'pos'        => 0,
+				'counts'     => array(),
+				'unread_run' => 0,
+				'asked'      => 0,
+				'left'       => array(),
+				'live_ids'   => array(),
+				'round'      => $round + 1,
+				'waiting'    => time() + self::PRUNE_FOLLOW_UP_SECONDS,
+				'candidates' => count( $left ),
+			) );
+			self::save_prune_queue( $queue );
+			as_schedule_single_action( time() + self::PRUNE_FOLLOW_UP_SECONDS, 'tcgiant_sync_prune_orphans', array( 'follow_up' => true ), self::GROUP_SCAN );
+
+			TCGiant_Sync_Logger::warning( sprintf(
+				'Inventory Pruning: %d products kept for now, their listings not yet confirmed as ended on eBay (%s). They are checked again in an hour.',
+				count( $left ),
+				$why
+			) );
+			return;
+		}
+
+		if ( ! empty( $left ) ) {
+			TCGiant_Sync_Logger::warning( sprintf(
+				'Inventory Pruning: %d products kept for now, their listings not yet confirmed as ended on eBay (%s). They are left for the clean-up after the next full sync.',
+				count( $left ),
+				$why
+			) );
+		}
+
+		delete_option( self::PRUNE_QUEUE_OPTION );
+	}
+
+	/**
+	 * A follow-up run's list, from what a 3.27.6 clean-up left to ask eBay
+	 * about again (PRUNE_PENDING_OPTION), or null.
+	 *
+	 * 3.28.0 keeps what a run leaves in its own list (finish_prune()); this
+	 * takes up what an update from 3.27.6 found waiting, with its follow-up
+	 * still queued. Only for the full sync whose clean-up left them, while it
+	 * is still the last one and every page of it is read: its list of live
+	 * listings is the one these were missing from. Any other, they are
+	 * dropped, and that sync's own clean-up decides.
+	 *
+	 * @return array|null
+	 */
+	private function follow_up_prune_queue() {
+		$pending = get_option( self::PRUNE_PENDING_OPTION, array() );
+		if ( ! is_array( $pending ) || empty( $pending['rows'] ) ) {
+			return null;
+		}
+
+		$state   = self::state_from_table();
+		$made_by = (string) ( $pending['scan'] ?? '' );
+		if ( '' === $made_by || $made_by !== (string) ( $state['full_started_at'] ?? '' ) || $made_by !== (string) ( $state['scan_finished'] ?? '' ) ) {
+			delete_option( self::PRUNE_PENDING_OPTION );
+			TCGiant_Sync_Logger::log( 'Inventory Pruning: the products an earlier clean-up left to check again were from a full sync since replaced, so they are left to the newer one\'s clean-up.' );
+			return null;
+		}
+
+		// Products that run left, still linked to the listing it asked about.
+		// The checks it passed - a clean scan, the ratio guard, nothing listed
+		// since - stand; eBay's answer decides.
+		$rows = self::pending_prune_rows( $pending );
+		delete_option( self::PRUNE_PENDING_OPTION );
+		if ( empty( $rows ) ) {
+			return null;
+		}
+
+		$queue = array(
+			'scan'        => $made_by,
+			'items'       => array_map( function ( $row ) {
+				return array( (int) $row->post_id, (string) $row->ebay_id );
+			}, $rows ),
+			'pos'         => 0,
+			'counts'      => array(),
+			'unread_run'  => 0,
+			'asked'       => 0,
+			'left'        => array(),
+			'round'       => (int) ( $pending['round'] ?? 0 ) + 1,
+			'waiting'     => 0,
+			'candidates'  => count( $rows ),
+			'linked'      => 0,
+			'known_ended' => 0,
+		);
+		self::save_prune_queue( $queue );
+
+		TCGiant_Sync_Logger::log( sprintf(
+			'Inventory pruning: checking again what an earlier run left (follow-up %d of at most %d): %d listings.',
+			$queue['round'],
+			self::PRUNE_FOLLOW_UP_ROUNDS,
+			count( $queue['items'] )
+		) );
+
+		return $queue;
 	}
 
 	/**
@@ -6295,11 +8337,25 @@ class TCGiant_Sync_Importer {
 		return $rows;
 	}
 
+	/**
+	 * Whether a newer full sync has started since this list was made.
+	 *
+	 * @param array $queue The prune's list.
+	 * @return bool
+	 */
+	private static function prune_superseded( array $queue ) {
+		$started = (string) ( self::state_from_table()['full_started_at'] ?? '' );
 
+		return '' !== $started && (string) ( $queue['scan'] ?? '' ) !== $started;
+	}
 
-
-
-
-
-
+	/**
+	 * Keep the prune's list, never autoloaded.
+	 *
+	 * @param array $queue The prune's list and counts.
+	 */
+	private static function save_prune_queue( array $queue ) {
+		delete_option( self::PRUNE_QUEUE_OPTION );
+		add_option( self::PRUNE_QUEUE_OPTION, $queue, '', false );
+	}
 }

@@ -16,8 +16,12 @@
  * neither take a sale off twice nor put a sold item back up for sale - the
  * coin shop's complaint, from the same release.
  *
- * Loaded for real: TCGiant_Sync_Importer, TCGiant_Sync_Inventory and
- * TCGiant_Sync_Runtime. WordPress, WooCommerce's stock functions, Action
+ * Since 3.28.0 a variation listing is checked variation by variation, and a
+ * variation's eBay sale counts as its parent's listing's, not as the sale of a
+ * product with no link.
+ *
+ * Loaded for real: TCGiant_Sync_Importer, TCGiant_Sync_Inventory,
+ * TCGiant_Sync_Variations and TCGiant_Sync_Runtime. WordPress, WooCommerce's stock functions, Action
  * Scheduler and eBay are played here, and a queued check is run the way Action
  * Scheduler runs one: through the hook the importer registered for it.
  *
@@ -50,16 +54,20 @@ $LOG       = array();
 $EVENTS    = array();
 $UNGUARDED = array();
 $EBAY      = array();
+$SYNCED    = array();
 
 class WP_Error {
 	private $code;
 	private $message;
-	public function __construct( $code = '', $message = '' ) {
+	private $data;
+	public function __construct( $code = '', $message = '', $data = '' ) {
 		$this->code    = $code;
 		$this->message = $message;
+		$this->data    = $data;
 	}
 	public function get_error_code() { return $this->code; }
 	public function get_error_message() { return $this->message; }
+	public function get_error_data() { return $this->data; }
 }
 
 /**
@@ -67,6 +75,7 @@ class WP_Error {
  * with or without the trash, as each query asks.
  */
 class Harness_Wpdb {
+	public $options  = 'wp_options';
 	public $postmeta = 'wp_postmeta';
 	public $posts    = 'wp_posts';
 	public function prepare( $query, ...$args ) {
@@ -80,6 +89,10 @@ class Harness_Wpdb {
 		}, $query );
 	}
 	public function get_var( $query ) {
+		// The stock checks' joins (3.28.0 fix round 3): read by name.
+		if ( preg_match( "/^SELECT option_value FROM wp_options WHERE option_name = '(tcgiant_sync_settle_joined_[^']+)' LIMIT 1$/", trim( $query ), $jm ) ) {
+			return array_key_exists( $jm[1], $GLOBALS['OPTIONS'] ) ? (string) $GLOBALS['OPTIONS'][ $jm[1] ] : null;
+		}
 		if ( ! preg_match( "/meta_key = '_ebay_item_id' AND (?:pm\\.)?meta_value = '([^']*)'/", $query, $m ) ) {
 			return null;
 		}
@@ -91,8 +104,31 @@ class Harness_Wpdb {
 		}
 		return null;
 	}
+	public function query( $query ) {
+		// The stock checks' joins (3.28.0 fix round 3): one upsert keeping the
+		// later time, autoload off; deleted by name. $GLOBALS['ON_JOIN_QUERY'],
+		// when set, runs just before the statement lands.
+		if ( preg_match( "/^INSERT INTO wp_options \\( option_name, option_value, autoload \\) VALUES \\( '(tcgiant_sync_settle_joined_[^']+)', '?(\\d+)'?, 'no' \\)\\s*ON DUPLICATE KEY UPDATE option_value = GREATEST\\( option_value \\+ 0, '?(\\d+)'? \\)$/", trim( $query ), $jm ) ) {
+			if ( isset( $GLOBALS['ON_JOIN_QUERY'] ) ) {
+				call_user_func( $GLOBALS['ON_JOIN_QUERY'], $jm[1], (int) $jm[2] );
+			}
+			$GLOBALS['OPTIONS'][ $jm[1] ] = (string) ( array_key_exists( $jm[1], $GLOBALS['OPTIONS'] ) ? max( (int) $GLOBALS['OPTIONS'][ $jm[1] ], (int) $jm[3] ) : (int) $jm[2] );
+			$GLOBALS['JOIN_AUTOLOAD'][ $jm[1] ] = false;
+			return 1;
+		}
+		if ( preg_match( "/^DELETE FROM wp_options WHERE option_name = '(tcgiant_sync_settle_joined_[^']+)'$/", trim( $query ), $jm ) ) {
+			$had = array_key_exists( $jm[1], $GLOBALS['OPTIONS'] );
+			unset( $GLOBALS['OPTIONS'][ $jm[1] ] );
+			return $had ? 1 : 0;
+		}
+		return 0;
+	}
 }
 $wpdb = new Harness_Wpdb();
+if ( ! function_exists( 'wp_cache_delete' ) ) {
+	function wp_cache_delete( $key, $group = '' ) { return true; }
+}
+
 
 function is_wp_error( $thing ) { return $thing instanceof WP_Error; }
 function __( $text ) { return $text; }
@@ -155,7 +191,37 @@ class Harness_Product {
 	public function managing_stock() { return (bool) $this->row()['manage']; }
 	public function get_stock_quantity() { return $this->row()['manage'] ? $this->row()['stock'] : null; }
 	public function get_stock_status() { return $this->row()['status']; }
+	// What pairing a listing's variations with a variable product's reads.
+	public function is_type( $type ) { return $type === $this->row()['type']; }
+	public function get_status() { return $this->row()['post_status']; }
+	public function get_meta( $key, $single = true ) { return $this->row()['meta'][ $key ] ?? ''; }
+	public function get_attributes() { return $this->row()['attrs'] ?? array(); }
+	/** A variation with no SKU of its own shows its parent's, except in 'edit'. */
+	public function get_sku( $context = 'view' ) {
+		$sku = (string) $this->row()['sku'];
+		if ( '' === $sku && 'view' === $context && $this->get_parent_id() ) {
+			return (string) $GLOBALS['PRODUCTS'][ $this->get_parent_id() ]['sku'];
+		}
+		return $sku;
+	}
+	/** Its variations, published or retired; never those in the trash. */
+	public function get_children() {
+		$out = array();
+		foreach ( $GLOBALS['PRODUCTS'] as $id => $p ) {
+			if ( (int) $p['parent'] === $this->id && 'trash' !== $p['post_status'] ) {
+				$out[] = $id;
+			}
+		}
+		return $out;
+	}
 }
+/** The parent's price range and stock status follow its variations: noted, with whether pushes were held off. */
+class WC_Product_Variable {
+	public static function sync( $id ) { $GLOBALS['SYNCED'][] = array( (int) $id, TCGiant_Sync_Inventory::is_push_suppressed() ); }
+}
+function sanitize_title( $title ) { return trim( preg_replace( '/[^a-z0-9_\-]+/', '-', strtolower( trim( (string) $title ) ) ), '-' ); }
+// No global attributes in this shop: every variation attribute is a custom one.
+function taxonomy_exists( $taxonomy ) { return false; }
 function wc_get_product( $id ) {
 	return isset( $GLOBALS['PRODUCTS'][ (int) $id ] ) ? new Harness_Product( $id ) : false;
 }
@@ -207,6 +273,17 @@ function as_enqueue_async_action( $hook, $args = array(), $group = '' ) {
 	return count( $GLOBALS['QUEUE'] );
 }
 function as_schedule_single_action( $when, $hook, $args = array(), $group = '' ) { return as_enqueue_async_action( $hook, $args, $group ); }
+// Action Scheduler 3.0 and later: the next action with this hook and these
+// arguments is taken off the queue (a stock push's safety try, 3.28.0).
+function as_unschedule_action( $hook, $args = array(), $group = '' ) {
+	foreach ( $GLOBALS['QUEUE'] as $i => $action ) {
+		if ( $action['hook'] === $hook && $action['args'] === $args ) {
+			array_splice( $GLOBALS['QUEUE'], $i, 1 );
+			return $i;
+		}
+	}
+	return null;
+}
 /** A pending async action answers true, as Action Scheduler's does. */
 function as_next_scheduled_action( $hook, $args = null, $group = '' ) {
 	foreach ( $GLOBALS['QUEUE'] as $action ) {
@@ -249,9 +326,12 @@ class TCGiant_Sync_API {
 		$GLOBALS['EBAY']['get_items'][] = (string) $item_id;
 		return $GLOBALS['EBAY']['items'][ (string) $item_id ] ?? new WP_Error( 'api_error', 'The item could not be found.' );
 	}
+	// The sale check reads past the shared ceiling, as a sale's push does (3.28.0).
+	public function with_stock_priority( callable $fn ) { return $fn(); }
 }
 
 require $ROOT . '/includes/class-tcgiant-sync-runtime.php';
+require $ROOT . '/includes/class-tcgiant-sync-variations.php';
 require $ROOT . '/includes/class-tcgiant-sync-inventory.php';
 require $ROOT . '/includes/class-tcgiant-sync-sites.php';
 require $ROOT . '/includes/class-tcgiant-sync-importer.php';
@@ -268,12 +348,17 @@ function fresh_shop( array $settings = array() ) {
 	$GLOBALS['LOG']       = array();
 	$GLOBALS['EVENTS']    = array();
 	$GLOBALS['UNGUARDED'] = array();
+	$GLOBALS['SYNCED']    = array();
 	$GLOBALS['EBAY']      = array( 'orders' => array( 'orders' => array() ), 'items' => array(), 'get_items' => array() );
 }
 
-/** A product; linked to a listing when given its eBay item number. */
+/**
+ * A product; linked to a listing when given its eBay item number. One given a
+ * parent is that product's variation; a variable parent says so in $extra.
+ */
 function product( $id, $sku, $stock, $item_id = '', array $extra = array() ) {
 	$row = array_merge( array(
+		'type'        => empty( $extra['parent'] ) ? 'simple' : 'variation',
 		'sku'         => $sku,
 		'stock'       => $stock,
 		'manage'      => null !== $stock,
@@ -543,17 +628,54 @@ check( '  out of stock', status( 313 ), 'outofstock' );
 check( '  but kept, and not marked ended - the listing is live', ! trashed( 313 ) && '' === meta( 313, '_ebay_listing_status' ), true );
 check( '  and the 0 not sent to eBay, which would end the listing', $UNGUARDED, array() );
 
-// A variation listing's Quantity is the whole listing's.
+// A variation listing (3.28.0). Its Quantity is the whole listing's, which only
+// the parent takes - the import gives the parent the listing's total. Each
+// variation is checked against its own figures: eBay sold one of A's three, and
+// the website sold B's last one, which eBay has not heard of yet.
 fresh_shop();
-product( 321, 'SET-321', 4, '130000000021' );
+product( 321, 'SET-321', 4, '130000000021', array( 'type' => 'variable' ) );
+product( 322, 'SET-321-A', 3, '', array( 'parent' => 321 ) );
+product( 323, 'SET-321-B', 0, '', array( 'parent' => 321 ) );
 listing( '130000000021', 'Active', 5, 2, array( 'Variations' => array( 'Variation' => array(
 	array( 'SKU' => 'SET-321-A', 'Quantity' => '3', 'SellingStatus' => array( 'QuantitySold' => '1' ) ),
 	array( 'SKU' => 'SET-321-B', 'Quantity' => '2', 'SellingStatus' => array( 'QuantitySold' => '1' ) ),
 ) ) ) );
 sale_check( '130000000021' );
-check( 'a live listing with variations is left alone', stock( 321 ), 4 );
-check( '  nothing written to it at all', events_for( 321 ), array() );
-check( '  though eBay was asked', $EBAY['get_items'], array( '130000000021' ) );
+check( 'a live listing with variations: the parent lowered to the listing\'s 3', stock( 321 ), 3 );
+check( '  in one write', stock_writes( 321 ), array( 'stock 321 set 3' ) );
+check( '  variation A, 3 listed and 1 sold on eBay: from 3 to 2', stock( 322 ), 2 );
+check( '    in one write', stock_writes( 322 ), array( 'stock 322 set 2' ) );
+check( '  variation B, sold out here: left at 0, not raised to eBay\'s 1', stock( 323 ), 0 );
+check( '    nothing written to it', events_for( 323 ), array() );
+check( '  none of it sent back to eBay', $UNGUARDED, array() );
+check( '  the parent brought in line with its variations once, pushes held off', $SYNCED, array( array( 321, true ) ) );
+check( '  the variation logged with its figures', logged( 'Sale check: eBay item 130000000021 - variations of WC #321 lowered to eBay\'s figures: #322 3 to 2.' ), true );
+check( '  and the parent', logged( 'Sale check: eBay item 130000000021 - WC #321 stock now 3 (eBay: 5 listed, 2 sold).' ), true );
+check( '  every eBay variation paired: no warning', logged( 'no matching variation' ), false );
+check( '  not marked settled - the listing is live', meta( 321, '_ebay_variations_settled_item' ), '' );
+check( '  one call to eBay', $EBAY['get_items'], array( '130000000021' ) );
+
+// The same check again, nothing new on eBay.
+$written = count( $EVENTS );
+sale_check( '130000000021' );
+check( 'checked again with nothing new on eBay: nothing written', array_slice( $EVENTS, $written ), array() );
+check( '  the parent not brought in line again', count( $SYNCED ), 1 );
+
+// The shop turned an imported variable product into a simple one, and it is
+// still linked to the listing with variations. The listing's total is all it
+// can take: there are no variations here to pair with eBay's, and none missing.
+fresh_shop();
+product( 324, 'SET-324', 4, '130000000024' );
+listing( '130000000024', 'Active', 5, 2, array( 'Variations' => array( 'Variation' => array(
+	array( 'SKU' => 'SET-324-A', 'Quantity' => '3', 'SellingStatus' => array( 'QuantitySold' => '1' ) ),
+	array( 'SKU' => 'SET-324-B', 'Quantity' => '2', 'SellingStatus' => array( 'QuantitySold' => '1' ) ),
+) ) ) );
+sale_check( '130000000024' );
+check( 'a simple product on a listing with variations: lowered to the listing\'s 3', stock( 324 ), 3 );
+check( '  in one write', stock_writes( 324 ), array( 'stock 324 set 3' ) );
+check( '  no warning about variations it cannot have', logged( 'no matching variation' ), false );
+check( '  nothing recorded as unmatched', meta( 324, '_ebay_unmatched_variations' ), '' );
+check( '  and nothing to bring in line', $SYNCED, array() );
 
 echo "\nWHEN EBAY CANNOT ANSWER, NOTHING CHANGES\n" . str_repeat( '=', 124 ) . "\n";
 
@@ -574,12 +696,15 @@ check( '  nothing written at all', events_for( 332 ), array() );
 
 echo "\nA LISTING NO LIVE PRODUCT IS LINKED TO\n" . str_repeat( '=', 124 ) . "\n";
 
+// Since 3.28.0 eBay is asked once: the listing could be a relist of one a
+// product follows (test-relist-adopt.php). This one names no listing it was
+// relisted from, so that is all that happens.
 fresh_shop();
 product( 341, 'CARD-341', 1, '130000000041' );
 listing( '130000000041', 'Completed', 1, 1 );
 listing( '130000000099', 'Completed', 1, 1 );
 sale_check( '130000000099' );
-check( 'a listing no product is linked to: eBay not asked', $EBAY['get_items'], array() );
+check( 'a listing no product is linked to: eBay asked once, about it', $EBAY['get_items'], array( '130000000099' ) );
 check( '  nothing written', $EVENTS, array() );
 check( '  nothing logged', $LOG, array() );
 check( '  and the product linked to another listing untouched', stock( 341 ) . '/' . status( 341 ) . '/' . ( trashed( 341 ) ? 'trash' : 'live' ), '1/instock/live' );
@@ -599,26 +724,30 @@ echo "\nA SALE OF ONE VARIATION\n" . str_repeat( '=', 124 ) . "\n";
 // eBay: red 3 listed, 1 sold, so 2 left. Whichever of the delta and order sync
 // reaches the sale first, the variation should end at eBay's 2.
 //
-// KNOWN, and older than 3.27.0: when the delta counted the sale first, order
-// sync - which still treats a variation as unlinked - takes it off a second
-// time, leaving 1. That errs towards under-stocking, not overselling, and the
-// deduction is what protects a variation while the delta is behind. Settling
-// variations from eBay by SKU is 3.28.0's variation work; this records what
-// happens until then, so a change either way is seen.
-$want = array( 'the delta counted it first' => 1, 'the delta behind' => 2 );
+// Until 3.28.0 order sync treated a variation as unlinked and took the sale off
+// itself, so when the delta had counted it first red ended at 1. A variation's
+// sale is its parent's listing's now: order sync queues the stock check for
+// that listing, and the check lowers each variation to eBay's own figure.
 foreach ( array( 'the delta counted it first' => 2, 'the delta behind' => 3 ) as $when => $before ) {
 	fresh_shop( array( 'enable_order_sync' => '1' ) );
-	product( 401, 'SET-401', null, '140000000001' );
+	product( 401, 'SET-401', null, '140000000001', array( 'type' => 'variable' ) );
 	product( 402, 'SET-401-RED', $before, '', array( 'parent' => 401 ) );
+	product( 403, 'SET-401-BLUE', 1, '', array( 'parent' => 401 ) );
 	listing( '140000000001', 'Active', 5, 2, array( 'Variations' => array( 'Variation' => array(
 		array( 'SKU' => 'SET-401-RED', 'Quantity' => '3', 'SellingStatus' => array( 'QuantitySold' => '1' ) ),
 		array( 'SKU' => 'SET-401-BLUE', 'Quantity' => '2', 'SellingStatus' => array( 'QuantitySold' => '1' ) ),
 	) ) ) );
 	orders( array( sale( '40001', '140000000001', 'SET-401-RED' ) ) );
 	order_sync();
+	check( sprintf( 'red sold, %s: a check for the parent\'s listing', $when ), checks_queued(), array( array( '140000000001' ) ) );
+	check( '  order sync itself takes nothing off', stock_writes( 402 ), array() );
+	check( '  the sale marked handled on the variation the SKU found', '' !== (string) meta( 402, '_ebay_order_processed_40001' ), true );
 	run_queued();
 	order_sync();
-	check( sprintf( 'red sold on eBay, %s: from %d to %d', $when, $before, $want[ $when ] ), stock( 402 ), $want[ $when ] );
+	check( sprintf( '  red ends at eBay\'s 2 (WooCommerce had %d)', $before ), stock( 402 ), 2 );
+	check( '  blue, 1 left on eBay and 1 here, untouched', events_for( 403 ), array() );
+	check( '  order sync again: nothing more queued', $QUEUE, array() );
+	check( '  nothing sent back to eBay', $UNGUARDED, array() );
 }
 
 echo "\nAN ENDING ALREADY IN THE STOCK IS NOT APPLIED AGAIN\n" . str_repeat( '=', 124 ) . "\n";
@@ -634,6 +763,7 @@ listing( '130000000009', 'Completed', 1, 1 );
 sale_check( '130000000009' );
 check( 'a restock after the ending was settled is left alone', stock( 309 ), 3 );
 check( '  and the product is still marked ended', meta( 309, '_ebay_listing_status' ), 'Ended' );
+check( '  saying why the stock was left', logged( 'Sale check: eBay item 130000000009 is Completed' ) && logged( 'WC #309 marked ended; its sales were already in the stock, so the stock is left as it is.' ), true );
 
 echo "\nEVERY CONNECTED SHOP GETS THE STOCK CHECK (3.27.1)\n" . str_repeat( '=', 124 ) . "\n";
 
@@ -769,6 +899,48 @@ order_sync();
 check( 'set back to All eBay sites: the sale left alone is reduced, once', stock( 661 ), 4 );
 order_sync();
 check( '  and not again', stock( 661 ), 4 );
+
+echo "\nF3 A WEBSITE SALE'S PUSH ON ITS WAY, NO RECORD OF EBAY'S SALES: THE CHECK LEAVES THE STOCK TO THE PUSH (RELEASE FIX ROUND 1)\n" . str_repeat( '=', 124 ) . "\n";
+
+// 5 on both; the website sells 1 (its push queued, so 4 here), and eBay sells
+// 2 (3 left there). Lowered to eBay's 3, the stock had the website's sale
+// and eBay's two counted from one figure that holds only eBay's: the push,
+// which reads eBay itself, then took eBay's two off again.
+fresh_shop();
+product( 670, 'COIN-670', 4, '170000000670', array( 'meta' => array( '_ebay_push_pending' => array( 'sale-670' => array( 'until' => time() + HOUR_IN_SECONDS, 'queued_at' => time() ) ) ) ) );
+listing( '170000000670', 'Active', 5, 2 );
+sale_check( '170000000670' );
+check( 'a website sale\'s push on its way, no record: the stock is left as it is, for the push', stock( 670 ), 4 );
+check( '  and said', logged( 'WC #670 left at its stock: a website sale of it is on its way to eBay, and its push takes off eBay\'s sales.' ), true );
+
+// With a record, the sales since it are known: lowered as before.
+fresh_shop();
+product( 671, 'COIN-671', 4, '170000000671', array( 'meta' => array(
+	'_ebay_push_pending' => array( 'sale-671' => array( 'until' => time() + HOUR_IN_SECONDS, 'queued_at' => time() ) ),
+	'_ebay_sold_seen'    => array( 'item' => '170000000671', 'sku' => '', 'sold' => 0 ),
+) ) );
+listing( '170000000671', 'Active', 5, 2 );
+sale_check( '170000000671' );
+check( '  with a record of eBay\'s sales: lowered to eBay\'s 3, as before', stock( 671 ), 3 );
+
+// No sale on its way: lowered as before.
+fresh_shop();
+product( 672, 'COIN-672', 5, '170000000672', array( 'meta' => array( '_ebay_push_pending' => array( 'edit-672' => array( 'until' => time() + HOUR_IN_SECONDS, 'queued_at' => time() ) ) ) ) );
+listing( '170000000672', 'Active', 5, 2 );
+sale_check( '170000000672' );
+check( '  a push on its way that is not a sale\'s: lowered to eBay\'s 3, as before', stock( 672 ), 3 );
+
+// N3 (release fix round 2): only the mark of a sale whose push never got
+// there (30 days). Held back as a sale on its way, eBay's sales stayed on
+// the website: now eBay's figure less that sale's unit, as the import does.
+fresh_shop();
+product( 673, 'COIN-673', 4, '170000000673', array( 'meta' => array(
+	'_ebay_push_pending' => array( 'unsent' => time() + 30 * DAY_IN_SECONDS ),
+	'_ebay_unsent_qty'   => array( 'sale-673' => 1 ),
+) ) );
+listing( '170000000673', 'Active', 5, 2 );
+sale_check( '170000000673' );
+check( 'N3 only a sale\'s unsent mark: eBay\'s 3 less its 1 unit - 2, not left at 4', array( stock( 673 ), logged( 'left at its stock' ) ), array( 2, false ) );
 
 printf( "\n  %d passed, %d failed\n\n", $pass, $fail );
 exit( $fail > 0 ? 1 : 0 );

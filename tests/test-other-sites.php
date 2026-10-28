@@ -258,13 +258,23 @@ class Harness_Wpdb {
 			}
 			return $rows;
 		}
-		// The pruner's list of linked products.
-		if ( false !== strpos( $query, 'meta_value as ebay_id' ) ) {
+		// The pruner's list of linked products, with the marks the 3.28.0
+		// pruner reads beside each: its listing status, stock status, when it
+		// was last asked about and when the scans began to miss it.
+		if ( false !== stripos( $query, 'meta_value as ebay_id' ) ) {
 			$rows = array();
 			foreach ( $GLOBALS['POSTS'] as $id => $post ) {
-				$item = (string) ( $GLOBALS['META'][ $id ]['_ebay_item_id'] ?? '' );
+				$m    = $GLOBALS['META'][ $id ] ?? array();
+				$item = (string) ( $m['_ebay_item_id'] ?? '' );
 				if ( 'product' === $post['type'] && 'trash' !== $post['status'] && '' !== $item ) {
-					$rows[] = (object) array( 'post_id' => (string) $id, 'ebay_id' => $item );
+					$rows[] = (object) array(
+						'post_id'        => (string) $id,
+						'ebay_id'        => $item,
+						'listing_status' => (string) ( $m['_ebay_listing_status'] ?? '' ),
+						'stock_status'   => (string) ( $m['_stock_status'] ?? '' ),
+						'checked'        => (string) ( $m['_ebay_prune_checked'] ?? '0' ),
+						'missed'         => (string) ( $m['_ebay_prune_missed'] ?? '0' ),
+					);
 				}
 			}
 			return $rows;
@@ -622,6 +632,11 @@ class TCGiant_Sync_Image_Localizer {
 	public static function find_products_with_duplicate_images() { return array(); }
 }
 
+// A live shop, by wp-config, for TCGiant_Sync_Environment (3.28.0), which
+// the push, Relist and auto-relist ask before anything goes to eBay.
+// Staging copies are test-staging-detect.php's.
+define( 'TCGIANT_SYNC_IS_STAGING', false );
+require $ROOT . '/includes/class-tcgiant-sync-environment.php';
 require $ROOT . '/includes/class-tcgiant-sync-api.php';
 require $ROOT . '/includes/class-tcgiant-sync-sites.php';
 require $ROOT . '/includes/class-tcgiant-sync-runtime.php';
@@ -1932,11 +1947,14 @@ push( 817 );
 check( 'settled, no site recorded, eBay says eBay.com and refuses the new listing: asked once', array( $EBAY['wire'], $EBAY['get_items'], meta( 817, '_ebay_export_status' ) ), array( array( 'ReviseFixedPriceItem', 'AddFixedPriceItem' ), array( '110000000817' ), 'error' ) );
 check( '  still on its ended listing, now recorded on eBay.com', array( meta( 817, '_ebay_item_id' ), meta( 817, '_ebay_site' ) ), array( '110000000817', 'US' ) );
 push( 817 );
-check( '  pushed again: eBay is not asked again', array( $EBAY['wire'], $EBAY['get_items'] ), array( array( 'ReviseFixedPriceItem', 'AddFixedPriceItem' ), array() ) );
+// Since 3.28.0 every push of an ended listing asks eBay about it once - for a
+// relist made on eBay since, which a new listing would sit beside - and the
+// site is judged from that same answer: never a second call for the site.
+check( '  pushed again: eBay asked once, as for every push of an ended listing, not again for its site', array( $EBAY['wire'], $EBAY['get_items'] ), array( array( 'ReviseFixedPriceItem', 'AddFixedPriceItem' ), array( '110000000817' ) ) );
 unset( $EBAY['add'] );
 $EBAY['new_item'] = '110000009817';
 push( 817 );
-check( '  and once eBay takes it, the new listing, on eBay.com', array( $EBAY['wire'], $EBAY['get_items'], meta( 817, '_ebay_item_id' ), meta( 817, '_ebay_site' ), meta( 817, '_ebay_export_status' ) ), array( array( 'ReviseFixedPriceItem', 'AddFixedPriceItem' ), array(), '110000009817', 'US', 'pushed' ) );
+check( '  and once eBay takes it, the new listing, on eBay.com', array( $EBAY['wire'], $EBAY['get_items'], meta( 817, '_ebay_item_id' ), meta( 817, '_ebay_site' ), meta( 817, '_ebay_export_status' ) ), array( array( 'ReviseFixedPriceItem', 'AddFixedPriceItem' ), array( '110000000817' ), '110000009817', 'US', 'pushed' ) );
 // eBay answers without an item number: nothing to link either, so the same -
 // here for a variable product, which the ended-listing check never asks about.
 fresh_shop( $ONLY_US );
@@ -1947,7 +1965,7 @@ $EBAY['add'] = array( 'Ack' => 'Success' );
 push( 818 );
 $first = $EBAY['get_items'];
 push( 818 );
-check( '  a variable product, eBay giving no item number: asked once, recorded, still on its ended listing', array( $first, $EBAY['get_items'], meta( 818, '_ebay_site' ), meta( 818, '_ebay_item_id' ) ), array( array( '110000000818' ), array(), 'US', '110000000818' ) );
+check( '  a variable product, eBay giving no item number: asked once a push, recorded, still on its ended listing', array( $first, $EBAY['get_items'], meta( 818, '_ebay_site' ), meta( 818, '_ebay_item_id' ) ), array( array( '110000000818' ), array( '110000000818' ), 'US', '110000000818' ) );
 // A first listing eBay refuses has no ended listing, and records nothing.
 fresh_shop( array( 'import_sites' => 'primary', 'marketplace' => 'EBAY_GB' ) );
 product( 819, array( '_sku' => 'OWN-819' ) );
@@ -1955,17 +1973,40 @@ $EBAY['add'] = new WP_Error( 'api_error', 'The category selected is not a leaf c
 push( 819 );
 check( '  a first listing eBay refuses: no site recorded', array( $EBAY['wire'], meta( 819, '_ebay_site' ), meta( 819, '_ebay_export_status' ) ), array( array( 'AddFixedPriceItem' ), null, 'error' ) );
 
-// Nothing extra asked where the site is known, or where every site is imported.
+// Nothing extra asked where the site is known, or where every site is imported:
+// the one GetItem every push of an ended listing makes since 3.28.0, for a
+// relist made on eBay since, and no more.
 fresh_shop( $ONLY_US );
 linked_product( 815, '110000000815', 'US', $settled( '110000000815' ) );
+ebay_has( '110000000815', ended( '110000000815', 'US' ) );
 $EBAY['new_item'] = '110000009815';
 push( 815 );
-check( 'settled, recorded on eBay.com: a new listing, with no GetItem', array( $EBAY['wire'], $EBAY['get_items'] ), array( array( 'ReviseFixedPriceItem', 'AddFixedPriceItem' ), array() ) );
+check( 'settled, recorded on eBay.com: a new listing, with the one GetItem for a relist', array( $EBAY['wire'], $EBAY['get_items'] ), array( array( 'ReviseFixedPriceItem', 'AddFixedPriceItem' ), array( '110000000815' ) ) );
 fresh_shop( array( 'marketplace' => 'EBAY_US' ) );
 linked_product( 816, '220000000816', null, $settled( '220000000816' ) );
+ebay_has( '220000000816', ended( '220000000816', 'UK' ) );
 $EBAY['new_item'] = '110000009816';
 push( 816 );
-check( 'all eBay sites: settled, no site recorded - a new listing, as in 3.27.4, with no GetItem', array( $EBAY['wire'], $EBAY['get_items'] ), array( array( 'ReviseFixedPriceItem', 'AddFixedPriceItem' ), array() ) );
+check( 'all eBay sites: settled, no site recorded - a new listing, as in 3.27.4, with the one GetItem for a relist', array( $EBAY['wire'], $EBAY['get_items'] ), array( array( 'ReviseFixedPriceItem', 'AddFixedPriceItem' ), array( '220000000816' ) ) );
+
+// 3.28.0's push follows a relist eBay names, and revises it when it is live.
+// A copy whose relist Web Interpret made on its own site, nothing recorded:
+// the site decides first, and the copy's relist is neither followed nor
+// revised from the shop's product.
+fresh_shop( $ONLY_US );
+linked_product( 831, '220000000831', null, $settled( '220000000831' ) );
+ebay_has( '220000000831', array_replace_recursive( ended( '220000000831', 'UK' ), array( 'ListingDetails' => array( 'RelistedItemID' => '220000000832' ) ) ) );
+ebay_has( '220000000832', listing( '220000000832', 'UK', array( 'SKU' => 'SKU-831' ) ) );
+push( 831 );
+check( 'an ended copy relisted on its own site, pushed: not moved on to the relist, nor the relist revised', array( $EBAY['wire'], $EBAY['get_items'], meta( 831, '_ebay_item_id' ) ), array( array( 'ReviseFixedPriceItem' ), array( '220000000831' ), '220000000831' ) );
+check( '  refused for its site, and the site recorded', array( meta( 831, '_ebay_export_error' ), meta( 831, '_ebay_site' ) ), array( $UK_REFUSAL, 'UK' ) );
+// The shop's own site: followed and revised, as 3.28.0 does it.
+fresh_shop( $ONLY_US );
+linked_product( 832, '110000000832', null, $settled( '110000000832' ) );
+ebay_has( '110000000832', array_replace_recursive( ended( '110000000832', 'US' ), array( 'ListingDetails' => array( 'RelistedItemID' => '110000000833' ) ) ) );
+ebay_has( '110000000833', listing( '110000000833', 'US', array( 'SKU' => 'SKU-832' ) ) );
+push( 832 );
+check( '  its own site\'s: moved on to the live relist, which the push revises', array( meta( 832, '_ebay_item_id' ), $EBAY['wire'] ), array( '110000000833', array( 'ReviseFixedPriceItem', 'ReviseFixedPriceItem' ) ) );
 
 echo "\nA COPY REVISED ONCE BY PUSH IS NEVER RELISTED ON ITS OWN SITE (FAILS ON THE SECOND 3.27.5 BUILD)\n" . str_repeat( '=', 142 ) . "\n";
 
@@ -2048,8 +2089,12 @@ $TERMS[821] = array( 77 );
 // retires anything).
 ebay_has( '220000000821', gone_from_ebay() );
 prune_with_active( $active );
-check( 'the pruner keeps it (preserved) and drops its item number', array( status_of( 821 ), meta( 821, '_ebay_item_id' ) ), array( 'publish', null ) );
-check( '  and its listing\'s site with it', meta( 821, '_ebay_site' ), null );
+// 3.27.6 unlinked a preserved product it retired, and dropped its site with
+// it. Since 3.28.0 the pruner never trashes, zeroes or unlinks: a listing eBay
+// no longer has is marked ended, the product kept as it is, on that listing -
+// so its site is still the site of the listing it is on.
+check( 'the pruner keeps it, marked ended, on the listing it was on', array( status_of( 821 ), meta( 821, '_ebay_item_id' ), meta( 821, '_ebay_listing_status' ) ), array( 'publish', '220000000821', 'Ended' ) );
+check( '  and that listing\'s site with it', meta( 821, '_ebay_site' ), 'UK' );
 // With no item number its eBay panel offers "Link to this listing", and the
 // shop links it to its own eBay.com listing.
 ebay_has( '110000000829', listing( '110000000829', 'US' ) );
@@ -2144,19 +2189,15 @@ preg_match_all( '/tcgiant_sync_ebay_settings\[([a-z_]+)\]/', substr( $view, 0, $
 $import_fields = array_values( array_unique( $m[1] ) );
 preg_match_all( '/tcgiant_sync_ebay_settings\[([a-z_]+)\]/', substr( $view, $cut ), $m );
 $export_fields = array_values( array_unique( $m[1] ) );
-preg_match( '/\$preserve_keys = array\(([^)]*)\)/', $view, $m );
-preg_match_all( "/'([a-z_]+)'/", $m[1] ?? '', $keys );
-$both = $keys[1];
-preg_match( '/\$all_preserve = array_merge\( \$preserve_keys, array\(([^)]*)\)/', $view, $m );
-preg_match_all( "/'([a-z_]+)'/", $m[1] ?? '', $keys );
-$kept_by_export = array_merge( $both, $keys[1] );
-preg_match( '/\$export_preserve = array\(([^)]*)\)/', $view, $m );
-preg_match_all( "/'([a-z_]+)'/", $m[1] ?? '', $keys );
-$kept_by_import = array_merge( $both, $keys[1] );
-check( 'the Export Settings form keeps every Import Settings field', array_values( array_diff( $import_fields, $kept_by_export ) ), array() );
-check( '  Import listings from among them', in_array( 'import_sites', $kept_by_export, true ), true );
-check( '  and the Standard Categories import filter', in_array( 'import_standard_category_ids', $kept_by_export, true ), true );
-check( 'the Import Settings form keeps every Export Settings field', array_values( array_diff( array_diff( $export_fields, $kept_by_export ), $kept_by_import ) ), array() );
+// 3.28.0: a form no longer carries the other's fields back. A save from one
+// changes only its own settings (TCGiant_Sync_Admin::SETTINGS_FORMS) and keeps
+// every other as stored - so none of one form's fields may be the other's.
+$own_import = TCGiant_Sync_Admin::SETTINGS_FORMS['import'];
+$own_export = TCGiant_Sync_Admin::SETTINGS_FORMS['export'];
+check( 'the Export Settings form keeps every Import Settings field', array( array_values( array_diff( $import_fields, $own_import ) ), array_values( array_intersect( $import_fields, $own_export ) ) ), array( array(), array() ) );
+check( '  Import listings from among them', array( in_array( 'import_sites', $own_import, true ), in_array( 'import_sites', $own_export, true ) ), array( true, false ) );
+check( '  and the Standard Categories import filter', array( in_array( 'import_standard_category_ids', $own_import, true ), in_array( 'import_standard_category_ids', $own_export, true ) ), array( true, false ) );
+check( 'the Import Settings form keeps every Export Settings field', array( array_values( array_diff( $export_fields, $own_export ) ), array_values( array_intersect( $export_fields, $own_import ) ) ), array( array(), array() ) );
 check( 'the field is in the Import Settings form', in_array( 'import_sites', $import_fields, true ), true );
 
 // The wizard cannot be reached, so it is not where the setting lives.

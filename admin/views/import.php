@@ -22,9 +22,11 @@ $license_ui       = $license->get_status_for_ui();
 $auth_url         = TCGiant_Sync_OAuth::instance()->get_authorization_url();
 $log_entries      = TCGiant_Sync_Logger::get_recent_entries( 20 );
 
+// Shown as stopped, but not written: to a running scan, "stopped" in the
+// table means Emergency Stop, and the scan writes limit_reached part way
+// through a page and carries on.
 if ( 'limit_reached' === $sync_state['status'] && $license_ui['can_import'] ) {
 	$sync_state['status'] = 'stopped';
-	TCGiant_Sync_Importer::update_sync_state( array( 'status' => 'stopped' ) );
 }
 
 // What the sync's progress looks like on screen, from the state as it is:
@@ -90,7 +92,7 @@ $progress_pct = $tc_screen['queued_pct'];
 		?></p></div>
 	<?php endif; ?>
 	<?php if ( isset( $_GET['prune_started'] ) && '1' === $_GET['prune_started'] ) : ?>
-		<div class="notice notice-success is-dismissible"><p><?php esc_html_e( 'Scanning eBay now. Products no longer listed will be moved to the Trash once the scan finishes.', 'tcgiant-sync' ); ?></p></div>
+		<div class="notice notice-success is-dismissible"><p><?php esc_html_e( 'Scanning eBay now. When the full sync has finished, eBay is asked about the products whose listing it did not find, up to 300 at a time and the rest an hour later, and any that have ended are settled. The Activity Log says what was checked.', 'tcgiant-sync' ); ?></p></div>
 	<?php endif; ?>
 	<?php if ( isset( $_GET['queue_processed'] ) && '1' === $_GET['queue_processed'] ) :
 		$tc_as   = isset( $_GET['queue_as'] ) ? (int) $_GET['queue_as'] : 0;
@@ -366,8 +368,8 @@ $progress_pct = $tc_screen['queued_pct'];
 
 			<div class="tc-section">
 				<h3 class="tc-section-title"><?php esc_html_e( 'Clean Sold Items', 'tcgiant-sync' ); ?></h3>
-				<p class="tc-section-desc"><?php esc_html_e( 'Re-scans your eBay store, then moves WooCommerce products that are no longer listed to the Trash. Because it has to check every listing first, this takes as long as a full sync.', 'tcgiant-sync' ); ?></p>
-				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" onsubmit="return confirm('<?php echo esc_js( __( 'This re-scans your entire eBay store, then moves products that are no longer listed to the Trash.
+				<p class="tc-section-desc"><?php esc_html_e( 'Re-scans your eBay store, then asks eBay about each product whose listing the scan did not find, up to 300 at a time and the rest an hour later. A listing that has ended is settled the way the sync settles any ended listing: stock is lowered to what eBay says is left on that listing, never raised, and a product goes to the Trash only if it sold out and "Remove products when their eBay listing sells out" is on. Products you pushed to eBay, and products in Preserve categories, are never removed. Because it has to check every listing first, this takes as long as a full sync.', 'tcgiant-sync' ); ?></p>
+				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" onsubmit="return confirm('<?php echo esc_js( __( 'This re-scans your entire eBay store, then settles each product whose eBay listing has ended. Only products that sold out on eBay are moved to the Trash, and only if "Remove products when their eBay listing sells out" is on.
 
 Products can be restored from the Trash afterwards. Continue?', 'tcgiant-sync' ) ); ?>');">
 					<input type="hidden" name="action" value="tcgiant_prune_now">

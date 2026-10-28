@@ -178,6 +178,13 @@ class TCGiant_Sync_OAuth {
 }
 class TCGiant_Sync_Inventory {
 	const SETTLE_KEYS = array();
+	// The import's record writer (3.28.0 release fix round 5): nothing to arm here.
+	public static function arm_record( $product, $before, $record, $holds = null ) { return null; }
+	public static function disarm_record( $armed ) { return false; }
+	// What the real class names (3.28.0): the auction the shop listed from
+	// WooCommerce, and the figures an auction import records.
+	const AUCTION_LISTED_KEY  = '_ebay_auction_listed_item';
+	const AUCTION_FIGURE_KEYS = array( '_ebay_start_price', '_ebay_current_price', '_ebay_bid_count', '_ebay_buy_it_now_price' );
 	public static function begin_ebay_origin() {}
 	public static function end_ebay_origin() {}
 }
@@ -196,6 +203,11 @@ class TCGiant_Sync_Logger {
 	public static function write_now( $message, $level = 'error' ) { $GLOBALS['LOG'][] = $message; }
 }
 
+// A live shop, by wp-config, for TCGiant_Sync_Environment (3.28.0), which
+// the push, Relist and auto-relist ask before anything goes to eBay.
+// Staging copies are test-staging-detect.php's.
+define( 'TCGIANT_SYNC_IS_STAGING', false );
+require $ROOT . '/includes/class-tcgiant-sync-environment.php';
 require $ROOT . '/includes/class-tcgiant-sync-runtime.php';
 require $ROOT . '/includes/class-tcgiant-sync-catalog.php';
 // The mapper's save and the push read the listing's eBay site through it.
