@@ -158,18 +158,15 @@ class TCGiant_Sync_Exporter {
 
 	/**
 	 * eBay categories that require ConditionDescriptors — Trading Cards.
+	 *
+	 * Exactly the three eBay's table of condition descriptor IDs for trading
+	 * cards names (MIP user guide). Until 3.28.1 seven more were here, under
+	 * IDs eBay files elsewhere: see TCGiant_Sync_Catalog::RETIRED_CATEGORIES.
 	 */
 	const DESCRIPTOR_CATEGORIES_TCG = array(
-		'183050', // Trading Card Games
-		'183454', // CCG Individual Cards (Dragon Ball Super, etc.)
+		'183050', // Non-Sport Trading Card Singles
+		'183454', // CCG Individual Cards
 		'261328', // Sports Trading Card Singles
-		'2536',   // Trading Cards
-		'261068', // Non-Sport Trading Card Games
-		'180006', // Pokémon Individual Cards
-		'176055', // Magic: The Gathering Cards
-		'69243',  // Yu-Gi-Oh! Individual Cards
-		'183446', // Disney Lorcana
-		'185089', // One Piece Card Game
 	);
 
 	/**
@@ -1473,6 +1470,8 @@ class TCGiant_Sync_Exporter {
 		// A new push: its photos are decided afresh (get_product_image_urls()).
 		$this->pictures_for = array();
 		$this->grade_said   = array();
+		$this->card_said    = array();
+		$this->build_for    = 'Push';
 
 		$settings = $this->get_export_settings( $product->get_id() );
 
@@ -1495,9 +1494,20 @@ class TCGiant_Sync_Exporter {
 			);
 		}
 
+		// A product with a listing has its item built for the revise below.
+		// That listing keeps the category it is in (3.28.1): eBay does not move
+		// a live fixed-price listing to another category once it has sales, so
+		// a retired ID is mapped only for a new listing - here, and for one in
+		// place of an ended listing below - and Verify. The item specifics and
+		// the card details follow the category sent.
+		$ebay_item_id = $product->get_meta( '_ebay_item_id' );
+
+		$kept_settings = self::keep_listing_category( $settings );
+		$sent_settings = ! empty( $ebay_item_id ) ? $kept_settings : $settings;
+
 		// Fail locally with the specific missing aspects rather than sending a
 		// request eBay will reject with a generic error.
-		$missing_aspects = $this->find_missing_required_aspects( $product, $settings );
+		$missing_aspects = $this->find_missing_required_aspects( $product, $sent_settings );
 		if ( ! empty( $missing_aspects ) ) {
 			return new WP_Error(
 				'missing_required_aspects',
@@ -1511,9 +1521,8 @@ class TCGiant_Sync_Exporter {
 
 		// A product with a listing has its item built for the revise below,
 		// which keeps the listing's photos when one of them would be left out.
-		$ebay_item_id = $product->get_meta( '_ebay_item_id' );
-		$item_xml     = $this->build_item_xml( $product, $settings, ! empty( $ebay_item_id ) );
-		$held         = $this->pictures_held;
+		$item_xml = $this->build_item_xml( $product, $sent_settings, ! empty( $ebay_item_id ) );
+		$held     = $this->pictures_held;
 
 		// eBay refuses a description over 500,000 characters, tags included, and
 		// a refusal is a call spent. A templated or eBay-only description is
@@ -1608,6 +1617,7 @@ class TCGiant_Sync_Exporter {
 			if ( ! is_wp_error( $response ) ) {
 				// ReviseItem returns ItemID in the response.
 				$returned_item_id = $response['ItemID'] ?? $ebay_item_id;
+				$this->say_category_kept( $product->get_id(), $kept_settings, (string) $ebay_item_id );
 				return array( 'item_id' => $returned_item_id, 'action' => 'updated', 'desc' => $this->last_render );
 			}
 
@@ -1717,7 +1727,7 @@ class TCGiant_Sync_Exporter {
 				// sent the old one. For the live relist, as a revise: one of its
 				// photos that would be left out keeps the relist's photos as they
 				// are (3.27.8), as for the listing the push began with.
-				$item_xml = $this->build_item_xml( $product, $settings, $relist_live );
+				$item_xml = $this->build_item_xml( $product, $relist_live ? $kept_settings : $settings, $relist_live );
 
 				if ( $relist_live ) {
 					$full_xml = '<Item>' . "\n" . '<ItemID>' . esc_attr( $ebay_item_id ) . '</ItemID>' . "\n" . $item_xml . "\n" . '</Item>';
@@ -1733,6 +1743,8 @@ class TCGiant_Sync_Exporter {
 					if ( is_wp_error( $response ) ) {
 						return $response;
 					}
+
+					$this->say_category_kept( $product->get_id(), $kept_settings, (string) $ebay_item_id );
 
 					// With the description it sent, as any revise eBay accepts:
 					// process_single_push() records it (3.27.8).
@@ -1772,7 +1784,9 @@ class TCGiant_Sync_Exporter {
 			// revise without its photos is built again with them: a new listing
 			// goes without only the ones that cannot be put on eBay, and those
 			// it has no room for, said once - here, as the revise's build did not.
-			if ( $check || $held ) {
+			// So is one built for the revise in a retired category: the new
+			// listing goes to the category it was meant to be (3.28.1).
+			if ( $check || $held || ! empty( $kept_settings['category_kept'] ) ) {
 				if ( $check ) {
 					$product = wc_get_product( $product->get_id() );
 				}
@@ -1932,6 +1946,8 @@ class TCGiant_Sync_Exporter {
 		// A build of its own: its photos are decided afresh.
 		$this->pictures_for = array();
 		$this->grade_said   = array();
+		$this->card_said    = array();
+		$this->build_for    = 'Verify';
 
 		return $this->build_item_xml( $product, $settings );
 	}
@@ -2474,6 +2490,13 @@ class TCGiant_Sync_Exporter {
 			return new WP_Error( 'no_item_id', __( 'eBay did not return a new Item ID. The listing may have been relisted - check your eBay account.', 'tcgiant-sync' ) );
 		}
 
+		// RelistItem sends no category: the relist stays in the one the
+		// listing was in, a retired ID's too (3.28.1). Said, with how to move it.
+		$relist_kept = self::keep_listing_category( $this->get_export_settings( $product_id ) );
+		if ( ! empty( $relist_kept['category_kept'] ) ) {
+			TCGiant_Sync_Logger::warning( self::kept_category_warning( $product_id, $relist_kept['category_kept'], $new_id, 'relist' ) );
+		}
+
 		// An auction the shop listed from WooCommerce stays the shop's when
 		// it is relisted from here; one imported from eBay stays eBay's.
 		if ( (string) get_post_meta( $product_id, TCGiant_Sync_Inventory::AUCTION_LISTED_KEY, true ) === (string) $ebay_item_id ) {
@@ -2878,6 +2901,13 @@ class TCGiant_Sync_Exporter {
 		// injects raw XML into the AddItem payload.
 		$xml .= '<Description><![CDATA[' . str_replace( ']]>', ']]]]><![CDATA[>', $description ) . ']]></Description>' . "\n";
 		$xml .= '<PrimaryCategory><CategoryID>' . esc_attr( $settings['category_id'] ) . '</CategoryID></PrimaryCategory>' . "\n";
+
+		// Sent to the category a retired ID was meant to be: said once a push
+		// (get_export_settings()).
+		if ( ! empty( $settings['category_retired'] ) && empty( $this->card_said[ 'category:' . $product->get_id() ] ) ) {
+			$this->card_said[ 'category:' . $product->get_id() ] = true;
+			TCGiant_Sync_Logger::warning( self::retired_category_warning( $product->get_id(), $settings['category_retired'], $this->build_for ) );
+		}
 		
 	
 		if ( ! $product->is_type( 'variable' ) ) {
@@ -2900,7 +2930,11 @@ class TCGiant_Sync_Exporter {
 			// ConditionID is set inside build_condition_descriptors_xml based on type.
 			$condition_id = 'graded' === $settings['condition_type'] ? '2750' : '4000';
 			$xml .= '<ConditionID>' . esc_attr( $condition_id ) . '</ConditionID>' . "\n";
-			$xml .= $descriptor_xml . "\n";
+			// None left to send (an ungraded condition eBay does not take in
+			// the category): the ConditionID alone, never an empty container.
+			if ( false !== strpos( $descriptor_xml, '<ConditionDescriptor>' ) ) {
+				$xml .= $descriptor_xml . "\n";
+			}
 		} else {
 			$xml .= '<ConditionID>' . esc_attr( $settings['condition_id'] ) . '</ConditionID>' . "\n";
 		}
@@ -3196,6 +3230,25 @@ class TCGiant_Sync_Exporter {
 			$resolved                 = TCGiant_Sync_Templates::resolve( $product );
 			$settings['template_id']  = $resolved['template_id'];
 			$settings['template_why'] = $resolved['why'];
+		}
+
+		// A category the plugin's own list once offered under an ID eBay files
+		// elsewhere (3.28.1): the item goes to the category it was meant for,
+		// and the push says so (build_item_xml()). What is stored is left as
+		// it is, for the shop to change; one chosen from eBay's own tree is a
+		// custom choice and stays.
+		$from_product = $product && ! empty( $product->get_meta( '_ebay_export_category_id' ) );
+		$saved_name   = $from_product ? (string) $product->get_meta( '_ebay_export_category_name' ) : (string) ( $global['export_category_name'] ?? '' );
+		$saved_typed  = $from_product ? (string) $product->get_meta( '_ebay_export_category_typed' ) : (string) ( $global['export_category_typed'] ?? '' );
+		$settings['category_typed'] = $saved_typed;
+		$retired_to   = TCGiant_Sync_Catalog::retired_category( $settings['category_id'], $saved_name, $saved_typed );
+		if ( '' !== $retired_to ) {
+			$settings['category_retired'] = array(
+				'from'   => (string) $settings['category_id'],
+				'to'     => $retired_to,
+				'source' => $from_product ? 'product' : 'default',
+			);
+			$settings['category_id']      = $retired_to;
 		}
 
 		// Flag category-item_type mismatch so validation can catch it.
@@ -3504,6 +3557,13 @@ class TCGiant_Sync_Exporter {
 	 */
 	public function describe_aspects( WC_Product $product, array $settings ) {
 		$category_id = (string) ( $settings['category_id'] ?? '' );
+
+		// A retired ID still on the screen is asked about as the category a
+		// push sends it to (get_export_settings()).
+		$retired_to = TCGiant_Sync_Catalog::retired_category( $category_id, $settings['category_name'] ?? '', $settings['category_typed'] ?? '' );
+		if ( '' !== $retired_to ) {
+			$category_id = $retired_to;
+		}
 
 		if ( '' === trim( $category_id ) ) {
 			return array(
@@ -4085,6 +4145,247 @@ class TCGiant_Sync_Exporter {
 	private $grade_said = array();
 
 	/**
+	 * What this push has said about a product's card category or card
+	 * condition, by 'category:ID' and 'ungraded:ID': a relist builds its
+	 * item twice, and says it once. Cleared with $pictures_for.
+	 *
+	 * @var array<string,bool>
+	 */
+	private $card_said = array();
+
+	/**
+	 * Whose build this is, for its warnings: 'Push' (do_push()) or 'Verify'
+	 * (build_item_xml_public(): Verify, Check with eBay, the template
+	 * preview), which lists nothing.
+	 *
+	 * @var string
+	 */
+	private $build_for = 'Push';
+
+	/**
+	 * The warning for a product, or the default, saved with a retired
+	 * category ID (TCGiant_Sync_Catalog::RETIRED_CATEGORIES), on a new
+	 * listing's item.
+	 *
+	 * @param int    $product_id Product.
+	 * @param array  $retired    get_export_settings()'s category_retired: from, to, source.
+	 * @param string $for        'Push' or 'Verify'.
+	 * @return string
+	 */
+	public static function retired_category_warning( $product_id, array $retired, $for = 'Push' ) {
+		$from = (string) ( $retired['from'] ?? '' );
+		$to   = (string) ( $retired['to'] ?? '' );
+
+		return sprintf(
+			'Verify' === $for
+				? 'Verify: WC #%1$d is saved with eBay category %2$s ("%3$s"), an ID TCGiant Sync\'s category list had wrong until 3.28.1, so the item was checked in %4$s, %5$s, where eBay files those cards and a new listing goes. Choose the category again on %6$s to stop this message.'
+				: 'Push: WC #%1$d is saved with eBay category %2$s ("%3$s"), an ID TCGiant Sync\'s category list had wrong until 3.28.1, so the listing went to %4$s, %5$s, where eBay files those cards. Choose the category again on %6$s to stop this message.',
+			(int) $product_id,
+			$from,
+			TCGiant_Sync_Catalog::RETIRED_CATEGORY_LABELS[ $from ] ?? $from,
+			$to,
+			TCGiant_Sync_Catalog::CARD_CATEGORY_NAMES[ $to ] ?? $to,
+			'product' === ( $retired['source'] ?? '' ) ? 'the product\'s eBay tab' : 'Settings, Push to eBay (the default eBay category)'
+		);
+	}
+
+	/**
+	 * The settings a revise of a live listing is built with (3.28.1): a
+	 * retired ID is not mapped there, as eBay does not move a live
+	 * fixed-price listing to another category once it has sales. The stored
+	 * ID goes as it is, under category_kept, and the card details follow it.
+	 *
+	 * @param array $settings get_export_settings().
+	 * @return array
+	 */
+	public static function keep_listing_category( array $settings ) {
+		if ( empty( $settings['category_retired']['from'] ) ) {
+			return $settings;
+		}
+
+		$settings['category_kept'] = $settings['category_retired'];
+		$settings['category_id']   = (string) $settings['category_retired']['from'];
+		unset( $settings['category_retired'] );
+
+		return $settings;
+	}
+
+	/**
+	 * The warning for a live listing left in a retired category, by a revise
+	 * or a relist.
+	 *
+	 * @param int    $product_id Product.
+	 * @param array  $kept       keep_listing_category()'s category_kept: from, to, source.
+	 * @param string $item_id    The listing revised, or the relist made.
+	 * @param string $action     'revise' or 'relist'.
+	 * @return string
+	 */
+	public static function kept_category_warning( $product_id, array $kept, $item_id, $action = 'revise' ) {
+		$from = (string) ( $kept['from'] ?? '' );
+		$to   = (string) ( $kept['to'] ?? '' );
+
+		return sprintf(
+			'relist' === $action
+				? 'Relist: WC #%1$d is saved with eBay category %2$s ("%3$s"), an ID TCGiant Sync\'s category list had wrong until 3.28.1, and eBay US does not file single trading cards under it. Its listing was relisted as %4$s in the category it was in, as a relist keeps it. To move it to %5$s, %6$s, end the listing and push the product again, which makes a new listing there.'
+				: 'Push: WC #%1$d is saved with eBay category %2$s ("%3$s"), an ID TCGiant Sync\'s category list had wrong until 3.28.1, and eBay US does not file single trading cards under it. Its eBay listing %4$s was revised in that category as it is: eBay does not move a live listing to another category once it has sales. To move it to %5$s, %6$s, end the listing and push the product again, which makes a new listing there.',
+			(int) $product_id,
+			$from,
+			TCGiant_Sync_Catalog::RETIRED_CATEGORY_LABELS[ $from ] ?? $from,
+			(string) $item_id,
+			$to,
+			TCGiant_Sync_Catalog::CARD_CATEGORY_NAMES[ $to ] ?? $to
+		);
+	}
+
+	/**
+	 * Say that a revise eBay accepted left a live listing in its retired
+	 * category (keep_listing_category()). A push makes one such revise at
+	 * most, so it is said once.
+	 *
+	 * @param int    $product_id Product.
+	 * @param array  $kept       The settings the revise was built with.
+	 * @param string $item_id    The listing revised.
+	 */
+	private function say_category_kept( $product_id, array $kept, $item_id ) {
+		if ( ! empty( $kept['category_kept'] ) ) {
+			TCGiant_Sync_Logger::warning( self::kept_category_warning( (int) $product_id, $kept['category_kept'], $item_id, 'revise' ) );
+		}
+	}
+
+	/**
+	 * Whether an ungraded card condition (descriptor 40001) is one eBay's
+	 * table lists for a category, for the three single-card categories
+	 * (TCGiant_Sync_Catalog::UNGRADED_TCG_CATEGORIES). In any other category
+	 * the table says nothing. One it does not list is sent all the same, and
+	 * said: the table is a documentation page, behind eBay's own data.
+	 *
+	 * @param string $value       Descriptor value ID.
+	 * @param string $category_id eBay category ID.
+	 * @return bool
+	 */
+	public static function ungraded_valid_in( $value, $category_id ) {
+		$category_id = (string) $category_id;
+		if ( ! in_array( $category_id, self::DESCRIPTOR_CATEGORIES_TCG, true ) ) {
+			return true;
+		}
+
+		return in_array( $category_id, TCGiant_Sync_Catalog::UNGRADED_TCG_CATEGORIES[ (string) $value ] ?? array(), true );
+	}
+
+	/**
+	 * The warning for an ungraded card condition eBay does not take in the
+	 * product's category.
+	 *
+	 * @param int    $product_id  Product.
+	 * @param string $value       Descriptor value ID.
+	 * @param string $category_id eBay category ID.
+	 * @param string $for         'Push' or 'Verify'.
+	 * @return string
+	 */
+	public static function ungraded_invalid_warning( $product_id, $value, $category_id, $for = 'Push' ) {
+		$takes = array();
+		foreach ( TCGiant_Sync_Catalog::UNGRADED_TCG_CATEGORIES as $id => $categories ) {
+			if ( in_array( (string) $category_id, $categories, true ) ) {
+				$takes[] = TCGiant_Sync_Catalog::UNGRADED_TCG[ $id ];
+			}
+		}
+
+		return sprintf(
+			'%6$s: the card condition "%2$s" of WC #%1$d is not one eBay\'s table of trading-card conditions lists for category %3$s, %4$s, where it lists %5$s. It was sent as it is: if eBay refuses it, choose the condition again in the product\'s eBay Listing tab.',
+			(int) $product_id,
+			TCGiant_Sync_Catalog::UNGRADED_TCG[ $value ] ?? $value,
+			$category_id,
+			TCGiant_Sync_Catalog::CARD_CATEGORY_NAMES[ $category_id ] ?? $category_id,
+			implode( ', ', $takes ),
+			'Verify' === $for ? 'Verify' : 'Push'
+		);
+	}
+
+	/**
+	 * Whether these settings take eBay's trading-card ConditionDescriptors
+	 * (27501-27503, 40001): a descriptor category or Item Type, a condition
+	 * type, and not a coin. What build_condition_descriptors_xml() decides,
+	 * for the product's eBay tab to say the same.
+	 *
+	 * @param array $settings Merged export settings.
+	 * @return bool
+	 */
+	public static function takes_card_descriptors( array $settings ) {
+		$item_type   = (string) ( $settings['item_type'] ?? '' );
+		$category_id = (string) ( $settings['category_id'] ?? '' );
+
+		return self::is_descriptor_category( $category_id, $item_type )
+			&& ! empty( $settings['condition_type'] )
+			&& ! self::is_coins_category( $category_id, $item_type, $settings['category_name'] ?? '' );
+	}
+
+	/**
+	 * The warning for a trading card whose category is not one eBay takes its
+	 * card details in.
+	 *
+	 * @param int    $product_id  Product.
+	 * @param string $category_id eBay category ID.
+	 * @param string $for         'Push' or 'Verify'.
+	 * @return string
+	 */
+	public static function card_category_warning( $product_id, $category_id, $for = 'Push' ) {
+		return sprintf(
+			'%3$s: WC #%1$d is a trading card in eBay category %2$s, and eBay takes card grading and condition details (grader, grade, certification number, card condition) only in 183454 CCG Individual Cards, 183050 Non-Sport Trading Card Singles and 261328 Sports Trading Card Singles. So none were sent, only its condition. Choose one of those categories on the product\'s eBay tab, or set its Item Type to All Other.',
+			(int) $product_id,
+			$category_id,
+			'Verify' === $for ? 'Verify' : 'Push'
+		);
+	}
+
+	/**
+	 * Whether a professional grader (descriptor 27501) is one eBay's table
+	 * lists for a category, for the three single-card categories
+	 * (TCGiant_Sync_Catalog::GRADER_TCG_CATEGORIES). A grader the table does
+	 * not list at all is unknown to it. One it does not list for the category
+	 * is sent all the same, and said.
+	 *
+	 * @param string $grader      Descriptor value ID.
+	 * @param string $category_id eBay category ID.
+	 * @return bool
+	 */
+	public static function grader_valid_in( $grader, $category_id ) {
+		$grader      = (string) $grader;
+		$category_id = (string) $category_id;
+		if ( ! in_array( $category_id, self::DESCRIPTOR_CATEGORIES_TCG, true ) || ! isset( TCGiant_Sync_Catalog::GRADER_TCG_CATEGORIES[ $grader ] ) ) {
+			return true;
+		}
+
+		return in_array( $category_id, TCGiant_Sync_Catalog::GRADER_TCG_CATEGORIES[ $grader ], true );
+	}
+
+	/**
+	 * The warning for a grader eBay does not take in the product's category.
+	 *
+	 * @param int    $product_id  Product.
+	 * @param string $grader      Descriptor value ID.
+	 * @param string $category_id eBay category ID.
+	 * @param string $for         'Push' or 'Verify'.
+	 * @return string
+	 */
+	public static function grader_invalid_warning( $product_id, $grader, $category_id, $for = 'Push' ) {
+		$name  = array_search( (string) $grader, TCGiant_Sync_Catalog::GRADERS_TCG, true );
+		$takes = array();
+		foreach ( TCGiant_Sync_Catalog::GRADER_TCG_CATEGORIES[ (string) $grader ] ?? array() as $id ) {
+			$takes[] = $id . ' ' . ( TCGiant_Sync_Catalog::CARD_CATEGORY_NAMES[ $id ] ?? $id );
+		}
+
+		return sprintf(
+			'%6$s: the grader "%2$s" of WC #%1$d is not one eBay\'s table of trading-card graders lists for category %3$s, %4$s; it lists it only in %5$s. It was sent as it is: if eBay refuses it, choose the grader again in the product\'s eBay Listing tab.',
+			(int) $product_id,
+			false !== $name ? $name : $grader,
+			$category_id,
+			TCGiant_Sync_Catalog::CARD_CATEGORY_NAMES[ $category_id ] ?? $category_id,
+			implode( ', ', $takes ),
+			'Verify' === $for ? 'Verify' : 'Push'
+		);
+	}
+
+	/**
 	 * Build <ConditionDescriptors> XML for the listing.
 	 *
 	 * Returns empty string if the category does not require descriptors
@@ -4102,6 +4403,18 @@ class TCGiant_Sync_Exporter {
 
 		if ( empty( $settings['condition_type'] ) ) {
 			return '';
+		}
+
+		// Trading-card details go only in the three categories eBay's table
+		// names (3.28.1). Elsewhere - Item Type "Trading Cards" in a category
+		// of the shop's own - none is sent, said once a push, and the item
+		// keeps its Graded or Ungraded ConditionID.
+		if ( self::takes_card_descriptors( $settings ) && ! in_array( (string) $settings['category_id'], self::DESCRIPTOR_CATEGORIES_TCG, true ) ) {
+			if ( empty( $this->card_said[ 'outside:' . (int) $product_id ] ) ) {
+				$this->card_said[ 'outside:' . (int) $product_id ] = true;
+				TCGiant_Sync_Logger::warning( self::card_category_warning( (int) $product_id, (string) $settings['category_id'], $this->build_for ) );
+			}
+			return '<ConditionDescriptors>' . "\n" . '</ConditionDescriptors>';
 		}
 
 		$xml = '<ConditionDescriptors>' . "\n";
@@ -4164,12 +4477,18 @@ class TCGiant_Sync_Exporter {
 				}
 			} else {
 				// ---- TCG: Graded ----
-				// Professional Grader (required) for TCG.
+				// Professional Grader (required) for TCG. One eBay's table does not
+				// list for the category goes all the same, and is said once a push:
+				// the table is a documentation page, behind eBay's own data.
 				if ( ! empty( $settings['grader_id'] ) ) {
 					$xml .= "\t<ConditionDescriptor>\n";
 					$xml .= "\t\t<Name>27501</Name>\n";
 					$xml .= "\t\t<Value>" . esc_attr( $settings['grader_id'] ) . "</Value>\n";
 					$xml .= "\t</ConditionDescriptor>\n";
+					if ( ! self::grader_valid_in( $settings['grader_id'], $settings['category_id'] ) && empty( $this->card_said[ 'grader:' . (int) $product_id ] ) ) {
+						$this->card_said[ 'grader:' . (int) $product_id ] = true;
+						TCGiant_Sync_Logger::warning( self::grader_invalid_warning( (int) $product_id, (string) $settings['grader_id'], (string) $settings['category_id'], $this->build_for ) );
+					}
 				}
 	
 				// Grade (required) for TCG: eBay's value ID for it, never the grade
@@ -4211,11 +4530,17 @@ class TCGiant_Sync_Exporter {
 					$xml .= "\t\t<Value>" . esc_attr( $settings['ungraded_condition'] ) . "</Value>\n";
 					$xml .= "\t</ConditionDescriptor>\n";
 				} else {
-					// TCG: Descriptor Name 40001 ("Card Condition").
+					// TCG: Descriptor Name 40001 ("Card Condition"). One eBay's table
+					// does not list for the category goes all the same, and is said
+					// once a push: the table is behind eBay's own data.
 					$xml .= "\t<ConditionDescriptor>\n";
 					$xml .= "\t\t<Name>40001</Name>\n";
 					$xml .= "\t\t<Value>" . esc_attr( $settings['ungraded_condition'] ) . "</Value>\n";
 					$xml .= "\t</ConditionDescriptor>\n";
+					if ( ! self::ungraded_valid_in( $settings['ungraded_condition'], $settings['category_id'] ) && empty( $this->card_said[ 'ungraded:' . (int) $product_id ] ) ) {
+						$this->card_said[ 'ungraded:' . (int) $product_id ] = true;
+						TCGiant_Sync_Logger::warning( self::ungraded_invalid_warning( (int) $product_id, (string) $settings['ungraded_condition'], (string) $settings['category_id'], $this->build_for ) );
+					}
 				}
 			}
 		}

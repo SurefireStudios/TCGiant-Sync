@@ -58,7 +58,7 @@ class TCGiant_Sync_Admin {
 			'overwrite_attributes', 'overwrite_weight_dims', 'delete_data_on_uninstall',
 		),
 		'export' => array(
-			'export_category_id', 'export_category_name', 'export_condition_type', 'export_grader_id', 'export_grade_value',
+			'export_category_id', 'export_category_name', 'export_category_typed', 'export_condition_type', 'export_grader_id', 'export_grade_value',
 			'export_cert_number', 'export_ungraded_condition', 'export_condition_id', 'export_location', 'export_postal_code',
 			'export_fulfillment_policy', 'export_return_policy', 'export_payment_policy', 'export_listing_type',
 			'export_listing_duration', 'export_default_quantity', 'export_send_package_details', 'best_offer_enabled',
@@ -1792,6 +1792,7 @@ class TCGiant_Sync_Admin {
 		// Save per-product override fields from the form before queuing.
 		$override_fields = array(
 			'override_category_id'        => '_ebay_export_category_id',
+			'override_category_typed'     => '_ebay_export_category_typed',
 			'override_condition_id'       => '_ebay_export_condition_id',
 			'override_item_type'          => '_ebay_export_item_type',
 			'override_condition_type'     => '_ebay_export_condition_type',
@@ -3064,6 +3065,9 @@ class TCGiant_Sync_Admin {
 				$cat_val = $cat_select;
 			}
 			update_post_meta( $post_id, '_ebay_export_category_id', $cat_val );
+			// Typed into the custom box: the shop's own, never mapped as a
+			// retired ID (3.28.1). Chosen from the list, it is not typed.
+			update_post_meta( $post_id, '_ebay_export_category_typed', 'custom' === $cat_select ? $cat_val : '' );
 			// Save the category name if provided.
 			if ( isset( $_POST['_ebay_export_category_name'] ) ) {
 				update_post_meta( $post_id, '_ebay_export_category_name', sanitize_text_field( wp_unslash( $_POST['_ebay_export_category_name'] ) ) );
@@ -3484,6 +3488,7 @@ class TCGiant_Sync_Admin {
 		// anyone thinks to press Update.
 		$live = array(
 			'override_category_id'    => 'category_id',
+			'override_category_typed' => 'category_typed',
 			'override_item_type'      => 'item_type',
 			'override_condition_type' => 'condition_type',
 		);
@@ -3813,9 +3818,29 @@ class TCGiant_Sync_Admin {
 		</div>
 
 		<?php // == STEP 2: CATEGORY ==
-			  $is_custom_cat = ! empty( $cat_override ) && ! isset( $tcg_categories[ $cat_override ] );
+			  // A category the list once offered under an ID eBay files elsewhere
+			  // (TCGiant_Sync_Catalog::RETIRED_CATEGORIES) is shown as what it is,
+			  // chosen, rather than as a blank custom entry; the push sends the
+			  // category it was meant to be. One chosen from eBay's own tree is a
+			  // custom category, as any other.
+			  $retired_cat   = '' !== TCGiant_Sync_Catalog::retired_category( (string) $cat_override, (string) $cat_name_saved, (string) get_post_meta( $product_id, '_ebay_export_category_typed', true ) );
+			  $cat_choices   = $tcg_categories;
+			  if ( $retired_cat ) {
+				  $cat_custom = $cat_choices['custom'] ?? null;
+				  unset( $cat_choices['custom'] );
+				  $cat_choices[ (string) $cat_override ] = TCGiant_Sync_Catalog::retired_category_label( $cat_override );
+				  if ( null !== $cat_custom ) {
+					  $cat_choices['custom'] = $cat_custom;
+				  }
+			  }
+			  $is_custom_cat = ! empty( $cat_override ) && ! isset( $cat_choices[ $cat_override ] );
 			  $select_val    = $is_custom_cat ? 'custom' : $cat_override;
 			  $eff_cat       = $merged_settings['category_id'] ?? '';
+			  $cat_retired   = $merged_settings['category_retired'] ?? array();
+			  // A push revises a live listing, which keeps the category it is in
+			  // (3.28.1, TCGiant_Sync_Exporter::keep_listing_category()); one that
+			  // has ended is replaced by a new listing, in the mapped category.
+			  $revises       = ! empty( $ebay_item_id ) && ! $has_ended;
 		?>
 		<div class="tc-ebay-section" id="tc-section-category">
 			<div class="tc-ebay-section-head <?php echo ! empty( $item_type ) ? 'open' : ''; ?>" data-target="tc-body-category">
@@ -3831,13 +3856,41 @@ class TCGiant_Sync_Admin {
 					<p style="margin:0 0 6px;font-size:11px;color:#888;"><?php echo esc_html( sprintf( __( 'Global default: %s - override below for this product', 'tcgiant-sync' ), $global_cat ) ); ?></p>
 				<?php endif; ?>
 				<select name="_ebay_export_category_id_select" id="_ebay_export_category_id_select" style="width:100%;font-size:12px;margin-bottom:4px;">
-				<?php foreach ( $tcg_categories as $id => $label ) : ?>
+				<?php foreach ( $cat_choices as $id => $label ) : ?>
 					<option value="<?php echo esc_attr( $id ); ?>" <?php selected( $select_val, $id ); ?>><?php
 						if ( '' === $id ) { echo esc_html( $label ) . ( $global_cat ? ' (Global: ' . esc_html( $global_cat ) . ')' : '' ); }
+						elseif ( $retired_cat && (string) $id === (string) $cat_override ) { echo esc_html( $label ); }
 						else { echo esc_html( $label . ( 'custom' !== $id ? " ($id)" : '' ) ); }
 					?></option>
 				<?php endforeach; ?>
 				</select>
+				<?php if ( ! empty( $cat_retired['from'] ) && $revises ) : ?>
+					<p class="tc-retired-category" style="margin:2px 0 6px;font-size:11px;color:#8a6d3b;"><?php
+						echo esc_html( sprintf(
+							/* translators: 1: where it is saved, 2: the old label, 3: its ID, 4: the category a new listing goes to, 5: that category's ID, 6: the eBay listing */
+							__( 'The category saved %1$s, %2$s (%3$s), was wrong in TCGiant Sync\'s list until 3.28.1: eBay does not file trading cards under %3$s. Its eBay listing %6$s stays there, as eBay does not move a live listing to another category once it has sales, and a push revises it as it is. To move it to %4$s (%5$s), end the listing and push again: the new listing goes there.', 'tcgiant-sync' ),
+							'product' === ( $cat_retired['source'] ?? '' ) ? __( 'for this product', 'tcgiant-sync' ) : __( 'as the default in Settings', 'tcgiant-sync' ),
+							TCGiant_Sync_Catalog::RETIRED_CATEGORY_LABELS[ $cat_retired['from'] ] ?? $cat_retired['from'],
+							$cat_retired['from'],
+							TCGiant_Sync_Catalog::CARD_CATEGORY_NAMES[ $cat_retired['to'] ] ?? $cat_retired['to'],
+							$cat_retired['to'],
+							(string) $ebay_item_id
+						) );
+					?></p>
+				<?php elseif ( ! empty( $cat_retired['from'] ) ) : ?>
+					<p class="tc-retired-category" style="margin:2px 0 6px;font-size:11px;color:#8a6d3b;"><?php
+						echo esc_html( sprintf(
+							/* translators: 1: where it is saved, 2: the old label, 3: its ID, 4: the category pushes send, 5: that category's ID, 6: how to replace it */
+							__( 'The category saved %1$s, %2$s (%3$s), was wrong in TCGiant Sync\'s list until 3.28.1: eBay does not file trading cards under %3$s. Pushes send %4$s (%5$s) instead, where eBay files those cards, and the log says so. %6$s', 'tcgiant-sync' ),
+							'product' === ( $cat_retired['source'] ?? '' ) ? __( 'for this product', 'tcgiant-sync' ) : __( 'as the default in Settings', 'tcgiant-sync' ),
+							TCGiant_Sync_Catalog::RETIRED_CATEGORY_LABELS[ $cat_retired['from'] ] ?? $cat_retired['from'],
+							$cat_retired['from'],
+							TCGiant_Sync_Catalog::CARD_CATEGORY_NAMES[ $cat_retired['to'] ] ?? $cat_retired['to'],
+							$cat_retired['to'],
+							'product' === ( $cat_retired['source'] ?? '' ) ? __( 'Choose a category here to replace it.', 'tcgiant-sync' ) : __( 'Choose one here for this product, or the default again in Settings.', 'tcgiant-sync' )
+						) );
+					?></p>
+				<?php endif; ?>
 				<input type="text" name="_ebay_export_category_id_custom" id="_ebay_export_category_id_custom" value="<?php echo esc_attr( $is_custom_cat ? $cat_override : '' ); ?>" placeholder="<?php esc_attr_e( 'Enter eBay leaf category ID', 'tcgiant-sync' ); ?>" style="width:100%;font-size:12px;<?php echo 'custom' === $select_val ? '' : 'display:none;'; ?>">
 				<input type="hidden" name="_ebay_export_category_name" id="_ebay_export_category_name" value="<?php echo esc_attr( $cat_name_saved ); ?>">
 				<div id="tc-selected-category-label-product" style="margin-top:4px;font-size:11px;color:#16a34a;font-weight:500;<?php echo ( $cat_override && $cat_name_saved ) ? '' : 'display:none;'; ?>"><?php
@@ -4063,8 +4116,20 @@ class TCGiant_Sync_Admin {
 
 		<?php // == STEP 6: READINESS + PUSH ==
 			  $checks = array();
+			  // What a push sends: a revise keeps a retired ID (F2, 3.28.1).
+			  $sent_settings = $revises ? TCGiant_Sync_Exporter::keep_listing_category( $merged_settings ) : $merged_settings;
+			  $sent_cat      = (string) ( $sent_settings['category_id'] ?? '' );
 			  // Category
-			  if ( ! empty( $eff_cat ) ) {
+			  if ( ! empty( $cat_retired['from'] ) && $revises ) {
+				  // Sent as it is, as eBay does not move a live listing: said, not refused.
+				  $cd = sprintf( __( '%1$s (%2$s) - its eBay listing stays in this category, which eBay US does not file single trading cards under: to move it to %3$s (%4$s), end the listing and push again', 'tcgiant-sync' ), TCGiant_Sync_Catalog::RETIRED_CATEGORY_LABELS[ $cat_retired['from'] ] ?? $cat_retired['from'], $cat_retired['from'], TCGiant_Sync_Catalog::CARD_CATEGORY_NAMES[ $cat_retired['to'] ] ?? $cat_retired['to'], $cat_retired['to'] );
+				  $checks[] = array( 'ok' => true, 'warn' => true, 'label' => sprintf( __( 'Category: %s', 'tcgiant-sync' ), $cd ) );
+			  } elseif ( ! empty( $cat_retired['from'] ) ) {
+				  // The retired ID's stored name is not the category sent.
+				  $cd = sprintf( __( '%1$s (%2$s), in place of the retired %3$s', 'tcgiant-sync' ), TCGiant_Sync_Catalog::CARD_CATEGORY_NAMES[ $eff_cat ] ?? $eff_cat, $eff_cat, $cat_retired['from'] );
+				  $mm = ! empty( $merged_settings['_category_mismatch'] );
+				  $checks[] = array( 'ok' => ! $mm, 'label' => $mm ? sprintf( __( 'Category: %s - item type mismatch', 'tcgiant-sync' ), $cd ) : sprintf( __( 'Category: %s', 'tcgiant-sync' ), $cd ) );
+			  } elseif ( ! empty( $eff_cat ) ) {
 				  $cd = $cat_name_saved ? $cat_name_saved . ' (' . $eff_cat . ')' : $eff_cat;
 				  $mm = ! empty( $merged_settings['_category_mismatch'] );
 				  $checks[] = array( 'ok' => ! $mm, 'label' => $mm ? sprintf( __( 'Category: %s - item type mismatch', 'tcgiant-sync' ), $cd ) : sprintf( __( 'Category: %s', 'tcgiant-sync' ), $cd ) );
@@ -4087,6 +4152,7 @@ class TCGiant_Sync_Admin {
 				  }
 				  $checks[] = array( 'ok' => $cond_known, 'label' => 'Condition: ' . $cond_label );
 			  } elseif ( ! empty( $cte ) ) {
+				  $cw = false;
 				  if ( 'graded' === $cte ) {
 					  $gi = $merged_settings['grader_id'] ?? ''; $gv = $merged_settings['grade_value'] ?? '';
 					  $gm = 'coins' === $ite ? TCGiant_Sync_Catalog::GRADERS_COINS : TCGiant_Sync_Catalog::GRADERS_TCG;
@@ -4101,7 +4167,21 @@ class TCGiant_Sync_Admin {
 					  $co = ! empty( $uv );
 					  if ( ! $co ) { $cl .= ' - condition required'; }
 				  }
-				  $checks[] = array( 'ok' => $co, 'label' => 'Condition: ' . $cl );
+				  // eBay's table for trading cards (3.28.1), in the category a push
+				  // sends: their details go only in its three single-card categories,
+				  // which a push keeps to. Some graders and conditions it lists in
+				  // only one or two of them; one it does not list goes all the same,
+				  // as the table is behind eBay's own data, and is said.
+				  if ( $co && '' !== $sent_cat && TCGiant_Sync_Exporter::takes_card_descriptors( $sent_settings ) ) {
+					  if ( ! in_array( $sent_cat, TCGiant_Sync_Exporter::DESCRIPTOR_CATEGORIES_TCG, true ) ) {
+						  $co = false; $cl .= ' - eBay takes card grading and condition details only in CCG Individual Cards, Non-Sport Trading Card Singles and Sports Trading Card Singles';
+					  } elseif ( 'graded' === $cte && ! TCGiant_Sync_Exporter::grader_valid_in( $gi, $sent_cat ) ) {
+						  $cw = true; $cl .= ' - eBay\'s table of card graders does not list it for this category: sent as it is, eBay may refuse it';
+					  } elseif ( 'graded' !== $cte && ! TCGiant_Sync_Exporter::ungraded_valid_in( $uv, $sent_cat ) ) {
+						  $cw = true; $cl .= ' - eBay\'s table of card conditions does not list it for this category: sent as it is, eBay may refuse it';
+					  }
+				  }
+				  $checks[] = array( 'ok' => $co, 'warn' => $cw, 'label' => 'Condition: ' . $cl );
 			  } else { $checks[] = array( 'ok' => false, 'label' => __( 'Condition: Not set', 'tcgiant-sync' ) ); }
 			  // Policies
 			  $hp = ! empty( $merged_settings['fulfillment_policy_id'] ) && ! empty( $merged_settings['return_policy_id'] ) && ! empty( $merged_settings['payment_policy_id'] );
@@ -4125,7 +4205,8 @@ class TCGiant_Sync_Admin {
 				<div class="tc-readiness <?php echo $all_ok ? '' : 'has-issues'; ?>">
 					<div class="tc-readiness-title" style="color:<?php echo $all_ok ? '#1e7e34' : '#721c24'; ?>;"><?php echo $all_ok ? '&#10004; ' . esc_html__( 'Ready to push', 'tcgiant-sync' ) : '&#9888; ' . esc_html__( 'Not ready - fix issues above', 'tcgiant-sync' ); ?></div>
 					<?php foreach ( $checks as $c ) : ?>
-						<div class="tc-readiness-check" style="color:<?php echo $c['ok'] ? '#333' : '#721c24'; ?>;"><?php echo $c['ok'] ? '<span style="color:#1e7e34;">&#10004;</span>' : '<span style="color:#dc3545;">&#10008;</span>'; ?> <?php echo esc_html( $c['label'] ); ?></div>
+						<?php $c_warn = $c['ok'] && ! empty( $c['warn'] ); ?>
+						<div class="tc-readiness-check" style="color:<?php echo $c_warn ? '#8a6d3b' : ( $c['ok'] ? '#333' : '#721c24' ); ?>;"><?php echo $c_warn ? '<span style="color:#c8a44a;">&#9679;</span>' : ( $c['ok'] ? '<span style="color:#1e7e34;">&#10004;</span>' : '<span style="color:#dc3545;">&#10008;</span>' ); ?> <?php echo esc_html( $c['label'] ); ?></div>
 					<?php endforeach; ?>
 					<div class="tc-readiness-check" id="tc-readiness-aspects" style="color:#8a6d3b;"><span style="color:#c8a44a;">&#9679;</span> <?php esc_html_e( 'Item specifics: not checked - open Item Specifics above', 'tcgiant-sync' ); ?></div>
 					<?php
@@ -4232,7 +4313,7 @@ class TCGiant_Sync_Admin {
 			$('#_ebay_export_category_id_select').on('change',function(){$('#_ebay_export_category_id_custom').toggle($(this).val()==='custom');});
 			// Category browser
 			var ajaxUrl='<?php echo esc_js( admin_url( 'admin-ajax.php' ) ); ?>',nonce='<?php echo esc_js( wp_create_nonce( 'tcgiant_sync_ajax' ) ); ?>',trail=[];
-			$('#tc-browse-categories-btn-product').on('click',function(){var $b=$('#tc-category-browser-product');$b.toggle();if($b.is(':visible')&&$('#tc-category-drilldown-product').children().length===0){var it=$('#_ebay_export_item_type').val(),sid='';if(it==='coins'){sid='11116';trail=[{id:'11116',name:'Coins & Paper Money'}];}else if(it==='tcg'){sid='2536';trail=[{id:'2536',name:'Toys & Hobbies'}];}renderBread();loadCats(sid);}});
+			$('#tc-browse-categories-btn-product').on('click',function(){var $b=$('#tc-category-browser-product');$b.toggle();if($b.is(':visible')&&$('#tc-category-drilldown-product').children().length===0){var it=$('#_ebay_export_item_type').val(),sid='';if(it==='coins'){sid='11116';trail=[{id:'11116',name:'Coins & Paper Money'}];}else if(it==='tcg'){sid='2536';trail=[{id:'2536',name:'Collectible Card Games'}];}renderBread();loadCats(sid);}});
 			function loadCats(pid){var $d=$('#tc-category-drilldown-product'),$s=$('#tc-category-browser-status-product');$d.html('<div style="text-align:center;padding:12px;color:#888;">Loading...</div>');$s.text('');$.post(ajaxUrl,{action:'tcgiant_browse_categories',_ajax_nonce:nonce,parent_id:pid},function(r){if(!r.success){$d.html('<div style="color:#c00;padding:6px;">'+r.data.message+'</div>');return;}renderCats(r.data.categories);}).fail(function(){$d.html('<div style="color:#c00;padding:6px;">Request failed.</div>');});}
 			function renderCats(cats){var $d=$('#tc-category-drilldown-product');$d.empty();if(!cats||!cats.length){$d.html('<div style="padding:6px;color:#888;">No subcategories.</div>');return;}$.each(cats,function(i,c){var $r=$('<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 6px;border-bottom:1px solid #eee;cursor:pointer;font-size:12px;"></div>');$r.append($('<span style="flex:1;"></span>').text(c.name));$r.append(c.leaf?'<span style="color:#16a34a;font-size:10px;font-weight:600;">leaf</span>':'<span class="dashicons dashicons-arrow-right-alt2" style="color:#888;font-size:13px;width:13px;height:13px;"></span>');$r.on('mouseenter',function(){$(this).css('background','#f0f6fc');}).on('mouseleave',function(){$(this).css('background','');});$r.on('click',function(){if(c.leaf){selectCat(c.id,c.name);$('#tc-category-browser-product').slideUp(200);trail=[];}else{trail.push({id:c.id,name:c.name});renderBread();loadCats(c.id);}});$d.append($r);});}
 			function selectCat(id,name){tcAspectsReset();$('#_ebay_export_category_id_select').val('custom');$('#_ebay_export_category_id_custom').val(id).show();$('#_ebay_export_category_name').val(name);$('#tc-selected-category-label-product').html('&#10004; '+name+' ('+id+')').show();$('#tc-step2-summary').text(name+' ('+id+')');}
@@ -4242,7 +4323,7 @@ class TCGiant_Sync_Admin {
 			// Dismiss error
 			$('#tcgiant-dismiss-export-error').on('click',function(e){e.preventDefault();$.post(ajaxUrl,{action:'tcgiant_clear_export_error',product_id:$(this).data('product-id'),_ajax_nonce:nonce});$('#tcgiant-export-error-notice').slideUp(200);});
 			// Push
-			$('#tcgiant-push-btn').on('click',function(){var btn=$(this),st=$('#tcgiant-push-status');btn.prop('disabled',true);st.css('color','#555').text('Saving & validating...');var cs=$('#_ebay_export_category_id_select').val()||'',cc=$('#_ebay_export_category_id_custom').val()||'',catId=(cs==='custom')?cc:cs,it=$('#_ebay_export_item_type').val()||'',sf=(it&&it!=='other')?'_'+it:'',gid=$('#_ebay_export_grader_id'+sf).val()||'',gv=$('#_ebay_export_grade_value'+sf).val()||'',uc=$('#_ebay_export_ungraded_condition'+sf).val()||'';$.post(ajaxUrl,{action:'tcgiant_push_product',product_id:btn.data('product-id'),override_category_id:catId,override_condition_id:$('#_ebay_export_condition_id').val()||'',override_item_type:it,override_condition_type:$('#_ebay_export_condition_type').val()||'',override_grader_id:gid,override_grade_value:gv,override_cert_number:$('[name="_ebay_export_cert_number"]').val()||'',override_coin_year:$('[name="_ebay_export_coin_year"]').val()||'',override_ungraded_condition:uc,override_listing_type:$('#_ebay_export_listing_type').val()||'',override_listing_duration:$('#_ebay_export_listing_duration').val()||'',override_fulfillment_policy:$('#_ebay_export_fulfillment_policy').val()||'',specifics_present:tcAspectsPresent(),specifics:tcAspectValues(),_tcgiant_tpl_fields:$('#_tcgiant_tpl_override').length?1:'',_tcgiant_tpl_override:$('#_tcgiant_tpl_override').val()||'',_tcgiant_ebay_description:$('#_tcgiant_ebay_description').val()||'',_ajax_nonce:nonce},function(r){if(r.success){st.css('color','#2a8a2a').text('OK - '+r.data.message);}else{st.css('color','#cc1818').text('Error: '+(r.data?r.data.message:'Unknown error'));btn.prop('disabled',false);}});});
+			$('#tcgiant-push-btn').on('click',function(){var btn=$(this),st=$('#tcgiant-push-status');btn.prop('disabled',true);st.css('color','#555').text('Saving & validating...');var cs=$('#_ebay_export_category_id_select').val()||'',cc=$('#_ebay_export_category_id_custom').val()||'',catId=(cs==='custom')?cc:cs,it=$('#_ebay_export_item_type').val()||'',sf=(it&&it!=='other')?'_'+it:'',gid=$('#_ebay_export_grader_id'+sf).val()||'',gv=$('#_ebay_export_grade_value'+sf).val()||'',uc=$('#_ebay_export_ungraded_condition'+sf).val()||'';$.post(ajaxUrl,{action:'tcgiant_push_product',product_id:btn.data('product-id'),override_category_id:catId,override_category_typed:(cs==='custom')?cc:'',override_condition_id:$('#_ebay_export_condition_id').val()||'',override_item_type:it,override_condition_type:$('#_ebay_export_condition_type').val()||'',override_grader_id:gid,override_grade_value:gv,override_cert_number:$('[name="_ebay_export_cert_number"]').val()||'',override_coin_year:$('[name="_ebay_export_coin_year"]').val()||'',override_ungraded_condition:uc,override_listing_type:$('#_ebay_export_listing_type').val()||'',override_listing_duration:$('#_ebay_export_listing_duration').val()||'',override_fulfillment_policy:$('#_ebay_export_fulfillment_policy').val()||'',specifics_present:tcAspectsPresent(),specifics:tcAspectValues(),_tcgiant_tpl_fields:$('#_tcgiant_tpl_override').length?1:'',_tcgiant_tpl_override:$('#_tcgiant_tpl_override').val()||'',_tcgiant_ebay_description:$('#_tcgiant_ebay_description').val()||'',_ajax_nonce:nonce},function(r){if(r.success){st.css('color','#2a8a2a').text('OK - '+r.data.message);}else{st.css('color','#cc1818').text('Error: '+(r.data?r.data.message:'Unknown error'));btn.prop('disabled',false);}});});
 			// Item specifics: ask eBay what this category requires, and show it.
 			function tcAspectValues(){var o={};$('#tc-aspect-rows [data-aspect]').each(function(){var n=$(this).data('aspect');if(n){o[n]=$.trim($(this).val()||'');}});return o;}
 			function tcAspectsPresent(){return $('#tc-aspect-rows [data-aspect]').length?1:'';}
@@ -4313,7 +4394,7 @@ class TCGiant_Sync_Admin {
 				if(!$btn.length||$btn.prop('disabled')){return;}
 				var cs=$('#_ebay_export_category_id_select').val()||'',cc=$('#_ebay_export_category_id_custom').val()||'',catId=(cs==='custom')?cc:cs;
 				$btn.prop('disabled',true);$st.css('color','#555').text('Asking eBay...');
-				$.post(ajaxUrl,{action:'tcgiant_category_aspects',product_id:$btn.data('product-id'),override_category_id:catId,override_item_type:$('#_ebay_export_item_type').val()||'',override_condition_type:$('#_ebay_export_condition_type').val()||'',specifics_present:tcAspectsPresent(),specifics:tcAspectValues(),_ajax_nonce:nonce},function(r){
+				$.post(ajaxUrl,{action:'tcgiant_category_aspects',product_id:$btn.data('product-id'),override_category_id:catId,override_category_typed:(cs==='custom')?cc:'',override_item_type:$('#_ebay_export_item_type').val()||'',override_condition_type:$('#_ebay_export_condition_type').val()||'',specifics_present:tcAspectsPresent(),specifics:tcAspectValues(),_ajax_nonce:nonce},function(r){
 					$btn.prop('disabled',false);
 					if(!r.success){$st.css('color','#cc1818').text(r.data&&r.data.message?r.data.message:'Could not check.');tcAspectReadiness(null);return;}
 					tcRenderAspects(r.data);
@@ -4360,7 +4441,7 @@ class TCGiant_Sync_Admin {
 			var fpDurations={'FixedPriceItem':['GTC'],'Chinese':['Days_1','Days_3','Days_5','Days_7','Days_10']};
 			$('#_ebay_export_listing_type').on('change',function(){var lt=$(this).val(),$dur=$('#_ebay_export_listing_duration');if(!lt){$dur.find('option').show();return;}var valid=fpDurations[lt]||[];$dur.find('option').each(function(){var v=$(this).val();if(!v){$(this).show();}else{$(this).toggle(valid.indexOf(v)>=0);}});if(valid.indexOf($dur.val())<0){$dur.val('');}}).trigger('change');
 			// Verify (dry run)
-			$('#tcgiant-verify-btn').on('click',function(){var btn=$(this),st=$('#tcgiant-push-status');btn.prop('disabled',true);st.css('color','#555').text('Verifying listing...');var cs=$('#_ebay_export_category_id_select').val()||'',cc=$('#_ebay_export_category_id_custom').val()||'',catId=(cs==='custom')?cc:cs,it=$('#_ebay_export_item_type').val()||'',sf=(it&&it!=='other')?'_'+it:'',gid=$('#_ebay_export_grader_id'+sf).val()||'',gv=$('#_ebay_export_grade_value'+sf).val()||'',uc=$('#_ebay_export_ungraded_condition'+sf).val()||'';$.post(ajaxUrl,{action:'tcgiant_verify_product',product_id:btn.data('product-id'),override_category_id:catId,override_condition_id:$('#_ebay_export_condition_id').val()||'',override_item_type:it,override_condition_type:$('#_ebay_export_condition_type').val()||'',override_grader_id:gid,override_grade_value:gv,override_cert_number:$('[name="_ebay_export_cert_number"]').val()||'',override_coin_year:$('[name="_ebay_export_coin_year"]').val()||'',override_ungraded_condition:uc,override_listing_type:$('#_ebay_export_listing_type').val()||'',override_listing_duration:$('#_ebay_export_listing_duration').val()||'',override_fulfillment_policy:$('#_ebay_export_fulfillment_policy').val()||'',specifics_present:tcAspectsPresent(),specifics:tcAspectValues(),_tcgiant_tpl_fields:$('#_tcgiant_tpl_override').length?1:'',_tcgiant_tpl_override:$('#_tcgiant_tpl_override').val()||'',_tcgiant_ebay_description:$('#_tcgiant_ebay_description').val()||'',_ajax_nonce:nonce},function(r){btn.prop('disabled',false);if(r.success){st.css('color','#2a8a2a').html(r.data.message.replace(/\n/g,'<br>'));}else{st.css('color','#cc1818').text('Verify failed: '+(r.data?r.data.message:'Unknown error'));}}).fail(function(){btn.prop('disabled',false);st.css('color','#cc1818').text('Verify request failed.');});});
+			$('#tcgiant-verify-btn').on('click',function(){var btn=$(this),st=$('#tcgiant-push-status');btn.prop('disabled',true);st.css('color','#555').text('Verifying listing...');var cs=$('#_ebay_export_category_id_select').val()||'',cc=$('#_ebay_export_category_id_custom').val()||'',catId=(cs==='custom')?cc:cs,it=$('#_ebay_export_item_type').val()||'',sf=(it&&it!=='other')?'_'+it:'',gid=$('#_ebay_export_grader_id'+sf).val()||'',gv=$('#_ebay_export_grade_value'+sf).val()||'',uc=$('#_ebay_export_ungraded_condition'+sf).val()||'';$.post(ajaxUrl,{action:'tcgiant_verify_product',product_id:btn.data('product-id'),override_category_id:catId,override_category_typed:(cs==='custom')?cc:'',override_condition_id:$('#_ebay_export_condition_id').val()||'',override_item_type:it,override_condition_type:$('#_ebay_export_condition_type').val()||'',override_grader_id:gid,override_grade_value:gv,override_cert_number:$('[name="_ebay_export_cert_number"]').val()||'',override_coin_year:$('[name="_ebay_export_coin_year"]').val()||'',override_ungraded_condition:uc,override_listing_type:$('#_ebay_export_listing_type').val()||'',override_listing_duration:$('#_ebay_export_listing_duration').val()||'',override_fulfillment_policy:$('#_ebay_export_fulfillment_policy').val()||'',specifics_present:tcAspectsPresent(),specifics:tcAspectValues(),_tcgiant_tpl_fields:$('#_tcgiant_tpl_override').length?1:'',_tcgiant_tpl_override:$('#_tcgiant_tpl_override').val()||'',_tcgiant_ebay_description:$('#_tcgiant_ebay_description').val()||'',_ajax_nonce:nonce},function(r){btn.prop('disabled',false);if(r.success){st.css('color','#2a8a2a').html(r.data.message.replace(/\n/g,'<br>'));}else{st.css('color','#cc1818').text('Verify failed: '+(r.data?r.data.message:'Unknown error'));}}).fail(function(){btn.prop('disabled',false);st.css('color','#cc1818').text('Verify request failed.');});});
 		})(jQuery);
 		</script>
 		<?php
@@ -4482,6 +4563,12 @@ class TCGiant_Sync_Admin {
 			$display_cat_id   = '';
 			$display_cat_name = '';
 			$cat_source       = '';
+		}
+
+		// A retired ID is named for what a push sends (3.28.1).
+		$display_typed = 'global' === $cat_source ? (string) ( $global_settings['export_category_typed'] ?? '' ) : (string) get_post_meta( $post_id, '_ebay_export_category_typed', true );
+		if ( ! empty( $display_cat_id ) && '' !== TCGiant_Sync_Catalog::retired_category( $display_cat_id, $display_cat_name, $display_typed ) ) {
+			$display_cat_name = TCGiant_Sync_Catalog::retired_category_label( $display_cat_id );
 		}
 
 		// Also check the built-in categories list for a label.
@@ -4999,6 +5086,7 @@ class TCGiant_Sync_Admin {
 		// Save per-product override fields from the form before verifying.
 		$override_fields = array(
 			'override_category_id'        => '_ebay_export_category_id',
+			'override_category_typed'     => '_ebay_export_category_typed',
 			'override_condition_id'       => '_ebay_export_condition_id',
 			'override_item_type'          => '_ebay_export_item_type',
 			'override_condition_type'     => '_ebay_export_condition_type',

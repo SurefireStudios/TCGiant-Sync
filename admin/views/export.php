@@ -81,7 +81,10 @@ $export_state = TCGiant_Sync_Exporter::get_export_state();
 				<?php
 				/* translators: %s: eBay category ID */
 				$cat_display = esc_html( $settings['export_category_id'] );
-				if ( ! empty( $settings['export_category_name'] ) ) {
+				if ( '' !== TCGiant_Sync_Catalog::retired_category( $settings['export_category_id'], $settings['export_category_name'] ?? '', $settings['export_category_typed'] ?? '' ) ) {
+					// One the list had wrong until 3.28.1: named for what a push sends.
+					$cat_display = esc_html( TCGiant_Sync_Catalog::retired_category_label( $settings['export_category_id'] ) );
+				} elseif ( ! empty( $settings['export_category_name'] ) ) {
 					$cat_display = esc_html( $settings['export_category_name'] ) . ' (' . $cat_display . ')';
 				}
 				printf( esc_html__( 'Default category: %s · Condition: %s', 'tcgiant-sync' ), '<strong>' . $cat_display . '</strong>', '<strong>' . esc_html( $cond_label ) . '</strong>' );
@@ -201,7 +204,9 @@ $export_state = TCGiant_Sync_Exporter::get_export_state();
 							<?php
 						if ( $category_configured ) {
 							$cat_conf_display = esc_html( $settings['export_category_id'] );
-							if ( ! empty( $settings['export_category_name'] ) ) {
+							if ( '' !== TCGiant_Sync_Catalog::retired_category( $settings['export_category_id'], $settings['export_category_name'] ?? '', $settings['export_category_typed'] ?? '' ) ) {
+								$cat_conf_display = esc_html( TCGiant_Sync_Catalog::retired_category_label( $settings['export_category_id'] ) );
+							} elseif ( ! empty( $settings['export_category_name'] ) ) {
 								$cat_conf_display = esc_html( $settings['export_category_name'] ) . ' (' . $cat_conf_display . ')';
 							}
 							echo $cat_conf_display;

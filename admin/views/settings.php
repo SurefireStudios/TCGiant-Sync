@@ -36,8 +36,22 @@ $list_marker = function ( $key ) {
 $tcg_categories = TCGiant_Sync_Catalog::get_categories();
 
 $current_category = $settings['export_category_id'] ?? '';
+// A default the list once offered under an ID eBay files elsewhere (3.28.1,
+// TCGiant_Sync_Catalog::RETIRED_CATEGORIES): shown as what it is, chosen. A
+// push sends the category it was meant to be. One chosen from eBay's own
+// tree is a custom category, as any other.
+$retired_default = '' !== TCGiant_Sync_Catalog::retired_category( (string) $current_category, (string) ( $settings['export_category_name'] ?? '' ), (string) ( $settings['export_category_typed'] ?? '' ) );
+$default_choices = $tcg_categories;
+if ( $retired_default ) {
+	$default_custom = $default_choices['custom'] ?? null;
+	unset( $default_choices['custom'] );
+	$default_choices[ (string) $current_category ] = TCGiant_Sync_Catalog::retired_category_label( $current_category );
+	if ( null !== $default_custom ) {
+		$default_choices['custom'] = $default_custom;
+	}
+}
 // If the saved value isn't in our curated list, it's a custom ID.
-$is_custom_cat = $current_category !== '' && ! array_key_exists( $current_category, $tcg_categories );
+$is_custom_cat = $current_category !== '' && ! array_key_exists( $current_category, $default_choices );
 ?>
 
 <div class="wrap tc-dashboard-wrap">
@@ -417,8 +431,25 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 										<?php echo esc_html( $label . ' (' . $id . ')' ); ?>
 									</label>
 								<?php endforeach; ?>
+								<?php
+								// A retired ID ticked before 3.28.1 stays ticked, and says what it
+								// is: the import compares it with each listing's category, and
+								// eBay files no card listing under it. Left out of the list, the
+								// next save would have cleared it - and a filter left empty
+								// imports everything.
+								$retired_filters = array_diff( array_intersect( array_map( 'strval', $selected_standard_cats ), array_map( 'strval', array_keys( TCGiant_Sync_Catalog::RETIRED_CATEGORIES ) ) ), array_map( 'strval', array_keys( $standard_cats ) ) );
+								foreach ( $retired_filters as $id ) :
+								?>
+									<label class="tc-retired-category" style="display:block;margin-bottom:6px;font-weight:normal;cursor:pointer;color:#8a6d3b;">
+										<input type="checkbox" name="tcgiant_sync_ebay_settings[import_standard_category_ids][]" value="<?php echo esc_attr( $id ); ?>" checked>
+										<?php echo esc_html( TCGiant_Sync_Catalog::retired_category_label( $id ) ); ?>
+									</label>
+								<?php endforeach; ?>
 							</div>
 							<p class="tc-hint" style="margin-top:8px;"><?php esc_html_e( 'Only import items that belong to these standard eBay categories.', 'tcgiant-sync' ); ?></p>
+							<?php if ( $retired_filters ) : ?>
+								<p class="tc-hint tc-retired-category" style="color:#8a6d3b;"><?php esc_html_e( 'A category marked (retired) was wrong in TCGiant Sync\'s list until 3.28.1, and no card listing is filed under it, so it imports none. Tick the category its label points to instead, and untick the retired one.', 'tcgiant-sync' ); ?></p>
+							<?php endif; ?>
 						</div>
 					</div>
 
@@ -724,19 +755,34 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 				<div class="tc-field">
 					<label class="tc-label" for="export_category_select"><?php esc_html_e( 'Default eBay Category', 'tcgiant-sync' ); ?></label>
 					<select class="tc-select" id="export_category_select" style="margin-bottom:6px;">
-						<?php foreach ( $tcg_categories as $cat_id => $cat_label ) : ?>
+						<?php foreach ( $default_choices as $cat_id => $cat_label ) : ?>
 							<option value="<?php echo esc_attr( $cat_id ); ?>"
 								<?php selected( $is_custom_cat ? 'custom' : $current_category, $cat_id ); ?>>
-								<?php echo esc_html( $cat_id && $cat_id !== 'custom' ? $cat_label . ' (' . $cat_id . ')' : $cat_label ); ?>
+								<?php echo esc_html( $cat_id && $cat_id !== 'custom' && ! ( $retired_default && (string) $cat_id === (string) $current_category ) ? $cat_label . ' (' . $cat_id . ')' : $cat_label ); ?>
 							</option>
 						<?php endforeach; ?>
 					</select>
+					<?php if ( $retired_default ) : ?>
+						<p class="tc-hint tc-retired-category" style="color:#8a6d3b;"><?php
+							$retired_to = TCGiant_Sync_Catalog::RETIRED_CATEGORIES[ (string) $current_category ];
+							echo esc_html( sprintf(
+								/* translators: 1: the old label, 2: its ID, 3: the category pushes send, 4: that category's ID */
+								__( 'The default saved here, %1$s (%2$s), was wrong in TCGiant Sync\'s list until 3.28.1: eBay does not file trading cards under %2$s. Pushes send %3$s (%4$s) instead, where eBay files those cards, and the log says so. Choose a category here to replace it.', 'tcgiant-sync' ),
+								TCGiant_Sync_Catalog::RETIRED_CATEGORY_LABELS[ (string) $current_category ] ?? $current_category,
+								$current_category,
+								TCGiant_Sync_Catalog::CARD_CATEGORY_NAMES[ $retired_to ],
+								$retired_to
+							) );
+						?></p>
+					<?php endif; ?>
 					<input type="text" class="tc-input" id="export_category_id_custom"
 						name="tcgiant_sync_ebay_settings[export_category_id]"
 						value="<?php echo esc_attr( $current_category ); ?>"
 						placeholder="<?php esc_attr_e( 'Enter numeric eBay Category ID', 'tcgiant-sync' ); ?>"
 						style="display:<?php echo ( ! $current_category || $is_custom_cat ) ? 'block' : 'none'; ?>;">
 					<input type="hidden" id="export_category_name" name="tcgiant_sync_ebay_settings[export_category_name]" value="<?php echo esc_attr( $settings['export_category_name'] ?? '' ); ?>">
+					<?php // The ID typed into the box, as typed: the shop's own, never mapped as a retired ID (3.28.1). Set on save, below. ?>
+					<input type="hidden" id="export_category_typed" name="tcgiant_sync_ebay_settings[export_category_typed]" value="<?php echo esc_attr( (string) ( $settings['export_category_typed'] ?? '' ) === (string) $current_category ? (string) $current_category : '' ); ?>">
 					<?php
 					$saved_cat_name = $settings['export_category_name'] ?? '';
 					$show_selected  = $current_category && $saved_cat_name;
@@ -1051,6 +1097,13 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 
 <script>
 (function($){
+	// The default typed into the box, rather than chosen from the list, is
+	// saved as typed (3.28.1): a retired ID typed there is never mapped.
+	$('#export_category_id_custom').closest('form').on('submit', function(){
+		var sel = $('#export_category_select').val();
+		$('#export_category_typed').val( ( sel === 'custom' || sel === '' ) ? $('#export_category_id_custom').val() : '' );
+	});
+
 	// Category dropdown → show/hide custom text input.
 	$('#export_category_select').on('change', function(){
 		var val = $(this).val();

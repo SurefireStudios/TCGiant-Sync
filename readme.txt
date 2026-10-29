@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.28.0
+Stable tag: 3.28.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -139,6 +139,16 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.28.1 - 2026-10-29 =
+**The trading card categories**
+* FIX: The eBay category list on a product's eBay tab and in Settings had the wrong IDs for trading cards. "Pokémon Individual Cards" filed a listing under eBay's Desiccant & Moisture Absorbers, "Disney Lorcana" under Building Toys and "Non-Sport Trading Card Games" under Action Figures. "Magic: The Gathering Cards", "Yu-Gi-Oh! Individual Cards" and "One Piece Card Game" were not eBay categories at all. The list now offers eBay's own categories for single cards: CCG Individual Cards, for Pokémon, Magic, Yu-Gi-Oh!, Lorcana, One Piece and every other card game (the game goes in the listing's "Game" item specific), Non-Sport Trading Card Singles and Sports Trading Card Singles. The coins are as before.
+* A product or default saved with one of the old categories gets the one it was meant to be when it is listed anew: CCG Individual Cards, or Non-Sport Trading Card Singles for "Non-Sport Trading Card Games". Verify checks it there too. The log says so once a push. What you saved is not changed: the product's eBay tab and Settings show it as "(retired) ... → CCG Individual Cards", with a line saying why, until you choose a category again. A category you picked with Browse eBay Categories, or typed in yourself, in the custom box or as one of your own custom categories, is left as it is.
+* A product already live on eBay in one of the old categories stays there: eBay does not move a live listing to another category once it has sales, so a push revises it in the category saved, and a relist keeps it there too. The log and the product's eBay tab say so. To move it, end the listing and push the product again: the new listing goes to the right category.
+* This is for a shop whose Primary eBay Marketplace is United States, or not set: the old IDs and the new ones are eBay US's, so a shop on another eBay site keeps what it saved, as a category of its own.
+* In "eBay Standard Categories to Import", an old category you ticked stays ticked, marked (retired). No card listing is filed under it, so it imports none: tick the category it points to instead.
+* FIX: Card grading and condition details (the grader, grade, certification number and card condition) are now sent only in those three categories, as eBay's own table says. A product set to Item Type "Trading Cards" in another category is sent as Graded or Ungraded without them; the log says so, and the product's eBay tab shows it as not ready.
+* A grader or ungraded card condition that eBay's table doesn't list for the card's category is sent as before, and the log and the product's eBay tab say so: the table is behind eBay's own data. In CCG Individual Cards it lists the conditions Near Mint or Better and the three "Played" ones, and the graders Ace, PCA, PCG, TCG and ARK only there; in the two Trading Card Singles categories it lists Near Mint or Better, Excellent, Very Good and Poor, and CSG only in Sports Trading Card Singles.
 
 = 3.28.0 - 2026-10-28 =
 **Upgrade notice: please read before updating**

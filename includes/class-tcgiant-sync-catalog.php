@@ -223,6 +223,59 @@ class TCGiant_Sync_Catalog {
 	);
 
 	/**
+	 * The categories each ungraded card condition (descriptor 40001) is valid
+	 * in, from eBay's table of condition descriptor IDs for trading cards (MIP
+	 * user guide): Near Mint or Better in all three; Excellent, Very Good and
+	 * Poor in the two trading-card singles categories; the three "Played"
+	 * values in CCG Individual Cards only. eBay refuses a value outside its
+	 * category, so the exporter sends none and says so.
+	 */
+	const UNGRADED_TCG_CATEGORIES = array(
+		'400010' => array( '183050', '183454', '261328' ),
+		'400011' => array( '183050', '261328' ),
+		'400012' => array( '183050', '261328' ),
+		'400013' => array( '183050', '261328' ),
+		'400015' => array( '183454' ),
+		'400016' => array( '183454' ),
+		'400017' => array( '183454' ),
+	);
+
+	/**
+	 * The categories each professional grader (descriptor 27501) is valid in,
+	 * from the same table of eBay's: most in all three; CSG in Sports Trading
+	 * Card Singles only; PCA, PCG, Ace, TCG and ARK in CCG Individual Cards
+	 * only. eBay refuses a grader outside its category, so the exporter sends
+	 * none and says so. A grader not in the table (GRADERS_TCG's 2750124 to
+	 * 2750129) is unknown to it, and goes as it is.
+	 */
+	const GRADER_TCG_CATEGORIES = array(
+		'275010'  => array( '183050', '183454', '261328' ), // PSA
+		'275011'  => array( '183050', '183454', '261328' ), // BCCG
+		'275012'  => array( '183050', '183454', '261328' ), // BVG
+		'275013'  => array( '183050', '183454', '261328' ), // BGS
+		'275014'  => array( '261328' ),                     // CSG
+		'275015'  => array( '183050', '183454', '261328' ), // CGC
+		'275016'  => array( '183050', '183454', '261328' ), // SGC
+		'275017'  => array( '183050', '183454', '261328' ), // KSA
+		'275018'  => array( '183050', '183454', '261328' ), // GMA
+		'275019'  => array( '183050', '183454', '261328' ), // HGA
+		'2750110' => array( '183050', '183454', '261328' ), // ISA
+		'2750111' => array( '183454' ),                     // PCA
+		'2750112' => array( '183050', '183454', '261328' ), // GSG
+		'2750113' => array( '183050', '183454', '261328' ), // PGS
+		'2750114' => array( '183050', '183454', '261328' ), // MNT
+		'2750115' => array( '183050', '183454', '261328' ), // TAG
+		'2750116' => array( '183050', '183454', '261328' ), // Rare
+		'2750117' => array( '183050', '183454', '261328' ), // RCG
+		'2750118' => array( '183454' ),                     // PCG
+		'2750119' => array( '183454' ),                     // Ace
+		'2750120' => array( '183050', '183454', '261328' ), // CGA
+		'2750121' => array( '183454' ),                     // TCG
+		'2750122' => array( '183454' ),                     // ARK
+		'2750123' => array( '183050', '183454', '261328' ), // Other
+	);
+
+	/**
 	 * Ungraded Coin conditions — conditionDescriptorValueId => label.
 	 * Coins — Descriptor Name 2.
 	 */
@@ -235,18 +288,20 @@ class TCGiant_Sync_Catalog {
 
 	/**
 	 * TCG-relevant eBay category map (ID => label).
+	 *
+	 * eBay US's own leaf categories for single cards, the three its condition
+	 * descriptors for trading cards apply to (TCGiant_Sync_Exporter::
+	 * DESCRIPTOR_CATEGORIES_TCG). The game goes in the "Game" item specific,
+	 * not in the category: eBay files every card game's singles under CCG
+	 * Individual Cards. Until 3.28.1 this list offered a category per game
+	 * under IDs eBay files elsewhere - "Pokémon Individual Cards" was 180006,
+	 * eBay's Desiccant & Moisture Absorbers - see RETIRED_CATEGORIES.
 	 */
 	const CATEGORIES = array(
 		''       => '— Select a default category —',
-		'183050' => 'Trading Card Games',
-		'2536'   => 'Trading Cards',
-		'261068' => 'Non-Sport Trading Card Games',
-		'180006' => 'Pokémon Individual Cards',
-		'176055' => 'Magic: The Gathering Cards',
-		'69243'  => 'Yu-Gi-Oh! Individual Cards',
-		'183454' => 'Dragon Ball Super CCG',
-		'183446' => 'Disney Lorcana',
-		'185089' => 'One Piece Card Game',
+		'183454' => 'CCG Individual Cards: Pokémon, Magic, Yu-Gi-Oh!, Lorcana, One Piece and other card games',
+		'183050' => 'Non-Sport Trading Card Singles',
+		'261328' => 'Sports Trading Card Singles',
 		'253'    => 'Coins: US',
 		'256'    => 'Coins: World',
 		'3377'   => 'Coins: Canada',
@@ -254,6 +309,132 @@ class TCGiant_Sync_Catalog {
 		'18466'  => 'Coins: Medieval',
 		'custom' => 'Custom Category ID...',
 	);
+
+	/** eBay US's names for the three single-card categories. */
+	const CARD_CATEGORY_NAMES = array(
+		'183454' => 'CCG Individual Cards',
+		'183050' => 'Non-Sport Trading Card Singles',
+		'261328' => 'Sports Trading Card Singles',
+	);
+
+	/**
+	 * Category IDs this plugin's list offered until 3.28.1 that eBay US files
+	 * elsewhere, and the category each was meant to be (ID => ID). A product
+	 * or the default saved with one is pushed to the right category, with a
+	 * warning; the stored value is left for the shop to change.
+	 */
+	const RETIRED_CATEGORIES = array(
+		'2536'   => '183454', // Collectible Card Games: a parent of CCG Individual Cards, not a leaf.
+		'261068' => '183050', // Action Figures.
+		'180006' => '183454', // Desiccant & Moisture Absorbers.
+		'176055' => '183454', // No category on eBay US.
+		'69243'  => '183454', // No category on eBay US.
+		'183446' => '183454', // Building Toys.
+		'185089' => '183454', // No category on eBay US.
+	);
+
+	/** What the list called each retired ID. */
+	const RETIRED_CATEGORY_LABELS = array(
+		'2536'   => 'Trading Cards',
+		'261068' => 'Non-Sport Trading Card Games',
+		'180006' => 'Pokémon Individual Cards',
+		'176055' => 'Magic: The Gathering Cards',
+		'69243'  => 'Yu-Gi-Oh! Individual Cards',
+		'183446' => 'Disney Lorcana',
+		'185089' => 'One Piece Card Game',
+	);
+
+	/**
+	 * eBay US's own name for the retired IDs that are real categories. Saved
+	 * with the ID as its category name, it says the shop chose that category
+	 * from eBay's own tree (Browse eBay Categories, Suggest Category): a
+	 * custom choice, which is never mapped.
+	 */
+	const RETIRED_CATEGORY_EBAY_NAMES = array(
+		'2536'   => 'Collectible Card Games',
+		'261068' => 'Action Figures',
+		'180006' => 'Desiccant & Moisture Absorbers',
+		'183446' => 'Building Toys',
+	);
+
+	/**
+	 * The category a retired ID is pushed to, or '' when the ID is not one,
+	 * or is the shop's own: typed into a custom category box (the ID saved
+	 * as typed with it, 3.28.1), typed into Settings' custom categories, or
+	 * chosen from eBay's own tree (its eBay name saved with it, as the name
+	 * or the end of the path the category browser saves).
+	 *
+	 * @param string $category_id    Stored category ID.
+	 * @param string $category_name  The category name stored with it.
+	 * @param string $category_typed The ID last saved from the custom box, if any.
+	 * @return string
+	 */
+	public static function retired_category( $category_id, $category_name = '', $category_typed = '' ) {
+		$category_id = trim( (string) $category_id );
+		if ( ! isset( self::RETIRED_CATEGORIES[ $category_id ] ) ) {
+			return '';
+		}
+
+		// Typed into the custom box: the shop's own, never mapped. Only while
+		// it is the ID saved; one chosen since from the list is not typed.
+		if ( trim( (string) $category_typed ) === $category_id ) {
+			return '';
+		}
+
+		// The IDs, and where they go, are eBay US's: another site's shop keeps
+		// what it saved, as a category of its own.
+		if ( ! self::maps_retired_categories() ) {
+			return '';
+		}
+
+		// In the list only as one of the shop's custom categories.
+		if ( isset( self::get_categories()[ $category_id ] ) ) {
+			return '';
+		}
+
+		$ebay_name = self::RETIRED_CATEGORY_EBAY_NAMES[ $category_id ] ?? '';
+		$name      = strtolower( trim( (string) $category_name ) );
+		if ( '' !== $ebay_name && '' !== $name && strtolower( $ebay_name ) === substr( $name, -strlen( $ebay_name ) ) ) {
+			return '';
+		}
+
+		return self::RETIRED_CATEGORIES[ $category_id ];
+	}
+
+	/**
+	 * Whether this shop's retired IDs are mapped: only when its Primary eBay
+	 * Marketplace is eBay US, or unset, which every call reads as eBay US
+	 * (TCGiant_Sync_API). RETIRED_CATEGORIES is eBay US's tree.
+	 *
+	 * @return bool
+	 */
+	public static function maps_retired_categories() {
+		$settings    = TCGiant_Sync_OAuth::instance()->get_settings();
+		$marketplace = is_array( $settings ) && is_string( $settings['marketplace'] ?? null ) ? $settings['marketplace'] : '';
+
+		return '' === $marketplace || 'EBAY_US' === $marketplace;
+	}
+
+	/**
+	 * How a stored retired ID is shown: "(retired) Pokémon Individual Cards
+	 * (180006) → CCG Individual Cards (183454)".
+	 *
+	 * @param string $category_id A key of RETIRED_CATEGORIES.
+	 * @return string
+	 */
+	public static function retired_category_label( $category_id ) {
+		$category_id = (string) $category_id;
+		$to          = self::RETIRED_CATEGORIES[ $category_id ] ?? '';
+
+		return sprintf(
+			/* translators: 1: the old label, 2: its ID, 3: the category it is pushed to, 4: that category's ID */
+			__( '(retired) %1$s (%2$s) → %3$s (%4$s)', 'tcgiant-sync' ),
+			self::RETIRED_CATEGORY_LABELS[ $category_id ] ?? $category_id,
+			$category_id,
+			self::CARD_CATEGORY_NAMES[ $to ] ?? $to,
+			$to
+		);
+	}
 
 	/**
 	 * Listing types supported by the Trading API.
