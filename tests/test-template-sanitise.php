@@ -174,6 +174,13 @@ check( 'on a site that is not https, even its own http image is dropped', $out['
 check( '  in an attribute too, however long', 1 === count( array_filter( TCGiant_Sync_Template_Sanitiser::lint( '<img src="https://shop.example/a.png" alt="[[attribute_' . str_repeat( 'Long label ', 12 ) . ']]">' ), function ( $w ) { return false !== strpos( $w, 'placeholder' ); } ) ), true );
 check( 'the lint says when a [[placeholder]] from another plugin would reach buyers', 1 === count( array_filter( TCGiant_Sync_Template_Sanitiser::lint( '<p>Card [[attribute_Card #]]</p>' ), function ( $w ) { return false !== strpos( $w, '[[attribute_Card #]]' ); } ) ), true );
 
+$script = function ( $html ) {
+	return array_values( array_filter( TCGiant_Sync_Template_Sanitiser::lint( $html ), function ( $w ) { return false !== strpos( $w, 'active-content' ); } ) );
+};
+check( 'the lint names ".cookie", which eBay refused live', $script( '<p>x.cookie</p>' ), array( 'The text ".cookie" looks like script, which eBay\'s active-content check refuses. Check with eBay to be sure.' ) );
+check( '  and the call form of includes', count( $script( '<p>list.includes(x)</p>' ) ), 1 );
+check( '  not "includes" as a plain word, which eBay accepted live', $script( '<p>This lot includes one graded card.</p>' ), array() );
+
 $fixed = function ( $html ) {
 	return count( array_filter( TCGiant_Sync_Template_Sanitiser::lint( $html ), function ( $w ) { return false !== strpos( $w, 'fixed width' ); } ) );
 };

@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.28.1
+Stable tag: 3.28.2
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -139,6 +139,10 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.28.2 - 2026-10-29 =
+* FIX: When another plugin held back the stock change an import makes, the import still counted eBay's sales as taken off the website's stock. They never were, so an item sold on eBay could stay for sale on the website. The import now counts them only once the website's stock holds eBay's figure; otherwise the next stock check takes them off.
+* FIX: The listing template preview no longer warns about the word "includes" in ordinary text. In a live check eBay refused ".cookie" and accepted "this lot includes one graded card", so the warning now names only text that looks like script: ".cookie", "cookie(", "replace(" and "includes(".
 
 = 3.28.1 - 2026-10-29 =
 **The trading card categories**

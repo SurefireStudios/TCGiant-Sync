@@ -75,11 +75,12 @@ class TCGiant_Sync_Template_Sanitiser {
 	const EBAY_HOSTS = '/(^|\.)ebay\.(com|co\.uk|de|fr|it|es|ca|com\.au|ie|at|ch|nl|be|pl)$/i';
 
 	/**
-	 * Strings a third party reports eBay's active-content check matching. The
-	 * exact rule is UNVERIFIED (live test 6), so these warn and never block
-	 * (https://help.m2epro.com/support/solutions/articles/9000219018).
+	 * Script forms eBay's active-content check names in its refusal (".cookie",
+	 * "cookie(", "replace(", "includes"). Live, eBay refused ".cookie" and
+	 * accepted "includes" as a plain word in a sentence, so only the call form
+	 * of "includes" is here. These warn and never block.
 	 */
-	const ACTIVE_CONTENT_WORDS = array( '.cookie', 'cookie(', 'replace(', 'includes' );
+	const ACTIVE_CONTENT_WORDS = array( '.cookie', 'cookie(', 'replace(', 'includes(' );
 
 	/**
 	 * Words for payment outside eBay's checkout.
@@ -303,7 +304,7 @@ class TCGiant_Sync_Template_Sanitiser {
 		foreach ( self::ACTIVE_CONTENT_WORDS as $word ) {
 			if ( false !== stripos( (string) $html, $word ) ) {
 				/* translators: %s: a word */
-				$warnings[] = sprintf( __( 'The text "%s" is reported to trip eBay\'s active-content check, which can refuse a listing. This is not confirmed; Check with eBay to be sure.', 'tcgiant-sync' ), $word );
+				$warnings[] = sprintf( __( 'The text "%s" looks like script, which eBay\'s active-content check refuses. Check with eBay to be sure.', 'tcgiant-sync' ), $word );
 			}
 		}
 

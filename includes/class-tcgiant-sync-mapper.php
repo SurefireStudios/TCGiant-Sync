@@ -2109,8 +2109,13 @@ class TCGiant_Sync_Mapper {
 			TCGiant_Sync_Inventory::queue_after_ebay_sale( (int) $saved_id );
 		}
 
-		// eBay's figure is the stock now: every eBay sale so far is in it.
-		if ( $saved_id && ! $stock_kept && null !== ( $product_data['quantity_sold'] ?? null ) ) {
+		// eBay's figure is the stock now: every eBay sale so far is in it. A
+		// product already here has had its record from the armed save above,
+		// and only if the stock holds eBay's figure: another plugin can hold
+		// the save's stock write back (x22b). A new one, which could not be
+		// armed, is checked the same way here.
+		if ( $saved_id && $is_new && ! $stock_kept && null !== ( $product_data['quantity_sold'] ?? null )
+			&& (int) get_post_meta( $saved_id, '_stock', true ) === (int) $product_data['stock_quantity'] ) {
 			update_post_meta( $saved_id, '_ebay_sold_seen', array( 'item' => (string) $item_id, 'sku' => '', 'sold' => (int) $product_data['quantity_sold'] ) );
 		}
 
@@ -3391,7 +3396,10 @@ class TCGiant_Sync_Mapper {
 
 				// eBay's figure for the variation is its stock now: every eBay
 				// sale of it so far is in it (TCGiant_Sync_Inventory::SOLD_SEEN_KEY).
-				if ( ! $var_kept && ! $pooled_var && '' !== $ebay_var_sku && null !== ( $var_data['sold'] ?? null ) ) {
+				// One already here has had its record from its armed save, as
+				// the product's (x22b); a new one is checked here.
+				if ( $is_new_variation && ! $var_kept && ! $pooled_var && '' !== $ebay_var_sku && null !== ( $var_data['sold'] ?? null )
+					&& (int) get_post_meta( $saved_var_id, '_stock', true ) === (int) $var_data['stock_quantity'] ) {
 					update_post_meta( $saved_var_id, '_ebay_sold_seen', array( 'item' => (string) get_post_meta( $parent_id, '_ebay_item_id', true ), 'sku' => $ebay_var_sku, 'sold' => (int) $var_data['sold'] ) );
 				}
 			}

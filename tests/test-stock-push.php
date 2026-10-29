@@ -4459,6 +4459,78 @@ try {
 }
 $HELD_STOCK = array();
 check( '  and its save\'s stock held back by another plugin, a throw in its save: 5, its record untouched', array( $rf4_died, stock( 1899 ), $RF4_SEEN, meta( 1899, '_ebay_sold_seen' )['sold'] ?? null ), array( 'another plugin\'s hook failed', 5, 0, 0 ) );
+// x22b: the stock held back and nothing thrown - the import's own write after
+// the save leaves the record too, so a website sale's push still takes eBay's
+// 2 sales off: 5 - 2 - 1 = 2, and eBay is sent 2.
+$x22b_revised = function () {
+	return array_values( array_map( function ( $w ) { return preg_match( '#<Quantity>(\d+)</Quantity>#', $w[1], $m ) ? (int) $m[1] : null; }, array_filter( $GLOBALS['WIRE'], function ( $w ) { return 'ReviseInventoryStatus' === $w[0]; } ) ) );
+};
+fresh_shop();
+product( 1897, 5, '189700001897' );
+seen( 1897, '189700001897', 0 );
+$HELD_STOCK = array( 1897 );
+import_listing( listing( '189700001897', 5, 2 ) + array( 'Title' => 'Lot', 'SKU' => 'SKU-1897' ) );
+$HELD_STOCK = array();
+$x22b_mid   = array( stock( 1897 ), meta( 1897, '_ebay_sold_seen' )['sold'] ?? null );
+next_request();
+ebay_has( '189700001897', listing( '189700001897', 5, 2 ), listing( '189700001897', 5, 2 ) );
+website_order( 18971, array( 1897 => 1 ) );
+run_queue( true );
+check( 'x22b another plugin holding the import\'s stock back, nothing thrown: 5, the record untouched; a website sale then: 2, and eBay sent 2', array( $x22b_mid, stock( 1897 ), $x22b_revised() ), array( array( 5, 0 ), 2, array( 2 ) ) );
+fresh_shop();
+variable( 1898, '189800001898' );
+variation( 1899, 1898, 'VAR-R', 5, array( 'Colour' => 'Red' ), array( '_ebay_variation_sku' => 'VAR-R' ) );
+seen( 1899, '189800001898', 0, 'VAR-R' );
+$HELD_STOCK = array( 1899 );
+// From eBay, as the import's save of the listing runs it.
+TCGiant_Sync_Inventory::begin_ebay_origin();
+try {
+	import_variations( 1898, array( array( 'sku' => 'VAR-R', 'stock_quantity' => 3, 'sold' => 2, 'attributes' => array( 'Colour' => 'Red' ) ) ) );
+} finally {
+	TCGiant_Sync_Inventory::end_ebay_origin();
+}
+$HELD_STOCK = array();
+$x22b_mid   = array( stock( 1899 ), meta( 1899, '_ebay_sold_seen' )['sold'] ?? null );
+next_request();
+$x22b_vl = variation_listing( '189800001898', array( ev( 'VAR-R', 5, 2, array( 'Colour' => 'Red' ) ) ) );
+ebay_has( '189800001898', $x22b_vl, $x22b_vl, $x22b_vl );
+website_order( 18991, array( 1899 => 1 ) );
+run_queue( true );
+check( '  a variation keeping its own stock, the same: 5, its record untouched; a website sale then: 2, and eBay sent 2', array( $x22b_mid, stock( 1899 ), $x22b_revised() ), array( array( 5, 0 ), 2, array( 2 ) ) );
+// A product new to the shop is not armed: the write after its save makes its
+// record when the stock holds eBay's figure, and not when it was held back.
+fresh_shop();
+$x22b_new = (int) import_listing( listing( '189600001896', 5, 2 ) + array( 'Title' => 'New', 'SKU' => 'SKU-NEW-1896' ) );
+check( '  a product new to the shop: eBay\'s 3, and its record made from eBay\'s 2 sold', array( $x22b_new >= 9000, stock( $x22b_new ), meta( $x22b_new, '_ebay_sold_seen' )['sold'] ?? null ), array( true, 3, 2 ) );
+fresh_shop();
+$HELD_STOCK = array( $NEXT_ID );
+$x22b_new   = (int) import_listing( listing( '189600001896', 5, 2 ) + array( 'Title' => 'New', 'SKU' => 'SKU-NEW-1896' ) );
+$HELD_STOCK = array();
+check( '  and its stock held back by another plugin: no record', array( $x22b_new >= 9000, meta( $x22b_new, '_ebay_sold_seen' ) ), array( true, null ) );
+// A variation new to the shop is not armed: the write after its save makes its
+// record, as before.
+fresh_shop();
+variable( 1898, '189800001898' );
+variation( 1899, 1898, 'VAR-R', 5, array( 'Colour' => 'Red' ), array( '_ebay_variation_sku' => 'VAR-R' ) );
+seen( 1899, '189800001898', 0, 'VAR-R' );
+$x22b_new = import_variations( 1898, array(
+	array( 'sku' => 'VAR-R', 'stock_quantity' => 5, 'sold' => 0, 'attributes' => array( 'Colour' => 'Red' ) ),
+	array( 'sku' => 'VAR-B', 'stock_quantity' => 4, 'sold' => 1, 'attributes' => array( 'Colour' => 'Blue' ) ),
+) );
+$x22b_id  = (int) ( $x22b_new[1]['variation_id'] ?? 0 );
+check( '  a variation new to the shop: its record made from eBay\'s 1 sold', array( $x22b_id > 1899, $x22b_id ? ( meta( $x22b_id, '_ebay_sold_seen' )['sold'] ?? null ) : null ), array( true, 1 ) );
+fresh_shop();
+variable( 1898, '189800001898' );
+variation( 1899, 1898, 'VAR-R', 5, array( 'Colour' => 'Red' ), array( '_ebay_variation_sku' => 'VAR-R' ) );
+seen( 1899, '189800001898', 0, 'VAR-R' );
+$HELD_STOCK = array( $NEXT_ID );
+$x22b_new   = import_variations( 1898, array(
+	array( 'sku' => 'VAR-R', 'stock_quantity' => 5, 'sold' => 0, 'attributes' => array( 'Colour' => 'Red' ) ),
+	array( 'sku' => 'VAR-B', 'stock_quantity' => 4, 'sold' => 1, 'attributes' => array( 'Colour' => 'Blue' ) ),
+) );
+$HELD_STOCK = array();
+$x22b_id    = (int) ( $x22b_new[1]['variation_id'] ?? 0 );
+check( '  and its stock held back by another plugin: no record', array( $x22b_id > 1899, $x22b_id ? meta( $x22b_id, '_ebay_sold_seen' ) : 'none' ), array( true, null ) );
 // A save that throws before WooCommerce fires its stock action: the record is
 // written on the way out, once the stock holds eBay's figure.
 fresh_shop();
