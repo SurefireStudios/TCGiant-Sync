@@ -656,21 +656,105 @@ class TCGiant_Sync_DB {
 	}
 
 	/**
-	 * Query listings with filters, pagination, and sorting.
+	 * Whether a row's product is out of stock in WooCommerce, as SQL - a flag,
+	 * 1 or 0, never NULL - and the join it needs: from the lookup table where
+	 * the store has one, and the product's own _stock_status where it has
+	 * not, or where the lookup table has no row for it.
 	 *
-	 * Used by the Listings admin page (WP_List_Table).
+	 * A flag, not the status. Each column is compared with the literal on its
+	 * own side, and only the two answers are merged:
 	 *
-	 * @param array $args Query args.
-	 * @return array { items: array, total: int }
+	 *   COALESCE( lk.stock_status = 'outofstock', ( SELECT ss.meta_value = 'outofstock' ... ), 0 )
+	 *
+	 * The status itself, COALESCE( lk.stock_status, ( SELECT ss.meta_value ... ) ),
+	 * compared with 'outofstock' afterwards, fails on a site whose lookup
+	 * table and wp_postmeta are in different collations - a shop older than
+	 * WordPress 4.2 with its postmeta converted to utf8mb4_unicode_ci beside
+	 * WooCommerce's table made in utf8mb4_unicode_520_ci, or a MySQL 8 server
+	 * default of utf8mb4_0900_ai_ci. MySQL and MariaDB merge COALESCE's
+	 * arguments into one collation; two columns of the same character set and
+	 * different collations merge to no collation at all (derivation NONE),
+	 * which is allowed inside COALESCE, and then refused by the comparison:
+	 * "Illegal mix of collations ... for operation '='". The statement fails
+	 * whatever the data, so every Listings view would be empty, every count
+	 * 0, and Auto-Relist would find nothing to do. A column compared with a
+	 * literal takes the column's collation, and integers have none to mix.
+	 * SQLite has no collation merging, so the harness checks the shape
+	 * (tests/test-sold-view.php).
+	 *
+	 * @param string $product_column The column holding the product id.
+	 * @return array [ join, flag ]
 	 */
+	public static function out_of_stock_sql( $product_column = 'l.product_id' ) {
+		global $wpdb;
+
+		$meta   = "(SELECT ss.meta_value = 'outofstock' FROM {$wpdb->postmeta} ss WHERE ss.post_id = {$product_column} AND ss.meta_key = '_stock_status' LIMIT 1)";
+		$lookup = self::lookup_table();
+
+		if ( $lookup ) {
+			return array( " LEFT JOIN {$lookup} lk ON lk.product_id = {$product_column}", "COALESCE(lk.stock_status = 'outofstock', {$meta}, 0)" );
+		}
+
+		return array( '', "COALESCE({$meta}, 0)" );
+	}
+
+	/**
+	 * The Listings screen's three views, each as an SQL condition over the
+	 * out-of-stock flag above. Active is eBay's word for the listing. The
+	 * other two are both over on eBay, and told apart by WooCommerce: Sold
+	 * when the product is out of stock, Ended when it still has something to
+	 * sell - in stock, or on backorder.
+	 *
+	 * Ended used to be the exact status "Ended", so a coin that sold sat
+	 * beside one that ran out unsold, and the only way to find the sold ones
+	 * was to open each.
+	 *
+	 * The one place a row is put in a view: the filter, the counts and the
+	 * view each row says it is in are all built from these, so a count
+	 * cannot disagree with the rows its link shows.
+	 *
+	 * @param string $out_of_stock From out_of_stock_sql().
+	 * @return array View => condition.
+	 */
+	private static function view_conditions( $out_of_stock ) {
+		$over = "l.listing_status <> 'Active'";
+
+		return array(
+			'Active' => "l.listing_status = 'Active'",
+			'Ended'  => "( {$over} AND {$out_of_stock} = 0 )",
+			'Sold'   => "( {$over} AND {$out_of_stock} = 1 )",
+		);
+	}
+
+	/**
+	 * What every listings query reads from: the table, its products - never
+	 * a row that has outlived its product, nor one in the trash or an
+	 * auto-draft - and the lookup table where there is one.
+	 *
+	 * The count and the rows used to read the table alone, so a trashed
+	 * product stayed on the screen and in "All", for ever.
+	 *
+	 * @return string
+	 */
+	private static function from_sql() {
+		global $wpdb;
+
+		list( $join ) = self::out_of_stock_sql( 'l.product_id' );
+
+		return self::table_name() . " l INNER JOIN {$wpdb->posts} p ON p.ID = l.product_id AND p.post_status NOT IN ( 'trash', 'auto-draft' ){$join}";
+	}
+
 	/**
 	 * The filter half of a listings query, shared so that a bulk action acting
 	 * on "everything matching" cannot drift from what the screen displayed.
 	 *
 	 * Columns are qualified because the row query joins WooCommerce's lookup
-	 * table, and product_id exists on both sides of that join.
+	 * table, and product_id exists on both sides of that join. Read with
+	 * from_sql(), which supplies the joins the views need.
 	 *
-	 * @param array $args status, type and search.
+	 * @param array $args status (a view, or a stored status from an older
+	 *                    link), type, search, and ended_only (the Ended
+	 *                    view's rows only, whatever the status).
 	 * @return array [ where clause, parameters ]
 	 */
 	private static function build_where( array $args ) {
@@ -679,9 +763,24 @@ class TCGiant_Sync_DB {
 		$where  = array( '1=1' );
 		$params = array();
 
-		if ( ! empty( $args['status'] ) ) {
+		list( , $out_of_stock ) = self::out_of_stock_sql( 'l.product_id' );
+		$views           = self::view_conditions( $out_of_stock );
+
+		if ( ! empty( $args['status'] ) && isset( $views[ $args['status'] ] ) ) {
+			$where[] = $views[ $args['status'] ];
+		} elseif ( ! empty( $args['status'] ) ) {
+			// A link from before the views, to a status no view is named
+			// for: that status, as it always was.
 			$where[]  = 'l.listing_status = %s';
 			$params[] = $args['status'];
+		}
+
+		// What a Relist of "everything matching" may take: neither the Sold
+		// view, which has nothing left to sell, nor the Active one, which is
+		// live - Relist asks eBay before it finds that out, and a select-all
+		// on All spent a GetItem on every live listing to relist nothing.
+		if ( ! empty( $args['ended_only'] ) ) {
+			$where[] = $views['Ended'];
 		}
 
 		if ( ! empty( $args['type'] ) ) {
@@ -709,7 +808,8 @@ class TCGiant_Sync_DB {
 	 * what was asked. So the screen names the filters and the server runs the
 	 * same query again without a LIMIT.
 	 *
-	 * @param array $args status, type and search - as passed to query().
+	 * @param array $args status, type and search - as passed to query() - and
+	 *                    ended_only.
 	 * @return int[] Product ids.
 	 */
 	public static function find_product_ids( array $args ) {
@@ -719,18 +819,17 @@ class TCGiant_Sync_DB {
 			return array();
 		}
 
-		$table = self::table_name();
-
 		list( $where_clause, $params ) = self::build_where( wp_parse_args( $args, array(
-			'status' => '',
-			'type'   => '',
-			'search' => '',
+			'status'     => '',
+			'type'       => '',
+			'search'     => '',
+			'ended_only' => false,
 		) ) );
 
 		// Joined to the posts table so that a row outliving its product - or a
 		// product in the trash - is never acted on by "everything matching".
-		$sql = "SELECT l.product_id FROM {$table} l
-			INNER JOIN {$wpdb->posts} p ON p.ID = l.product_id AND p.post_status NOT IN ( 'trash', 'auto-draft' )
+		$from = self::from_sql();
+		$sql  = "SELECT l.product_id FROM {$from}
 			WHERE {$where_clause} ORDER BY l.product_id ASC";
 
 		$ids = $params
@@ -740,16 +839,24 @@ class TCGiant_Sync_DB {
 		return array_values( array_filter( array_map( 'absint', (array) $ids ) ) );
 	}
 
+	/**
+	 * Query listings with filters, pagination, and sorting.
+	 *
+	 * Used by the Listings admin page. Each row says which view it is in, as
+	 * listing_view.
+	 *
+	 * @param array $args Query args.
+	 * @return array { items: array, total: int }
+	 */
 	public static function query( $args = array() ) {
 		global $wpdb;
-		$table = self::table_name();
 
 		if ( ! TCGiant_Sync_DB::table_exists() ) {
 			return array( 'items' => array(), 'total' => 0 );
 		}
 
 		$defaults = array(
-			'status'   => '',      // Active, Ended, Completed
+			'status'   => '',      // Active, Ended or Sold (view_conditions()); another stored status matches exactly
 			'type'     => '',      // FixedPriceItem, Chinese
 			'search'   => '',      // Search by title, eBay ID, or product ID
 			'orderby'  => 'updated_at',
@@ -771,7 +878,12 @@ class TCGiant_Sync_DB {
 		// looking at the Ended tab notices first. A derived number cannot drift.
 		$live_qty   = $lookup ? 'COALESCE(lk.stock_quantity, l.ebay_quantity)' : 'l.ebay_quantity';
 		$live_price = $lookup ? 'COALESCE(lk.min_price, l.ebay_price)' : 'l.ebay_price';
-		$join       = $lookup ? " LEFT JOIN {$lookup} lk ON lk.product_id = l.product_id" : '';
+
+		// Which view the row is in, from the same conditions as the filter.
+		list( , $out_of_stock ) = self::out_of_stock_sql( 'l.product_id' );
+		$views           = self::view_conditions( $out_of_stock );
+		$in_view         = "CASE WHEN {$views['Active']} THEN 'Active' WHEN {$views['Sold']} THEN 'Sold' ELSE 'Ended' END";
+		$from            = self::from_sql();
 
 		// Whitelist orderby to prevent SQL injection. The value never reaches SQL;
 		// it only chooses one of these expressions.
@@ -813,9 +925,9 @@ class TCGiant_Sync_DB {
 		$offset = ( max( 1, (int) $args['page'] ) - 1 ) * (int) $args['per_page'];
 		$limit = (int) $args['per_page'];
 
-		// Count total.
-		// No join here: the count does not depend on stock or price.
-		$count_sql = "SELECT COUNT(*) FROM {$table} l WHERE {$where_clause}";
+		// Count total, from the same rows as the page: the views go by
+		// WooCommerce's stock, and a trashed product is in none of them.
+		$count_sql = "SELECT COUNT(*) FROM {$from} WHERE {$where_clause}";
 		if ( ! empty( $params ) ) {
 			$total = (int) $wpdb->get_var( $wpdb->prepare( $count_sql, $params ) );
 		} else {
@@ -823,8 +935,8 @@ class TCGiant_Sync_DB {
 		}
 
 		// Fetch rows.
-		$query_sql = "SELECT l.*, {$live_qty} AS live_quantity, {$live_price} AS live_price
-			FROM {$table} l{$join}
+		$query_sql = "SELECT l.*, {$live_qty} AS live_quantity, {$live_price} AS live_price, {$in_view} AS listing_view
+			FROM {$from}
 			WHERE {$where_clause}
 			ORDER BY {$orderby} {$order}
 			LIMIT {$limit} OFFSET {$offset}";
@@ -857,32 +969,38 @@ class TCGiant_Sync_DB {
 	}
 
 	/**
-	 * Get aggregate stats for the dashboard.
+	 * The Listings screen's counts: every view's, and all of them together,
+	 * in one query over the rows the views show.
 	 *
-	 * @return array Counts by status.
+	 * Trashed and auto-draft products are in none of them, so "All" no
+	 * longer counts them.
+	 *
+	 * @return array active, ended, sold and total.
 	 */
 	public static function get_stats() {
 		global $wpdb;
-		$table = self::table_name();
+
+		$stats = array( 'active' => 0, 'ended' => 0, 'sold' => 0, 'total' => 0 );
 
 		if ( ! TCGiant_Sync_DB::table_exists() ) {
-			return array( 'active' => 0, 'ended' => 0, 'total' => 0 );
+			return $stats;
 		}
 
-		$results = $wpdb->get_results(
-			"SELECT listing_status, COUNT(*) as cnt FROM {$table} GROUP BY listing_status",
+		list( , $out_of_stock ) = self::out_of_stock_sql( 'l.product_id' );
+		$views           = self::view_conditions( $out_of_stock );
+		$from            = self::from_sql();
+
+		$row = $wpdb->get_row(
+			"SELECT COUNT(*) AS total,
+				SUM(CASE WHEN {$views['Active']} THEN 1 ELSE 0 END) AS active,
+				SUM(CASE WHEN {$views['Ended']} THEN 1 ELSE 0 END) AS ended,
+				SUM(CASE WHEN {$views['Sold']} THEN 1 ELSE 0 END) AS sold
+			FROM {$from}",
 			ARRAY_A
 		);
 
-		$stats = array( 'active' => 0, 'ended' => 0, 'total' => 0 );
-		foreach ( $results as $row ) {
-			$status = strtolower( $row['listing_status'] );
-			if ( 'active' === $status ) {
-				$stats['active'] = (int) $row['cnt'];
-			} else {
-				$stats['ended'] += (int) $row['cnt'];
-			}
-			$stats['total'] += (int) $row['cnt'];
+		foreach ( array_keys( $stats ) as $key ) {
+			$stats[ $key ] = is_array( $row ) ? (int) ( $row[ $key ] ?? 0 ) : 0;
 		}
 
 		return $stats;

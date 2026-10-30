@@ -521,9 +521,158 @@ class TCGiant_Sync_Inventory {
 		// listing; a relist or push later needs to know whether THIS listing's
 		// sales are already in the stock, or whether stock entered since is the
 		// shop's own restock.
-		update_post_meta( $product_id, '_ebay_stock_settled_item', (string) get_post_meta( $product_id, '_ebay_item_id', true ) );
+		$settled_item = (string) get_post_meta( $product_id, '_ebay_item_id', true );
+		update_post_meta( $product_id, '_ebay_stock_settled_item', $settled_item );
+
+		// Why it ended, when eBay's figures say everything sold: for the
+		// Listings screen's Sold view. A reason already recorded for this
+		// listing - the shop ended it, or the plugin did at 0 - stands.
+		if ( (int) $listed >= 1 && (int) $sold >= (int) $listed ) {
+			self::note_end_reason( $product_id, $settled_item, self::END_SOLD_OUT, false );
+		}
 
 		return $held;
+	}
+
+	/**
+	 * Why a listing ended, as _ebay_end_reason records it, for the listing
+	 * _ebay_end_reason_item names. Spent with the rest of a settle when a new
+	 * listing starts (SETTLE_KEYS).
+	 *
+	 * - END_STOCK_ZERO: the plugin ended it because WooCommerce's stock
+	 *   reached 0 (3.28.0).
+	 * - END_BY_SHOP: the shop ended it from WordPress - End Listing on the
+	 *   product, or End Listing on the Listings screen - and eBay took it.
+	 * - END_SOLD_OUT: eBay's final figures say every unit sold.
+	 */
+	const END_STOCK_ZERO = 'stock_zero';
+	const END_BY_SHOP    = 'by_shop';
+	const END_SOLD_OUT   = 'sold_out';
+
+	/**
+	 * Record why a listing ended.
+	 *
+	 * @param int    $product_id Product holding the link.
+	 * @param string $item_id    The listing.
+	 * @param string $reason     One of the END_ constants.
+	 * @param bool   $replace    Whether a reason already recorded for this
+	 *                           listing gives way.
+	 * @return void
+	 */
+	private static function note_end_reason( $product_id, $item_id, $reason, $replace ) {
+		$product_id = (int) $product_id;
+		$item_id    = (string) $item_id;
+
+		if ( '' === $item_id ) {
+			return;
+		}
+
+		if ( ! $replace
+			&& '' !== (string) get_post_meta( $product_id, '_ebay_end_reason', true )
+			&& $item_id === (string) get_post_meta( $product_id, '_ebay_end_reason_item', true ) ) {
+			return;
+		}
+
+		update_post_meta( $product_id, '_ebay_end_reason', (string) $reason );
+		update_post_meta( $product_id, '_ebay_end_reason_item', $item_id );
+	}
+
+	/**
+	 * The shop ended a listing from WordPress, and eBay took it.
+	 *
+	 * Recorded as Ended, when (eBay's EndTime from the answer, or now), and
+	 * why. Nothing is settled: the listing's figures come from eBay when the
+	 * sync next reads it.
+	 *
+	 * @param int    $product_id Product holding the link.
+	 * @param string $item_id    The listing.
+	 * @param mixed  $response   EndItem's answer.
+	 * @return void
+	 */
+	public static function record_shop_end( $product_id, $item_id, $response = null ) {
+		$product_id = (int) $product_id;
+		$end        = is_array( $response ) ? TCGiant_Sync_API::scalar_value( $response['EndTime'] ?? '' ) : '';
+
+		update_post_meta( $product_id, '_ebay_listing_status', 'Ended' );
+		update_post_meta( $product_id, '_ebay_end_time', '' !== $end ? $end : gmdate( 'Y-m-d\TH:i:s.000\Z' ) );
+		self::note_end_reason( $product_id, (string) $item_id, self::END_BY_SHOP, true );
+	}
+
+	/**
+	 * What the Listings screen says about how a listing ended, for its Sold
+	 * and Ended views: sold on eBay, out of stock on the website, ended by
+	 * the shop, and how many of a listing of several sold.
+	 *
+	 * Only from what was recorded about this listing - the reason
+	 * (_ebay_end_reason_item) and eBay's final figures
+	 * (_ebay_stock_settled_item) must name it - so nothing a product's
+	 * earlier listing left is said about its new one. eBay is not asked.
+	 *
+	 * "Out of stock on your website" is the plugin ending the listing at 0,
+	 * or eBay selling fewer than were listed while WooCommerce has none: the
+	 * stock went somewhere other than eBay - a website sale, usually, or a
+	 * hand edit to 0, which reads the same from here.
+	 *
+	 * @param int    $product_id The product.
+	 * @param string $item_id    The listing the row is for.
+	 * @param string $view       Its view: Active, Ended or Sold.
+	 * @return string Plain text, '' when nothing is known or the listing is live.
+	 */
+	public static function end_note( $product_id, $item_id, $view ) {
+		$product_id = (int) $product_id;
+		$item_id    = (string) $item_id;
+
+		if ( 'Active' === $view || '' === $item_id ) {
+			return '';
+		}
+
+		$reason = $item_id === (string) get_post_meta( $product_id, '_ebay_end_reason_item', true )
+			? (string) get_post_meta( $product_id, '_ebay_end_reason', true )
+			: '';
+
+		$listed = null;
+		$sold   = null;
+		if ( $item_id === (string) get_post_meta( $product_id, '_ebay_stock_settled_item', true ) ) {
+			$l = get_post_meta( $product_id, '_ebay_quantity_listed', true );
+			$s = get_post_meta( $product_id, '_ebay_quantity_sold', true );
+			if ( is_numeric( $l ) && is_numeric( $s ) ) {
+				$listed = max( 0, (int) $l );
+				$sold   = max( 0, (int) $s );
+			}
+		}
+
+		$sold_out = self::END_SOLD_OUT === $reason || ( null !== $listed && $listed >= 1 && $sold >= $listed );
+		$several  = null !== $listed && $listed > 1;
+
+		// Every unit sold on eBay: nothing more to say.
+		if ( $sold_out && self::END_BY_SHOP !== $reason ) {
+			/* translators: %d: units the listing held, every one of them sold */
+			return $several ? sprintf( __( 'Sold on eBay: all %d', 'tcgiant-sync' ), $listed ) : __( 'Sold on eBay', 'tcgiant-sync' );
+		}
+
+		if ( self::END_BY_SHOP === $reason ) {
+			$note = __( 'Ended by you', 'tcgiant-sync' );
+		} elseif ( 'Sold' === $view && ( self::END_STOCK_ZERO === $reason || null !== $listed ) ) {
+			// None left here, and eBay did not sell them all.
+			$note = __( 'Out of stock on your website', 'tcgiant-sync' );
+		} elseif ( self::END_STOCK_ZERO === $reason ) {
+			// Ended at 0, and restocked since.
+			$note = __( 'Ended when your stock reached 0', 'tcgiant-sync' );
+		} elseif ( null !== $listed && 0 === $sold ) {
+			return __( 'Ended unsold', 'tcgiant-sync' );
+		} else {
+			$note = '';
+		}
+
+		// And how many of a listing of several sold on eBay, when any did.
+		/* translators: 1: units sold on eBay, 2: units the listing held */
+		$of = $several && $sold > 0 ? sprintf( __( '%1$d of %2$d sold on eBay', 'tcgiant-sync' ), min( $sold, $listed ), $listed ) : '';
+
+		if ( '' === $note ) {
+			return $of;
+		}
+
+		return '' !== $of ? $note . ' - ' . $of : $note;
 	}
 
 	/**
@@ -3027,6 +3176,13 @@ class TCGiant_Sync_Inventory {
 		}
 
 		self::push_done( $job );
+
+		// eBay took this one: what an earlier push of the product to the
+		// same listing could not get there is now out of date, and leaves
+		// Stock Review's list.
+		if ( 'success' === $result['status'] ) {
+			self::forget_push_failure( (int) $job['product_id'], (string) $target['item_id'] );
+		}
 
 		return $result;
 	}
@@ -6545,12 +6701,24 @@ class TCGiant_Sync_Inventory {
 	}
 
 	/**
-	 * Products that sold out on eBay and are still in the catalogue.
+	 * Products that sold out on eBay and are still in the catalogue, that the
+	 * sold-out cleanup would move to the trash.
 	 *
 	 * The backlog left by removal having lived on one code path. Every one of
-	 * these was settled from eBay's own Quantity and QuantitySold and came out
-	 * at nothing, which is the sold-out test - so the judgement is already made
-	 * and recorded, and nothing here needs asking again.
+	 * these was settled from eBay's own Quantity and QuantitySold for the
+	 * listing it still follows, and came out at nothing, which is the
+	 * sold-out test - so the judgement is already made and recorded, and
+	 * nothing here needs asking again.
+	 *
+	 * Only those. A settle from before 3.27.0 recorded no figures, and "Ended,
+	 * out of stock and settled" was taken for an eBay sell-out - but a coin
+	 * sold on the website and settled then looks exactly the same. Those are
+	 * counted (count_sold_out_unverified()) and left alone.
+	 *
+	 * And not a product remove_if_allowed() would keep whatever it was asked:
+	 * one the shop pushed to eBay, or one in a Preserve category. They were
+	 * listed, counted in the panel's headline and offered to its button,
+	 * which then kept every one of them.
 	 *
 	 * Deliberately not acted on automatically. A shop should be shown the list
 	 * and asked, not told afterwards that an upgrade trashed some products.
@@ -6561,28 +6729,7 @@ class TCGiant_Sync_Inventory {
 	public static function find_sold_out_not_removed( $limit = 0 ) {
 		global $wpdb;
 
-		$sql = "SELECT p.ID
-			FROM {$wpdb->posts} p
-			INNER JOIN {$wpdb->postmeta} listing ON listing.post_id = p.ID AND listing.meta_key = '_ebay_listing_status'
-			INNER JOIN {$wpdb->postmeta} settled ON settled.post_id = p.ID AND settled.meta_key = '_ebay_stock_settled_at'
-			INNER JOIN {$wpdb->postmeta} stock   ON stock.post_id   = p.ID AND stock.meta_key   = '_stock_status'
-			LEFT JOIN  {$wpdb->postmeta} qlisted ON qlisted.post_id = p.ID AND qlisted.meta_key = '_ebay_quantity_listed'
-			LEFT JOIN  {$wpdb->postmeta} qsold   ON qsold.post_id   = p.ID AND qsold.meta_key   = '_ebay_quantity_sold'
-			LEFT JOIN  {$wpdb->postmeta} zeroed  ON zeroed.post_id  = p.ID AND zeroed.meta_key  = '_ebay_restock_reviewed' AND zeroed.meta_value = 'zeroed'
-			LEFT JOIN  {$wpdb->postmeta} sitem   ON sitem.post_id   = p.ID AND sitem.meta_key   = '_ebay_stock_settled_item'
-			WHERE p.post_type = 'product'
-			  AND p.post_status NOT IN ( 'trash', 'auto-draft' )
-			  AND listing.meta_value = 'Ended'
-			  AND stock.meta_value = 'outofstock'
-			  AND settled.meta_value <> ''
-			  -- Out of stock because eBay sold it, not because the website did.
-			  -- Settled before 3.27.0 there are no figures, and under the old rule
-			  -- out of stock after a settle could only mean an eBay sell-out.
-			  AND ( ( qlisted.meta_value IS NULL AND sitem.meta_id IS NULL )
-			        OR CAST( qsold.meta_value AS SIGNED ) >= CAST( qlisted.meta_value AS SIGNED ) )
-			  -- Set to 0 from Stock Review as a website sale: not eBay's to remove.
-			  AND zeroed.meta_id IS NULL
-			ORDER BY p.ID DESC";
+		$sql = self::sold_out_sql( 'SELECT p.ID', true ) . ' ORDER BY p.ID DESC';
 
 		if ( $limit > 0 ) {
 			// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
@@ -6594,12 +6741,386 @@ class TCGiant_Sync_Inventory {
 	}
 
 	/**
+	 * Products ended, out of stock and settled before 3.27.0, with no record
+	 * of eBay's figures: what the sold-out list used to take for eBay
+	 * sell-outs. Some sold on the website instead, and nothing here can tell
+	 * which, so Stock Review lists them apart, for the shop to check one by
+	 * one and trash by hand - the sold-out button never takes them (and
+	 * sold_out_on_ebay() refuses them). The same keeps as the verified list:
+	 * not a product the shop pushed, nor one in a Preserve category.
+	 *
+	 * @param int $limit 0 for all.
+	 * @return int[] Product ids, newest first.
+	 */
+	public static function find_sold_out_unverified( $limit = 0 ) {
+		global $wpdb;
+
+		$sql = self::sold_out_sql( 'SELECT p.ID', false ) . ' ORDER BY p.ID DESC';
+
+		if ( $limit > 0 ) {
+			// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+			$sql = $wpdb->prepare( $sql . ' LIMIT %d', (int) $limit );
+		}
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared
+		return array_map( 'intval', (array) $wpdb->get_col( $sql ) );
+	}
+
+	/**
+	 * How many are in that list.
+	 *
+	 * @return int
+	 */
+	public static function count_sold_out_unverified() {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared
+		return (int) $wpdb->get_var( self::sold_out_sql( 'SELECT COUNT(*)', false ) );
+	}
+
+	/**
+	 * The queries above.
+	 *
+	 * @param string $select   What to select.
+	 * @param bool   $verified eBay's figures for the listing the product
+	 *                         follows say it sold out (true), or a settle
+	 *                         from before 3.27.0 left none (false).
+	 * @return string SQL.
+	 */
+	private static function sold_out_sql( $select, $verified ) {
+		global $wpdb;
+
+		$figures = $verified
+			// Out of stock because eBay sold it, by eBay's own figures for the
+			// listing it follows - not because the website did.
+			? "sitem.meta_value = item.meta_value
+			  AND CAST( qlisted.meta_value AS SIGNED ) >= 1
+			  AND CAST( qsold.meta_value AS SIGNED ) >= CAST( qlisted.meta_value AS SIGNED )"
+			// No figures and no listing named: settled before 3.27.0.
+			: 'qlisted.meta_id IS NULL AND sitem.meta_id IS NULL';
+
+		// remove_if_allowed()'s own rules, so a list is what the shop may
+		// remove: not a product the shop pushed to eBay - whatever its latest
+		// push is doing - nor one in a Preserve category.
+		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
+		$preserve = is_array( $settings ) && isset( $settings['preserve_woo_category_ids'] ) && is_array( $settings['preserve_woo_category_ids'] )
+			? array_values( array_filter( array_map( 'absint', $settings['preserve_woo_category_ids'] ) ) )
+			: array();
+
+		$keeps = "
+			  AND ( pushed.meta_value IS NULL OR pushed.meta_value NOT IN ( 'pushed', 'pushing', 'failed' ) )
+			  AND ( lastpush.meta_value IS NULL OR lastpush.meta_value = '' )";
+
+		if ( $preserve ) {
+			$keeps .= "
+			  AND NOT EXISTS ( SELECT 1 FROM {$wpdb->term_relationships} tr
+			        INNER JOIN {$wpdb->term_taxonomy} tt ON tt.term_taxonomy_id = tr.term_taxonomy_id
+			        WHERE tr.object_id = p.ID AND tt.taxonomy = 'product_cat' AND tt.term_id IN ( " . implode( ', ', $preserve ) . ' ) )';
+		}
+
+		return "{$select}
+			FROM {$wpdb->posts} p
+			INNER JOIN {$wpdb->postmeta} listing ON listing.post_id = p.ID AND listing.meta_key = '_ebay_listing_status'
+			INNER JOIN {$wpdb->postmeta} settled ON settled.post_id = p.ID AND settled.meta_key = '_ebay_stock_settled_at'
+			INNER JOIN {$wpdb->postmeta} stock   ON stock.post_id   = p.ID AND stock.meta_key   = '_stock_status'
+			LEFT JOIN  {$wpdb->postmeta} item    ON item.post_id    = p.ID AND item.meta_key    = '_ebay_item_id'
+			LEFT JOIN  {$wpdb->postmeta} qlisted ON qlisted.post_id = p.ID AND qlisted.meta_key = '_ebay_quantity_listed'
+			LEFT JOIN  {$wpdb->postmeta} qsold   ON qsold.post_id   = p.ID AND qsold.meta_key   = '_ebay_quantity_sold'
+			LEFT JOIN  {$wpdb->postmeta} zeroed  ON zeroed.post_id  = p.ID AND zeroed.meta_key  = '_ebay_restock_reviewed' AND zeroed.meta_value = 'zeroed'
+			LEFT JOIN  {$wpdb->postmeta} sitem   ON sitem.post_id   = p.ID AND sitem.meta_key   = '_ebay_stock_settled_item'
+			LEFT JOIN  {$wpdb->postmeta} pushed  ON pushed.post_id  = p.ID AND pushed.meta_key  = '_ebay_export_status'
+			LEFT JOIN  {$wpdb->postmeta} lastpush ON lastpush.post_id = p.ID AND lastpush.meta_key = '_ebay_export_last_pushed'
+			WHERE p.post_type = 'product'
+			  AND p.post_status NOT IN ( 'trash', 'auto-draft' )
+			  AND listing.meta_value = 'Ended'
+			  AND stock.meta_value = 'outofstock'
+			  AND settled.meta_value <> ''
+			  AND {$figures}
+			  -- Set to 0 from Stock Review as a website sale: not eBay's to remove.
+			  AND zeroed.meta_id IS NULL{$keeps}";
+	}
+
+	/**
+	 * Whether a product is, right now, what the sold-out cleanup may move to
+	 * the trash: its listing recorded as Ended, out of stock, and eBay's own
+	 * final figures for that listing - the one it still follows - saying
+	 * every unit sold. Not one set to 0 from Stock Review as a website sale.
+	 *
+	 * Asked of each product as the cleanup reaches it. The list was the one
+	 * drawn when the button was pressed, or whatever ids the request named,
+	 * and a product relisted, restocked or put right since was trashed on the
+	 * strength of what it had been.
+	 *
+	 * @param int $product_id Product.
+	 * @return bool
+	 */
+	public static function sold_out_on_ebay( $product_id ) {
+		$product_id = (int) $product_id;
+		$status     = get_post_status( $product_id );
+
+		if ( ! $status || in_array( $status, array( 'trash', 'auto-draft' ), true ) || 'product' !== get_post_type( $product_id ) ) {
+			return false;
+		}
+
+		$item = (string) get_post_meta( $product_id, '_ebay_item_id', true );
+
+		if ( '' === $item
+			|| 'Ended' !== (string) get_post_meta( $product_id, '_ebay_listing_status', true )
+			|| 'outofstock' !== (string) get_post_meta( $product_id, '_stock_status', true )
+			|| '' === (string) get_post_meta( $product_id, '_ebay_stock_settled_at', true )
+			|| $item !== (string) get_post_meta( $product_id, '_ebay_stock_settled_item', true )
+			|| 'zeroed' === (string) get_post_meta( $product_id, '_ebay_restock_reviewed', true ) ) {
+			return false;
+		}
+
+		$listed = get_post_meta( $product_id, '_ebay_quantity_listed', true );
+		$sold   = get_post_meta( $product_id, '_ebay_quantity_sold', true );
+
+		return is_numeric( $listed ) && is_numeric( $sold ) && (int) $listed >= 1 && (int) $sold >= (int) $listed;
+	}
+
+	/**
 	 * How many are in the state above.
 	 *
 	 * @return int
 	 */
 	public static function count_sold_out_not_removed() {
 		return count( self::find_sold_out_not_removed() );
+	}
+
+	/**
+	 * Stock pushes eBay still refused after every try (PUSH_FAILURES_OPTION),
+	 * newest first, for Stock Review to list. Each as record_push_failure()
+	 * wrote it.
+	 *
+	 * @return array[]
+	 */
+	public static function push_failures() {
+		$failures = get_option( self::PUSH_FAILURES_OPTION, array() );
+
+		if ( ! is_array( $failures ) ) {
+			return array();
+		}
+
+		return array_reverse( array_values( array_filter( $failures, function ( $row ) {
+			return is_array( $row ) && ! empty( $row['product_id'] );
+		} ) ) );
+	}
+
+	/**
+	 * Clear that list, when the shop has dealt with it. Nothing else changes.
+	 *
+	 * @return void
+	 */
+	public static function forget_push_failures() {
+		delete_option( self::PUSH_FAILURES_OPTION );
+	}
+
+	/**
+	 * Take a product's rows for a listing off that list: a later push of it
+	 * to that listing reached eBay. Only that listing's - a row naming none
+	 * goes too - so a push to the listing a product follows now does not
+	 * drop the row of another it was linked to, which may still be live and
+	 * still showing more than the shop holds. Written only when there was
+	 * one to take off.
+	 *
+	 * @param int    $product_id The product the push was for.
+	 * @param string $item_id    The listing it reached.
+	 * @return void
+	 */
+	private static function forget_push_failure( $product_id, $item_id ) {
+		$failures = get_option( self::PUSH_FAILURES_OPTION, array() );
+
+		if ( ! is_array( $failures ) || empty( $failures ) ) {
+			return;
+		}
+
+		$kept = array_values( array_filter( $failures, function ( $row ) use ( $product_id, $item_id ) {
+			if ( ! is_array( $row ) || (int) ( $row['product_id'] ?? 0 ) !== (int) $product_id ) {
+				return true;
+			}
+			$row_item = (string) ( $row['item_id'] ?? '' );
+			return '' !== $row_item && $row_item !== (string) $item_id;
+		} ) );
+
+		if ( count( $kept ) !== count( $failures ) ) {
+			update_option( self::PUSH_FAILURES_OPTION, $kept, false );
+		}
+	}
+
+	/**
+	 * How find_relist_pairs() pages through the relist marks: so many marks
+	 * a round, so many rounds a request, so many listings asked after at a
+	 * time.
+	 */
+	const RELIST_PAIRS_SCAN   = 2000;
+	const RELIST_PAIRS_ROUNDS = 10;
+	const RELIST_PAIRS_CHUNK  = 200;
+
+	/**
+	 * Products that may be the same item twice: one imported from a relist,
+	 * which recorded the listing it was relisted from (_ebay_relist_parent_id,
+	 * 3.28.0), beside another product still linked to that listing.
+	 *
+	 * 3.28.0 moves the product that sold the old listing on to its relist.
+	 * Before it, a relist became a second product while the first stayed on
+	 * the ended listing. Since 3.28.0 every import of a relist records the
+	 * listing it came from on the product it writes, so those pairs come to
+	 * light as the sync reads each relist again. Only listed: which copy to
+	 * keep is the shop's to say.
+	 *
+	 * Not a pair whose older product's listing was a single item that sold,
+	 * by eBay's figures for it: the relist is then usually another copy of
+	 * the item, and both products are right (3.28.0's decision not to move
+	 * a product on to such a relist). Never a product with itself.
+	 *
+	 * Asked for, not run on every Stock Review load, and bounded. The marks
+	 * are read newest first, RELIST_PAIRS_SCAN at a time by their meta_id -
+	 * one indexed read each - with the products holding those marks'
+	 * listings looked up RELIST_PAIRS_CHUNK listings at a time; at most
+	 * RELIST_PAIRS_ROUNDS rounds a request, and the answer says where to go
+	 * on from. One join of the two sets of post meta was cheap only with this
+	 * plugin's (meta_key, meta_value) index, which a large shared-host table
+	 * may never have taken; without it, it read every linked product once
+	 * per relist mark. And reading only the newest marks missed the very
+	 * pairs this is for: the duplicates from before 3.28.0 got their marks
+	 * when 3.28.0 first read them, so on a shop that relists every day they
+	 * are the oldest.
+	 *
+	 * Neither in the trash nor an auto-draft, and the relist's product still
+	 * linked to a listing. eBay is not asked.
+	 *
+	 * @param int $limit  Most pairs.
+	 * @param int $before Start below this meta_id (0: from the newest).
+	 * @return array pairs (each: product_id and item_id, the relist's;
+	 *               parent_item; other_id, the product still on the parent
+	 *               listing), checked (marks read) and next (the meta_id to
+	 *               go on below, 0 once every mark has been read).
+	 */
+	public static function find_relist_pairs( $limit = 200, $before = 0 ) {
+		global $wpdb;
+
+		$limit   = max( 1, (int) $limit );
+		$cursor  = max( 0, (int) $before );
+		$pairs   = array();
+		$checked = 0;
+
+		for ( $round = 0; $round < self::RELIST_PAIRS_ROUNDS; $round++ ) {
+			$below = $cursor > 0 ? $wpdb->prepare( ' AND rp.meta_id < %d', $cursor ) : '';
+
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+			$relists = $wpdb->get_results( $wpdb->prepare(
+				"SELECT rp.meta_id AS mark, rp.post_id AS product_id, ni.meta_value AS item_id, rp.meta_value AS parent_item
+				 FROM {$wpdb->postmeta} rp
+				 INNER JOIN {$wpdb->posts} np ON np.ID = rp.post_id AND np.post_type = 'product' AND np.post_status NOT IN ( 'trash', 'auto-draft' )
+				 INNER JOIN {$wpdb->postmeta} ni ON ni.post_id = rp.post_id AND ni.meta_key = '_ebay_item_id' AND ni.meta_value <> '' AND ni.meta_value <> rp.meta_value
+				 WHERE rp.meta_key = '_ebay_relist_parent_id' AND rp.meta_value <> ''{$below}
+				 ORDER BY rp.meta_id DESC
+				 LIMIT %d",
+				self::RELIST_PAIRS_SCAN
+			), ARRAY_A );
+
+			$relists = is_array( $relists ) ? $relists : array();
+			if ( empty( $relists ) ) {
+				return array( 'pairs' => $pairs, 'checked' => $checked, 'next' => 0 );
+			}
+
+			$holders = self::relist_parent_holders( $relists );
+
+			foreach ( $relists as $row ) {
+				$checked++;
+				$cursor = (int) $row['mark'];
+				$others = $holders[ (string) $row['parent_item'] ] ?? array();
+				sort( $others );
+
+				foreach ( $others as $other_id ) {
+					// Never itself: a product can hold both listings - two
+					// _ebay_item_id rows, after an import that copied meta, or
+					// a restore.
+					if ( (int) $other_id === (int) $row['product_id'] ) {
+						continue;
+					}
+
+					if ( self::sold_single_item( $other_id, (string) $row['parent_item'] ) ) {
+						continue;
+					}
+
+					$pairs[] = array(
+						'product_id'  => (int) $row['product_id'],
+						'item_id'     => (string) $row['item_id'],
+						'parent_item' => (string) $row['parent_item'],
+						'other_id'    => (int) $other_id,
+					);
+				}
+
+				// Enough: the rest wait for the next request, from this mark.
+				if ( count( $pairs ) >= $limit ) {
+					return array( 'pairs' => $pairs, 'checked' => $checked, 'next' => $cursor );
+				}
+			}
+
+			if ( count( $relists ) < self::RELIST_PAIRS_SCAN ) {
+				return array( 'pairs' => $pairs, 'checked' => $checked, 'next' => 0 );
+			}
+		}
+
+		// Out of rounds, with marks still below this one.
+		return array( 'pairs' => $pairs, 'checked' => $checked, 'next' => $cursor );
+	}
+
+	/**
+	 * Who still holds each parent listing a round of relist marks names:
+	 * listing => product ids, by meta_value IN (...), RELIST_PAIRS_CHUNK at
+	 * a time.
+	 *
+	 * @param array[] $relists The round's marks.
+	 * @return array
+	 */
+	private static function relist_parent_holders( array $relists ) {
+		global $wpdb;
+
+		$holders = array();
+		$parents = array_values( array_unique( array_map( function ( $row ) {
+			return (string) $row['parent_item'];
+		}, $relists ) ) );
+
+		foreach ( array_chunk( $parents, self::RELIST_PAIRS_CHUNK ) as $chunk ) {
+			$in = implode( ', ', array_fill( 0, count( $chunk ), '%s' ) );
+
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+			$found = $wpdb->get_results( $wpdb->prepare(
+				"SELECT o.post_id AS other_id, o.meta_value AS item_id
+				 FROM {$wpdb->postmeta} o
+				 INNER JOIN {$wpdb->posts} op ON op.ID = o.post_id AND op.post_type = 'product' AND op.post_status NOT IN ( 'trash', 'auto-draft' )
+				 WHERE o.meta_key = '_ebay_item_id' AND o.meta_value IN ( {$in} )",
+				$chunk
+			), ARRAY_A );
+
+			foreach ( is_array( $found ) ? $found : array() as $row ) {
+				$holders[ (string) $row['item_id'] ][] = (int) $row['other_id'];
+			}
+		}
+
+		return $holders;
+	}
+
+	/**
+	 * Whether eBay's final figures for a listing a product follows say it
+	 * was a single item, and that it sold.
+	 *
+	 * @param int    $product_id The product.
+	 * @param string $item_id    The listing.
+	 * @return bool
+	 */
+	private static function sold_single_item( $product_id, $item_id ) {
+		if ( (string) $item_id !== (string) get_post_meta( (int) $product_id, '_ebay_stock_settled_item', true ) ) {
+			return false;
+		}
+
+		$listed = get_post_meta( (int) $product_id, '_ebay_quantity_listed', true );
+		$sold   = get_post_meta( (int) $product_id, '_ebay_quantity_sold', true );
+
+		return is_numeric( $listed ) && is_numeric( $sold ) && 1 === (int) $listed && (int) $sold >= 1;
 	}
 
 	/**

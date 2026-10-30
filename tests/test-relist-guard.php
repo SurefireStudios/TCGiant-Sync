@@ -417,6 +417,10 @@ class TCGiant_Sync_DB {
 	public static function table_name() { return 'wp_tcgiant_sync_listings'; }
 	// A site whose listings table was never created reads from post meta.
 	public static function table_exists() { return $GLOBALS['TABLE_EXISTS'] ?? true; }
+	// Auto-relist leaves out sold rows by WooCommerce's stock status; this
+	// database plays its rows from ENDED_ROWS, so a stand-in flag.
+	// test-site-sql.php and test-sold-jobs.php run the real query.
+	public static function out_of_stock_sql( $column = 'l.product_id' ) { return array( '', '0' ); }
 }
 
 // The settle is tested on its own elsewhere; here only whether it is asked.

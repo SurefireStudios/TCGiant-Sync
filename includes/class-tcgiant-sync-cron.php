@@ -939,7 +939,33 @@ class TCGiant_Sync_Cron {
 		// imports only its own (TCGiant_Sync_Sites). Each would be refused, every
 		// day, and fifty of them would take every place below - so no listing on
 		// the shop's own site would ever be relisted again.
-		$other_sites_out = TCGiant_Sync_Sites::sql_keeps_out_other_sites( TCGiant_Sync_DB::table_exists() ? 'l.product_id' : 'pm1.post_id' );
+		$product_column  = TCGiant_Sync_DB::table_exists() ? 'l.product_id' : 'pm1.post_id';
+		$other_sites_out = TCGiant_Sync_Sites::sql_keeps_out_other_sites( $product_column );
+
+		// Nor a sold one - out of stock in WooCommerce, the Listings screen's
+		// Sold view. Each was refused for having no stock, every day, and fifty
+		// of them took every place below just as other sites' did: a shop
+		// whose listings mostly sell had its unsold ones never relisted.
+		// A flag, never a status compared across tables - see
+		// TCGiant_Sync_DB::out_of_stock_sql().
+		list( $stock_join, $out_of_stock ) = TCGiant_Sync_DB::out_of_stock_sql( $product_column );
+		$sold_out                          = " AND {$out_of_stock} = 0";
+
+		// Nor one the shop ended itself from WordPress - End Listing on the
+		// product or on the Listings screen, _ebay_end_reason by_shop
+		// (TCGiant_Sync_Inventory::END_BY_SHOP) for the very listing the
+		// product follows. It was taken off eBay on purpose, stock and all.
+		// With the sold rows out of the way, Auto-Relist would otherwise reach
+		// it and put it straight back up, fees and all. A relist the shop
+		// asks for by hand still goes. An end made in Seller Hub records no
+		// reason, so it is not known here. The mark is spent when a new
+		// listing starts (SETTLE_KEYS). The listing is compared within
+		// wp_postmeta, never with the listings table's column: two tables can
+		// differ in collation (TCGiant_Sync_DB::out_of_stock_sql()).
+		$shop_ended = " AND NOT EXISTS ( SELECT 1 FROM {$wpdb->postmeta} er
+				   INNER JOIN {$wpdb->postmeta} eri ON eri.post_id = er.post_id AND eri.meta_key = '_ebay_end_reason_item'
+				   INNER JOIN {$wpdb->postmeta} eci ON eci.post_id = er.post_id AND eci.meta_key = '_ebay_item_id' AND eci.meta_value = eri.meta_value
+				   WHERE er.post_id = {$product_column} AND er.meta_key = '_ebay_end_reason' AND er.meta_value = 'by_shop' )";
 
 		// Check if custom table exists.
 		if ( ! TCGiant_Sync_DB::table_exists() ) {
@@ -948,10 +974,10 @@ class TCGiant_Sync_Cron {
 				"SELECT pm1.post_id, pm1.meta_value AS ebay_item_id
 				 FROM {$wpdb->postmeta} pm1
 				 INNER JOIN {$wpdb->postmeta} pm2 ON pm1.post_id = pm2.post_id AND pm2.meta_key = '_ebay_listing_status'
-				 INNER JOIN {$wpdb->posts} p ON pm1.post_id = p.ID
+				 INNER JOIN {$wpdb->posts} p ON pm1.post_id = p.ID{$stock_join}
 				 WHERE pm1.meta_key = '_ebay_item_id'
 				   AND pm2.meta_value = 'Ended'
-				   AND p.post_status = 'publish'{$other_sites_out}
+				   AND p.post_status = 'publish'{$other_sites_out}{$sold_out}{$shop_ended}
 				 LIMIT 50",
 				ARRAY_A
 			);
@@ -964,9 +990,9 @@ class TCGiant_Sync_Cron {
 			$ended_products = $wpdb->get_results(
 				"SELECT l.product_id, l.ebay_item_id
 				 FROM {$table} l
-				 INNER JOIN {$wpdb->posts} p ON p.ID = l.product_id
+				 INNER JOIN {$wpdb->posts} p ON p.ID = l.product_id{$stock_join}
 				 WHERE l.listing_status = 'Ended'
-				   AND p.post_status = 'publish'{$other_sites_out}
+				   AND p.post_status = 'publish'{$other_sites_out}{$sold_out}{$shop_ended}
 				 LIMIT 50",
 				ARRAY_A
 			);

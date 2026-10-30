@@ -488,6 +488,9 @@ class TCGiant_Sync_DB {
 	// No Listings table, so auto-relist reads its ended listings from post meta.
 	public static function table_name() { return 'wp_tcgiant_sync_listings'; }
 	public static function table_exists() { return false; }
+	// Auto-relist leaves out sold rows; this database plays its rows, so a
+	// stand-in flag. test-site-sql.php and test-sold-jobs.php run the real query.
+	public static function out_of_stock_sql( $column = 'l.product_id' ) { return array( '', '0' ); }
 }
 class TCGiant_Sync_Inventory {
 	const SETTLE_KEYS = array( '_ebay_stock_settled_at', '_ebay_stock_settled_item' );

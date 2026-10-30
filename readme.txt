@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.28.2
+Stable tag: 3.28.3
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -139,6 +139,24 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.28.3 - 2026-10-30 =
+**The Listings screen's Sold view**
+* NEW: Listings has a Sold view beside Active and Ended. Sold is a listing that has ended on eBay and has nothing left in stock on your website. Ended is one that has ended with stock still to sell, or on backorder. Each has its count.
+* NEW: An ended listing says how it ended, under its status: sold on eBay, out of stock on your website, ended by you, ended unsold, or how many of a listing of several sold on eBay, such as "2 of 5 sold on eBay". This comes from what TCGiant Sync recorded when the listing ended, so a listing that ended before this version says what eBay's final figures show, or nothing. "Out of stock on your website" means eBay did not sell them all and your website has none left: usually a website sale, though a stock change to 0 by hand reads the same.
+* The Sold view has no Relist: nothing on it has stock to sell. Restock a product and it moves to Ended. A Relist of every matching listing, on any view, now takes only ended listings that still have stock. Before, it also took live listings and asked eBay about each one, to relist nothing.
+* FIX: The Listings counts and lists included products in the trash, drafts never saved and products deleted since. They no longer do, so "All" may be lower than before. A listing still live on eBay whose product is in the trash is no longer on the screen: restore the product to end the listing from WordPress, or end it in Seller Hub. A link to the Ended view saved from an older version no longer shows sold listings; they are under Sold.
+* FIX: A Good 'Til Cancelled listing whose renewal date had gone by showed as Ended on the product's eBay tab and in the products list, with "Relist on eBay" on its button and no End Listing. eBay renews those listings every month, so the date on record says nothing once it has passed. They now show as active until a sync reads them again, and the products list shows the date as a renewal date. Listings that run for a set number of days, and auctions, still show as ended once their date passes.
+
+**Auto-Relist**
+* FIX: Auto-Relist checks 50 ended listings a day, and took them in the same order every day, sold ones included. Sold listings are never relisted, so a shop with 50 or more of them never had its unsold listings relisted at all. Sold listings are now left out. If you use Auto-Relist, expect it to start relisting ended listings that still have stock, up to 50 a day. See the upgrade notice.
+* NEW: Auto-Relist leaves alone a listing you end with End Listing in TCGiant Sync, on the product or on the Listings screen, from this version on. You can still relist it yourself. A listing you ended before this version, or in Seller Hub, carries no such mark and may be relisted if it still has stock: if that matters, turn Auto-Relist off before updating, and check the Ended view.
+
+**Stock Review**
+* FIX: "Products sold out on eBay and still here" listed products you pushed to eBay yourself and products in your Preserve Categories, and its button then kept every one of them. They are no longer listed, so the count is what the button moves. The panel no longer shows at all while "Remove products when their eBay listing sells out?" is No.
+* FIX: The same list counted a product as sold out on eBay when it had ended out of stock before version 3.27.0, which kept no record of what sold on eBay. Some of those sold on your website. They now have a list of their own, to check one by one: each has its Edit link, a link to its eBay listing, and a Trash link (none while the trash is switched off), and nothing on it is moved in bulk. Check on eBay that a listing has really ended before you trash its product: those versions could record a listing as ended when eBay had refused to end it, and trashing a product does not end its listing. Like the panel above, this list is not shown while "Remove products when their eBay listing sells out?" is No. The sold-out button also checks each product again as it reaches it, and keeps one that has been restocked or relisted since the page was drawn.
+* NEW: Stock changes that never reached eBay. When eBay refused a change every time it was tried, it is now listed on Stock Review: the product, the listing, what changed, your stock then and eBay's last answer. Check those listings in Seller Hub. A product leaves the list when a later change of it reaches eBay. "Clear this list" clears the list only.
+* NEW: Products that may be the same item twice. Before 3.28.0, relisting on eBay could create a second product while the first stayed on the old listing. "Look for products that may be the same item twice" on Stock Review lists such pairs among the relists the sync has recorded, the newest 20,000 at a time, and says when there are older ones still to look through. A single item that sold and was relisted is usually another copy, and is left out. Nothing changes from the list: which to keep is yours to decide.
 
 = 3.28.2 - 2026-10-29 =
 * FIX: When another plugin held back the stock change an import makes, the import still counted eBay's sales as taken off the website's stock. They never were, so an item sold on eBay could stay for sale on the website. The import now counts them only once the website's stock holds eBay's figure; otherwise the next stock check takes them off.
@@ -1463,6 +1481,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.28.3 =
+If Auto-Relist is on, it will now start relisting ended eBay listings that still have stock on your website: up to 50 a day, each using 2 eBay calls and charged eBay's usual fees for a relist. Until now, listings that had sold took all 50 places every day, so on many shops it relisted nothing. Listings that sold stay ended, and so does a listing you end with End Listing in TCGiant Sync from this version on. A listing you ended before this version, with End Listing or in Seller Hub, carries no such mark and may be relisted if it still has stock: if that matters, turn Auto-Relist off before updating, and check the Listings screen's Ended view. To turn it off: TCGiant Sync, Settings, Import Settings, Scheduling, set "Auto-relist ended listings?" to No and save. It is off unless you turned it on. Also: the Listings screen has a Sold view, and its counts no longer include products in the trash.
 
 = 3.28.0 =
 If "Reduce WooCommerce stock on eBay sale?" was saved as No, website stock changes now go to eBay: a website sale updates or ends the eBay listing. Not if WP-Lister for eBay is active: then they stay off. To stop them, set "Send website stock changes to eBay?" to No in Settings. Each website sale now costs 2 eBay calls. See the changelog first.

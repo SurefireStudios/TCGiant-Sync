@@ -32,7 +32,34 @@ $base_url  = admin_url( 'admin.php?page=tcgiant-stock-review' );
 // settled. These were settled - correctly, from eBay's own figures - and
 // came out at nothing, but removal used to live on a single code path and
 // whichever path noticed the ending first decided whether it ever ran.
-$sold_out_ids = TCGiant_Sync_Inventory::find_sold_out_not_removed();
+//
+// Not while "Remove products when their eBay listing sells out?" is off: the
+// shop has said to keep them, and the button would only keep every one.
+$tc_review_settings = get_option( 'tcgiant_sync_ebay_settings', array() );
+$tc_remove_sold     = ! ( is_array( $tc_review_settings ) && isset( $tc_review_settings['remove_sold_products'] ) && empty( $tc_review_settings['remove_sold_products'] ) );
+$sold_out_ids       = $tc_remove_sold ? TCGiant_Sync_Inventory::find_sold_out_not_removed() : array();
+
+// Out of stock and settled before 3.27.0, which kept no eBay figures: some
+// sold on the website, so they are listed apart, to check one by one and
+// trash by hand. The newest hundred, and how many there are.
+$tc_unverified_total = $tc_remove_sold ? TCGiant_Sync_Inventory::count_sold_out_unverified() : 0;
+$tc_unverified_ids   = $tc_unverified_total > 0 ? TCGiant_Sync_Inventory::find_sold_out_unverified( 100 ) : array();
+
+// Stock pushes eBay still refused once every try was spent.
+$push_failures = TCGiant_Sync_Inventory::push_failures();
+
+// A product imported from a relist beside another still on the listing it
+// was relisted from: possibly the same item twice. Only when the shop asks:
+// it is the heaviest question on this page, and the answer changes rarely.
+// Read newest first, a bounded stretch a request; "Look further back" goes
+// on from where it stopped (relist_before).
+$tc_pairs_asked  = ! empty( $_GET['relist_pairs'] ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+$tc_pairs_before = isset( $_GET['relist_before'] ) ? absint( $_GET['relist_before'] ) : 0; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+$tc_pairs        = $tc_pairs_asked ? TCGiant_Sync_Inventory::find_relist_pairs( 200, $tc_pairs_before ) : array( 'pairs' => array(), 'checked' => 0, 'next' => 0 );
+$relist_pairs    = $tc_pairs['pairs'];
+$tc_pairs_more   = $tc_pairs_asked && (int) $tc_pairs['next'] > 0
+	? admin_url( 'admin.php?page=tcgiant-stock-review&relist_pairs=1&relist_before=' . (int) $tc_pairs['next'] ) . '#tc-relist-pairs'
+	: '';
 
 // Probably sold on the website and then put back in stock by the settle
 // before 3.27.0, which wrote eBay's figure over WooCommerce's.
@@ -73,6 +100,9 @@ $tc_nonce    = wp_create_nonce( 'tcgiant_sync_ajax' );
 			</p>
 			<p style="margin:0 0 10px;">
 				<?php esc_html_e( 'They go to the trash, not away for good, and anything your settings protect is left alone with the reason written to the log.', 'tcgiant-sync' ); ?>
+			</p>
+			<p style="margin:0 0 10px;">
+				<?php esc_html_e( 'Each one is here because eBay\'s own figures for its listing say every unit sold. Products you pushed to eBay yourself, and products in your Preserve Categories, are not listed: they are always kept.', 'tcgiant-sync' ); ?>
 			</p>
 			<p style="margin:0;">
 				<button type="button" id="tc-remove-sold" class="button button-primary"><?php esc_html_e( 'Move them to the trash', 'tcgiant-sync' ); ?></button>
@@ -129,6 +159,45 @@ $tc_nonce    = wp_create_nonce( 'tcgiant_sync_ajax' );
 				}
 			}( jQuery ) );
 		</script>
+	<?php endif; ?>
+
+	<?php if ( ! empty( $tc_unverified_ids ) ) : ?>
+		<?php $tc_trash_off_now = TCGiant_Sync_Sites::trash_is_off(); ?>
+		<div class="notice notice-info" id="tc-sold-out-unverified" style="margin-top:16px;padding:12px 14px;">
+			<p style="margin:0 0 6px;">
+				<strong><?php printf( esc_html( _n( '%s product ended out of stock before version 3.27.0.', '%s products ended out of stock before version 3.27.0.', $tc_unverified_total, 'tcgiant-sync' ) ), esc_html( number_format_i18n( $tc_unverified_total ) ) ); ?></strong>
+			</p>
+			<p style="margin:0 0 10px;"><?php esc_html_e( 'Those versions kept no record of what sold on eBay, so whether each sold there or on your website cannot be told from here, and none is moved to the trash for you. Open each one: if it has gone for good, move it to the trash from its own link. Products you pushed to eBay yourself, and products in your Preserve Categories, are not listed.', 'tcgiant-sync' ); ?></p>
+			<p style="margin:0 0 10px;"><?php esc_html_e( 'First check on eBay that its listing has really ended. Those versions could record a listing as ended when eBay had refused to end it, and moving a product to the trash does not end its listing: it would go on selling, with its product in the trash.', 'tcgiant-sync' ); ?></p>
+			<?php if ( $tc_unverified_total > count( $tc_unverified_ids ) ) : ?>
+				<p style="margin:0 0 10px;"><?php /* translators: 1: products shown, 2: products in all */ printf( esc_html__( 'The newest %1$s of %2$s are shown.', 'tcgiant-sync' ), esc_html( number_format_i18n( count( $tc_unverified_ids ) ) ), esc_html( number_format_i18n( $tc_unverified_total ) ) ); ?></p>
+			<?php endif; ?>
+			<?php if ( $tc_trash_off_now ) : ?>
+				<p style="margin:0 0 10px;"><?php esc_html_e( 'The trash is switched off on this website (EMPTY_TRASH_DAYS is 0), so WordPress would delete a product for good instead of moving it to the trash. No trash link is offered here.', 'tcgiant-sync' ); ?></p>
+			<?php endif; ?>
+			<table class="widefat striped" style="margin-bottom:10px;">
+				<thead><tr><th><?php esc_html_e( 'Product', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'eBay item', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'Settled', 'tcgiant-sync' ); ?></th><th></th></tr></thead>
+				<tbody>
+				<?php foreach ( $tc_unverified_ids as $tc_uid ) : ?>
+					<?php $tc_up = wc_get_product( $tc_uid ); ?>
+					<?php if ( ! $tc_up ) { continue; } ?>
+					<?php $tc_trash_link = $tc_trash_off_now ? '' : (string) get_delete_post_link( $tc_uid ); ?>
+					<tr>
+						<td><a href="<?php echo esc_url( (string) get_edit_post_link( $tc_uid ) ); ?>"><?php echo esc_html( $tc_up->get_name() ); ?></a> <span style="color:#777;">#<?php echo esc_html( (string) $tc_uid ); ?></span></td>
+						<?php $tc_uitem = (string) get_post_meta( $tc_uid, '_ebay_item_id', true ); ?>
+						<td><a href="<?php echo esc_url( 'https://www.ebay.com/itm/' . rawurlencode( $tc_uitem ) ); ?>" target="_blank" rel="noopener" title="<?php esc_attr_e( 'Check on eBay that it has ended', 'tcgiant-sync' ); ?>"><?php echo esc_html( $tc_uitem ); ?> &nearr;</a></td>
+						<td><?php echo esc_html( (string) get_post_meta( $tc_uid, '_ebay_stock_settled_at', true ) ); ?></td>
+						<td>
+							<a href="<?php echo esc_url( (string) get_edit_post_link( $tc_uid ) ); ?>"><?php esc_html_e( 'Edit', 'tcgiant-sync' ); ?></a>
+							<?php if ( '' !== $tc_trash_link ) : ?>
+								| <a href="<?php echo esc_url( $tc_trash_link ); ?>" style="color:#b32d2e;"><?php esc_html_e( 'Trash', 'tcgiant-sync' ); ?></a>
+							<?php endif; ?>
+						</td>
+					</tr>
+				<?php endforeach; ?>
+				</tbody>
+			</table>
+		</div>
 	<?php endif; ?>
 
 	<?php if ( ! empty( $tc_other_ids ) || $tc_other_unchecked > 0 ) : ?>
@@ -501,6 +570,121 @@ $tc_nonce    = wp_create_nonce( 'tcgiant_sync_ajax' );
 				<?php wp_nonce_field( 'tcgiant_forget_held' ); ?>
 				<button type="submit" class="button"><?php esc_html_e( 'Clear this list', 'tcgiant-sync' ); ?></button>
 			</form>
+		</div>
+	<?php endif; ?>
+
+	<?php if ( ! empty( $push_failures ) ) : ?>
+		<?php
+		$push_why = array(
+			'order'  => __( 'A website order', 'tcgiant-sync' ),
+			'manual' => __( 'Push to eBay, by hand', 'tcgiant-sync' ),
+			'edit'   => __( 'A stock change on your website', 'tcgiant-sync' ),
+		);
+		?>
+		<div class="notice notice-error" id="tc-push-failures" style="margin-top:16px;padding:12px 14px;">
+			<p style="margin:0 0 6px;">
+				<strong><?php printf( esc_html( _n( '%s stock change never reached eBay.', '%s stock changes never reached eBay.', count( $push_failures ), 'tcgiant-sync' ) ), esc_html( number_format_i18n( count( $push_failures ) ) ) ); ?></strong>
+			</p>
+			<p style="margin:0 0 10px;"><?php esc_html_e( 'eBay refused each of these every time it was tried, over about 10 hours (longer when eBay was down or out of calls), so the listing on eBay may still show more than your website holds. Check each listing in Seller Hub and set its quantity there if it is wrong. Your website\'s stock was not changed. The most recent are first.', 'tcgiant-sync' ); ?></p>
+			<table class="widefat striped" style="margin-bottom:10px;">
+				<thead><tr><th><?php esc_html_e( 'When', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'Product', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'eBay item', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'What changed', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'Your stock then', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'eBay\'s last answer', 'tcgiant-sync' ); ?></th></tr></thead>
+				<tbody>
+				<?php foreach ( $push_failures as $push_row ) : ?>
+					<?php $push_pid = (int) $push_row['product_id']; ?>
+					<tr>
+						<td><?php echo esc_html( wp_date( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), (int) ( $push_row['time'] ?? 0 ) ) ); ?></td>
+						<td>
+							<?php if ( get_post_status( $push_pid ) ) : ?>
+								<a href="<?php echo esc_url( (string) get_edit_post_link( $push_pid ) ); ?>"><?php echo esc_html( get_the_title( $push_pid ) ); ?></a>
+							<?php endif; ?>
+							<span style="color:#777;">#<?php echo esc_html( (string) $push_pid ); ?></span>
+							<?php if ( '' !== (string) ( $push_row['sku'] ?? '' ) ) : ?>
+								<span style="color:#777;"><?php echo esc_html( sprintf( /* translators: %s: SKU */ __( 'SKU %s', 'tcgiant-sync' ), (string) $push_row['sku'] ) ); ?></span>
+							<?php endif; ?>
+						</td>
+						<td><?php echo esc_html( (string) ( $push_row['item_id'] ?? '' ) ); ?></td>
+						<td>
+							<?php echo esc_html( $push_why[ (string) ( $push_row['reason'] ?? '' ) ] ?? $push_why['edit'] ); ?>
+							<?php if ( ! empty( $push_row['order'] ) ) : ?>
+								<span style="color:#777;">#<?php echo esc_html( (string) (int) $push_row['order'] ); ?></span>
+							<?php endif; ?>
+						</td>
+						<td><?php echo esc_html( (string) (int) ( $push_row['stock'] ?? 0 ) ); ?></td>
+						<td>
+							<?php echo esc_html( (string) ( $push_row['message'] ?? '' ) ); ?>
+							<?php if ( '' !== (string) ( $push_row['code'] ?? '' ) ) : ?>
+								<span style="color:#777;">(<?php echo esc_html( (string) $push_row['code'] ); ?>)</span>
+							<?php endif; ?>
+						</td>
+					</tr>
+				<?php endforeach; ?>
+				</tbody>
+			</table>
+			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin:0;">
+				<input type="hidden" name="action" value="tcgiant_forget_push_failures" />
+				<?php wp_nonce_field( 'tcgiant_forget_push_failures' ); ?>
+				<button type="submit" class="button"><?php esc_html_e( 'Clear this list', 'tcgiant-sync' ); ?></button>
+				<span style="margin-left:8px;color:#555;"><?php esc_html_e( 'Only the list is cleared. Nothing is sent to eBay.', 'tcgiant-sync' ); ?></span>
+			</form>
+		</div>
+	<?php endif; ?>
+
+	<?php if ( ! $tc_pairs_asked ) : ?>
+		<p id="tc-relist-pairs-ask" style="margin-top:16px;">
+			<a class="button" href="<?php echo esc_url( admin_url( 'admin.php?page=tcgiant-stock-review&relist_pairs=1' ) . '#tc-relist-pairs' ); ?>"><?php esc_html_e( 'Look for products that may be the same item twice', 'tcgiant-sync' ); ?></a>
+			<span style="margin-left:8px;color:#555;"><?php esc_html_e( 'A relist made on eBay before version 3.28.0 could become a second product beside the first. Nothing changes from the list.', 'tcgiant-sync' ); ?></span>
+		</p>
+	<?php elseif ( empty( $relist_pairs ) && '' === $tc_pairs_more ) : ?>
+		<div class="notice notice-success" id="tc-relist-pairs" style="margin-top:16px;padding:12px 14px;">
+			<p style="margin:0;">
+				<?php if ( $tc_pairs_before > 0 ) : ?>
+					<?php esc_html_e( 'No more were found: every relist the sync has recorded has now been looked through.', 'tcgiant-sync' ); ?>
+				<?php else : ?>
+					<?php esc_html_e( 'No products were found that may be the same item twice.', 'tcgiant-sync' ); ?>
+				<?php endif; ?>
+			</p>
+		</div>
+	<?php elseif ( empty( $relist_pairs ) ) : ?>
+		<div class="notice notice-info" id="tc-relist-pairs" style="margin-top:16px;padding:12px 14px;">
+			<p style="margin:0;">
+				<?php /* translators: %s: number of relists looked through */ printf( esc_html( _n( 'None among the %s relist looked through so far, but there are older ones still to look through.', 'None among the %s relists looked through so far, but there are older ones still to look through.', (int) $tc_pairs['checked'], 'tcgiant-sync' ) ), esc_html( number_format_i18n( (int) $tc_pairs['checked'] ) ) ); ?>
+				<a class="button" style="margin-left:8px;" href="<?php echo esc_url( $tc_pairs_more ); ?>"><?php esc_html_e( 'Look further back', 'tcgiant-sync' ); ?></a>
+			</p>
+		</div>
+	<?php endif; ?>
+
+	<?php if ( ! empty( $relist_pairs ) ) : ?>
+		<div class="notice notice-info" id="tc-relist-pairs" style="margin-top:16px;padding:12px 14px;">
+			<p style="margin:0 0 6px;">
+				<strong><?php printf( esc_html( _n( '%s product may be the same item as another.', '%s products may be the same item as another.', count( $relist_pairs ), 'tcgiant-sync' ) ), esc_html( number_format_i18n( count( $relist_pairs ) ) ) ); ?></strong>
+			</p>
+			<p style="margin:0 0 10px;"><?php esc_html_e( 'Each was imported from an eBay listing relisted from another, while a second product stayed linked to that older listing. Versions before 3.28.0 did this when you relisted on eBay, so the same item could be on your website twice, and a sale of one did not reach the other. A single item that sold and was relisted is usually another copy of the item, so those are left out. Nothing changes from this list; which to keep is yours to decide.', 'tcgiant-sync' ); ?></p>
+			<table class="widefat striped" style="margin-bottom:10px;">
+				<thead><tr><th><?php esc_html_e( 'From the relist', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'Its listing', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'Still on the older listing', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'Older listing', 'tcgiant-sync' ); ?></th></tr></thead>
+				<tbody>
+				<?php foreach ( $relist_pairs as $pair ) : ?>
+					<?php
+					$pair_new = wc_get_product( $pair['product_id'] );
+					$pair_old = wc_get_product( $pair['other_id'] );
+					if ( ! $pair_new || ! $pair_old ) {
+						continue;
+					}
+					?>
+					<tr>
+						<td><a href="<?php echo esc_url( (string) get_edit_post_link( $pair['product_id'] ) ); ?>"><?php echo esc_html( $pair_new->get_name() ); ?></a> <span style="color:#777;">#<?php echo esc_html( (string) $pair['product_id'] ); ?>, <?php echo esc_html( sprintf( /* translators: %s: stock quantity or status */ __( 'stock %s', 'tcgiant-sync' ), $pair_new->managing_stock() ? (string) (int) $pair_new->get_stock_quantity() : $pair_new->get_stock_status() ) ); ?></span></td>
+						<td><?php echo esc_html( $pair['item_id'] ); ?></td>
+						<td><a href="<?php echo esc_url( (string) get_edit_post_link( $pair['other_id'] ) ); ?>"><?php echo esc_html( $pair_old->get_name() ); ?></a> <span style="color:#777;">#<?php echo esc_html( (string) $pair['other_id'] ); ?>, <?php echo esc_html( sprintf( /* translators: %s: stock quantity or status */ __( 'stock %s', 'tcgiant-sync' ), $pair_old->managing_stock() ? (string) (int) $pair_old->get_stock_quantity() : $pair_old->get_stock_status() ) ); ?></span></td>
+						<td><?php echo esc_html( $pair['parent_item'] ); ?></td>
+					</tr>
+				<?php endforeach; ?>
+				</tbody>
+			</table>
+			<?php if ( '' !== $tc_pairs_more ) : ?>
+				<p style="margin:0;">
+					<?php /* translators: %s: number of relists looked through */ printf( esc_html( _n( 'These are from the newest %s relist looked through; there are older ones still to look through.', 'These are from the %s relists looked through so far; there are older ones still to look through.', (int) $tc_pairs['checked'], 'tcgiant-sync' ) ), esc_html( number_format_i18n( (int) $tc_pairs['checked'] ) ) ); ?>
+					<a class="button" style="margin-left:8px;" href="<?php echo esc_url( $tc_pairs_more ); ?>"><?php esc_html_e( 'Look further back', 'tcgiant-sync' ); ?></a>
+				</p>
+			<?php endif; ?>
 		</div>
 	<?php endif; ?>
 

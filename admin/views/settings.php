@@ -657,7 +657,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 							<label><input type="radio" name="tcgiant_sync_ebay_settings[auto_relist_enabled]" value="1" <?php checked( $settings['auto_relist_enabled'] ?? '0', '1' ); ?>> Yes</label>
 							<label><input type="radio" name="tcgiant_sync_ebay_settings[auto_relist_enabled]" value="0" <?php checked( $settings['auto_relist_enabled'] ?? '0', '0' ); ?>> No</label>
 						</div>
-						<p class="tc-hint"><?php esc_html_e( 'Automatically relist ended eBay listings during daily maintenance (3 AM) if WooCommerce stock is still > 0. Max 50 per day.', 'tcgiant-sync' ); ?></p>
+						<p class="tc-hint"><?php esc_html_e( 'Automatically relist ended eBay listings during daily maintenance (3 AM) if WooCommerce stock is still > 0. Max 50 per day, each costing 2 eBay calls and eBay\'s usual fees for a relist. A listing you end with End Listing in TCGiant Sync from version 3.28.3 on stays ended. One you ended before then, or in Seller Hub, is not known here and may be relisted if it still has stock.', 'tcgiant-sync' ); ?></p>
 					</div>
 				</div>
 

@@ -37,8 +37,13 @@ $items      = $result['items'];
 $total      = $result['total'];
 $total_pages = ceil( $total / $per_page );
 
-// Get stats for filter counts.
+// Get stats for filter counts: every view's, in one query over the same rows.
 $stats = TCGiant_Sync_DB::get_stats();
+
+// The rows' own meta in one read, for what each says about how it ended.
+if ( ! empty( $items ) && function_exists( 'update_postmeta_cache' ) ) {
+	update_postmeta_cache( array_map( 'intval', wp_list_pluck( $items, 'product_id' ) ) );
+}
 
 // Sort direction toggle.
 $sort_order = 'ASC' === strtoupper( $order ) ? 'DESC' : 'ASC';
@@ -107,8 +112,14 @@ $base_url = admin_url( 'admin.php?page=tcgiant-listings' );
 			</a> |
 		</li>
 		<li>
-			<a href="<?php echo esc_url( add_query_arg( 'listing_status', 'Ended', $base_url ) ); ?>" class="<?php echo 'Ended' === $current_status ? 'current' : ''; ?>">
+			<a href="<?php echo esc_url( add_query_arg( 'listing_status', 'Ended', $base_url ) ); ?>" class="<?php echo 'Ended' === $current_status ? 'current' : ''; ?>" title="<?php esc_attr_e( 'Over on eBay, and still in stock on your website', 'tcgiant-sync' ); ?>">
 				<?php printf( esc_html__( 'Ended %s', 'tcgiant-sync' ), '<span class="count">(' . esc_html( $stats['ended'] ) . ')</span>' ); ?>
+			</a> |
+		</li>
+		<li>
+			<?php // Over on eBay with nothing left in WooCommerce: what sold, wherever it sold. ?>
+			<a href="<?php echo esc_url( add_query_arg( 'listing_status', 'Sold', $base_url ) ); ?>" class="<?php echo 'Sold' === $current_status ? 'current' : ''; ?>" title="<?php esc_attr_e( 'Over on eBay, and out of stock on your website', 'tcgiant-sync' ); ?>">
+				<?php printf( esc_html__( 'Sold %s', 'tcgiant-sync' ), '<span class="count">(' . esc_html( $stats['sold'] ) . ')</span>' ); ?>
 			</a>
 		</li>
 	</ul>
@@ -156,7 +167,10 @@ $base_url = admin_url( 'admin.php?page=tcgiant-listings' );
 				<?php // Already implemented in the job runner and, until now, offered nowhere. ?>
 				<option value="bulk_verify"><?php esc_html_e( 'Check push settings only (eBay is not asked)', 'tcgiant-sync' ); ?></option>
 				<option value="bulk_end"><?php esc_html_e( 'End Listing', 'tcgiant-sync' ); ?></option>
-				<option value="bulk_relist"><?php esc_html_e( 'Relist', 'tcgiant-sync' ); ?></option>
+				<?php // Not on the Sold view: nothing there has stock to relist, and the server refuses it. ?>
+				<?php if ( 'Sold' !== $current_status ) : ?>
+					<option value="bulk_relist"><?php esc_html_e( 'Relist', 'tcgiant-sync' ); ?></option>
+				<?php endif; ?>
 				<option value="bulk_set_format"><?php esc_html_e( 'Change listing format', 'tcgiant-sync' ); ?></option>
 			</select>
 
@@ -230,7 +244,7 @@ $base_url = admin_url( 'admin.php?page=tcgiant-listings' );
 						<span class="sorting-indicators"><span class="sorting-indicator asc" aria-hidden="true"></span><span class="sorting-indicator desc" aria-hidden="true"></span></span>
 					</a>
 				</th>
-				<th scope="col" class="<?php echo esc_attr( $sort_class( 'listing_status', 'ASC' ) ); ?>" style="width: 80px;">
+				<th scope="col" class="<?php echo esc_attr( $sort_class( 'listing_status', 'ASC' ) ); ?>" style="width: 130px;">
 					<a href="<?php echo $sort_url( 'listing_status', 'ASC' ); ?>">
 						<span><?php esc_html_e( 'Status', 'tcgiant-sync' ); ?></span>
 						<span class="sorting-indicators"><span class="sorting-indicator asc" aria-hidden="true"></span><span class="sorting-indicator desc" aria-hidden="true"></span></span>
@@ -278,7 +292,16 @@ $base_url = admin_url( 'admin.php?page=tcgiant-listings' );
 					$product_id   = (int) $listing['product_id'];
 					$ebay_item_id = esc_html( $listing['ebay_item_id'] );
 					$title        = ! empty( $listing['ebay_title'] ) ? esc_html( $listing['ebay_title'] ) : esc_html( get_the_title( $product_id ) );
-					$status       = esc_html( $listing['listing_status'] );
+					// The view the row is in - Active, Ended, or Sold when it is over
+					// and WooCommerce has none left - and, when it is over, how.
+					$view         = isset( $listing['listing_view'] ) ? (string) $listing['listing_view'] : ( 'Active' === $listing['listing_status'] ? 'Active' : 'Ended' );
+					$view_labels  = array(
+						'Active' => __( 'Active', 'tcgiant-sync' ),
+						'Ended'  => __( 'Ended', 'tcgiant-sync' ),
+						'Sold'   => __( 'Sold', 'tcgiant-sync' ),
+					);
+					$status       = esc_html( $view_labels[ $view ] ?? $listing['listing_status'] );
+					$end_note     = TCGiant_Sync_Inventory::end_note( $product_id, (string) $listing['ebay_item_id'], $view );
 					$type         = 'Chinese' === $listing['listing_type'] ? esc_html__( 'Auction', 'tcgiant-sync' ) : esc_html__( 'Fixed Price', 'tcgiant-sync' );
 					// The live figures the query derives from WooCommerce, falling back to
 					// what was recorded at push time on a store with no lookup table. The
@@ -313,7 +336,8 @@ $base_url = admin_url( 'admin.php?page=tcgiant-listings' );
 					$edit_url     = get_edit_post_link( $product_id );
 
 					// Status badge colors.
-					$status_class = 'Active' === $listing['listing_status'] ? 'color: #46B450;' : 'color: #dc3232;';
+					$status_colors = array( 'Active' => 'color: #46B450;', 'Ended' => 'color: #dc3232;', 'Sold' => 'color: #2271b1;' );
+					$status_class  = $status_colors[ $view ] ?? 'color: #dc3232;';
 				?>
 				<tr>
 					<th scope="row" class="check-column" style="padding: 8px 4px;"><input type="checkbox" class="tc-listing-cb" value="<?php echo esc_attr( $product_id ); ?>" /></th>
@@ -332,7 +356,12 @@ $base_url = admin_url( 'admin.php?page=tcgiant-listings' );
 						</a>
 					</td>
 					<td><?php echo $type; ?></td>
-					<td><strong style="<?php echo $status_class; ?>"><?php echo $status; ?></strong></td>
+					<td>
+						<strong style="<?php echo $status_class; ?>"><?php echo $status; ?></strong>
+						<?php if ( '' !== $end_note ) : ?>
+							<br><span class="tc-end-note" style="color:#666;font-size:11px;"><?php echo esc_html( $end_note ); ?></span>
+						<?php endif; ?>
+					</td>
 					<td><?php echo $price; ?></td>
 					<td><?php echo esc_html( $qty ); ?></td>
 					<td><?php echo $listed; ?></td>

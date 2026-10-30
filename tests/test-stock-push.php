@@ -2474,6 +2474,36 @@ ebay_answers( 'ReviseInventoryStatus', ...$r );
 hand_edit( 1290, 5 );
 run_queue( true );
 check( 'L2 a hand edit to 5 refused the same way twice, the listing unchanged: given up after two tries and 4 calls, listed, an error', array( calls(), pushes(), count( get_option( TCGiant_Sync_Inventory::PUSH_FAILURES_OPTION, array() ) ), logged( 'refused it the same way twice', 'error' ) ), array( array( 'ReviseInventoryStatus', 'GetItem', 'GetItem', 'ReviseInventoryStatus' ), array(), 1, true ) );
+// Stock Review lists it until a later push of the same product reaches eBay,
+// which takes its row off - and only its own.
+$OPTIONS[ TCGiant_Sync_Inventory::PUSH_FAILURES_OPTION ][] = array( 'time' => time(), 'product_id' => 7777, 'item_id' => '977770007777', 'message' => 'Another product' );
+// The same product's row for a listing it was linked to before, maybe
+// still live: a push to the one it follows now says nothing of that one.
+$OPTIONS[ TCGiant_Sync_Inventory::PUSH_FAILURES_OPTION ][] = array( 'time' => time(), 'product_id' => 1290, 'item_id' => '128000001280', 'message' => 'Its earlier listing' );
+// And one from before item ids were kept, naming no listing.
+$OPTIONS[ TCGiant_Sync_Inventory::PUSH_FAILURES_OPTION ][] = array( 'time' => time(), 'product_id' => 1290, 'message' => 'No listing named' );
+// Another product's row for the same listing - a variation beside it on a
+// listing with variations: its own quantity never got there.
+$OPTIONS[ TCGiant_Sync_Inventory::PUSH_FAILURES_OPTION ][] = array( 'time' => time(), 'product_id' => 1299, 'item_id' => '129000001290', 'message' => 'Its sibling variation' );
+ebay_answers( 'ReviseInventoryStatus' );
+hand_edit( 1290, 4 );
+run_queue( true );
+check( '  a later push of it that eBay takes: its row for that listing leaves the list, and one naming no listing', array_map( function ( $row ) { return (int) $row['product_id'] . '/' . ( $row['item_id'] ?? '' ); }, get_option( TCGiant_Sync_Inventory::PUSH_FAILURES_OPTION, array() ) ), array( '7777/977770007777', '1290/128000001280', '1299/129000001290' ) );
+check( '  another product\'s stays, even for the same listing, and so does its own row for another listing', count( get_option( TCGiant_Sync_Inventory::PUSH_FAILURES_OPTION, array() ) ), 3 );
+check( '  and that push did reach eBay', in_array( 'ReviseInventoryStatus', calls(), true ), true );
+$before_refused = get_option( TCGiant_Sync_Inventory::PUSH_FAILURES_OPTION, array() );
+ebay_answers( 'ReviseInventoryStatus', refused( 21919999, 'Something about the listing.' ), refused( 21919999, 'Something about the listing.' ) );
+hand_edit( 1290, 2 );
+run_queue( true );
+check( '  a later push eBay refuses again: listed again, the others kept', array_map( function ( $row ) { return (int) $row['product_id'] . '/' . ( $row['item_id'] ?? '' ); }, get_option( TCGiant_Sync_Inventory::PUSH_FAILURES_OPTION, array() ) ), array( '7777/977770007777', '1290/128000001280', '1299/129000001290', '1290/129000001290' ) );
+// A later push that ends any other way - here the listing is gone from
+// eBay - is not one that reached it: the row stays.
+unset( $GLOBALS['EBAY']['items']['129000001290'] );
+ebay_answers( 'ReviseInventoryStatus', refused( 21919999, 'Something about the listing.' ) );
+$WIRE = array();
+hand_edit( 1290, 1 );
+run_queue( true );
+check( '  a later push that does not reach eBay (the listing is gone): the row stays', array( in_array( '1290/129000001290', array_map( function ( $row ) { return (int) $row['product_id'] . '/' . ( $row['item_id'] ?? '' ); }, get_option( TCGiant_Sync_Inventory::PUSH_FAILURES_OPTION, array() ) ), true ), logged( 'cannot be found on this eBay account', 'error' ) ), array( true, true ) );
 fresh_shop();
 product( 1291, 3, '129000001291' );
 ebay_has( '129000001291', listing( '129000001291', 3, 0 ), listing( '129000001291', 3, 1 ) );

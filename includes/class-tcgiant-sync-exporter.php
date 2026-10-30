@@ -1406,7 +1406,8 @@ class TCGiant_Sync_Exporter {
 
 	/**
 	 * Whether the listing a product is linked to is over, as far as the
-	 * product knows: a sync marked it ended, or its end time has passed. The
+	 * product knows: a sync marked it ended, or it runs a fixed number of days
+	 * and its end time has passed (end_time_says_ended()). The
 	 * same judgement as TCGiant_Sync_Admin::listing_has_ended(), which the
 	 * product screens make - here because the push runs where the admin
 	 * class is not loaded.
@@ -1425,10 +1426,37 @@ class TCGiant_Sync_Exporter {
 			return true;
 		}
 
-		$end_time = (string) get_post_meta( $product_id, '_ebay_end_time', true );
-		$ends_at  = '' !== $end_time ? strtotime( $end_time ) : false;
+		return self::end_time_says_ended(
+			(string) get_post_meta( $product_id, '_ebay_end_time', true ),
+			(string) get_post_meta( $product_id, '_ebay_listing_duration', true ),
+			(string) get_post_meta( $product_id, '_ebay_listing_type', true )
+		);
+	}
 
-		return $ends_at && $ends_at < time();
+	/**
+	 * Whether a listing's recorded end time, gone by, means it is over.
+	 *
+	 * Only for a listing that runs a fixed number of days: a Days_ duration,
+	 * or an auction, which always has one. A Good 'Til Cancelled listing's
+	 * end time is its next renewal - eBay moves it on a month at a time - so
+	 * once it has gone by, the listing has most likely been renewed, and only
+	 * a sync reading it again can say. One with no duration recorded is not
+	 * judged by its date either.
+	 *
+	 * @param string $end_time     Recorded end time, ISO 8601.
+	 * @param string $duration     Recorded _ebay_listing_duration.
+	 * @param string $listing_type Recorded _ebay_listing_type.
+	 * @return bool
+	 */
+	public static function end_time_says_ended( $end_time, $duration = '', $listing_type = '' ) {
+		$ends_at = '' !== (string) $end_time ? strtotime( (string) $end_time ) : false;
+
+		if ( ! $ends_at || $ends_at >= time() ) {
+			return false;
+		}
+
+		return 0 === strpos( (string) $duration, 'Days_' )
+			|| ( '' === (string) $duration && 'Chinese' === (string) $listing_type );
 	}
 
 	/**

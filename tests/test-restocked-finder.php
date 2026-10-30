@@ -63,6 +63,8 @@ function get_transient( $key ) { return $GLOBALS['TRANSIENTS'][ $key ] ?? false;
 function set_transient( $key, $value, $ttl = 0 ) { $GLOBALS['TRANSIENTS'][ $key ] = $value; return true; }
 function delete_transient( $key ) { unset( $GLOBALS['TRANSIENTS'][ $key ] ); return true; }
 function add_action() {}
+// The sold-out list reads Preserve Categories, to leave out what it keeps.
+function get_option( $name, $default = false ) { return $default; }
 function current_time( $type, $gmt = 0 ) { return gmdate( 'Y-m-d H:i:s' ); }
 function get_gmt_from_date( $date, $format = 'Y-m-d H:i:s' ) { return 'U' === $format ? (string) strtotime( $date . ' UTC' ) : gmdate( $format, strtotime( $date . ' UTC' ) ); }
 
@@ -255,7 +257,10 @@ fresh();
 TCGiant_Sync_Inventory::find_sold_out_not_removed();
 $sold_out_sql = $QUERIES[0] ?? '';
 check( '  which keeps it off the "sold out on eBay" list and its trash button', false !== strpos( $sold_out_sql, 'zeroed.meta_id IS NULL' ), true );
-check( 'that list only assumes an eBay sell-out for a settle from before 3.27.0', false !== strpos( $sold_out_sql, '( qlisted.meta_value IS NULL AND sitem.meta_id IS NULL )' ), true );
+// It no longer takes a settle from before 3.27.0, which kept no figures,
+// for an eBay sell-out: a website sale settled then looks the same.
+check( 'that list goes by the figures eBay gave for the listing the product follows', false !== strpos( $sold_out_sql, 'sitem.meta_value = item.meta_value' ), true );
+check( '  never assuming a sell-out for a settle from before 3.27.0', false === strpos( $sold_out_sql, '( qlisted.meta_value IS NULL AND sitem.meta_id IS NULL )' ), true );
 
 check( 'a new listing forgets the review', in_array( '_ebay_restock_reviewed', TCGiant_Sync_Inventory::SETTLE_KEYS, true ), true );
 

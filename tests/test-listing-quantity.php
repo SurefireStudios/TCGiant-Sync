@@ -190,7 +190,7 @@ check( '  a duration the format cannot use is refused once, not per product', fa
 check( 'checking before pushing is finally offered', false !== strpos( $view, 'value="bulk_verify"' ), true );
 
 check( 'a bulk action can reach past the current page', false !== strpos( $jobs, 'TCGiant_Sync_DB::find_product_ids(' ), true );
-check( '  resolved from the filters the screen used', false !== strpos( $jobs, "'status' => sanitize_text_field( wp_unslash( \$_POST['listing_status'] ?? '' ) )," ), true );
+check( '  resolved from the filters the screen used', false !== strpos( $jobs, "\$listing_view = sanitize_text_field( wp_unslash( \$_POST['listing_status'] ?? '' ) );" ) && false !== strpos( $jobs, "'status'     => \$listing_view," ), true );
 check( '  sharing one filter builder with the screen', false !== strpos( $db, 'private static function build_where( array $args )' ), true );
 check( '  and the page offers it only when there is more to reach', false !== strpos( $view, '$total > count( $items )' ), true );
 

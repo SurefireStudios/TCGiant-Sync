@@ -51,6 +51,7 @@ add_action   admin_post_tcgiant_dismiss_sites_notice => handle_dismiss_sites_not
 add_action   admin_post_tcgiant_dismiss_wplister_notice => handle_dismiss_wplister
 add_action   admin_post_tcgiant_force_queue => handle_force_queue
 add_action   admin_post_tcgiant_forget_held => handle_forget_held
+add_action   admin_post_tcgiant_forget_push_failures => handle_forget_push_failures
 add_action   admin_post_tcgiant_oauth_start => handle_oauth_start
 add_action   admin_post_tcgiant_prune_now => handle_prune_now
 add_action   admin_post_tcgiant_refresh_coin_listings => handle_refresh_coin_listings

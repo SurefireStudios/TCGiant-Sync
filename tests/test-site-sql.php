@@ -77,6 +77,11 @@ class Sqlite_Wpdb {
 		$this->db->exec( 'CREATE TABLE wp_term_taxonomy ( term_taxonomy_id INTEGER PRIMARY KEY, term_id INTEGER, taxonomy TEXT )' );
 		$this->db->exec( 'CREATE TABLE wp_term_relationships ( object_id INTEGER, term_taxonomy_id INTEGER )' );
 		$this->db->exec( 'CREATE TABLE wp_tcgiant_sync_listings ( id INTEGER PRIMARY KEY AUTOINCREMENT, product_id INTEGER, ebay_item_id TEXT, listing_status TEXT )' );
+		$this->db->exec( 'CREATE TABLE wp_wc_product_meta_lookup ( product_id INTEGER PRIMARY KEY, stock_status TEXT )' );
+	}
+	/** WooCommerce's stock status for a product, in its lookup table. */
+	public function stock_status( $product_id, $status ) {
+		$this->db->exec( $this->prepare( 'INSERT OR REPLACE INTO wp_wc_product_meta_lookup ( product_id, stock_status ) VALUES ( %d, %s )', $product_id, $status ) );
 	}
 	public function prepare( $query, ...$args ) {
 		if ( isset( $args[0] ) && is_array( $args[0] ) ) {
@@ -213,6 +218,13 @@ class TCGiant_Sync_DB {
 	public static $exists = true;
 	public static function table_exists() { return self::$exists; }
 	public static function table_name() { return 'wp_tcgiant_sync_listings'; }
+	// Whether WooCommerce has the product out of stock, as a 1/0 flag from
+	// its lookup table: auto-relist leaves out sold rows by it. A stand-in of
+	// one shape the real TCGiant_Sync_DB::out_of_stock_sql() gives;
+	// test-sold-view.php and test-sold-jobs.php run the real one.
+	public static function out_of_stock_sql( $column = 'l.product_id' ) {
+		return array( " LEFT JOIN wp_wc_product_meta_lookup lk ON lk.product_id = {$column}", "COALESCE(lk.stock_status = 'outofstock', 0)" );
+	}
 }
 /** Relist, as far as auto-relist is concerned: which products it was handed. */
 class TCGiant_Sync_Exporter {
@@ -265,6 +277,35 @@ TCGiant_Sync_DB::$exists = true;
 $OPTIONS['tcgiant_sync_ebay_settings']['import_sites'] = 'all';
 check( 'all eBay sites: every ended product comes up, as before', auto_relist_asks(), array( 21, 22, 23, 24, 25, 26, 27, 28 ) );
 check( '  by a query with no such clause', false === strpos( (string) end( $wpdb->queries ), 'tcg_site' ), true );
+
+echo "\nAUTO-RELIST LEAVES OUT WHAT SOLD, SO IT CANNOT CROWD OUT WHAT DID NOT\n" . str_repeat( '=', 140 ) . "\n";
+
+// Out of stock in WooCommerce - the Listings screen's Sold view - each was
+// picked, refused by Relist for having no stock, every day; fifty of them
+// took every place in the LIMIT 50, and the one with stock never came up.
+// 22 and 23 sold; 26 is on backorder; 27 has no lookup row; 21, 24, 25 and
+// 28 are other sites', all sites now imported.
+$wpdb->stock_status( 22, 'outofstock' );
+$wpdb->stock_status( 23, 'outofstock' );
+$wpdb->stock_status( 26, 'onbackorder' );
+$wpdb->stock_status( 21, 'instock' );
+check( 'the listings table\'s query: the sold ones are not handed to Relist', auto_relist_asks(), array( 21, 24, 25, 26, 27, 28 ) );
+check( '  by the clause that says so', false !== strpos( (string) end( $wpdb->queries ), "COALESCE(lk.stock_status = 'outofstock', 0) = 0" ), true );
+TCGiant_Sync_DB::$exists = false;
+check( 'the post meta query: the same, 10 included', auto_relist_asks(), array( 10, 21, 24, 25, 26, 27, 28 ) );
+TCGiant_Sync_DB::$exists = true;
+
+// Sixty sold, then one with stock, in the order the table holds them.
+for ( $id = 100; $id < 160; $id++ ) {
+	linked( $id, 'US', array( '_ebay_listing_status' => 'Ended' ) );
+	$wpdb->listing_row( $id, '9000' . $id, 'Ended' );
+	$wpdb->stock_status( $id, 'outofstock' );
+}
+linked( 160, 'US', array( '_ebay_listing_status' => 'Ended' ) );
+$wpdb->listing_row( 160, '9000160', 'Ended' );
+$wpdb->stock_status( 160, 'instock' );
+check( 'sixty sold rows ahead of it: the one with stock is still reached', in_array( 160, auto_relist_asks(), true ), true );
+check( '  and none of the sixty is', array_values( array_intersect( range( 100, 159 ), auto_relist_asks() ) ), array() );
 
 check( 'no query was refused', $wpdb->errors, array() );
 

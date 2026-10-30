@@ -128,6 +128,7 @@ class TCGiant_Sync_Admin {
 		add_action( 'wp_ajax_tcgiant_sync_order_to_ebay', array( $this, 'ajax_sync_order_to_ebay' ) );
 		add_action( 'admin_post_tcgiant_stop_sync', array( $this, 'handle_stop_sync' ) );
 		add_action( 'admin_post_tcgiant_forget_held', array( $this, 'handle_forget_held' ) );
+		add_action( 'admin_post_tcgiant_forget_push_failures', array( $this, 'handle_forget_push_failures' ) );
 		add_action( 'admin_post_tcgiant_clear_log', array( $this, 'handle_clear_log' ) );
 		add_action( 'admin_post_tcgiant_clear_recent_sales', array( $this, 'handle_clear_recent_sales' ) );
 		add_action( 'admin_post_tcgiant_sync_disconnect', array( $this, 'handle_disconnect' ) );
@@ -501,6 +502,22 @@ class TCGiant_Sync_Admin {
 		}
 
 		TCGiant_Sync_Importer::forget_held_back();
+
+		wp_safe_redirect( admin_url( 'admin.php?page=tcgiant-stock-review' ) );
+		exit;
+	}
+
+	/**
+	 * Clear Stock Review's list of stock pushes eBay never took. Only the
+	 * list: nothing is sent to eBay, and no product changes.
+	 */
+	public function handle_forget_push_failures() {
+		check_admin_referer( 'tcgiant_forget_push_failures' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'Unauthorized.', 'tcgiant-sync' ) );
+		}
+
+		TCGiant_Sync_Inventory::forget_push_failures();
 
 		wp_safe_redirect( admin_url( 'admin.php?page=tcgiant-stock-review' ) );
 		exit;
@@ -1953,9 +1970,8 @@ class TCGiant_Sync_Admin {
 			wp_send_json_error( array( 'message' => $result->get_error_message() ) );
 		}
 
-		// Update product meta to reflect ended status.
-		update_post_meta( $product_id, '_ebay_listing_status', 'Ended' );
-		update_post_meta( $product_id, '_ebay_end_time', gmdate( 'Y-m-d\TH:i:s.000\Z' ) );
+		// Ended, when, and that the shop ended it - for the Listings screen.
+		TCGiant_Sync_Inventory::record_shop_end( $product_id, (string) $ebay_item_id, $result );
 
 		TCGiant_Sync_Logger::log( sprintf(
 			'eBay listing %s ended from WordPress (product #%d).',
@@ -3542,15 +3558,23 @@ class TCGiant_Sync_Admin {
 	 * the end time gets there first: a listing that ran out an hour ago is
 	 * finished whether or not anything has been round to notice yet.
 	 *
+	 * Only for a listing that runs for a fixed number of days, though. A Good
+	 * 'Til Cancelled listing's end time is its next renewal: eBay moves it on
+	 * a month every time, so a date gone by says nothing until a sync has
+	 * read the listing again - and it showed a live listing as Ended, with
+	 * Relist on its button (TCGiant_Sync_Exporter::end_time_says_ended()).
+	 *
 	 * Shared so the product screen and the products list cannot disagree about
 	 * the same listing.
 	 *
 	 * @param string $ebay_item_id   Linked eBay Item ID, if any.
 	 * @param string $listing_status Recorded status, e.g. "Active" or "Ended".
 	 * @param string $end_time       Recorded end time, ISO 8601.
+	 * @param string $duration       Recorded _ebay_listing_duration, e.g. "Days_7" or "GTC".
+	 * @param string $listing_type   Recorded _ebay_listing_type.
 	 * @return bool
 	 */
-	public static function listing_has_ended( $ebay_item_id, $listing_status, $end_time ) {
+	public static function listing_has_ended( $ebay_item_id, $listing_status, $end_time, $duration = '', $listing_type = '' ) {
 		if ( empty( $ebay_item_id ) ) {
 			return false;
 		}
@@ -3559,13 +3583,7 @@ class TCGiant_Sync_Admin {
 			return true;
 		}
 
-		if ( empty( $end_time ) ) {
-			return false;
-		}
-
-		$ends_at = strtotime( $end_time );
-
-		return $ends_at && $ends_at < time();
+		return TCGiant_Sync_Exporter::end_time_says_ended( (string) $end_time, (string) $duration, (string) $listing_type );
 	}
 
 	/**
@@ -3662,7 +3680,7 @@ class TCGiant_Sync_Admin {
 		$last_pushed    = get_post_meta( $product_id, '_ebay_export_last_pushed', true );
 		$listing_status = get_post_meta( $product_id, '_ebay_listing_status', true );
 		$end_time       = get_post_meta( $product_id, '_ebay_end_time', true );
-		$has_ended      = self::listing_has_ended( $ebay_item_id, $listing_status, $end_time );
+		$has_ended      = self::listing_has_ended( $ebay_item_id, $listing_status, $end_time, get_post_meta( $product_id, '_ebay_listing_duration', true ), get_post_meta( $product_id, '_ebay_listing_type', true ) );
 		$cat_override   = get_post_meta( $product_id, '_ebay_export_category_id', true );
 		$cat_name_saved = get_post_meta( $product_id, '_ebay_export_category_name', true );
 		$item_type      = get_post_meta( $product_id, '_ebay_export_item_type', true );
@@ -4628,13 +4646,16 @@ class TCGiant_Sync_Admin {
 			}
 			echo '</div>';
 
-			// End time / status.
+			// End time / status. The same judgement as the button below: a
+			// Good 'Til Cancelled listing whose date has gone by has been
+			// renewed, as far as anything here knows, not ended.
 			if ( ! empty( $end_time ) ) {
-				$end_ts   = strtotime( $end_time );
-				$is_ended = ( 'Ended' === $listing_status ) || ( $end_ts && $end_ts < time() );
+				$end_ts = strtotime( $end_time );
 
-				if ( $is_ended ) {
+				if ( self::listing_has_ended( $ebay_item_id, $listing_status, $end_time, $listing_dur, $listing_type ) ) {
 					echo '<div class="tc-ebay-end tc-ended">⛔ Ended ' . esc_html( date_i18n( 'M j, Y', $end_ts ) ) . '</div>';
+				} elseif ( $end_ts && $end_ts < time() ) {
+					echo '<div class="tc-ebay-end">⏰ Renews (date on record ' . esc_html( date_i18n( 'M j, Y', $end_ts ) ) . ')</div>';
 				} else {
 					echo '<div class="tc-ebay-end">⏰ Ends ' . esc_html( date_i18n( 'M j, Y', $end_ts ) ) . '</div>';
 				}
@@ -4663,7 +4684,7 @@ class TCGiant_Sync_Admin {
 		// An ended listing cannot be revised — pushing creates a fresh listing
 		// instead. Say so on the button, rather than offering "Update" for
 		// something that will produce a new Item ID.
-		$listing_has_ended = self::listing_has_ended( $ebay_item_id, $listing_status, $end_time );
+		$listing_has_ended = self::listing_has_ended( $ebay_item_id, $listing_status, $end_time, $listing_dur, $listing_type );
 
 		if ( $listing_has_ended ) {
 			$btn_label = '↻ ' . __( 'Relist on eBay', 'tcgiant-sync' );
@@ -4678,9 +4699,9 @@ class TCGiant_Sync_Admin {
 		echo '<button type="button" class="' . esc_attr( $btn_class ) . '" data-product-id="' . esc_attr( $post_id ) . '">' . esc_html( $btn_label ) . '</button>';
 		echo '<span class="tc-ebay-btn-status" data-product-id="' . esc_attr( $post_id ) . '"></span>';
 
-		// End Listing button — only show for active (non-ended) listings.
-		$is_ended = ( 'Ended' === $listing_status ) || ( ! empty( $end_time ) && strtotime( $end_time ) && strtotime( $end_time ) < time() );
-		if ( ! empty( $ebay_item_id ) && ! $is_ended ) {
+		// End Listing button — only show for active (non-ended) listings, by
+		// the same judgement as the button above.
+		if ( ! empty( $ebay_item_id ) && ! $listing_has_ended ) {
 			echo '<button type="button" class="tc-ebay-btn tc-ebay-btn-end" data-product-id="' . esc_attr( $post_id ) . '" title="End this listing on eBay">⛔ End Listing</button>';
 		}
 

@@ -82,6 +82,11 @@ class TCGiant_Sync_Listing_Link {
 			// (3.28.0).
 			'_ebay_end_reason',
 			'_ebay_end_reason_item',
+			// The listing that listing was relisted from, as an import of it
+			// recorded (3.28.0). Stock Review pairs the product with any other
+			// still on that one, so a copy, or a product unlinked, must not
+			// carry it.
+			'_ebay_relist_parent_id',
 			// eBay's SKU for a variation of that listing (3.28.0).
 			'_ebay_variation_sku',
 			// Stock changes still on their way to that listing (3.28.0).

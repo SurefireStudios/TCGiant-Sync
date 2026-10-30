@@ -278,10 +278,29 @@ class TCGiant_Sync_Jobs {
 		// twenty of them and nothing to say the rest had been passed over. The
 		// filters come back here and the set is resolved from the same query.
 		if ( ! empty( $_POST['select_all'] ) && in_array( $type, self::LISTING_JOB_TYPES, true ) ) {
+			$listing_view = sanitize_text_field( wp_unslash( $_POST['listing_status'] ?? '' ) );
+
+			// The Sold view has nothing left to sell, so it offers no Relist;
+			// asked for anyway, it is refused whole rather than run row by row.
+			if ( 'bulk_relist' === $type && 'Sold' === $listing_view ) {
+				wp_send_json_error( array( 'message' => 'Nothing was relisted: the Sold view lists listings with nothing left in stock. Restock a product and it moves to Ended, where it can be relisted.' ) );
+			}
+
+			// Nor the Active view: those listings are live.
+			if ( 'bulk_relist' === $type && 'Active' === $listing_view ) {
+				wp_send_json_error( array( 'message' => 'Nothing was relisted: the Active view lists live eBay listings, which need no relisting.' ) );
+			}
+
 			$product_ids = TCGiant_Sync_DB::find_product_ids( array(
-				'status' => sanitize_text_field( wp_unslash( $_POST['listing_status'] ?? '' ) ),
-				'type'   => sanitize_text_field( wp_unslash( $_POST['listing_type'] ?? '' ) ),
-				'search' => sanitize_text_field( wp_unslash( $_POST['s'] ?? '' ) ),
+				'status'     => $listing_view,
+				'type'       => sanitize_text_field( wp_unslash( $_POST['listing_type'] ?? '' ) ),
+				'search'     => sanitize_text_field( wp_unslash( $_POST['s'] ?? '' ) ),
+				// A Relist of everything matching, on any view, takes in only
+				// the Ended view's rows: a sold one would be refused for having
+				// no stock, and a live one after a GetItem each - every live
+				// listing in the shop, on All. A listing the shop ended itself
+				// is still taken: this is the shop asking.
+				'ended_only' => 'bulk_relist' === $type,
 			) );
 		}
 
@@ -449,7 +468,9 @@ class TCGiant_Sync_Jobs {
 						$failed++;
 						$errors[] = sprintf( '#%d: %s', $product_id, $result->get_error_message() );
 					} else {
-						update_post_meta( $product_id, '_ebay_listing_status', 'Ended' );
+						// Ended, when, and that the shop ended it, for the
+						// Listings screen to say.
+						TCGiant_Sync_Inventory::record_shop_end( $product_id, (string) $ebay_id, $result );
 						$succeeded++;
 					}
 					break;
@@ -477,6 +498,18 @@ class TCGiant_Sync_Jobs {
 					// eBay's own figures, and recorded. Asking eBay again would only
 					// fail for the older ones - it drops old listings - and a backlog
 					// is by definition old.
+					//
+					// Checked again here, as each product is reached: the list is
+					// the one drawn when the button was pressed - or whatever ids
+					// the request named - and a product relisted, restocked or put
+					// right since is no longer sold out.
+					if ( ! TCGiant_Sync_Inventory::sold_out_on_ebay( $product_id ) ) {
+						$kept++;
+						$errors[] = sprintf( '#%d: not moved to the trash - eBay\'s figures for the listing it follows do not say it sold out.', $product_id );
+						TCGiant_Sync_Logger::log( sprintf( 'Sold-out cleanup: WC #%d was kept - eBay\'s figures for the listing it follows do not say it sold out.', $product_id ) );
+						break;
+					}
+
 					if ( TCGiant_Sync_Inventory::remove_if_allowed( $product_id ) ) {
 						$succeeded++;
 						TCGiant_Sync_Logger::log( sprintf( 'Sold-out cleanup: WC #%d moved to the trash.', $product_id ) );
