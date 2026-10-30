@@ -12,6 +12,12 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+// What the delta remembers of each listing's categories, which a push makes
+// out of date (3.28.4).
+if ( ! class_exists( 'TCGiant_Sync_Category_Memory', false ) ) {
+	require_once __DIR__ . '/class-tcgiant-sync-category-memory.php';
+}
+
 /**
  * TCGiant_Sync_Exporter class
  */
@@ -886,6 +892,13 @@ class TCGiant_Sync_Exporter {
 				if ( 'updated' !== $action ) {
 					self::$in_flight['created'] = (string) $item_id;
 				}
+
+				// Every push sends the listing's PrimaryCategory, which may not
+				// be the one eBay had: what the delta remembered of the listing,
+				// and of the one it replaced, is forgotten (3.28.4), so its next
+				// change is asked about rather than judged by the old category.
+				// After the in-flight record, which must come first.
+				TCGiant_Sync_Category_Memory::forget( array( (string) $item_id, (string) ( $result['previous_item_id'] ?? '' ) ) );
 				TCGiant_Sync_Runtime::stage( 'saving the link' );
 
 				$product->update_meta_data( '_ebay_item_id', $item_id );
@@ -2578,6 +2591,10 @@ class TCGiant_Sync_Exporter {
 			'listing_status' => 'Active',
 			'last_synced'    => current_time( 'mysql' ),
 		) );
+
+		// RelistItem keeps the category, but the new listing is a new number
+		// and the old one is over: neither is remembered any more (3.28.4).
+		TCGiant_Sync_Category_Memory::forget( array( $new_id, (string) $ebay_item_id ) );
 
 		TCGiant_Sync_Logger::log( sprintf(
 			'%s: WC #%d relisted on eBay as %s (was %s)%s.',

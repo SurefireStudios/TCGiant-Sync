@@ -1,7 +1,9 @@
 <?php
 /**
  * The world the pruner and the full sync's scan run in, for
- * test-prune-guards.php, test-prune-drift.php and test-scan-ended.php.
+ * test-prune-guards.php, test-prune-drift.php and test-scan-ended.php, and
+ * the delta's too for test-category-memory.php, which plays eBay with an API
+ * class of its own, declared before this file is loaded.
  *
  * Loads the real importer, inventory and runtime classes. WordPress,
  * WooCommerce, Action Scheduler and eBay are played here. Posts, post meta
@@ -122,7 +124,19 @@ function apply_filters( $hook, $value ) { return $value; }
 function do_action() {}
 function current_time( $type, $gmt = 0 ) { return gmdate( 'Y-m-d H:i:s' ); }
 function get_gmt_from_date( $d, $f = 'Y-m-d H:i:s' ) { return gmdate( $f, strtotime( $d ) ); }
-function wp_cache_delete() { return true; }
+// Dropping an option from the cache makes the next read the table's - played
+// only where a harness asks (CACHE_READS_TABLE), as the others were written
+// against a cache that kept this request's copy.
+function wp_cache_delete( $key = '', $group = '' ) {
+	if ( 'options' === $group && ! empty( $GLOBALS['CACHE_READS_TABLE'] ) ) {
+		if ( array_key_exists( $key, $GLOBALS['TABLE'] ) ) {
+			$GLOBALS['OPTIONS'][ $key ] = $GLOBALS['TABLE'][ $key ];
+		} else {
+			unset( $GLOBALS['OPTIONS'][ $key ] );
+		}
+	}
+	return true;
+}
 function get_transient( $k ) { return false; }
 function set_transient( $k, $v, $t = 0 ) { return true; }
 function delete_transient( $k ) { return true; }
@@ -138,7 +152,7 @@ function wp_next_scheduled( $hook ) { foreach ( $GLOBALS['CRON'] as $e ) { if ( 
 // through a raw read, or once a new request starts.
 $TABLE = array();
 function get_option( $n, $d = false ) { return array_key_exists( $n, $GLOBALS['OPTIONS'] ) ? $GLOBALS['OPTIONS'][ $n ] : $d; }
-function update_option( $n, $v, $a = null ) { $GLOBALS['OPTIONS'][ $n ] = $v; $GLOBALS['TABLE'][ $n ] = $v; return true; }
+function update_option( $n, $v, $a = null ) { if ( ! empty( $GLOBALS['ON_UPDATE'] ) ) { call_user_func( $GLOBALS['ON_UPDATE'], $n, $v, $a ); } $GLOBALS['OPTIONS'][ $n ] = $v; $GLOBALS['TABLE'][ $n ] = $v; return true; }
 function add_option( $n, $v = '', $dep = '', $a = 'yes' ) { if ( ! array_key_exists( $n, $GLOBALS['OPTIONS'] ) ) { $GLOBALS['OPTIONS'][ $n ] = $v; $GLOBALS['TABLE'][ $n ] = $v; $GLOBALS['AUTOLOAD'][ $n ] = $a; return true; } return false; }
 function delete_option( $n ) { unset( $GLOBALS['OPTIONS'][ $n ], $GLOBALS['TABLE'][ $n ] ); return true; }
 /** Another request writes an option: the table changes, this request's copy does not. */
@@ -257,7 +271,7 @@ class TCGiant_Sync_OAuth {
 }
 class TCGiant_Sync_Entitlements {
 	public static function instance() { static $i; return $i ?: ( $i = new self() ); }
-	public function can_import() { return true; }
+	public function can_import() { return $GLOBALS['CAN_IMPORT'] ?? true; }
 	public function get_active_product_count() { return 0; }
 	public function get_free_limit() { return 0; }
 }
@@ -310,6 +324,7 @@ class TCGiant_Sync_Mapper {
 }
 
 /** eBay. GetItem from a script; GetSellerList pages from a function of time. */
+if ( ! class_exists( 'TCGiant_Sync_API', false ) ) {
 class TCGiant_Sync_API {
 	const DAILY_CALL_LIMIT = 50000;
 	const DAILY_CALL_SOFT_CEILING = 0.80;
@@ -334,6 +349,7 @@ class TCGiant_Sync_API {
 		$GLOBALS['EBAY']['list_calls'][] = array( $page, $mod_from, $end_from );
 		return call_user_func( $GLOBALS['EBAY']['lister'], $page, $per, $mod_from, $end_from );
 	}
+}
 }
 
 function fresh_world( array $settings = array() ) {

@@ -2315,7 +2315,7 @@ foreach ( array(
 	check( 'the ping, ' . $label . ': stock_push says so', $sent['stock_push'] ?? null, $case[1] );
 }
 // And 3.27.8's version after it (test-relay-version.php).
-check( '  and nothing else new is sent', array_keys( (array) $sent ), array( 'site_url', 'synced_total', 'pushed_total', 'pulled_total', 'license_type', 'stock_push', 'version' ) );
+check( '  and nothing else new is sent', array_keys( (array) $sent ), array( 'site_url', 'synced_total', 'pushed_total', 'pulled_total', 'license_type', 'stock_push', 'version', 'php_version' ) );
 
 fresh_shop( array( 'push_stock_to_ebay' => '0', 'store_name' => 'shop' ) );
 $health = $ADMIN->get_system_health();
@@ -2326,6 +2326,16 @@ fresh_shop( array( 'enable_order_sync' => '0' ), false );
 check( '  On (not connected), where nothing can be sent', array( $ADMIN->get_system_health()['stock_push']['text'] ?? null, $ADMIN->get_system_health()['stock_push']['status'] ?? null ), array( 'On (not connected)', 'warning' ) );
 fresh_shop( array( 'push_stock_to_ebay' => '0' ), false );
 check( '  and Off is Off, connected or not', $ADMIN->get_system_health()['stock_push']['text'] ?? null, 'Off' );
+
+// PHP2Shell (3.28.4): a line of its own, straight after it, for a PHP before
+// the fix - test-php2shell.php has the versions - and none after it.
+TCGiant_Sync_Environment::$php_version = '8.3.20';
+$health = $ADMIN->get_system_health();
+$keys   = array_keys( $health );
+check( 'the health panel on PHP 8.3.20: a PHP2Shell line after "Website stock to eBay"', array( array_search( 'php2shell', $keys, true ) - array_search( 'stock_push', $keys, true ), $health['php2shell'] ?? null ), array( 1, TCGiant_Sync_Environment::php2shell_row( '8.3.20' ) ) );
+TCGiant_Sync_Environment::$php_version = '8.3.36';
+check( '  none on 8.3.36', array_key_exists( 'php2shell', $ADMIN->get_system_health() ), false );
+TCGiant_Sync_Environment::$php_version = null;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 echo "\nA WRITE-BACK AFTER AN EBAY CALL KEEPS A TOKEN REFRESHED DURING IT\n" . str_repeat( '=', 124 ) . "\n";

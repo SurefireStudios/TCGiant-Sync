@@ -1626,6 +1626,13 @@ class TCGiant_Sync_Admin {
 			'text'   => $pushing ? $on : __( 'Off', 'tcgiant-sync' ),
 		);
 
+		// The PHP this site runs on, when it comes before the fix for
+		// PHP2Shell (3.28.4). Only here: no notice, nothing stored.
+		$php2shell = TCGiant_Sync_Environment::php2shell_row();
+		if ( null !== $php2shell ) {
+			$health['php2shell'] = $php2shell;
+		}
+
 		// Proactively refresh the token if needed before checking health.
 		if ( $oauth->is_authenticated() ) {
 			$oauth->get_access_token();

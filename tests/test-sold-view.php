@@ -488,6 +488,78 @@ $rest = TCGiant_Sync_Inventory::find_relist_pairs( 200, $third['next'] );
 check( '  and the rest, to the end', array( pair_names( $rest['pairs'] ), $rest['next'] ), array( array( '401>402' ), 0 ) );
 check( 'no query was refused', $wpdb->errors, array() );
 
+// "Sell similar" (3.28.4): eBay gives the new listing a RelistParentID and
+// leaves the one it was made from on sale. On the live-test shop all three
+// pairs found were that: two graded cards, two cert numbers, both live. Left
+// out only when eBay showed the older listing live after the newer one was
+// listed: the older product saved (_sync_last_updated) as Active at least an
+// hour after the newer listing's start (_ebay_start_time).
+sold_shop();
+$tcg_listed = array( '_ebay_start_time' => '2026-10-20T10:00:00.000Z' );
+sold_product( 441, array( '_ebay_item_id' => '9441', '_ebay_relist_parent_id' => '8441' ) + $tcg_listed, false );
+sold_product( 442, array( '_ebay_item_id' => '8441', '_ebay_listing_status' => 'Active', '_sync_last_updated' => '2026-10-25 08:00:00' ), false );
+// A relist: the listing it came from has ended.
+sold_product( 443, array( '_ebay_item_id' => '9443', '_ebay_relist_parent_id' => '8443' ) + $tcg_listed, false );
+sold_product( 444, array( '_ebay_item_id' => '8443', '_ebay_listing_status' => 'Ended', '_sync_last_updated' => '2026-10-25 08:00:00' ), false );
+// Nothing recorded of the older listing: listed, as before.
+sold_product( 445, array( '_ebay_item_id' => '9445', '_ebay_relist_parent_id' => '8445' ) + $tcg_listed, false );
+sold_product( 446, array( '_ebay_item_id' => '8445' ), false );
+// Two products on the older listing, one of them read live since: only the
+// other is paired.
+sold_product( 447, array( '_ebay_item_id' => '9447', '_ebay_relist_parent_id' => '8447' ) + $tcg_listed, false );
+sold_product( 448, array( '_ebay_item_id' => '8447', '_ebay_listing_status' => 'Active', '_sync_last_updated' => '2026-10-25 08:00:00' ), false );
+sold_product( 449, array( '_ebay_item_id' => '8447', '_ebay_listing_status' => 'Completed', '_sync_last_updated' => '2026-10-25 08:00:00' ), false );
+// Active, but last read from eBay before the newer listing began: the record
+// may have fallen behind - a Good 'Til Cancelled listing ended early, an end
+// the delta skipped on the filter. A real duplicate: listed.
+sold_product( 451, array( '_ebay_item_id' => '9451', '_ebay_relist_parent_id' => '8451' ) + $tcg_listed, false );
+sold_product( 452, array( '_ebay_item_id' => '8451', '_ebay_listing_status' => 'Active', '_sync_last_updated' => '2026-10-19 10:00:00' ), false );
+// Active and read since, but the newer listing's start not recorded: listed.
+sold_product( 453, array( '_ebay_item_id' => '9453', '_ebay_relist_parent_id' => '8453' ), false );
+sold_product( 454, array( '_ebay_item_id' => '8453', '_ebay_listing_status' => 'Active', '_sync_last_updated' => '2026-10-25 08:00:00' ), false );
+// Read within the hour after the newer listing began: listed. At the hour:
+// left out.
+sold_product( 455, array( '_ebay_item_id' => '9455', '_ebay_relist_parent_id' => '8455' ) + $tcg_listed, false );
+sold_product( 456, array( '_ebay_item_id' => '8455', '_ebay_listing_status' => 'Active', '_sync_last_updated' => '2026-10-20 10:59:59' ), false );
+sold_product( 457, array( '_ebay_item_id' => '9457', '_ebay_relist_parent_id' => '8457' ) + $tcg_listed, false );
+sold_product( 458, array( '_ebay_item_id' => '8457', '_ebay_listing_status' => 'Active', '_sync_last_updated' => '2026-10-20 11:00:00' ), false );
+// Active, never saved from eBay's answer: listed.
+sold_product( 459, array( '_ebay_item_id' => '9459', '_ebay_relist_parent_id' => '8459' ) + $tcg_listed, false );
+sold_product( 460, array( '_ebay_item_id' => '8459', '_ebay_listing_status' => 'Active' ), false );
+$wpdb->queries = array();
+$found = TCGiant_Sync_Inventory::find_relist_pairs();
+check( '"Sell similar": a pair whose older listing eBay showed live since the newer was listed is left out', array( in_array( '441>442', pair_names( $found['pairs'] ), true ), in_array( '447>448', pair_names( $found['pairs'] ), true ), in_array( '457>458', pair_names( $found['pairs'] ), true ) ), array( false, false, false ) );
+check( '  every other pair listed: ended, unrecorded, read before, no start time, within the hour, never read', pair_names( $found['pairs'] ), array( '459>460', '455>456', '453>454', '451>452', '447>449', '445>446', '443>444' ) );
+check( '  every mark still read, nothing further back', array( $found['checked'], $found['next'] ), array( 9, 0 ) );
+check( '  by what the plugin recorded: still the two queries, none refused', array( count( $wpdb->queries ), $wpdb->errors ), array( 2, array() ) );
+// On a site ten hours ahead of UTC, _sync_last_updated is the site's local
+// time. 20:30 there is 10:30 UTC, within the hour after the newer listing
+// began: listed. Read as if it were UTC it would look ten hours later, and a
+// real duplicate would be left out. 21:00 there is 11:00 UTC: left out.
+sold_shop();
+$GLOBALS['SITE_TZ'] = '+10:00';
+sold_product( 471, array( '_ebay_item_id' => '9471', '_ebay_relist_parent_id' => '8471' ) + $tcg_listed, false );
+sold_product( 472, array( '_ebay_item_id' => '8471', '_ebay_listing_status' => 'Active', '_sync_last_updated' => '2026-10-20 20:30:00' ), false );
+sold_product( 473, array( '_ebay_item_id' => '9473', '_ebay_relist_parent_id' => '8473' ) + $tcg_listed, false );
+sold_product( 474, array( '_ebay_item_id' => '8473', '_ebay_listing_status' => 'Active', '_sync_last_updated' => '2026-10-20 21:00:00' ), false );
+$found = TCGiant_Sync_Inventory::find_relist_pairs();
+$GLOBALS['SITE_TZ'] = 'UTC';
+check( '  on a site at UTC+10, the save time is read as the site\'s own: 20:30 there (10:30 UTC) listed, 21:00 there (11:00 UTC) left out', pair_names( $found['pairs'] ), array( '471>472' ) );
+// The evidence is only what an import saves from eBay's answer: the time and
+// eBay's ListingStatus, in the one meta array the mapper writes, and the time
+// nowhere else in the plugin.
+$tcg_mapper = (string) file_get_contents( dirname( __DIR__ ) . '/includes/class-tcgiant-sync-mapper.php' );
+$tcg_meta   = substr( $tcg_mapper, (int) strpos( $tcg_mapper, "\$product_data['meta'] = array(" ) );
+$tcg_meta   = substr( $tcg_meta, 0, (int) strpos( $tcg_meta, ');' ) );
+check( '  the import saves the time with eBay\'s ListingStatus, side by side', array( false !== strpos( $tcg_meta, "'_sync_last_updated'     => current_time( 'mysql' )," ), false !== strpos( $tcg_meta, "'_ebay_listing_status'   => \$ebay_item['SellingStatus']['ListingStatus'] ?? 'Active'," ) ), array( true, true ) );
+$tcg_writers = array();
+foreach ( array_merge( glob( dirname( __DIR__ ) . '/includes/*.php' ), glob( dirname( __DIR__ ) . '/admin/*.php' ) ) as $tcg_file ) {
+	if ( preg_match( "/(update_post_meta|add_post_meta|update_meta_data|add_meta_data)\\([^;]*'_sync_last_updated'/", (string) file_get_contents( $tcg_file ) ) ) {
+		$tcg_writers[] = basename( $tcg_file );
+	}
+}
+check( '  and nothing else writes the time on its own', $tcg_writers, array() );
+
 // Many relists: their listings are asked after a chunk at a time.
 sold_shop();
 for ( $i = 0; $i < 450; $i++ ) {

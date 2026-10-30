@@ -159,7 +159,9 @@ function add_filter() { return true; }
 function do_action() {}
 function apply_filters( $hook, $value ) { return $value; }
 function current_time( $type, $gmt = 0 ) { return 'timestamp' === $type ? time() : gmdate( 'Y-m-d H:i:s' ); }
-function get_gmt_from_date( $d, $f = 'Y-m-d H:i:s' ) { return gmdate( $f, strtotime( $d ) ); }
+// Core's own, with the site in UTC unless a test sets $SITE_TZ (an offset such
+// as '+10:00'): an empty date is now, as date_create() reads it.
+function get_gmt_from_date( $d, $f = 'Y-m-d H:i:s' ) { $dt = date_create( (string) $d, new DateTimeZone( $GLOBALS['SITE_TZ'] ?? 'UTC' ) ); return false === $dt ? gmdate( $f, 0 ) : $dt->setTimezone( new DateTimeZone( 'UTC' ) )->format( $f ); }
 function wp_parse_args( $args, $defaults = array() ) { return array_merge( $defaults, (array) $args ); }
 function absint( $v ) { return abs( (int) $v ); }
 function sanitize_text_field( $v ) { return trim( strip_tags( (string) $v ) ); }

@@ -12,6 +12,12 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+// The listings' categories, which the delta and the full sync read and write
+// (3.28.4).
+if ( ! class_exists( 'TCGiant_Sync_Category_Memory', false ) ) {
+	require_once __DIR__ . '/class-tcgiant-sync-category-memory.php';
+}
+
 /**
  * TCGiant_Sync_Importer class
  */
@@ -1321,6 +1327,8 @@ class TCGiant_Sync_Importer {
 		} finally {
 			TCGiant_Sync_Runtime::unguard_cache();
 			TCGiant_Sync_Runtime::unguard_loops();
+			// What the run learnt of its listings' categories (3.28.4).
+			TCGiant_Sync_Category_Memory::end();
 			TCGiant_Sync_Runtime::unwatch();
 			self::$slice_in_flight = false;
 			self::release_lock();
@@ -1912,6 +1920,9 @@ class TCGiant_Sync_Importer {
 		$errors = 0;
 		$skipped = 0;
 		$fallback_count = 0;
+		// Skipped by the category filter on what TCGiant_Sync_Category_Memory
+		// remembered, with no GetItem. Not in $skipped, or among the fallbacks.
+		$remembered_skips = 0;
 		$other_site = 0; // Listings on other eBay sites left out - see TCGiant_Sync_Sites.
 		$sites_on   = TCGiant_Sync_Sites::primary_only();
 
@@ -1952,6 +1963,11 @@ class TCGiant_Sync_Importer {
 		$stopped_for  = '';
 		$memory_stop  = false;
 		$read_stop    = null;
+
+		// The categories the batch's GetItem answers carry, written once, after
+		// it, rather than once for each: by fetch_delta_events(), however this
+		// run ends.
+		TCGiant_Sync_Category_Memory::begin();
 
 		// Reading the window is not the first listing's doing.
 		TCGiant_Sync_Runtime::cache_guard_take();
@@ -2100,12 +2116,27 @@ class TCGiant_Sync_Importer {
 					// judge by; an item that did arrive with categories is filtered
 					// as before, at no extra cost.
 					if ( '' === (string) $primary_cat && '' === (string) $store_cat1 && '' === (string) $store_cat2 ) {
+						// What the last full sync, or the last GetItem of it,
+						// said its categories were (3.28.4). Learnt within the
+						// last 8 days and not taken by the filter, it is skipped
+						// here exactly as it would be after the GetItem below,
+						// which is all that call was for. Taken by the filter,
+						// not remembered, or remembered too long ago: asked
+						// about as before.
+						$known = TCGiant_Sync_Category_Memory::recall( array( $item_id ) );
+						$known = $known[ $item_id ] ?? null;
+						if ( null !== $known && ! self::category_filter_takes( $known[0], $known[1], $known[2], $standard_cats, $valid_custom_ids ) ) {
+							$remembered_skips++;
+							continue;
+						}
+
 						TCGiant_Sync_Runtime::stage( 'asking eBay for its category (GetItem)' );
 						$full_for_filter = TCGiant_Sync_API::instance()->get_item( $item_id );
 						if ( ! is_wp_error( $full_for_filter ) && isset( $full_for_filter['Item'] ) ) {
 							$ebay_item   = $full_for_filter['Item'];
 							$whole_item  = true;
 							$fallback_count++;
+							TCGiant_Sync_Category_Memory::note( $ebay_item );
 							if ( $sites_on && '' === $row_site ) {
 								TCGiant_Sync_Sites::remember_site( $item_id, TCGiant_Sync_Sites::site_of( $ebay_item ) );
 							}
@@ -2127,26 +2158,10 @@ class TCGiant_Sync_Importer {
 						}
 					}
 
-					$match = false;
-
 					// Nothing to judge by even after asking eBay — import it.
-					if ( '' === (string) $primary_cat && '' === (string) $store_cat1 && '' === (string) $store_cat2 ) {
-						$match = true;
-					}
-					
-					// Check against Standard Categories
-					if ( ! empty( $standard_cats ) ) {
-						if ( in_array( (string) $primary_cat, $standard_cats, true ) ) $match = true;
-					}
+					$match = '' === (string) $primary_cat && '' === (string) $store_cat1 && '' === (string) $store_cat2;
 
-					// Check against Custom Store Categories
-					if ( ! empty( $valid_custom_ids ) ) {
-						if ( in_array( (string) $primary_cat, $valid_custom_ids, true ) ) $match = true;
-						if ( in_array( (string) $store_cat1, $valid_custom_ids, true ) ) $match = true;
-						if ( in_array( (string) $store_cat2, $valid_custom_ids, true ) ) $match = true;
-					}
-
-					if ( ! $match ) {
+					if ( ! $match && ! self::category_filter_takes( $primary_cat, $store_cat1, $store_cat2, $standard_cats, $valid_custom_ids ) ) {
 						$skipped++;
 						continue;
 					}
@@ -2252,6 +2267,7 @@ class TCGiant_Sync_Importer {
 					$full_response = $api->get_item( $item_id );
 					if ( ! is_wp_error( $full_response ) && isset( $full_response['Item'] ) ) {
 						$ebay_item = $full_response['Item'];
+						TCGiant_Sync_Category_Memory::note( $ebay_item );
 						if ( $sites_on && '' === $row_site ) {
 							TCGiant_Sync_Sites::remember_site( $item_id, TCGiant_Sync_Sites::site_of( $ebay_item ) );
 						}
@@ -2406,13 +2422,14 @@ class TCGiant_Sync_Importer {
 		// Log summary. "Complete" only when the window is: it was said after
 		// every batch of forty, so a sync two weeks behind read as finished.
 		$filter_label = $skipped > 0 ? sprintf( ', %d skipped (category filter)', $skipped ) : '';
+		$remembered_label = $remembered_skips > 0 ? sprintf( ', %d skipped (category filter, remembered)', $remembered_skips ) : '';
 		$site_label = $other_site > 0 ? sprintf( ', %d left out (on other eBay sites)', $other_site ) : '';
 		$fallback_label = $fallback_count > 0 ? sprintf( ', %d GetItem fallbacks', $fallback_count ) : '';
 		TCGiant_Sync_Logger::log( sprintf(
 			$more || null !== $read_stop
-				? 'Delta batch done: %d imported, %d errors out of %d modified items%s%s%s.'
-				: 'Delta sync complete! %d imported, %d errors out of %d modified items%s%s%s.',
-			$processed, $errors, $handled, $filter_label, $site_label, $fallback_label
+				? 'Delta batch done: %d imported, %d errors out of %d modified items%s%s%s%s.'
+				: 'Delta sync complete! %d imported, %d errors out of %d modified items%s%s%s%s.',
+			$processed, $errors, $handled, $filter_label, $remembered_label, $site_label, $fallback_label
 		), 'success' );
 
 		// eBay could not be read. Keep the window and the place, stay running
@@ -3736,6 +3753,9 @@ class TCGiant_Sync_Importer {
 	 */
 	public function scan_all_pages( $scan = '' ) {
 		self::$scan_asked = is_string( $scan ) ? $scan : '';
+		// What the batch's pages carry of their listings' categories, written
+		// once, as it ends, rather than once a page (3.28.4).
+		TCGiant_Sync_Category_Memory::begin();
 		// A batch PHP kills leaves a line saying how, and on which page - and
 		// hands the scan on to the next.
 		TCGiant_Sync_Runtime::watch( self::SCAN_JOB, array( __CLASS__, 'on_scan_death' ) );
@@ -3748,6 +3768,7 @@ class TCGiant_Sync_Importer {
 		} finally {
 			TCGiant_Sync_Runtime::unguard_cache();
 			TCGiant_Sync_Runtime::unguard_loops();
+			TCGiant_Sync_Category_Memory::end();
 			TCGiant_Sync_Runtime::unwatch();
 			self::let_go_of_scan();
 		}
@@ -5239,6 +5260,12 @@ class TCGiant_Sync_Importer {
 			TCGiant_Sync_Logger::warning( 'Inventory Pruning: will not run after this full sync. Its list of live eBay listings could not be saved in full, and pruning against it would take live listings for gone.' );
 		}
 
+		// The categories remembered for listings this scan did not see - every
+		// page of it read, so they have ended or gone - are dropped.
+		if ( $clean ) {
+			TCGiant_Sync_Category_Memory::after_full_scan( (string) ( $state['full_started_at'] ?? '' ) );
+		}
+
 		$finished = null !== $key && '' !== (string) $key ? array( 'scan_finished' => (string) $key ) : array();
 
 		if ( $state['total_queued'] > 0 || $state['total_processed'] > 0 ) {
@@ -5338,7 +5365,14 @@ class TCGiant_Sync_Importer {
 		// it: the list is rewritten whole each time, and is large.
 		$ids_here = array_map( 'strval', array_keys( $by_id ) );
 		$known    = $in_scan ? self::scan_page_ids( $progress ) : array();
-		self::append_active_ids( array_values( array_diff( $ids_here, $known ) ) );
+		$new_here = array_values( array_diff( $ids_here, $known ) );
+		self::append_active_ids( $new_here );
+
+		// And their categories, matched by the filter or not, for the delta
+		// (TCGiant_Sync_Category_Memory): written as the batch ends, by
+		// scan_all_pages(). A page read again adds only what is new on it.
+		// Nothing while the shop does not filter.
+		TCGiant_Sync_Category_Memory::note_page( array_values( array_intersect_key( $by_id, array_flip( $new_here ) ) ) );
 
 		$order = $in_scan ? self::scan_page_order( $progress, $page_number, $ids_here ) : $ids_here;
 		$first = $in_scan ? min( (int) ( $progress['next'] ?? 0 ), count( $order ) ) : 0;
@@ -5500,26 +5534,14 @@ class TCGiant_Sync_Importer {
 			}
 
 			// Category pre-filter.
-			if ( $is_filtering ) {
-				$primary_cat = $item['PrimaryCategory']['CategoryID'] ?? '';
-				$store_cat1 = $item['Storefront']['StoreCategoryID'] ?? '';
-				$store_cat2 = $item['Storefront']['StoreCategory2ID'] ?? '';
-
-				$match = false;
-
-				if ( ! empty( $standard_cats ) ) {
-					if ( in_array( (string) $primary_cat, $standard_cats, true ) ) $match = true;
-				}
-
-				if ( ! empty( $valid_custom_ids ) ) {
-					if ( in_array( (string) $primary_cat, $valid_custom_ids, true ) ) $match = true;
-					if ( in_array( (string) $store_cat1, $valid_custom_ids, true ) ) $match = true;
-					if ( in_array( (string) $store_cat2, $valid_custom_ids, true ) ) $match = true;
-				}
-
-				if ( ! $match ) {
-					continue;
-				}
+			if ( $is_filtering && ! self::category_filter_takes(
+				$item['PrimaryCategory']['CategoryID'] ?? '',
+				$item['Storefront']['StoreCategoryID'] ?? '',
+				$item['Storefront']['StoreCategory2ID'] ?? '',
+				$standard_cats,
+				$valid_custom_ids
+			) ) {
+				continue;
 			}
 
 			// License check per item.
@@ -5678,6 +5700,28 @@ class TCGiant_Sync_Importer {
 	}
 
 
+
+	/**
+	 * Whether the category filter takes a listing with these categories.
+	 *
+	 * The one test, for the full sync, the delta, and the delta's reading of
+	 * TCGiant_Sync_Category_Memory, so the three can never judge a listing
+	 * differently. A standard category must be the primary category; a custom
+	 * one may be the primary category or either store category.
+	 *
+	 * @param mixed    $primary_cat      PrimaryCategory.CategoryID.
+	 * @param mixed    $store_cat1       Storefront.StoreCategoryID.
+	 * @param mixed    $store_cat2       Storefront.StoreCategory2ID.
+	 * @param string[] $standard_cats    "eBay Standard Categories to Import".
+	 * @param string[] $valid_custom_ids get_allowed_category_ids().
+	 * @return bool
+	 */
+	private static function category_filter_takes( $primary_cat, $store_cat1, $store_cat2, $standard_cats, $valid_custom_ids ) {
+		return in_array( (string) $primary_cat, $standard_cats, true )
+			|| in_array( (string) $primary_cat, $valid_custom_ids, true )
+			|| in_array( (string) $store_cat1, $valid_custom_ids, true )
+			|| in_array( (string) $store_cat2, $valid_custom_ids, true );
+	}
 
 	/**
 	 * Resolves User Category String Settings into eBay Category IDs.
@@ -5848,6 +5892,7 @@ class TCGiant_Sync_Importer {
 			}
 
 			$ebay_item = $detail['Item'];
+			TCGiant_Sync_Category_Memory::note( $ebay_item );
 		}
 
 		if ( empty( $ebay_item['RelistParentID'] ) ) {
@@ -5952,6 +5997,7 @@ class TCGiant_Sync_Importer {
 			if ( ! is_wp_error( $ended_detail ) && isset( $ended_detail['Item'] ) && is_array( $ended_detail['Item'] ) ) {
 				$used_get  = true;
 				$ebay_item = $ended_detail['Item'] + array( 'ItemID' => $item_id );
+				TCGiant_Sync_Category_Memory::note( $ebay_item );
 				$listed    = $ebay_item['Quantity'] ?? null;
 				$sold      = $ebay_item['SellingStatus']['QuantitySold'] ?? null;
 			} elseif ( is_wp_error( $ended_detail ) ) {
@@ -6795,6 +6841,7 @@ class TCGiant_Sync_Importer {
 			if ( is_wp_error( $detail ) || empty( $detail['Item'] ) || empty( $detail['Item']['RelistParentID'] ) ) {
 				if ( ! is_wp_error( $detail ) && ! empty( $detail['Item'] ) ) {
 					self::settle_check_answered( $item_id, $fresh, $asked );
+					TCGiant_Sync_Category_Memory::note( $detail['Item'] + array( 'ItemID' => $item_id ) );
 				}
 				return;
 			}
@@ -6868,6 +6915,7 @@ class TCGiant_Sync_Importer {
 
 		$item   = $detail['Item'];
 		$status = (string) ( $item['SellingStatus']['ListingStatus'] ?? '' );
+		TCGiant_Sync_Category_Memory::note( $item + array( 'ItemID' => $item_id ) );
 
 		// Its type, from this answer, for the listing it is about (3.28.0).
 		TCGiant_Sync_Inventory::note_listing_type( $existing_id, $item_id, $item['ListingType'] ?? '' );
@@ -7218,6 +7266,7 @@ class TCGiant_Sync_Importer {
 
 			$ebay_item = $ebay_response['Item'];
 			$title = $ebay_item['Title'] ?? 'Unknown';
+			TCGiant_Sync_Category_Memory::note( $ebay_item + array( 'ItemID' => $item_id ) );
 
 			// What eBay says now. An import queued by a scan runs minutes or
 			// hours later, and "Sync specific items" takes whatever it is given:

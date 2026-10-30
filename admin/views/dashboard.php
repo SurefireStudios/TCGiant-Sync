@@ -341,6 +341,9 @@ if ( empty( $settings['redirect_uri'] ) ) {
 						<span class="health-label"><?php echo esc_html( $metric['label'] ); ?></span>
 						<span class="status-badge <?php echo esc_attr( $metric['status'] ); ?>"><?php echo esc_html( $metric['text'] ); ?></span>
 					</div>
+					<?php if ( ! empty( $metric['detail'] ) ) : ?>
+						<p class="health-detail" style="margin:0;padding:0 0 10px;font-size:12px;color:#92400e;border-bottom:1px solid #f1f5f9;"><?php echo esc_html( $metric['detail'] ); ?></p>
+					<?php endif; ?>
 				<?php endforeach; ?>
 				<div class="health-item">
 					<span class="health-label"><?php esc_html_e( 'eBay Connection', 'tcgiant-sync' ); ?></span>

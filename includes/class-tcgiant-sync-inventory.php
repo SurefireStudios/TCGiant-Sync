@@ -6972,7 +6972,10 @@ class TCGiant_Sync_Inventory {
 	 * Not a pair whose older product's listing was a single item that sold,
 	 * by eBay's figures for it: the relist is then usually another copy of
 	 * the item, and both products are right (3.28.0's decision not to move
-	 * a product on to such a relist). Never a product with itself.
+	 * a product on to such a relist). Nor one whose older listing eBay showed
+	 * live after the newer one was listed (3.28.4, live_beside_relist()): a
+	 * "Sell similar" copy, which carries a RelistParentID while the listing it
+	 * was made from stays on sale. Never a product with itself.
 	 *
 	 * Asked for, not run on every Stock Review load, and bounded. The marks
 	 * are read newest first, RELIST_PAIRS_SCAN at a time by their meta_id -
@@ -7045,6 +7048,16 @@ class TCGiant_Sync_Inventory {
 						continue;
 					}
 
+					// Both listings live at once (3.28.4): eBay's "Sell
+					// similar" gives the new listing a RelistParentID and
+					// leaves the one it was made from on sale, so both are
+					// items of their own. On the live-test shop every pair
+					// found was that: two graded cards, two cert numbers. A
+					// real relist ends the listing it came from.
+					if ( self::live_beside_relist( (int) $other_id, (int) $row['product_id'] ) ) {
+						continue;
+					}
+
 					$pairs[] = array(
 						'product_id'  => (int) $row['product_id'],
 						'item_id'     => (string) $row['item_id'],
@@ -7102,6 +7115,47 @@ class TCGiant_Sync_Inventory {
 		}
 
 		return $holders;
+	}
+
+	/**
+	 * Whether eBay showed a pair's older listing live after the newer one was
+	 * listed - so both were live at once, which a relist never is.
+	 *
+	 * Not by the older product's _ebay_listing_status alone. That stays Active
+	 * until the plugin sees the listing end, and it can miss one: the hourly
+	 * check looks only at listings whose end time has passed, so not a
+	 * Good 'Til Cancelled listing ended early, and the delta skips an ended
+	 * listing's row outside the category filter. A real duplicate would be
+	 * hidden by a record that had fallen behind.
+	 *
+	 * So by when it was recorded: an import saves _sync_last_updated (the
+	 * site's local time) together with eBay's ListingStatus, whichever sync
+	 * read it - a full sync saves every listing its filter takes. Active, saved
+	 * at least an hour after the newer listing's own start (_ebay_start_time,
+	 * eBay's, in UTC), is eBay saying the older one was on sale after the newer
+	 * one began. The hour covers the hour a clock going back repeats. Anything
+	 * less - no start time, no save since, a status that has moved on - keeps
+	 * the pair listed.
+	 *
+	 * @param int $older_id  The product still on the older listing.
+	 * @param int $relist_id The product imported from the newer one.
+	 * @return bool
+	 */
+	private static function live_beside_relist( $older_id, $relist_id ) {
+		if ( 'Active' !== (string) get_post_meta( $older_id, '_ebay_listing_status', true ) ) {
+			return false;
+		}
+
+		$listed = strtotime( (string) get_post_meta( $relist_id, '_ebay_start_time', true ) );
+		$saved  = (string) get_post_meta( $older_id, '_sync_last_updated', true );
+
+		if ( false === $listed || $listed <= 0 || '' === $saved ) {
+			return false;
+		}
+
+		$saved = strtotime( ( function_exists( 'get_gmt_from_date' ) ? get_gmt_from_date( $saved ) : $saved ) . ' UTC' );
+
+		return false !== $saved && $saved >= $listed + HOUR_IN_SECONDS;
 	}
 
 	/**

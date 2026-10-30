@@ -3059,5 +3059,60 @@ check( '  and its push did not finish, saying so', meta( 745, '_ebay_export_stat
 check( '  naming the relist it is linked to, not the listing that had ended', array( false !== strpos( $said, 'It is linked to eBay listing ' . $relist_id . '.' ), false !== strpos( $said, $item ) ), array( true, false ) );
 check( '  and not saying it was making a new listing in place of one that had ended', false !== strpos( $said, 'which had ended, so this push was making a new one' ), false );
 
+echo "\nA PUSH OR A RELIST FORGETS WHAT THE DELTA REMEMBERED OF THE LISTING (3.28.4)\n" . str_repeat( '=', 126 ) . "\n";
+
+// Every push sends PrimaryCategory from the shop's own settings, which may move
+// the listing to another category. What TCGiant_Sync_Category_Memory held of
+// it must not stand in for a GetItem afterwards: the delta asks again.
+
+/** What the delta's memory holds for a listing: its line, as written. */
+function remembered_line( $item_id ) {
+	$raw = "\n" . (string) get_option( TCGiant_Sync_Category_Memory::option_name( TCGiant_Sync_Category_Memory::chunk_of( $item_id ) ), '' ) . "\n";
+	return false !== strpos( $raw, "\n" . $item_id . ',' );
+}
+/** Teach it a listing, as a full sync would. */
+function remember( $item_id ) {
+	$name = TCGiant_Sync_Category_Memory::option_name( TCGiant_Sync_Category_Memory::chunk_of( $item_id ) );
+	$old  = (string) get_option( $name, '' );
+	update_option( $name, ( '' === $old ? '' : $old . "\n" ) . $item_id . ',261328,222,0,' . time(), false );
+}
+
+// A revise of a live listing.
+$ebay = fresh_shop( $push_settings );
+$item = coin( 670, array( '_ebay_listing_status' => 'Active', '_ebay_end_time' => gmdate( 'Y-m-d\TH:i:s.000\Z', time() + 20 * DAY_IN_SECONDS ) ) );
+remember( $item );
+remember( '226100000999' );
+check( 'a push that revises a listing', push_from_queue( 670 ), 'pushed' );
+check( '  sent its PrimaryCategory', false !== strpos( (string) end( $ebay->sent ), '<PrimaryCategory><CategoryID>9355</CategoryID></PrimaryCategory>' ), true );
+check( '  and the listing is no longer remembered; another listing still is', array( remembered_line( $item ), remembered_line( '226100000999' ) ), array( false, true ) );
+
+// A push that finds its listing ended and makes a new one in its place.
+$ebay = fresh_shop( $push_settings );
+$item = coin( 671 );
+$ebay->items = array( $item => listing_says( $item, 'Completed', 3, 0 ) );
+$ebay->revises[ $item ] = new WP_Error( 'api_error', 'You are not allowed to revise ended listings.' );
+remember( $item );
+remember( '226100077777' );
+check( 'a push that lists anew for an ended listing', push_from_queue( 671 ), 'pushed' );
+check( '  neither the ended listing nor the new one is remembered', array( remembered_line( $item ), remembered_line( '226100077777' ) ), array( false, false ) );
+
+// A push refused: nothing is forgotten.
+$ebay = fresh_shop( $push_settings );
+$item = coin( 672, array( '_ebay_listing_status' => 'Active', '_ebay_end_time' => gmdate( 'Y-m-d\TH:i:s.000\Z', time() + 20 * DAY_IN_SECONDS ) ) );
+$ebay->revises[ $item ] = new WP_Error( 'api_error', 'Item.Title is too long.' );
+remember( $item );
+check( 'a push eBay refused', 'pushed' !== push_from_queue( 672 ), true );
+check( '  leaves the listing remembered', remembered_line( $item ), true );
+
+// Relist, from the Listings screen or Auto-Relist.
+$ebay          = fresh_shop( $push_settings );
+$item          = coin( 673 );
+$ebay->item    = listing_says( $item, 'Completed', 3, 0 );
+$ebay->relists = relisted_as( '226100009673' );
+remember( $item );
+remember( '226100009673' );
+check( 'a relist', outcome( relist( 673 ) ), 'relisted' );
+check( '  forgets the old listing and the new number alike', array( remembered_line( $item ), remembered_line( '226100009673' ) ), array( false, false ) );
+
 printf( "\n  %d passed, %d failed\n\n", $pass, $fail );
 exit( $fail > 0 ? 1 : 0 );

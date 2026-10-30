@@ -27,6 +27,9 @@
  * It is required directly from tcgiant-sync.php, before the autoloader exists,
  * so it uses nothing that is not already loaded when plugins are.
  *
+ * It also says whether the PHP the site runs on comes before the fix for
+ * PHP2Shell (php2shell(), 3.28.4), for the dashboard's health panel.
+ *
  * @package TCGiant_Sync
  * @license GPL-2.0-or-later
  */
@@ -797,5 +800,155 @@ final class TCGiant_Sync_Environment {
 			|| str_repeat( "\0", 16 ) === $bin             // ::, unspecified
 			|| 0xfc === ( $first & 0xfe )                  // fc00::/7, unique local
 			|| ( 0xfe === $first && 0x80 === ( $second & 0xc0 ) ); // fe80::/10, link-local
+	}
+
+	/**
+	 * PHP2Shell (CVE-2026-109618, CVE-2026-109619), a flaw in PHP itself,
+	 * not in this plugin: the first release of each PHP branch with the fix
+	 * (3.28.4). PHP 8.1 and older have no official fix. The dashboard's health
+	 * panel says so when the PHP the site runs on comes before it.
+	 */
+	const PHP2SHELL_FIXED = array(
+		'8.2' => '8.2.35',
+		'8.3' => '8.3.36',
+		'8.4' => '8.4.27',
+		'8.5' => '8.5.12',
+		'8.6' => '8.6.0RC4',
+	);
+
+	/**
+	 * The PHP version php2shell() judges when given none: PHP_VERSION, unless
+	 * a test sets this.
+	 *
+	 * @var string|null
+	 */
+	public static $php_version = null;
+
+	/**
+	 * Whether a PHP version comes before the fix for PHP2Shell.
+	 *
+	 * By the version alone: a host may add the fix to an older release without
+	 * changing its number, so this can only say "may be affected". A
+	 * distribution's suffix ("8.3.36-1+ubuntu24.04.1") is that release; a
+	 * pre-release (dev, alpha, beta, RC) comes before it. A branch after the
+	 * table (8.7, 9) is taken as fixed, and a version that cannot be read is
+	 * said nothing about.
+	 *
+	 * @param string|null $version A PHP version; this site's when omitted.
+	 * @return string 'unsupported' for 8.1 and older, 'unfixed' for a release
+	 *                of a later branch before its fix, '' otherwise.
+	 */
+	public static function php2shell( $version = null ) {
+		$have = self::php_release( self::php_version( $version ) );
+
+		if ( null === $have ) {
+			return '';
+		}
+
+		if ( $have[0] < 8 || ( 8 === $have[0] && $have[1] < 2 ) ) {
+			return 'unsupported';
+		}
+
+		$branch = $have[0] . '.' . $have[1];
+		if ( ! isset( self::PHP2SHELL_FIXED[ $branch ] ) ) {
+			return '';
+		}
+
+		$fixed = self::php_release( self::PHP2SHELL_FIXED[ $branch ] );
+
+		// The release, then how far along its way to release a build is.
+		foreach ( array( 2, 3, 4 ) as $part ) {
+			if ( $have[ $part ] !== $fixed[ $part ] ) {
+				return $have[ $part ] < $fixed[ $part ] ? 'unfixed' : '';
+			}
+		}
+
+		return '';
+	}
+
+	/**
+	 * The dashboard's health line for PHP2Shell, or null when there is none to
+	 * show. Nothing is stored, and nothing is asked of anyone.
+	 *
+	 * @param string|null $version A PHP version; this site's when omitted.
+	 * @return array|null label, status, text and detail, as get_system_health() rows.
+	 */
+	public static function php2shell_row( $version = null ) {
+		$version = self::php_version( $version );
+		$verdict = self::php2shell( $version );
+
+		if ( '' === $verdict ) {
+			return null;
+		}
+
+		$fixed = self::PHP2SHELL_FIXED;
+
+		if ( 'unsupported' === $verdict ) {
+			$have   = self::php_release( $version );
+			$detail = sprintf(
+				/* translators: 1: the site's PHP version, 2: its branch, e.g. 8.1, 3-6: the first fixed release of PHP 8.2, 8.3, 8.4 and 8.5 */
+				__( 'PHP %1$s may be affected by PHP2Shell (CVE-2026-109618, CVE-2026-109619), a security flaw in PHP itself. PHP no longer updates %2$s, so only your host can have added the fix: ask your host whether it has. PHP %3$s, %4$s, %5$s and %6$s have the fix.', 'tcgiant-sync' ),
+				$version,
+				$have[0] . '.' . $have[1],
+				$fixed['8.2'],
+				$fixed['8.3'],
+				$fixed['8.4'],
+				$fixed['8.5']
+			);
+		} else {
+			$detail = sprintf(
+				/* translators: 1: the site's PHP version, 2-5: the first fixed release of PHP 8.2, 8.3, 8.4 and 8.5 */
+				__( 'PHP %1$s may be affected by PHP2Shell (CVE-2026-109618, CVE-2026-109619), a security flaw in PHP itself. Ask your host whether it has the fix: PHP %2$s, %3$s, %4$s and %5$s do. Some hosts add the fix without changing the version number.', 'tcgiant-sync' ),
+				$version,
+				$fixed['8.2'],
+				$fixed['8.3'],
+				$fixed['8.4'],
+				$fixed['8.5']
+			);
+		}
+
+		return array(
+			'label'  => __( 'PHP security', 'tcgiant-sync' ),
+			'status' => 'warning',
+			'text'   => __( 'Check with your host', 'tcgiant-sync' ),
+			'detail' => $detail,
+		);
+	}
+
+	/**
+	 * The version to judge: the one given, else this site's.
+	 *
+	 * @param string|null $version A PHP version, or null.
+	 * @return string
+	 */
+	private static function php_version( $version ) {
+		if ( null !== $version ) {
+			return (string) $version;
+		}
+
+		return null !== self::$php_version ? (string) self::$php_version : PHP_VERSION;
+	}
+
+	/**
+	 * A PHP version, read: major, minor, release, then where the build is on
+	 * its way to that release - 0 dev, 1 alpha, 2 beta, 3 RC, 4 the release
+	 * itself or a distribution's build of it - and the pre-release's number.
+	 *
+	 * @param string $version e.g. 8.3.20, 8.6.0RC3, 8.1.2-1ubuntu2.14.
+	 * @return int[]|null Null when it is not a version.
+	 */
+	private static function php_release( $version ) {
+		if ( 1 !== preg_match( '/^(\d+)\.(\d+)\.(\d+)(.*)$/s', trim( (string) $version ), $m ) ) {
+			return null;
+		}
+
+		$stage = 4;
+		$count = 0;
+		if ( 1 === preg_match( '/^[-.]?(dev|alpha|beta|RC)(\d*)/i', $m[4], $pre ) ) {
+			$stage = (int) array_search( strtolower( $pre[1] ), array( 'dev', 'alpha', 'beta', 'rc' ), true );
+			$count = (int) $pre[2];
+		}
+
+		return array( (int) $m[1], (int) $m[2], (int) $m[3], $stage, $count );
 	}
 }

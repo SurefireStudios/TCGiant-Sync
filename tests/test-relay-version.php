@@ -160,8 +160,9 @@ list( $url, $args ) = $GLOBALS['posts'][0];
 $ping = json_decode( (string) $args['body'], true );
 check( 'the ping goes as before', array( count( $GLOBALS['posts'] ), $url, $args['headers']['Content-Type'] ?? null ), array( 1, 'https://tcgiant.com/syncconnect/telemetry.php', 'application/json' ) );
 check( '  carrying version: this version', $ping['version'] ?? null, TCGIANT_SYNC_VERSION );
-// 3.28.0's stock_push (item 17) sits between them.
-check( '  and nothing else new: 3.27.7\'s fields, 3.28.0\'s stock_push, then version', array_keys( (array) $ping ), array( 'site_url', 'synced_total', 'pushed_total', 'pulled_total', 'license_type', 'stock_push', 'version' ) );
+check( '  and php_version: the PHP it runs on (3.28.4)', $ping['php_version'] ?? null, PHP_VERSION );
+// 3.28.0's stock_push (item 17) sits between them; 3.28.4's php_version last.
+check( '  and nothing else new: 3.27.7\'s fields, 3.28.0\'s stock_push, version, then php_version', array_keys( (array) $ping ), array( 'site_url', 'synced_total', 'pushed_total', 'pulled_total', 'license_type', 'stock_push', 'version', 'php_version' ) );
 check( '  signed over the body exactly as sent, the version inside it', hash_hmac( 'sha256', $args['body'] . $args['headers']['X-TCGiant-Timestamp'], 'per-site-key' ), $args['headers']['X-TCGiant-Signature'] );
 
 printf( "\n  %d passed, %d failed\n\n", $pass, $fail );

@@ -179,6 +179,8 @@ echo "\n";
 run( array( 'delete_data_on_uninstall' => '0' ), false );
 check( 'answered No: settings kept', $DELETED, array() );
 check( 'answered No: table kept', dropped_table(), false );
+// The delta's memory of the listings' categories (3.28.4) is kept with them.
+check( 'answered No: the remembered categories kept', count( array_filter( $QUERIES, function ( $q ) { return false !== strpos( $q, 'tcgiant_sync_category_memory_' ); } ) ), 0 );
 
 echo "\n";
 
@@ -311,6 +313,11 @@ check( 'answered Yes: every option item D added is deleted', array( count( $tcg_
 // And each stock check's join, a row per listing (fix round 2).
 preg_match( "/const SETTLE_JOINED_PREFIX = '(tcgiant_[a-z_]+)'/", file_get_contents( __DIR__ . '/../includes/class-tcgiant-sync-importer.php' ), $tcg_join );
 check( '  and the stock checks\' joins, by their prefix', count( array_filter( $QUERIES, function ( $q ) use ( $tcg_join ) { return false !== strpos( $q, "option_name LIKE '" . ( $tcg_join[1] ?? 'none' ) . "%'" ); } ) ), 1 );
+
+// The delta's memory of the listings' categories (3.28.4): CHUNKS options
+// under one prefix, read from the class.
+preg_match( "/const OPTION_PREFIX = '(tcgiant_[a-z_]+)'/", file_get_contents( __DIR__ . '/../includes/class-tcgiant-sync-category-memory.php' ), $tcg_catmem );
+check( 'answered Yes: the remembered categories are deleted, by their prefix', count( array_filter( $QUERIES, function ( $q ) use ( $tcg_catmem ) { return false !== strpos( $q, "option_name LIKE '" . ( $tcg_catmem[1] ?? 'none' ) . "%'" ); } ) ), 1 );
 
 // Listing templates (3.27.8): their two options and the bulk-push cap's two,
 // read from their classes; the template and block posts with their meta;

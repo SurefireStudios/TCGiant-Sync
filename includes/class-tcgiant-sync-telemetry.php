@@ -98,6 +98,9 @@ class TCGiant_Sync_Telemetry {
 			// Which version this shop runs. In the body, so the signature
 			// below covers it.
 			'version'      => TCGIANT_SYNC_VERSION,
+			// The PHP it runs on (3.28.4): how many shops may still be on a
+			// PHP before the fix for PHP2Shell. The version only.
+			'php_version'  => PHP_VERSION,
 		) );
 
 		$headers = array( 'Content-Type' => 'application/json' );

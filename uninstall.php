@@ -251,8 +251,8 @@ foreach ( $tcgiant_options as $tcgiant_option ) {
 // Per-job item lists, cached eBay business policies, the leftover-photo
 // check's findings and its holds, the large-copy removal's holds, the
 // day's eBay call counts (3.28.0's, and the transients 3.27 kept them in),
-// and when each stock check waiting to try again was last joined (3.28.0)
-// use dynamic names.
+// when each stock check waiting to try again was last joined (3.28.0), and
+// the listings' categories the delta remembers (3.28.4) use dynamic names.
 // phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 $wpdb->query(
 	"DELETE FROM {$wpdb->options}
@@ -263,6 +263,7 @@ $wpdb->query(
 	    OR option_name LIKE 'tcgiant_sync_size_trim_lock_%'
 	    OR option_name LIKE 'tcgiant_sync_api_calls_%'
 	    OR option_name LIKE 'tcgiant_sync_settle_joined_%'
+	    OR option_name LIKE 'tcgiant_sync_category_memory_%'
 	    OR option_name LIKE '_transient_tcgiant_api_calls_%'
 	    OR option_name LIKE '_transient_timeout_tcgiant_api_calls_%'"
 );

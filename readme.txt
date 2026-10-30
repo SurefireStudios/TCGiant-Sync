@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.28.3
+Stable tag: 3.28.4
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -139,6 +139,14 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.28.4 - 2026-10-30 =
+* FIX: A shop that imports only some categories ("eBay Standard Categories to Import", or its store categories) no longer spends an eBay call on most changed listings just to learn their category. eBay's list of changes leaves the category out, so the sync asked eBay about each changed listing and then mostly skipped it: on one shop, about 440 calls a day for about 2 imports. TCGiant Sync now remembers each listing's categories from the weekly full sync and from the eBay answers it already gets, and skips a changed listing outside your categories without asking. A listing in your categories, or one it has not learnt about in the last 8 days, is asked about as before.
+* A listing you move into one of your categories on eBay is imported at the next full sync, within about a week, or straight away with Fetch Inventory. A listing you push from TCGiant Sync, which sends its category, is asked about again at its next change. Changing which categories you import needs nothing else: the next sync goes by the new ones.
+* The sync log's summary counts the listings skipped this way as "skipped (category filter, remembered)".
+* FIX: Stock Review's "Look for products that may be the same item twice" listed listings made with eBay's "Sell similar". eBay marks the new listing as relisted from the one it was made from, but while that one is still live they are two items of their own. A pair is now left out once TCGiant Sync has read the older listing from eBay as live after the newer one was listed, as the weekly full sync does for every listing in your categories. A real relist ends the listing it came from, so possible duplicates are still listed, and so is any pair TCGiant Sync cannot be sure of.
+* NEW: The dashboard's System Health warns when your site's PHP version may be affected by PHP2Shell (CVE-2026-109618, CVE-2026-109619), a security flaw in PHP itself, not in TCGiant Sync. PHP 8.2.35, 8.3.36, 8.4.27 and 8.5.12 have the fix, and PHP 8.1 and older get no fix from PHP. Some hosts add the fix without changing the version number, so ask your host. The check is made on your site, and nothing is stored.
+* On Pro, the usage report now includes your site's PHP version.
 
 = 3.28.3 - 2026-10-30 =
 **The Listings screen's Sold view**
