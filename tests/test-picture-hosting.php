@@ -49,6 +49,10 @@ class TCGiant_Sync_Runtime {
 }
 class TCGiant_Sync_Inventory {
 	const SETTLE_KEYS = array();
+	// eBay's reason for an end, read from the answer in hand (3.28.5): its
+	// rules are test-sold-view.php's, Auto-Relist's use test-relist-guard.php's.
+	public static function note_ebay_end( $product_id, array $item ) {}
+	public static function ended_by_shop( $product_id, $item_id ) { return false; }
 	public static function restocked_after_website_sale( $product_id ) { return 0; }
 	// Settled once eBay's sales of the listing the product follows were taken
 	// in, as the real class records it (_ebay_stock_settled_item): 3.28.0's
@@ -176,6 +180,7 @@ $GLOBALS['ITEMS'] = array();
 
 /** The item Verify and the preview's Check with eBay build: its photos, the uploads made, the warnings. */
 function built( WC_Product $product ) {
+	$GLOBALS['FOR']          = 'Verify';
 	$GLOBALS['API']->uploads = array();
 	$from                    = count( $GLOBALS['W']['log'] );
 	$xml                     = item_xml( $product, push_settings( $product ) );
@@ -185,6 +190,7 @@ function built( WC_Product $product ) {
 
 /** A push (do_push()): each eBay call with its photos, the uploads made, the warnings, the result. */
 function pushed( WC_Product $product ) {
+	$GLOBALS['FOR']          = 'Push';
 	$GLOBALS['API']->calls   = array();
 	$GLOBALS['API']->uploads = array();
 	$from                    = count( $GLOBALS['W']['log'] );
@@ -207,9 +213,16 @@ function sent( $n ) {
 	return (string) ( $GLOBALS['API']->calls[ $n ][1] ?? '' );
 }
 
+/**
+ * Whose words the warnings below are in: the last build's, Verify's for
+ * built() and a push's for pushed() (3.28.5: Verify and Check with eBay
+ * list nothing, so they say "Verify:").
+ */
+function for_words() { return $GLOBALS['FOR'] ?? 'Push'; }
+
 /** The one warning a push gives, word for word. */
 function mixed_warning( $photo, $product, $reason ) {
-	return sprintf( 'Push: photo #%d of WC #%d could not be put on eBay (%s), so this listing\'s photos are all sent from your website. eBay does not accept a mix.', $photo, $product, $reason );
+	return for_words() . sprintf( ': photo #%d of WC #%d could not be put on eBay (%s), so this listing\'s photos are all sent from your website. eBay does not accept a mix.', $photo, $product, $reason );
 }
 
 function hosting( $on ) { update_option( 'tcgiant_sync_ebay_settings', array( 'host_images_on_ebay' => $on ? '1' : '0' ) ); }
@@ -235,7 +248,7 @@ function kept_on_ebay( $id ) {
 /** The warning for photos left out of a listing whose other photos are on eBay, word for word. */
 function left_out_warning( $product, array $why ) {
 	if ( 1 === count( $why ) ) {
-		return sprintf( 'Push: photo #%d of WC #%d was left out of the listing: it could not be put on eBay (%s), and the listing\'s other photos are on eBay, which does not accept a mix.', key( $why ), $product, current( $why ) );
+		return for_words() . sprintf( ': photo #%d of WC #%d was left out of the listing: it could not be put on eBay (%s), and the listing\'s other photos are on eBay, which does not accept a mix.', key( $why ), $product, current( $why ) );
 	}
 	$names  = array();
 	$detail = array();
@@ -243,7 +256,7 @@ function left_out_warning( $product, array $why ) {
 		$names[]  = '#' . $id;
 		$detail[] = '#' . $id . ': ' . $reason;
 	}
-	return sprintf( 'Push: photos %s of WC #%d were left out of the listing: they could not be put on eBay (%s), and the listing\'s other photos are on eBay, which does not accept a mix.', implode( ', ', $names ), $product, implode( '; ', $detail ) );
+	return for_words() . sprintf( ': photos %s of WC #%d were left out of the listing: they could not be put on eBay (%s), and the listing\'s other photos are on eBay, which does not accept a mix.', implode( ', ', $names ), $product, implode( '; ', $detail ) );
 }
 
 /**
@@ -257,7 +270,7 @@ function unchanged_warning( $product, array $why, $then = null ) {
 		$then = 1 === count( $why ) ? 'It goes on the listing with the next push that can upload it.' : 'They go on the listing with the next push that can upload them.';
 	}
 	if ( 1 === count( $why ) ) {
-		return sprintf( 'Push: photo #%d of WC #%d could not be put on eBay (%s), so the listing\'s photos were not changed this time: its other photos are on eBay, which does not accept a mix. %s', key( $why ), $product, current( $why ), $then );
+		return for_words() . sprintf( ': photo #%d of WC #%d could not be put on eBay (%s), so the listing\'s photos were not changed this time: its other photos are on eBay, which does not accept a mix. %s', key( $why ), $product, current( $why ), $then );
 	}
 	$names  = array();
 	$detail = array();
@@ -265,23 +278,31 @@ function unchanged_warning( $product, array $why, $then = null ) {
 		$names[]  = '#' . $id;
 		$detail[] = '#' . $id . ': ' . $reason;
 	}
-	return sprintf( 'Push: photos %s of WC #%d could not be put on eBay (%s), so the listing\'s photos were not changed this time: its other photos are on eBay, which does not accept a mix. %s', implode( ', ', $names ), $product, implode( '; ', $detail ), $then );
+	return for_words() . sprintf( ': photos %s of WC #%d could not be put on eBay (%s), so the listing\'s photos were not changed this time: its other photos are on eBay, which does not accept a mix. %s', implode( ', ', $names ), $product, implode( '; ', $detail ), $then );
 }
 
 /** The warning for a product with more photos than a listing is sent, word for word. */
 function past_cap_warning( $product, $n ) {
 	if ( 1 === $n ) {
-		return sprintf( 'Push: WC #%d has more photos than the 24 eBay takes in one listing, so the one after the first 24 was not sent.', $product );
+		return for_words() . sprintf( ': WC #%d has more photos than the 24 eBay takes in one listing, so the one after the first 24 was not sent.', $product );
 	}
-	return sprintf( 'Push: WC #%d has more photos than the 24 eBay takes in one listing, so the %d after the first 24 were not sent.', $product, $n );
+	return for_words() . sprintf( ': WC #%d has more photos than the 24 eBay takes in one listing, so the %d after the first 24 were not sent.', $product, $n );
 }
 
 /** The warning for photo addresses too long together for eBay, word for word. */
 function too_long_warning( $product, $n, $sent ) {
 	if ( 1 === $n ) {
-		return sprintf( 'Push: the photo addresses of WC #%d are too long together for eBay, which takes about 4,000 characters of them in one listing, so the one after the first %d was not sent.', $product, $sent );
+		return for_words() . sprintf( ': the photo addresses of WC #%d are too long together for eBay, which takes about 4,000 characters of them in one listing, so the one after the first %d was not sent.', $product, $sent );
 	}
-	return sprintf( 'Push: the photo addresses of WC #%d are too long together for eBay, which takes about 4,000 characters of them in one listing, so the %d after the first %d were not sent.', $product, $n, $sent );
+	return for_words() . sprintf( ': the photo addresses of WC #%d are too long together for eBay, which takes about 4,000 characters of them in one listing, so the %d after the first %d were not sent.', $product, $n, $sent );
+}
+
+/** The warning for photos with nothing to send (3.28.5), word for word. */
+function no_address_warning( $product, array $ids ) {
+	if ( 1 === count( $ids ) ) {
+		return sprintf( '%s: photo #%d of WC #%d was left out of the listing: it has no address on your website and no copy on eBay. If it was deleted, take it off the product.', for_words(), $ids[0], $product );
+	}
+	return sprintf( '%s: photos #%s of WC #%d were left out of the listing: they have no address on your website and no copy on eBay. If they were deleted, take them off the product.', for_words(), implode( ', #', $ids ), $product );
 }
 
 /** The photos' addresses on the website as they are now set, in order. */
@@ -362,7 +383,7 @@ check( '  the refusal played is the real upload_picture()\'s', false !== strpos(
 $stale = photographed( 507, array( 71, 72, 73 ) );
 unset( $GLOBALS['W']['images'][72], $GLOBALS['W']['files'][72] );
 list( $pics, $uploads, $warned ) = built( $stale );
-check( 'a gallery photo since deleted (no file, no address): left out, the rest still eBay copies, as before', array( $pics, $warned ), array( epss( array( 71, 73 ) ), array() ) );
+check( 'a gallery photo since deleted (no file, no address): left out, the rest still eBay copies, one warning naming it (3.28.5)', array( $pics, $warned ), array( epss( array( 71, 73 ) ), array( no_address_warning( 507, array( 72 ) ) ) ) );
 $no_address = photographed( 508, array( 75, 76, 77 ) );
 unset( $GLOBALS['W']['images'][76] );
 $API->refuse['coin-76.jpg'] = new WP_Error( 'upload_failed', 'Not an image.' );
@@ -372,8 +393,37 @@ check( 'a photo with no website address whose upload fails: left out, as before;
 check( '  and 3.27.7\'s line says so, as information, naming the photo', infos_from( $from ), array( 'eBay picture upload failed for attachment #76 (Not an image). It has no address on this site either, so it is left out of the listing.' ) );
 $from = count( $GLOBALS['W']['log'] );
 built( $stale );
-check( '  one since deleted, whose upload was never tried, says nothing', infos_from( $from ), array() );
+check( '  one since deleted, whose upload was never tried, has no such line: its warning says it', infos_from( $from ), array() );
 unset( $API->refuse['coin-76.jpg'] );
+
+// More of them (3.28.5): the warning names each, once a push, in its own words.
+$gone = photographed( 520, array( 1891, 1892, 1893, 1894 ) );
+unset( $GLOBALS['W']['images'][1892], $GLOBALS['W']['files'][1892], $GLOBALS['W']['images'][1894], $GLOBALS['W']['files'][1894] );
+list( $calls, $uploads, $warned ) = pushed( $gone );
+check( 'two photos since deleted, pushed: the other two sent, one warning naming both and the product', array( $calls, $warned ), array( array( array( 'AddFixedPriceItem', epss( array( 1891, 1893 ) ) ) ), array( no_address_warning( 520, array( 1892, 1894 ) ) ) ) );
+live( 520 );
+list( $calls, $uploads, $warned ) = pushed( $gone );
+check( '  revised: the live listing sent the two, which takes the others off it, and said so once', array( $calls, $warned ), array( array( array( 'ReviseFixedPriceItem', epss( array( 1891, 1893 ) ) ) ), array( no_address_warning( 520, array( 1892, 1894 ) ) ) ) );
+delete_post_meta( 520, '_ebay_item_id' );
+hosting( false );
+list( $calls, $uploads, $warned ) = pushed( $gone );
+check( '  the setting off, from the website: the same warning', array( $calls, $warned ), array( array( array( 'AddFixedPriceItem', sites( array( 1891, 1893 ) ) ) ), array( no_address_warning( 520, array( 1892, 1894 ) ) ) ) );
+list( , , $warned ) = built( $gone );
+check( '  Verify says it in its own words', $warned, array( no_address_warning( 520, array( 1892, 1894 ) ) ) );
+check( '    which are Verify\'s', 0 === strpos( (string) ( $warned[0] ?? '' ), 'Verify: photos #1892, #1894 of WC #520' ), true );
+hosting( true );
+$tcg_gone_off = photographed( 521, array( 1895, 1896 ) );
+unlink( $GLOBALS['W']['files'][1895] );
+unset( $GLOBALS['W']['images'][1896], $GLOBALS['W']['files'][1896] );
+list( $calls, $uploads, $warned ) = pushed( $tcg_gone_off );
+check( '  one offloaded (sent from the website, said) and one deleted: the mix warning, then this one', array( $calls, $warned ), array( array( array( 'AddFixedPriceItem', sites( array( 1895 ) ) ) ), array( mixed_warning( 1895, 521, 'its file is not on this server' ), no_address_warning( 521, array( 1896 ) ) ) ) );
+
+hosting( false );
+$past = photographed( 522, range( 1901, 1926 ) );
+unset( $GLOBALS['W']['images'][1925], $GLOBALS['W']['files'][1925] );
+list( , , $warned ) = built( $past );
+check( '  one with no address past the 24th: not said, as it would not have been sent anyway; the one past the limit is', $warned, array( past_cap_warning( 522, 1 ) ) );
+hosting( true );
 
 $many = photographed( 509, range( 3101, 3130 ) );
 list( $pics, $uploads, $warned ) = built( $many );

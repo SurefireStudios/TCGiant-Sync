@@ -1794,9 +1794,13 @@ class TCGiant_Sync_API {
 	 *
 	 * Listings normally reference PictureURL values pointing back at the
 	 * WooCommerce site, which requires eBay's fetcher to reach it. That fails
-	 * on password-protected sites, behind Cloudflare bot protection, on
-	 * staging, and breaks retroactively whenever the domain changes. Hosting
-	 * the picture on eBay removes that dependency entirely.
+	 * on password-protected sites and behind Cloudflare bot protection, and
+	 * breaks retroactively whenever the domain changes. Hosting the picture
+	 * on eBay removes that dependency entirely.
+	 *
+	 * Never asked for from a staging copy, which puts nothing on eBay: the
+	 * exporter decides the photo there without it (TCGiant_Sync_Exporter::
+	 * eps_picture_url()), and a call that came here would be refused below.
 	 *
 	 * @param string $file_path Absolute path to a local image file.
 	 * @param string $name      Picture name shown in Seller Hub.

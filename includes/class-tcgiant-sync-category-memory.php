@@ -62,6 +62,14 @@
  * Written only while the shop filters by category. A shop that does not has
  * no use for it, and a full sync that finds the filter off deletes it.
  *
+ * And which coin parent each coin category sits under (3.28.5,
+ * coin_parent()). The coin categories the plugin's list offers are parents on
+ * eBay, under which eBay files no listing, so a ticked one matched nothing.
+ * eBay's path for a listing's category says its parent, and the full sync's
+ * pages and GetItem carry it; what they teach is kept as one small option,
+ * category ID => parent, so a listing remembered here by its category ID is
+ * still decided without a GetItem.
+ *
  * @package TCGiant_Sync
  * @license GPL-2.0-or-later
  * @since   3.28.4
@@ -117,11 +125,28 @@ class TCGiant_Sync_Category_Memory {
 	const PENDING_MAX = 2000;
 
 	/**
+	 * The option the coin categories are kept in (3.28.5): category ID =>
+	 * the coin parent it sits under (TCGiant_Sync_Catalog::
+	 * COIN_PARENT_CATEGORIES). Under OPTION_PREFIX, as the rest.
+	 */
+	const COIN_LEAVES_OPTION = 'tcgiant_sync_category_memory_coin_leaves';
+
+	/** Most coin categories kept: past it, the ones learnt first go. */
+	const COIN_LEAVES_MAX = 2000;
+
+	/**
 	 * Now, in Unix seconds. Overridable for tests.
 	 *
 	 * @var callable|null
 	 */
 	public static $clock = null;
+
+	/**
+	 * Coin categories learnt and not yet written: category ID => parent.
+	 *
+	 * @var array
+	 */
+	private static $pending_leaves = array();
 
 	/**
 	 * Listings learnt and not yet written: ItemID => array( categories, force ).
@@ -320,6 +345,36 @@ class TCGiant_Sync_Category_Memory {
 	}
 
 	/**
+	 * The coin parent a listing's category sits under (3.28.5), for the
+	 * import filter: from eBay's path for it, when the answer in hand has
+	 * one, or else from what an earlier answer taught. '' when neither says.
+	 *
+	 * @param mixed $category_id PrimaryCategory.CategoryID.
+	 * @param mixed $path        PrimaryCategory.CategoryName, eBay's path.
+	 * @return string The parent's ID.
+	 */
+	public static function coin_parent( $category_id, $path = '' ) {
+		$category_id = is_scalar( $category_id ) ? (string) $category_id : '';
+		if ( ! self::valid_id( $category_id ) ) {
+			return '';
+		}
+
+		// eBay's full path under Coins & Paper Money only: a name that is not
+		// one leaves it to what was learnt.
+		if ( is_string( $path ) && 0 === stripos( $path, 'Coins & Paper Money:' ) ) {
+			return TCGiant_Sync_Catalog::coin_parent_in_path( $path );
+		}
+
+		if ( isset( self::$pending_leaves[ $category_id ] ) ) {
+			return (string) self::$pending_leaves[ $category_id ];
+		}
+
+		$leaves = get_option( self::COIN_LEAVES_OPTION, array() );
+
+		return is_array( $leaves ) && isset( $leaves[ $category_id ] ) ? (string) $leaves[ $category_id ] : '';
+	}
+
+	/**
 	 * Write what was learnt.
 	 *
 	 * One option at a time: read, merge, tidy, written only if it changed.
@@ -327,6 +382,10 @@ class TCGiant_Sync_Category_Memory {
 	 * @return void
 	 */
 	public static function flush() {
+		if ( ! empty( self::$pending_leaves ) ) {
+			self::write_coin_leaves();
+		}
+
 		if ( empty( self::$pending ) ) {
 			return;
 		}
@@ -427,11 +486,13 @@ class TCGiant_Sync_Category_Memory {
 	 * @return void
 	 */
 	public static function forget_all() {
-		self::$pending = array();
+		self::$pending        = array();
+		self::$pending_leaves = array();
 
 		for ( $chunk = 0; $chunk < self::CHUNKS; $chunk++ ) {
 			delete_option( self::option_name( $chunk ) );
 		}
+		delete_option( self::COIN_LEAVES_OPTION );
 	}
 
 	/**
@@ -462,6 +523,14 @@ class TCGiant_Sync_Category_Memory {
 	 * @return void
 	 */
 	private static function add( array $item, $force ) {
+		// The coin parent its category sits under, when eBay's path says one
+		// the memory does not hold yet.
+		$category = $item['PrimaryCategory']['CategoryID'] ?? '';
+		$parent   = self::coin_parent( $category, $item['PrimaryCategory']['CategoryName'] ?? '' );
+		if ( '' !== $parent && $parent !== self::coin_parent( $category ) ) {
+			self::$pending_leaves[ (string) $category ] = $parent;
+		}
+
 		$item_id    = isset( $item['ItemID'] ) && is_scalar( $item['ItemID'] ) ? (string) $item['ItemID'] : '';
 		$categories = self::categories_of( $item );
 
@@ -620,6 +689,29 @@ class TCGiant_Sync_Category_Memory {
 		}
 
 		return count( $cats ) !== $before;
+	}
+
+	/**
+	 * Write the coin categories learnt, onto the option as the database
+	 * holds it now, keeping the last COIN_LEAVES_MAX learnt.
+	 *
+	 * @return void
+	 */
+	private static function write_coin_leaves() {
+		self::drop_cached( self::COIN_LEAVES_OPTION );
+		$leaves = get_option( self::COIN_LEAVES_OPTION, array() );
+		$leaves = is_array( $leaves ) ? $leaves : array();
+
+		foreach ( self::$pending_leaves as $category => $parent ) {
+			$leaves[ $category ] = $parent;
+		}
+		self::$pending_leaves = array();
+
+		if ( count( $leaves ) > self::COIN_LEAVES_MAX ) {
+			$leaves = array_slice( $leaves, -self::COIN_LEAVES_MAX, null, true );
+		}
+
+		update_option( self::COIN_LEAVES_OPTION, $leaves, false );
 	}
 
 	/**

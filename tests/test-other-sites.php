@@ -1756,7 +1756,7 @@ check( '  and a real copy is offered and moved, as before', array( $started['dat
 echo "\nA PUSH THAT FINDS ITS LISTING ENDED NEVER RELISTS ANOTHER SITE'S COPY ON THE SHOP'S OWN (FAILS ON THE FIRST 3.27.5 BUILD)\n" . str_repeat( '=', 142 ) . "\n";
 
 define( 'TCGIANT_SYNC_VERSION', '3.27.5' );
-require $ROOT . '/includes/class-tcgiant-sync-catalog.php';
+require_once $ROOT . '/includes/class-tcgiant-sync-catalog.php';
 require $ROOT . '/includes/class-tcgiant-sync-exporter.php';
 
 // process_single_push(), do_push(), the ended-listing check and relist as
@@ -1777,7 +1777,7 @@ eval( $src ); // phpcs:ignore Squiz.PHP.Eval.Discouraged
 
 class Push_Probe extends Push_Harness_Exporter {
 	public function get_export_settings( $product_id ) { return array( 'listing_type' => 'FixedPriceItem', 'listing_duration' => 'GTC' ); }
-	public function validate_export_settings( array $settings ) { return true; }
+	public function validate_export_settings( array $settings, $new_listing = true ) { return true; }
 	public function find_missing_required_aspects( WC_Product $product, array $settings ) { return array(); }
 }
 $PROBE = ( new ReflectionClass( 'Push_Probe' ) )->newInstanceWithoutConstructor();

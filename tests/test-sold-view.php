@@ -262,6 +262,67 @@ sold_product( 124, array( '_ebay_item_id' => '9124', '_ebay_listing_status' => '
 TCGiant_Sync_Inventory::apply_ended_listing_stock( 124, 0, 0 );
 check( 'a listing of nothing is not a sell-out', get_post_meta( 124, '_ebay_end_reason', true ), '' );
 
+// eBay's own reason, from the answer the settle has (3.28.5): an end made in
+// Seller Hub, which nothing here recorded.
+function ended_in_hub( $id, $why, array $meta = array(), $listed = 3, $sold = 1, $answer_id = null ) {
+	sold_product( $id, $meta + array( '_ebay_item_id' => '9' . $id, '_ebay_listing_status' => 'Ended', '_manage_stock' => 'yes', '_stock' => 2, '_stock_status' => 'instock' ) );
+	$answer = array( 'ItemID' => null === $answer_id ? '9' . $id : $answer_id, 'Quantity' => (string) $listed, 'SellingStatus' => array( 'QuantitySold' => (string) $sold ) );
+	if ( null !== $why ) {
+		$answer['ListingDetails'] = array( 'EndingReason' => $why );
+	}
+	TCGiant_Sync_Inventory::apply_ended_listing_stock( $id, $listed, $sold, $answer );
+	return array( get_post_meta( $id, '_ebay_end_reason', true ), get_post_meta( $id, '_ebay_end_reason_item', true ) );
+}
+$tcg_hub = array();
+foreach ( array( 'NotAvailable', 'Incorrect', 'LostOrBroken', 'OtherListingError', 'ProductDeleted' ) as $i => $tcg_why ) {
+	$tcg_hub[ $tcg_why ] = ended_in_hub( 1330 + $i, $tcg_why );
+}
+check( 'ended in Seller Hub for each reason a seller gives: ended by the shop, for that listing', $tcg_hub, array( 'NotAvailable' => array( 'by_shop', '91330' ), 'Incorrect' => array( 'by_shop', '91331' ), 'LostOrBroken' => array( 'by_shop', '91332' ), 'OtherListingError' => array( 'by_shop', '91333' ), 'ProductDeleted' => array( 'by_shop', '91334' ) ) );
+check( '  and the Ended view says so', array( view_of( 1330 ), note_of( 1330 ) ), array( 'Ended', 'Ended by you - 1 of 3 sold on eBay' ) );
+check( 'Sold, and SellToHighBidder, every unit sold: a sale', array( ended_in_hub( 1140, 'Sold', array(), 3, 3 ), ended_in_hub( 1141, 'SellToHighBidder', array(), 1, 1 ) ), array( array( 'sold_out', '91140' ), array( 'sold_out', '91141' ) ) );
+check( '  Sold with some left: the seller\'s own end (ruling 5)', ended_in_hub( 1152, 'Sold', array(), 3, 1 ), array( 'by_shop', '91152' ) );
+// Ruling 4: the shop's own end only when it held stock as the settle found it.
+check( 'NotAvailable, the shop holding none (an end the plugin made at 0 before 3.28.0 reads so): nothing recorded', ended_in_hub( 1153, 'NotAvailable', array( '_stock' => 0, '_stock_status' => 'outofstock' ) ), array( '', '' ) );
+check( '  Sold with some left, the shop holding none: nothing', ended_in_hub( 1154, 'Sold', array( '_stock' => 0, '_stock_status' => 'outofstock' ), 3, 1 ), array( '', '' ) );
+check( '  stock not managed, in stock: the shop\'s end; out of stock: nothing', array( ended_in_hub( 1156, 'NotAvailable', array( '_manage_stock' => 'no', '_stock' => '', '_stock_status' => 'instock' ) ), ended_in_hub( 1157, 'NotAvailable', array( '_manage_stock' => 'no', '_stock' => '', '_stock_status' => 'outofstock' ) ) ), array( array( 'by_shop', '91156' ), array( '', '' ) ) );
+check( 'CustomCode, an unknown reason, none at all: nothing recorded', array( ended_in_hub( 1142, 'CustomCode' ), ended_in_hub( 1143, 'SomethingNew' ), ended_in_hub( 1144, null ), ended_in_hub( 1145, array( 'not' => 'text' ) ) ), array( array( '', '' ), array( '', '' ), array( '', '' ), array( '', '' ) ) );
+check( 'the plugin ended it at 0 (eBay says NotAvailable for that too): its own reason stands', ended_in_hub( 1146, 'NotAvailable', array( '_ebay_end_reason' => 'stock_zero', '_ebay_end_reason_item' => '91146' ) ), array( 'stock_zero', '91146' ) );
+check( '  so does the shop\'s End from here', ended_in_hub( 1147, 'Sold', array( '_ebay_end_reason' => 'by_shop', '_ebay_end_reason_item' => '91147' ) ), array( 'by_shop', '91147' ) );
+check( '  a reason an earlier listing left does not', ended_in_hub( 1148, 'NotAvailable', array( '_ebay_end_reason' => 'stock_zero', '_ebay_end_reason_item' => '91048' ) ), array( 'by_shop', '91148' ) );
+check( 'every unit sold, then NotAvailable: eBay\'s figures say sold out, and that stands', ended_in_hub( 1149, 'NotAvailable', array(), 1, 1 ), array( 'sold_out', '91149' ) );
+check( 'an answer for another listing than the product holds: nothing recorded', ended_in_hub( 1150, 'NotAvailable', array(), 3, 1, '9999' ), array( '', '' ) );
+check( 'an answer that does not say which listing it is: nothing recorded', ended_in_hub( 1151, 'NotAvailable', array(), 3, 1, '' ), array( '', '' ) );
+// The settle keeps whether the shop held stock as it found it, for a reason read
+// later from another answer (the review's M1): Auto-Relist's own GetItem.
+check( 'the settle records whether the shop held any as it found it', array( get_post_meta( 1330, '_ebay_settled_with_stock', true ), get_post_meta( 1153, '_ebay_settled_with_stock', true ) ), array( '1', '0' ) );
+check( '  spent with the rest when a new listing starts', in_array( '_ebay_settled_with_stock', TCGiant_Sync_Inventory::SETTLE_KEYS, true ), true );
+function read_later( $id, $why, array $meta, $listed = 3, $sold = 0 ) {
+	sold_product( $id, $meta + array( '_ebay_item_id' => '9' . $id, '_ebay_listing_status' => 'Ended', '_manage_stock' => 'yes', '_stock' => 2, '_stock_status' => 'instock' ) );
+	TCGiant_Sync_Inventory::note_ebay_end( $id, array( 'ItemID' => '9' . $id, 'Quantity' => (string) $listed, 'SellingStatus' => array( 'QuantitySold' => (string) $sold ), 'ListingDetails' => array( 'EndingReason' => $why ) ) );
+	return array( get_post_meta( $id, '_ebay_end_reason', true ), TCGiant_Sync_Inventory::ended_by_shop( $id, '9' . $id ) );
+}
+check( 'read later, settled with stock: by_shop', read_later( 1160, 'NotAvailable', array( '_ebay_stock_settled_item' => '91160', '_ebay_settled_with_stock' => '1' ) ), array( 'by_shop', true ) );
+check( '  settled with none, stocked now (the plugin\'s end at 0, restocked): nothing', read_later( 1161, 'NotAvailable', array( '_ebay_stock_settled_item' => '91161', '_ebay_settled_with_stock' => '0' ) ), array( '', false ) );
+check( '  settled by a version that did not say: nothing', read_later( 1162, 'NotAvailable', array( '_ebay_stock_settled_item' => '91162' ) ), array( '', false ) );
+check( '  not settled: the stock now, held - by_shop; none - nothing', array( read_later( 1163, 'NotAvailable', array() ), read_later( 1164, 'NotAvailable', array( '_stock' => 0, '_stock_status' => 'outofstock' ) ) ), array( array( 'by_shop', true ), array( '', false ) ) );
+check( '  Sold with units left: by_shop; every unit sold: sold_out, whatever the reason', array( read_later( 1165, 'Sold', array( '_ebay_stock_settled_item' => '91165', '_ebay_settled_with_stock' => '1' ), 3, 1 ), read_later( 1166, 'NotAvailable', array( '_ebay_stock_settled_item' => '91166', '_ebay_settled_with_stock' => '1' ), 2, 2 ) ), array( array( 'by_shop', true ), array( 'sold_out', false ) ) );
+check( '  the plugin\'s own reason stands', read_later( 1167, 'NotAvailable', array( '_ebay_stock_settled_item' => '91167', '_ebay_settled_with_stock' => '1', '_ebay_end_reason' => 'stock_zero', '_ebay_end_reason_item' => '91167' ) ), array( 'stock_zero', false ) );
+check( '  a listing\'s by_shop is not another listing\'s', array( TCGiant_Sync_Inventory::ended_by_shop( 1160, '91160' ), TCGiant_Sync_Inventory::ended_by_shop( 1160, '91000' ), TCGiant_Sync_Inventory::ended_by_shop( 1160, '' ) ), array( true, false, false ) );
+check( 'no answer passed (the caller had none): nothing recorded, as before', array( TCGiant_Sync_Inventory::apply_ended_listing_stock( 121, 5, 2 ) !== null, get_post_meta( 121, '_ebay_end_reason', true ) ), array( true, '' ) );
+$tcg_src = array(
+	'cron'     => (string) file_get_contents( $ROOT . '/includes/class-tcgiant-sync-cron.php' ),
+	'exporter' => (string) file_get_contents( $ROOT . '/includes/class-tcgiant-sync-exporter.php' ),
+	'importer' => (string) file_get_contents( $ROOT . '/includes/class-tcgiant-sync-importer.php' ),
+	'jobs'     => (string) file_get_contents( $ROOT . '/includes/class-tcgiant-sync-jobs.php' ),
+);
+check( 'every settle hands it the answer it has: the hourly checks (2), the relist check, the delta, Stock Review', array(
+	substr_count( $tcg_src['cron'], "? \$expired['Item']['SellingStatus']['QuantitySold'] : null,\n\t\t\t\t\t\t\t\t\$expired['Item']\n" ) + substr_count( $tcg_src['cron'], "? \$item['SellingStatus']['QuantitySold'] : null,\n\t\t\t\t\t\$item\n" ),
+	substr_count( $tcg_src['exporter'], 'apply_ended_listing_stock( $product_id, $listed, $sold, $item )' ),
+	substr_count( $tcg_src['importer'], 'apply_ended_listing_stock( (int) $existing_id, $listed, $sold, $ebay_item )' ),
+	substr_count( $tcg_src['jobs'], "? \$detail['Item']['SellingStatus']['QuantitySold'] : null,\n\t\t\t\t\t\t\$detail['Item']\n" ),
+), array( 2, 1, 1, 1 ) );
+check( '  and the delta\'s rows keep the reason when eBay sends one', false !== strpos( $tcg_src['importer'], "foreach ( array( 'StartTime', 'EndTime', 'EndingReason' ) as \$key )" ), true );
+
 // A new listing: the reason goes with the rest of the settle.
 TCGiant_Sync_Inventory::clear_settled_mark( 120 );
 check( 'live again: the reason is spent', array( get_post_meta( 120, '_ebay_end_reason', true ), get_post_meta( 120, '_ebay_end_reason_item', true ), get_post_meta( 120, '_ebay_quantity_sold', true ) ), array( '', '', '' ) );

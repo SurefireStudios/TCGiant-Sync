@@ -1418,6 +1418,22 @@ class TCGiant_Sync_Exporter {
 	}
 
 	/**
+	 * Whether a push of a product makes a new listing, as far as the product
+	 * knows (3.28.5): it has no listing, or the one it has is over
+	 * (linked_listing_ended()). Otherwise it revises the live one. The push,
+	 * its button and Bulk Verify validate by this
+	 * (validate_export_settings()'s $new_listing), as the eBay tab's
+	 * readiness line judges; a push that then finds its listing ended checks
+	 * the new listing again before making it.
+	 *
+	 * @param int $product_id The product.
+	 * @return bool
+	 */
+	public static function pushes_new_listing( $product_id ) {
+		return empty( get_post_meta( (int) $product_id, '_ebay_item_id', true ) ) || self::linked_listing_ended( $product_id );
+	}
+
+	/**
 	 * Whether the listing a product is linked to is over, as far as the
 	 * product knows: a sync marked it ended, or it runs a fixed number of days
 	 * and its end time has passed (end_time_says_ended()). The
@@ -1516,8 +1532,9 @@ class TCGiant_Sync_Exporter {
 
 		$settings = $this->get_export_settings( $product->get_id() );
 
-		// Validate required settings before hitting the API.
-		$validation = $this->validate_export_settings( $settings );
+		// Validate required settings before hitting the API: as a new
+		// listing's when there is no live listing to revise (3.28.5).
+		$validation = $this->validate_export_settings( $settings, self::pushes_new_listing( $product->get_id() ) );
 		if ( is_wp_error( $validation ) ) {
 			return $validation;
 		}
@@ -1719,6 +1736,13 @@ class TCGiant_Sync_Exporter {
 				if ( $check ) {
 					$product  = wc_get_product( $product->get_id() );
 					$item_xml = $this->build_item_xml( $product, $settings );
+
+					// Every item built is measured before it can be sent
+					// (3.28.5), as the first was.
+					$too_long = $this->description_too_long();
+					if ( is_wp_error( $too_long ) ) {
+						return $too_long;
+					}
 				}
 			}
 
@@ -1770,6 +1794,11 @@ class TCGiant_Sync_Exporter {
 				// are (3.27.8), as for the listing the push began with.
 				$item_xml = $this->build_item_xml( $product, $relist_live ? $kept_settings : $settings, $relist_live );
 
+				$too_long = $this->description_too_long();
+				if ( is_wp_error( $too_long ) ) {
+					return $too_long;
+				}
+
 				if ( $relist_live ) {
 					$full_xml = '<Item>' . "\n" . '<ItemID>' . esc_attr( $ebay_item_id ) . '</ItemID>' . "\n" . $item_xml . "\n" . '</Item>';
 					$response = $fixed_price
@@ -1820,6 +1849,21 @@ class TCGiant_Sync_Exporter {
 			}
 			$ended_on = $listed_on;
 
+			// The new listing in its place is held to what any new listing is
+			// (3.28.5), before it is built: the revise was not.
+			$validation = $this->validate_export_settings( $settings );
+			if ( is_wp_error( $validation ) ) {
+				TCGiant_Sync_Sites::record_site( $product->get_id(), $ended_on );
+				// And that it has ended, as eBay has just said: the next push
+				// is refused before it is revised, and the eBay tab says why.
+				update_post_meta( $product->get_id(), '_ebay_listing_status', 'Ended' );
+				$ended_at = TCGiant_Sync_API::scalar_value( $ended_item['ListingDetails']['EndTime'] ?? '' );
+				if ( '' !== $ended_at ) {
+					update_post_meta( $product->get_id(), '_ebay_end_time', $ended_at );
+				}
+				return $validation;
+			}
+
 			// The stock may have come down to what is really left, and the item
 			// was built from the figure before that. And an item built for the
 			// revise without its photos is built again with them: a new listing
@@ -1833,7 +1877,7 @@ class TCGiant_Sync_Exporter {
 				}
 				$item_xml = $this->build_item_xml( $product, $settings );
 				if ( $held ) {
-					TCGiant_Sync_Logger::warning( self::left_out_warning( $product->get_id(), $held ) );
+					TCGiant_Sync_Logger::warning( self::left_out_warning( $product->get_id(), $held, $this->build_for ) );
 					$this->say_pictures_not_sent( $product->get_id() );
 				}
 
@@ -2031,6 +2075,15 @@ class TCGiant_Sync_Exporter {
 	private function ended_listing_check( WC_Product $product, $ebay_item_id, $item = null, &$answer = null ) {
 		$product_id = $product->get_id();
 
+		// Why eBay says it ended, from the answer in hand, before anything
+		// returns (3.28.5): a listing ended in Seller Hub is known so when
+		// its settle had no reason to read - eBay's list of changes need not
+		// carry one - and a listing settled already, or that sold nothing,
+		// has no settle here.
+		if ( is_array( $item ) ) {
+			TCGiant_Sync_Inventory::note_ebay_end( $product_id, $item );
+		}
+
 		$order_id = TCGiant_Sync_Inventory::restocked_after_website_sale( $product_id );
 		if ( $order_id ) {
 			return new WP_Error( 'relist_refused', sprintf(
@@ -2067,6 +2120,7 @@ class TCGiant_Sync_Exporter {
 				) );
 			}
 			$item = $detail['Item'];
+			TCGiant_Sync_Inventory::note_ebay_end( $product_id, $item );
 		}
 
 		$answer = $item;
@@ -2103,7 +2157,7 @@ class TCGiant_Sync_Exporter {
 			}
 		}
 
-		$settled = $whole_done ? $before : TCGiant_Sync_Inventory::apply_ended_listing_stock( $product_id, $listed, $sold );
+		$settled = $whole_done ? $before : TCGiant_Sync_Inventory::apply_ended_listing_stock( $product_id, $listed, $sold, $item );
 
 		// Never list on a figure that could not be checked: eBay gave no
 		// numbers, or the stock write did not take.
@@ -2481,6 +2535,13 @@ class TCGiant_Sync_Exporter {
 		}
 		if ( $check ) {
 			$product = wc_get_product( $product_id );
+		}
+
+		// Ended by the seller - in Seller Hub, as eBay's answer just said, or
+		// with End Listing here: Auto-Relist leaves it (3.28.5). A relist the
+		// shop asks for goes.
+		if ( 'Auto-Relist' === $source && TCGiant_Sync_Inventory::ended_by_shop( $product_id, $ebay_item_id ) ) {
+			return new WP_Error( 'relist_refused', __( 'the seller ended it on eBay', 'tcgiant-sync' ), array( 'ended_by_shop' => (string) $ebay_item_id ) );
 		}
 
 		// The site, from eBay's answer, every time: it covers a product with no
@@ -3312,10 +3373,16 @@ class TCGiant_Sync_Exporter {
 	/**
 	 * Validate that the minimum required settings for a push are present.
 	 *
-	 * @param array $settings Export settings array.
+	 * @param array $settings    Export settings array.
+	 * @param bool  $new_listing Whether a new listing is made (3.28.5): an
+	 *                           add, a new listing in place of an ended one,
+	 *                           Verify, Check with eBay, Bulk Verify. Only then
+	 *                           are a coin parent and card details outside
+	 *                           their categories refused; a revise of a live
+	 *                           listing sends them as until 3.28.5.
 	 * @return true|WP_Error True on success, WP_Error describing what's missing.
 	 */
-	public function validate_export_settings( array $settings ) {
+	public function validate_export_settings( array $settings, $new_listing = true ) {
 		$missing = array();
 
 		// Check for category-item_type mismatch (set in get_export_settings).
@@ -3325,6 +3392,20 @@ class TCGiant_Sync_Exporter {
 			} elseif ( 'tcg_in_coins' === $settings['_category_mismatch'] ) {
 				$missing[] = __( 'eBay Category — this is a Trading Cards item but the eBay category is set to Coins. Set a TCG leaf category on this product using Browse eBay Categories in the TCGiant Sync tab', 'tcgiant-sync' );
 			}
+		}
+
+		// A coin parent, which eBay refuses as a listing's category, and card
+		// details where eBay does not take them (3.28.5): refused here for a
+		// new listing, as the product's eBay tab says it is not ready.
+		$coin_parent   = $new_listing ? TCGiant_Sync_Catalog::coin_parent_problem( $settings['category_id'] ?? '' ) : '';
+		$card_category = $new_listing ? self::card_category_problem( $settings ) : '';
+		if ( '' !== $coin_parent ) {
+			/* translators: %s: why */
+			$missing[] = sprintf( __( 'eBay Category — %s', 'tcgiant-sync' ), $coin_parent );
+		}
+		if ( '' !== $card_category ) {
+			/* translators: %s: why */
+			$missing[] = sprintf( __( 'eBay Category — %s', 'tcgiant-sync' ), $card_category );
 		}
 
 		if ( empty( $settings['category_id'] ) ) {
@@ -4220,6 +4301,7 @@ class TCGiant_Sync_Exporter {
 	public static function retired_category_warning( $product_id, array $retired, $for = 'Push' ) {
 		$from = (string) ( $retired['from'] ?? '' );
 		$to   = (string) ( $retired['to'] ?? '' );
+		$note = TCGiant_Sync_Catalog::retired_category_note( $from );
 
 		return sprintf(
 			'Verify' === $for
@@ -4231,7 +4313,7 @@ class TCGiant_Sync_Exporter {
 			$to,
 			TCGiant_Sync_Catalog::CARD_CATEGORY_NAMES[ $to ] ?? $to,
 			'product' === ( $retired['source'] ?? '' ) ? 'the product\'s eBay tab' : 'Settings, Push to eBay (the default eBay category)'
-		);
+		) . ( '' !== $note ? ' ' . $note : '' );
 	}
 
 	/**
@@ -4362,6 +4444,29 @@ class TCGiant_Sync_Exporter {
 		return self::is_descriptor_category( $category_id, $item_type )
 			&& ! empty( $settings['condition_type'] )
 			&& ! self::is_coins_category( $category_id, $item_type, $settings['category_name'] ?? '' );
+	}
+
+	/**
+	 * Why these settings' trading-card details cannot go where they would
+	 * (3.28.5): a trading card in a category other than the three eBay
+	 * takes them in, for a shop on a site whose single-card categories are
+	 * those three (TCGiant_Sync_Catalog::CARD_LEAF_SITES: eBay US, UK,
+	 * Australia, Canada). '' when they can, or on another site. A new
+	 * listing and Verify refuse it in these words, before any call, and the
+	 * product's eBay tab says it is not ready; a revise of a live listing,
+	 * and any push on another site, sends the item without them, said
+	 * (card_category_warning()), as until 3.28.5.
+	 *
+	 * @param array $settings Merged export settings.
+	 * @return string
+	 */
+	public static function card_category_problem( array $settings ) {
+		if ( ! self::takes_card_descriptors( $settings ) || in_array( (string) ( $settings['category_id'] ?? '' ), self::DESCRIPTOR_CATEGORIES_TCG, true )
+			|| ! TCGiant_Sync_Catalog::card_leaves_verified() ) {
+			return '';
+		}
+
+		return __( 'eBay takes card grading and condition details only in 183454 CCG Individual Cards, 183050 Non-Sport Trading Card Singles and 261328 Sports Trading Card Singles: choose one of them with Browse eBay Categories, or set Item Type to All Other', 'tcgiant-sync' );
 	}
 
 	/**
@@ -4551,9 +4656,10 @@ class TCGiant_Sync_Exporter {
 					} elseif ( empty( $this->grade_said[ (int) $product_id ] ) ) {
 						$this->grade_said[ (int) $product_id ] = true;
 						TCGiant_Sync_Logger::warning( sprintf(
-							'Push: the grade "%2$s" of WC #%1$d is not one eBay takes for a graded trading card, so it was not sent and eBay will ask for it. Choose the grade again in the product\'s eBay Listing tab.',
+							'%3$s: the grade "%2$s" of WC #%1$d is not one eBay takes for a graded trading card, so it was not sent and eBay will ask for it. Choose the grade again in the product\'s eBay Listing tab.',
 							(int) $product_id,
-							$settings['grade_value']
+							$settings['grade_value'],
+							'Verify' === $this->build_for ? 'Verify' : 'Push'
 						) );
 					}
 				}
@@ -5210,14 +5316,15 @@ class TCGiant_Sync_Exporter {
 	 * 'urls', the addresses it sends; 'left_out', the photos left out of them
 	 * because the listing's others are on eBay (attachment ID => why);
 	 * 'past_cap', how many of the product's photos are not sent for want of
-	 * room; and 'too_long', whether that room ran out by the addresses'
-	 * length together (MAX_PICTURE_CHARS) rather than by their number.
+	 * room; 'too_long', whether that room ran out by the addresses'
+	 * length together (MAX_PICTURE_CHARS) rather than by their number; and
+	 * 'no_address', the photos left out with nothing to send (3.28.5).
 	 *
 	 * A relist builds its item twice in one push, and the second build sends
 	 * what the first decided: nothing is uploaded again, or said again.
 	 * Cleared at the start of every push, and of every build for Verify.
 	 *
-	 * @var array<int,array{urls:string[],left_out:array<int,string>,past_cap:int,too_long:bool}>
+	 * @var array<int,array{urls:string[],left_out:array<int,string>,past_cap:int,too_long:bool,no_address:int[]}>
 	 */
 	private $pictures_for = array();
 
@@ -5364,9 +5471,10 @@ class TCGiant_Sync_Exporter {
 			return $this->pictures_for[ $product_id ]['urls'];
 		}
 
-		$left_out = array();
-		$past_cap = 0;
-		$urls     = $this->decide_product_image_urls( $product, $left_out, $past_cap );
+		$left_out   = array();
+		$past_cap   = 0;
+		$no_address = array();
+		$urls       = $this->decide_product_image_urls( $product, $left_out, $past_cap, $no_address );
 
 		// The addresses' length together, as sent: the list stops before the
 		// first that would take it past MAX_PICTURE_CHARS, and the rest are not
@@ -5383,11 +5491,11 @@ class TCGiant_Sync_Exporter {
 			}
 		}
 
-		$this->pictures_for[ $product_id ] = array( 'urls' => $urls, 'left_out' => $left_out, 'past_cap' => $past_cap, 'too_long' => $too_long );
+		$this->pictures_for[ $product_id ] = array( 'urls' => $urls, 'left_out' => $left_out, 'past_cap' => $past_cap, 'too_long' => $too_long, 'no_address' => $no_address );
 
 		if ( ! $revise || ! $left_out ) {
 			if ( $left_out ) {
-				TCGiant_Sync_Logger::warning( self::left_out_warning( $product_id, $left_out ) );
+				TCGiant_Sync_Logger::warning( self::left_out_warning( $product_id, $left_out, $this->build_for ) );
 			}
 			$this->say_pictures_not_sent( $product_id );
 		}
@@ -5398,14 +5506,50 @@ class TCGiant_Sync_Exporter {
 	/**
 	 * Logs the warning for the photos this push's decision had no room for,
 	 * when it had any: past MAX_IMAGES, or past MAX_PICTURE_CHARS together.
+	 * And the one for those it had nothing to send for (3.28.5): no address
+	 * on the website and no copy on eBay, which a revise takes off the live
+	 * listing.
 	 *
 	 * @param int $product_id Product.
 	 */
 	private function say_pictures_not_sent( $product_id ) {
 		$decided = $this->pictures_for[ (int) $product_id ] ?? null;
 		if ( $decided && $decided['past_cap'] > 0 ) {
-			TCGiant_Sync_Logger::warning( self::past_cap_warning( (int) $product_id, $decided['past_cap'], count( $decided['urls'] ), $decided['too_long'] ) );
+			TCGiant_Sync_Logger::warning( self::past_cap_warning( (int) $product_id, $decided['past_cap'], count( $decided['urls'] ), $decided['too_long'], $this->build_for ) );
 		}
+		if ( $decided && ! empty( $decided['no_address'] ) ) {
+			TCGiant_Sync_Logger::warning( self::no_address_warning( (int) $product_id, $decided['no_address'], $this->build_for ) );
+		}
+	}
+
+	/**
+	 * The one warning a push gives for the photos it left out because there
+	 * was nothing to send: no address on the website - an attachment since
+	 * deleted, say - and no copy on eBay.
+	 *
+	 * @param int    $product_id Product.
+	 * @param int[]  $ids        Attachment IDs.
+	 * @param string $for        'Push' or 'Verify'.
+	 * @return string
+	 */
+	private static function no_address_warning( $product_id, array $ids, $for = 'Push' ) {
+		$for = 'Verify' === $for ? 'Verify' : 'Push';
+
+		if ( 1 === count( $ids ) ) {
+			return sprintf(
+				'%3$s: photo #%1$d of WC #%2$d was left out of the listing: it has no address on your website and no copy on eBay. If it was deleted, take it off the product.',
+				reset( $ids ),
+				$product_id,
+				$for
+			);
+		}
+
+		return sprintf(
+			'%3$s: photos %1$s of WC #%2$d were left out of the listing: they have no address on your website and no copy on eBay. If they were deleted, take them off the product.',
+			'#' . implode( ', #', array_map( 'intval', $ids ) ),
+			$product_id,
+			$for
+		);
 	}
 
 	/**
@@ -5416,9 +5560,12 @@ class TCGiant_Sync_Exporter {
 	 *                                    listing's others are on eBay, ID => why.
 	 * @param int               $past_cap Set to how many photos come after the
 	 *                                    first MAX_IMAGES, not sent.
+	 * @param int[]             $no_address Set to the photos within them left
+	 *                                    out with nothing to send: no address
+	 *                                    on the website, no copy on eBay.
 	 * @return string[]
 	 */
-	private function decide_product_image_urls( WC_Product $product, &$left_out, &$past_cap ) {
+	private function decide_product_image_urls( WC_Product $product, &$left_out, &$past_cap, &$no_address = array() ) {
 		$ids = array();
 
 		// Featured image, then the gallery.
@@ -5432,7 +5579,8 @@ class TCGiant_Sync_Exporter {
 
 		// Each photo's own address, as 3.27.7 sent them with the setting off.
 		$site_past = 0;
-		$site      = $this->site_picture_urls( $ids, $site_past );
+		$site_none = array();
+		$site      = $this->site_picture_urls( $ids, $site_past, $site_none );
 
 		$on_ebay = false;
 		foreach ( $site as $url ) {
@@ -5444,7 +5592,8 @@ class TCGiant_Sync_Exporter {
 
 		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
 		if ( ! $on_ebay && empty( $settings['host_images_on_ebay'] ) ) {
-			$past_cap = $site_past;
+			$past_cap   = $site_past;
+			$no_address = $site_none;
 			return $site;
 		}
 
@@ -5477,7 +5626,8 @@ class TCGiant_Sync_Exporter {
 			// No copy on eBay and no address on the website either - an
 			// attachment since deleted, say: there is nothing to send, so it is
 			// left out, as it always was. When eBay refused its upload, the log
-			// says so, as 3.27.7's did.
+			// says so, as 3.27.7's did; when there was no file to upload, one
+			// warning a push names them all (3.28.5).
 			if ( '' === $own ) {
 				if ( self::PICTURE_NOT_HERE !== $reason ) {
 					TCGiant_Sync_Logger::log( sprintf(
@@ -5485,6 +5635,8 @@ class TCGiant_Sync_Exporter {
 						$id,
 						$reason
 					) );
+				} else {
+					$no_address[] = $id;
 				}
 				continue;
 			}
@@ -5497,13 +5649,15 @@ class TCGiant_Sync_Exporter {
 			}
 
 			TCGiant_Sync_Logger::warning( sprintf(
-				'Push: photo #%d of WC #%d could not be put on eBay (%s), so this listing\'s photos are all sent from your website. eBay does not accept a mix.',
+				'%4$s: photo #%1$d of WC #%2$d could not be put on eBay (%3$s), so this listing\'s photos are all sent from your website. eBay does not accept a mix.',
 				$id,
 				$product_id,
-				$reason
+				$reason,
+				'Verify' === $this->build_for ? 'Verify' : 'Push'
 			) );
 
-			$past_cap = $site_past;
+			$past_cap   = $site_past;
+			$no_address = $site_none;
 			return $site;
 		}
 
@@ -5517,41 +5671,50 @@ class TCGiant_Sync_Exporter {
 	 * @param int  $product_id Product.
 	 * @param int  $not_sent   How many were not sent.
 	 * @param int  $sent       How many were.
-	 * @param bool $too_long   Whether the addresses' length together, rather
-	 *                         than their number, left no room.
+	 * @param bool   $too_long   Whether the addresses' length together, rather
+	 *                           than their number, left no room.
+	 * @param string $for        'Push' or 'Verify'.
 	 * @return string
 	 */
-	private static function past_cap_warning( $product_id, $not_sent, $sent, $too_long ) {
+	private static function past_cap_warning( $product_id, $not_sent, $sent, $too_long, $for = 'Push' ) {
+		$for = 'Verify' === $for ? 'Verify' : 'Push';
+
 		if ( $too_long ) {
 			if ( 1 === (int) $not_sent ) {
 				return sprintf(
-					'Push: the photo addresses of WC #%1$d are too long together for eBay, which takes about 4,000 characters of them in one listing, so the one after the first %2$d was not sent.',
+					'%4$s: the photo addresses of WC #%1$d are too long together for eBay, which takes about 4,000 characters of them in one listing, so the one after the first %2$d was not sent.',
 					$product_id,
-					$sent
+					$sent,
+					$not_sent,
+					$for
 				);
 			}
 
 			return sprintf(
-				'Push: the photo addresses of WC #%1$d are too long together for eBay, which takes about 4,000 characters of them in one listing, so the %3$d after the first %2$d were not sent.',
+				'%4$s: the photo addresses of WC #%1$d are too long together for eBay, which takes about 4,000 characters of them in one listing, so the %3$d after the first %2$d were not sent.',
 				$product_id,
 				$sent,
-				$not_sent
+				$not_sent,
+				$for
 			);
 		}
 
 		if ( 1 === (int) $not_sent ) {
 			return sprintf(
-				'Push: WC #%1$d has more photos than the %2$d eBay takes in one listing, so the one after the first %2$d was not sent.',
+				'%4$s: WC #%1$d has more photos than the %2$d eBay takes in one listing, so the one after the first %2$d was not sent.',
 				$product_id,
-				self::MAX_IMAGES
+				self::MAX_IMAGES,
+				$not_sent,
+				$for
 			);
 		}
 
 		return sprintf(
-			'Push: WC #%1$d has more photos than the %2$d eBay takes in one listing, so the %3$d after the first %2$d were not sent.',
+			'%4$s: WC #%1$d has more photos than the %2$d eBay takes in one listing, so the %3$d after the first %2$d were not sent.',
 			$product_id,
 			self::MAX_IMAGES,
-			$not_sent
+			$not_sent,
+			$for
 		);
 	}
 
@@ -5561,9 +5724,11 @@ class TCGiant_Sync_Exporter {
 	 *
 	 * @param int                $product_id Product.
 	 * @param array<int,string>  $left_out   Attachment ID => why.
+	 * @param string             $for        'Push' or 'Verify'.
 	 * @return string
 	 */
-	private static function left_out_warning( $product_id, array $left_out ) {
+	private static function left_out_warning( $product_id, array $left_out, $for = 'Push' ) {
+		$for    = 'Verify' === $for ? 'Verify' : 'Push';
 		$names  = array();
 		$detail = array();
 		foreach ( $left_out as $id => $reason ) {
@@ -5573,18 +5738,20 @@ class TCGiant_Sync_Exporter {
 
 		if ( 1 === count( $names ) ) {
 			return sprintf(
-				'Push: photo %s of WC #%d was left out of the listing: it could not be put on eBay (%s), and the listing\'s other photos are on eBay, which does not accept a mix.',
+				'%4$s: photo %1$s of WC #%2$d was left out of the listing: it could not be put on eBay (%3$s), and the listing\'s other photos are on eBay, which does not accept a mix.',
 				$names[0],
 				$product_id,
-				reset( $left_out )
+				reset( $left_out ),
+				$for
 			);
 		}
 
 		return sprintf(
-			'Push: photos %s of WC #%d were left out of the listing: they could not be put on eBay (%s), and the listing\'s other photos are on eBay, which does not accept a mix.',
+			'%4$s: photos %1$s of WC #%2$d were left out of the listing: they could not be put on eBay (%3$s), and the listing\'s other photos are on eBay, which does not accept a mix.',
 			implode( ', ', $names ),
 			$product_id,
-			implode( '; ', $detail )
+			implode( '; ', $detail ),
+			$for
 		);
 	}
 
@@ -5650,14 +5817,19 @@ class TCGiant_Sync_Exporter {
 	 * @param int[] $ids      Attachment IDs, the featured image first.
 	 * @param int   $past_cap Set to how many with an address come after the
 	 *                        first MAX_IMAGES, and so are not among them.
+	 * @param int[] $none     Set to those with no address, before that.
 	 * @return string[]
 	 */
-	private function site_picture_urls( array $ids, &$past_cap = 0 ) {
+	private function site_picture_urls( array $ids, &$past_cap = 0, &$none = array() ) {
 		$urls     = array();
 		$past_cap = 0;
+		$none     = array();
 		foreach ( $ids as $id ) {
 			$src = wp_get_attachment_image_url( $id, 'full' );
 			if ( ! $src ) {
+				if ( count( $urls ) < self::MAX_IMAGES ) {
+					$none[] = (int) $id;
+				}
 				continue;
 			}
 			if ( count( $urls ) >= self::MAX_IMAGES ) {

@@ -22,7 +22,7 @@ class TCGiant_Sync_Inventory {
 	 * Everything recorded about how one ended listing was settled. All of it
 	 * is about that listing, so all of it goes when a new one starts.
 	 */
-	const SETTLE_KEYS = array( '_ebay_stock_settled_at', '_ebay_stock_settled_item', '_ebay_unsold_at_end', '_ebay_quantity_listed', '_ebay_quantity_sold', '_ebay_restock_reviewed', '_ebay_variations_settled_item', '_ebay_unmatched_variations', '_ebay_end_reason', '_ebay_end_reason_item' );
+	const SETTLE_KEYS = array( '_ebay_stock_settled_at', '_ebay_stock_settled_item', '_ebay_unsold_at_end', '_ebay_quantity_listed', '_ebay_quantity_sold', '_ebay_restock_reviewed', '_ebay_variations_settled_item', '_ebay_unmatched_variations', '_ebay_end_reason', '_ebay_end_reason_item', '_ebay_settled_with_stock' );
 
 	/**
 	 * The WooCommerce -> eBay stock push (3.28.0).
@@ -411,14 +411,17 @@ class TCGiant_Sync_Inventory {
 	 * rather than applied: under-stocking can be put right later, an oversell
 	 * cannot.
 	 *
-	 * @param int      $product_id WooCommerce product.
-	 * @param int|null $listed     Quantity the listing held.
-	 * @param int|null $sold       Quantity eBay reports as sold.
+	 * @param int        $product_id WooCommerce product.
+	 * @param int|null   $listed     Quantity the listing held.
+	 * @param int|null   $sold       Quantity eBay reports as sold.
+	 * @param array|null $item       eBay's answer for the listing, when the
+	 *                               caller has it: why it ended is read from
+	 *                               it (3.28.5).
 	 * @return int|null Stock WooCommerce now holds (0 for an unmanaged product
 	 *                  that is out of stock), or null when eBay gave nothing to
 	 *                  go on or the write did not take.
 	 */
-	public static function apply_ended_listing_stock( $product_id, $listed, $sold ) {
+	public static function apply_ended_listing_stock( $product_id, $listed, $sold, $item = null ) {
 		if ( null === $listed || null === $sold ) {
 			return null;
 		}
@@ -430,6 +433,10 @@ class TCGiant_Sync_Inventory {
 
 		$product_id     = (int) $product_id;
 		$ebay_remaining = max( 0, (int) $listed - (int) $sold );
+
+		// Whether the shop held any, as the settle found it (3.28.5): eBay's
+		// reason for an end is taken as the shop's own only then.
+		$had_stock = $product->managing_stock() ? (int) $product->get_stock_quantity() > 0 : $product->is_in_stock();
 
 		// eBay has already accounted for its own sales, so nothing written here
 		// may travel back to eBay as a stock change of ours.
@@ -524,6 +531,11 @@ class TCGiant_Sync_Inventory {
 		$settled_item = (string) get_post_meta( $product_id, '_ebay_item_id', true );
 		update_post_meta( $product_id, '_ebay_stock_settled_item', $settled_item );
 
+		// And whether the shop held any as the settle found it (3.28.5), for
+		// eBay's reason for the end: read just below, and later from
+		// Auto-Relist's own GetItem.
+		update_post_meta( $product_id, '_ebay_settled_with_stock', $had_stock ? '1' : '0' );
+
 		// Why it ended, when eBay's figures say everything sold: for the
 		// Listings screen's Sold view. A reason already recorded for this
 		// listing - the shop ended it, or the plugin did at 0 - stands.
@@ -531,7 +543,110 @@ class TCGiant_Sync_Inventory {
 			self::note_end_reason( $product_id, $settled_item, self::END_SOLD_OUT, false );
 		}
 
+		// And why eBay says it ended, from the answer in hand (3.28.5), for an
+		// end made in Seller Hub, which nothing here recorded.
+		if ( is_array( $item ) ) {
+			self::note_ebay_end( $product_id, $item );
+		}
+
 		return $held;
+	}
+
+	/**
+	 * eBay's reasons (GetItem's ListingDetails.EndingReason) for an end the
+	 * seller made - in Seller Hub, or by any tool - and for a sale that ended
+	 * a listing early.
+	 */
+	const EBAY_ENDS_BY_SHOP = array( 'NotAvailable', 'Incorrect', 'LostOrBroken', 'OtherListingError', 'ProductDeleted' );
+	const EBAY_ENDS_SOLD    = array( 'Sold', 'SellToHighBidder' );
+
+	/**
+	 * Record why eBay says the listing a product holds ended, from an answer
+	 * for it already in hand (3.28.5): the settles', and the GetItem that
+	 * Auto-Relist, Relist and a push make of an ended listing
+	 * (TCGiant_Sync_Exporter::ended_listing_check()).
+	 *
+	 * - Every unit sold, by the answer's figures: END_SOLD_OUT, whatever eBay
+	 *   gives as the reason - a sale (EBAY_ENDS_SOLD) is that and nothing
+	 *   else.
+	 * - An end the seller made (EBAY_ENDS_BY_SHOP), or a "sale" with units
+	 *   left: END_BY_SHOP, so Auto-Relist leaves it, as one made with End
+	 *   Listing here - but only when the shop held stock as the listing's
+	 *   settle found it. The plugin's own end at 0 says NotAvailable on eBay
+	 *   too, and one made before 3.28.0 recorded no reason of its own; with
+	 *   no stock then, it is left with none, as before, however much it holds
+	 *   now.
+	 *
+	 * Anything else, or no reason, records nothing. A reason already recorded
+	 * for the listing stands.
+	 *
+	 * @param int   $product_id Product holding the link.
+	 * @param array $item       eBay's answer for the listing.
+	 * @return void
+	 */
+	public static function note_ebay_end( $product_id, array $item ) {
+		$product_id = (int) $product_id;
+		$item_id    = (string) get_post_meta( $product_id, '_ebay_item_id', true );
+
+		// Only an answer for that listing.
+		if ( '' === $item_id || TCGiant_Sync_API::scalar_value( $item['ItemID'] ?? '' ) !== $item_id ) {
+			return;
+		}
+
+		$why = TCGiant_Sync_API::scalar_value( $item['ListingDetails']['EndingReason'] ?? '' );
+		if ( ! in_array( $why, self::EBAY_ENDS_BY_SHOP, true ) && ! in_array( $why, self::EBAY_ENDS_SOLD, true ) ) {
+			return;
+		}
+
+		$listed = (int) TCGiant_Sync_API::scalar_value( $item['Quantity'] ?? '' );
+		$sold   = (int) TCGiant_Sync_API::scalar_value( $item['SellingStatus']['QuantitySold'] ?? '' );
+		if ( $listed >= 1 && $sold >= $listed ) {
+			self::note_end_reason( $product_id, $item_id, self::END_SOLD_OUT, false );
+			return;
+		}
+
+		if ( self::stock_as_settled( $product_id, $item_id ) ) {
+			self::note_end_reason( $product_id, $item_id, self::END_BY_SHOP, false );
+		}
+	}
+
+	/**
+	 * Whether the shop held stock as the settle of a listing found it, for
+	 * eBay's reason for its end read after it (3.28.5): what the settle
+	 * recorded, or nothing (false) for a settle from before 3.28.5. A listing
+	 * not settled yet: what the product holds now, which nothing has changed
+	 * since it ended.
+	 *
+	 * @param int    $product_id Product holding the link.
+	 * @param string $item_id    The listing.
+	 * @return bool
+	 */
+	private static function stock_as_settled( $product_id, $item_id ) {
+		if ( (string) $item_id === (string) get_post_meta( $product_id, '_ebay_stock_settled_item', true ) ) {
+			return '1' === (string) get_post_meta( $product_id, '_ebay_settled_with_stock', true );
+		}
+
+		$product = wc_get_product( $product_id );
+		if ( ! $product ) {
+			return false;
+		}
+
+		return $product->managing_stock() ? (int) $product->get_stock_quantity() > 0 : $product->is_in_stock();
+	}
+
+	/**
+	 * Whether the listing a product holds is recorded as ended by the shop
+	 * (END_BY_SHOP): with End Listing here, or in Seller Hub as eBay's reason
+	 * says (3.28.5).
+	 *
+	 * @param int    $product_id Product holding the link.
+	 * @param string $item_id    The listing.
+	 * @return bool
+	 */
+	public static function ended_by_shop( $product_id, $item_id ) {
+		return '' !== (string) $item_id
+			&& self::END_BY_SHOP === (string) get_post_meta( (int) $product_id, '_ebay_end_reason', true )
+			&& (string) $item_id === (string) get_post_meta( (int) $product_id, '_ebay_end_reason_item', true );
 	}
 
 	/**
@@ -1473,6 +1588,15 @@ class TCGiant_Sync_Inventory {
 
 		if ( isset( $settings['push_stock_to_ebay'] ) ) {
 			return ! is_scalar( $settings['push_stock_to_ebay'] ) || '0' !== (string) $settings['push_stock_to_ebay'];
+		}
+
+		// Held for WP-Lister at the upgrade, with the shop's No never stored
+		// (3.28.5): the request that claimed the run died between the claim
+		// and that write (maybe_upgrade_push_switch()). Off, as it would have
+		// stored.
+		$record = get_option( self::PUSH_SWITCH_OPTION, false );
+		if ( is_array( $record ) && 'wplister' === ( $record['held'] ?? '' ) ) {
+			return false;
 		}
 
 		return self::FLIP_LEGACY_ZERO || ! self::legacy_zero( $settings );

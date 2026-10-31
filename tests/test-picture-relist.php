@@ -38,6 +38,10 @@ class TCGiant_Sync_Runtime {
 }
 class TCGiant_Sync_Inventory {
 	const SETTLE_KEYS = array();
+	// eBay's reason for an end, read from the answer in hand (3.28.5): its
+	// rules are test-sold-view.php's, Auto-Relist's use test-relist-guard.php's.
+	public static function note_ebay_end( $product_id, array $item ) {}
+	public static function ended_by_shop( $product_id, $item_id ) { return false; }
 	public static function restocked_after_website_sale( $product_id ) { return 0; }
 	// Settled once its sales were taken in, as the real class records it.
 	public static function listing_already_settled( $product_id, $item_id ) { return '' !== (string) $item_id && (string) $item_id === (string) ( $GLOBALS['SETTLED_ITEM'][ (int) $product_id ] ?? '' ); }
@@ -168,6 +172,7 @@ function warnings_from( $from ) {
 function hosting( $on ) { update_option( 'tcgiant_sync_ebay_settings', array( 'host_images_on_ebay' => $on ? '1' : '0' ) ); }
 /** A push (do_push()): each call with its listing, photos and PictureDetails count; the uploads; the warnings; the result. */
 function pushed( WC_Product $product ) {
+	$GLOBALS['FOR']          = 'Push';
 	$GLOBALS['API']->calls   = array();
 	$GLOBALS['API']->uploads = array();
 	$from                    = count( $GLOBALS['W']['log'] );
@@ -185,6 +190,7 @@ function route( array $calls ) {
 }
 /** The item Verify builds: its photos, the uploads asked for, the warnings. */
 function built( WC_Product $product ) {
+	$GLOBALS['FOR']          = 'Verify';
 	$GLOBALS['API']->uploads = array();
 	$from                    = count( $GLOBALS['W']['log'] );
 	$xml                     = item_xml( $product, push_settings( $product ) );
@@ -204,10 +210,10 @@ function unchanged_warning( $product_id, array $held ) {
 	return private_method( 'TCGiant_Sync_Exporter', 'photos_unchanged_warning' )->invoke( null, $product_id, $held );
 }
 function left_out_warning( $product_id, array $left_out ) {
-	return private_method( 'TCGiant_Sync_Exporter', 'left_out_warning' )->invoke( null, $product_id, $left_out );
+	return private_method( 'TCGiant_Sync_Exporter', 'left_out_warning' )->invoke( null, $product_id, $left_out, $GLOBALS['FOR'] ?? 'Push' );
 }
 function mixed_warning( $photo, $product, $reason ) {
-	return sprintf( 'Push: photo #%d of WC #%d could not be put on eBay (%s), so this listing\'s photos are all sent from your website. eBay does not accept a mix.', $photo, $product, $reason );
+	return ( $GLOBALS['FOR'] ?? 'Push' ) . sprintf( ': photo #%d of WC #%d could not be put on eBay (%s), so this listing\'s photos are all sent from your website. eBay does not accept a mix.', $photo, $product, $reason );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -335,12 +341,15 @@ exec( escapeshellarg( PHP_BINARY ) . ' ' . escapeshellarg( __FILE__ ) . ' --stag
 $tcg_child = json_decode( (string) end( $tcg_lines ), true );
 check( 'the child is a staging copy, by wp-config', array( $tcg_code, $tcg_child['staging'] ?? null ), array( 0, true ) );
 $why = (string) ( $tcg_child['why'] ?? '' );
+// The child's builds are Verify's, and say so (3.28.5).
+$GLOBALS['FOR'] = 'Verify';
 list( $pics, $uploads, $warned ) = $tcg_child['verify_case3'] ?? array( null, null, null );
 check( 'Verify of a product with a photo kept on eBay: nothing uploaded', $uploads, array() );
 check( '  the kept photo and the cached eBay copy go, the other is left out for the copy\'s reason, the offloaded one as not here', array( $pics, $warned ), array( array( kept( 341 ), eps( 342 ) ), array( left_out_warning( 640, array( 343 => $why, 344 => 'its file is not on this server' ) ) ) ) );
 list( $pics, $uploads, $warned ) = $tcg_child['verify_case2'] ?? array( null, null, null );
 check( 'the setting on, none on eBay: nothing uploaded, the website\'s addresses, said once for the copy\'s reason', array( $uploads, $pics, $warned ), array( array(), sites( array( 345, 346 ) ), array( mixed_warning( 345, 642, $why ) ) ) );
 list( $route, $nodes, $uploads, $warned ) = $tcg_child['push_case3'] ?? array( null, null, null, null );
+$GLOBALS['FOR'] = 'Push';
 check( 'a push of a live listing: nothing uploaded, its revise sent no PictureDetails, said once', array( $route, $nodes, $uploads, $warned ), array( array( array( 'ReviseFixedPriceItem', '110000000644' ) ), 0, array(), array( unchanged_warning( 644, array( 348 => $why ) ) ) ) );
 
 done();

@@ -59,6 +59,22 @@ class TCGiant_Sync_Exporter {
 	public function relist_ended_listing( $product_id, $source ) { self::$relisted[] = (int) $product_id; return array( 'item_id' => '1' ); }
 	public static function push_progress( $product_id ) { return ''; }
 	public static function relist_stock_state( $product ) { return ''; }
+	// Bulk Verify (3.28.5): the settings a product resolves to, a retired ID
+	// mapped, and each check it was asked, with whether as a new listing.
+	// The checks themselves are test-category-ids.php's.
+	public static $validated = array();
+	public function get_export_settings( $product_id ) { return array( 'category_id' => '183454', 'category_retired' => array( 'from' => '180006', 'to' => '183454', 'source' => 'product' ) ); }
+	public function validate_export_settings( array $settings, $new_listing = true ) {
+		self::$validated[] = $settings['category_id'] . ( $new_listing ? ' new' : ' revise' );
+		return '180006' === $settings['category_id'] ? new WP_Error( 'missing_export_settings', 'refused in 180006' ) : true;
+	}
+	public static function keep_listing_category( array $settings ) {
+		$settings['category_id'] = $settings['category_retired']['from'];
+		unset( $settings['category_retired'] );
+		return $settings;
+	}
+	public static function linked_listing_ended( $product_id ) { return 'Ended' === get_post_meta( $product_id, '_ebay_listing_status', true ); }
+	public static function pushes_new_listing( $product_id ) { return '' === (string) get_post_meta( $product_id, '_ebay_item_id', true ) || self::linked_listing_ended( $product_id ); }
 }
 class TCGiant_Sync_Environment {
 	public static function write_block() { return null; }
@@ -283,14 +299,24 @@ check( 'a Relist of the Ended view by hand still takes in what the shop ended', 
 // the shop is told so wherever it is told its ends stay ended.
 sold_product( 863, array( '_ebay_item_id' => '98863', '_ebay_listing_status' => 'Ended', '_manage_stock' => 'yes', '_stock' => 2, '_stock_status' => 'instock', '_ebay_end_time' => '2026-09-01T10:00:00.000Z' ) );
 check( '  an End made with an earlier version (no mark): relisted', in_array( 863, auto_relisted(), true ), true );
+// Ended in Seller Hub (3.28.5): eBay's reason, read by the listing's settle,
+// marks it as the shop's own end.
+sold_product( 864, array( '_ebay_item_id' => '98864', '_ebay_listing_status' => 'Ended', '_manage_stock' => 'yes', '_stock' => 2, '_stock_status' => 'instock' ) );
+TCGiant_Sync_Inventory::apply_ended_listing_stock( 864, 3, 1, array( 'ItemID' => '98864', 'ListingDetails' => array( 'EndingReason' => 'NotAvailable' ) ) );
+sold_product( 865, array( '_ebay_item_id' => '98865', '_ebay_listing_status' => 'Ended', '_manage_stock' => 'yes', '_stock' => 2, '_stock_status' => 'instock' ) );
+TCGiant_Sync_Inventory::apply_ended_listing_stock( 865, 3, 1, array( 'ItemID' => '98865' ) );
+check( '  ended in Seller Hub, eBay saying why at its settle: left ended; one eBay gave no reason for: relisted', array( in_array( 864, auto_relisted(), true ), in_array( 865, auto_relisted(), true ) ), array( false, true ) );
 $readme   = (string) file_get_contents( $ROOT . '/readme.txt' );
-$notice   = substr( $readme, (int) strpos( $readme, "== Upgrade Notice ==\n\n= 3.28.3 =" ), 1600 );
+// 3.28.3's notice, wherever later ones put it (3.28.5 has one above it).
+$notice   = substr( $readme, (int) strpos( $readme, "\n= 3.28.3 =\n", (int) strpos( $readme, '== Upgrade Notice ==' ) ), 1600 );
+$notice5  = substr( $readme, (int) strpos( $readme, "== Upgrade Notice ==\n\n= 3.28.5 =" ), 700 );
+check( '  3.28.5\'s upgrade notice says Auto-Relist leaves a Seller Hub end, and that a new listing outside the card categories or in a coin parent is refused', array( false !== strpos( $notice5, 'Auto-Relist checks each ended listing with eBay before relisting it, and now leaves alone one you ended in Seller Hub' ), false !== strpos( $notice5, 'outside eBay\'s three single-card categories' ), false !== strpos( $notice5, 'is now refused before it reaches eBay' ) ), array( true, true, true ) );
 $entry    = substr( $readme, (int) strpos( $readme, '= 3.28.3 - ' ), 9000 );
 $settings = (string) file_get_contents( $ROOT . '/admin/views/settings.php' );
 $devlog   = (string) file_get_contents( $ROOT . '/changelog.txt' );
 check( '  the upgrade notice says an End made before this version may be relisted', array( false !== strpos( $notice, 'from this version on' ), false !== strpos( $notice, 'A listing you ended before this version, with End Listing or in Seller Hub, carries no such mark and may be relisted' ) ), array( true, true ) );
 check( '  so does the readme entry', false !== strpos( $entry, 'A listing you ended before this version, or in Seller Hub, carries no such mark and may be relisted' ), true );
-check( '  and the setting\'s own hint', false !== strpos( $settings, 'from version 3.28.3 on stays ended. One you ended before then, or in Seller Hub, is not known here and may be relisted' ), true );
+check( '  and the setting\'s own hint, which says Auto-Relist checks with eBay and leaves a Seller Hub end from 3.28.5 on', false !== strpos( $settings, 'from version 3.28.3 on stays ended. From 3.28.5 on, Auto-Relist also checks each ended listing with eBay before relisting it, and leaves one you ended in Seller Hub while your website still had stock. One the sync had brought in before then may be relisted' ), true );
 check( '  and the changelog', false !== strpos( $devlog, 'Only ends recorded from 3.28.3 on carry by_shop' ), true );
 check( '  nowhere is an unqualified promise left', array( false === strpos( $readme, 'listings you ended with End Listing in TCGiant Sync, stay ended' ), false === strpos( $settings, 'A listing you ended with End Listing in TCGiant Sync stays ended' ) ), array( true, true ) );
 $wpdb->db->exec( 'DROP TABLE wp_tcgiant_listings' );
@@ -317,6 +343,64 @@ $wpdb->db->exec( 'DROP TABLE wp_wc_product_meta_lookup' );
 sold_forget_tables();
 check( 'nor the lookup table: the same', auto_relisted(), array( 505, 506, 760, 761 ) );
 check( '  no query was refused', $wpdb->errors, array() );
+
+echo "\nAUTO-RELIST TAKES ITS 50 IN TURN (3.28.5)\n" . str_repeat( '=', 140 ) . "\n";
+
+/** What Auto-Relist hands to Relist, in the order it does. */
+function auto_relisted_in_order() {
+	TCGiant_Sync_Exporter::$relisted = array();
+	$GLOBALS['cron']->auto_relist_ended_items();
+	return TCGiant_Sync_Exporter::$relisted;
+}
+function rotation_shop() {
+	job_shop();
+	$GLOBALS['OPTIONS']['tcgiant_sync_ebay_settings'] = array( 'auto_relist_enabled' => '1' );
+	// Sixty refused every day before any call (eBay no longer has the item),
+	// ahead of five that are not, in the table's own order.
+	for ( $id = 900; $id < 960; $id++ ) {
+		sold_product( $id, array( '_ebay_item_id' => '99' . $id, '_ebay_listing_status' => 'Ended', '_manage_stock' => 'yes', '_stock' => 2, '_stock_status' => 'instock', '_ebay_unreadable_item' => '99' . $id ) );
+	}
+	for ( $id = 960; $id < 965; $id++ ) {
+		sold_product( $id, array( '_ebay_item_id' => '99' . $id, '_ebay_listing_status' => 'Ended', '_manage_stock' => 'yes', '_stock' => 2, '_stock_status' => 'instock' ) );
+	}
+}
+foreach ( array( 'the listings table', 'post meta, without the listings table' ) as $tcg_n => $tcg_where ) {
+	rotation_shop();
+	if ( 1 === $tcg_n ) {
+		$wpdb->db->exec( 'DROP TABLE wp_tcgiant_listings' );
+		sold_forget_tables();
+	}
+	$tcg_day1 = auto_relisted_in_order();
+	check( $tcg_where . ': day 1, sixty refused ahead of five: the first 50 never tried, in table order, so none of the five', array( $tcg_day1, '' !== (string) get_post_meta( 947, '_ebay_relist_tried', true ), get_post_meta( 948, '_ebay_relist_tried', true ) ), array( array( 505, 506 ), true, '' ) );
+	$tcg_day2 = auto_relisted_in_order();
+	check( '  day 2: the ones never tried first, so the five are reached', $tcg_day2, array( 960, 961, 962, 963, 964, 505, 506 ) );
+	// Each taken row is marked, refused or not; the one tried longest ago comes first.
+	update_post_meta( 963, '_ebay_relist_tried', '100' );
+	update_post_meta( 961, '_ebay_relist_tried', '200' );
+	update_post_meta( 962, '_ebay_relist_tried', '1000' );
+	$tcg_day3 = auto_relisted_in_order();
+	check( '  then the one tried longest ago first, by number, not by text ("1000" after "200")', array_slice( $tcg_day3, 0, 2 ), array( 963, 961 ) );
+	$tcg_sql = (string) current( array_filter( array_reverse( $wpdb->queries ), function ( $q ) { return false !== strpos( $q, 'LIMIT 50' ); } ) );
+	check( '  the order is the query\'s, and no query was refused', array( false !== strpos( $tcg_sql, "rt.meta_key = '_ebay_relist_tried' ), 0 ) ASC" ), $wpdb->errors ), array( true, array() ) );
+}
+
+// Two never tried, saved in the other order: by product, as MySQL is not
+// bound to keep any order among equals.
+job_shop();
+$GLOBALS['OPTIONS']['tcgiant_sync_ebay_settings'] = array( 'auto_relist_enabled' => '1' );
+sold_product( 969, array( '_ebay_item_id' => '99969', '_ebay_listing_status' => 'Ended', '_manage_stock' => 'yes', '_stock' => 2, '_stock_status' => 'instock' ) );
+sold_product( 968, array( '_ebay_item_id' => '99968', '_ebay_listing_status' => 'Ended', '_manage_stock' => 'yes', '_stock' => 2, '_stock_status' => 'instock' ) );
+check( 'equals, saved out of order: taken by product', auto_relisted_in_order(), array( 505, 506, 968, 969 ) );
+
+echo "\nBULK VERIFY CHECKS AS THE PUSH DOES: A NEW LISTING, OR A REVISE OF A LIVE ONE (3.28.5)\n" . str_repeat( '=', 140 ) . "\n";
+
+job_shop();
+sold_product( 520, array( '_manage_stock' => 'yes', '_stock' => 1, '_stock_status' => 'instock' ) );
+TCGiant_Sync_Exporter::$validated = array();
+list( $ok, $data ) = start_job( array( 'type' => 'bulk_verify', 'product_ids' => array( 501, 505, 520 ) ) );
+$done = run_job( $data['job_id'] );
+check( 'a live listing checked as its revise, an ended one and an unlinked one as a new listing', array( $done['succeeded'], $done['failed'], TCGiant_Sync_Exporter::$validated ), array( 3, 0, array( '183454 revise', '183454 new', '183454 new' ) ) );
+check( '  and nothing was asked of eBay', TCGiant_Sync_API::$calls, array() );
 
 printf( "\n  %d passed, %d failed\n\n", $pass, $fail );
 exit( $fail > 0 ? 1 : 0 );

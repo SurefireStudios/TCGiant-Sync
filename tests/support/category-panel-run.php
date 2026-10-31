@@ -118,9 +118,24 @@ $admin->save_product_export_meta( 512 );
 $out['saved_typed'][] = (string) get_post_meta( 512, '_ebay_export_category_typed', true );
 $_POST = array();
 
+// A coin parent, and a leaf under it (3.28.5).
+$coin               = array( '_ebay_export_item_type' => 'coins', '_ebay_export_condition_type' => 'graded', '_ebay_export_grader_id' => '14', '_ebay_export_grade_value' => 'MS/PR 70' );
+$out['coin_parent'] = tab( 513, $coin + array( '_ebay_export_category_id' => '253', '_ebay_export_category_name' => '' ) );
+$out['coin_leaf']   = tab( 514, $coin + array( '_ebay_export_category_id' => '11980', '_ebay_export_category_name' => 'Coins & Paper Money > Coins: US > Small Cents' ) );
+
+// A live listing: its revise sends what a new listing is refused (ruling 3).
+$live              = array( '_ebay_listing_type' => 'FixedPriceItem', '_ebay_listing_status' => 'Active' );
+$out['custom_live'] = tab( 515, $graded + $live + array( '_ebay_item_id' => '110000000515', '_ebay_export_category_id' => '183456', '_ebay_export_category_name' => 'Toys & Hobbies > Collectible Card Games > CCG Sealed Boxes' ) );
+$out['coin_live']   = tab( 516, $coin + $live + array( '_ebay_item_id' => '110000000516', '_ebay_export_category_id' => '253', '_ebay_export_category_name' => '' ) );
+
 // A shop on eBay UK: the mapping is eBay US's.
 TCGiant_Sync_OAuth::$settings['marketplace'] = 'EBAY_GB';
 $out['gb'] = tab( 508, $graded + array( '_ebay_export_category_id' => '180006', '_ebay_export_category_name' => '' ) );
+// LOW 8: a trading card there in it is not ready, as the push refuses it.
+$out['gb_card'] = $out['gb'];
+// On eBay Germany the three were not checked: sent without, as 3.28.4 (ruling 2).
+TCGiant_Sync_OAuth::$settings['marketplace'] = 'EBAY_DE';
+$out['de_card'] = tab( 517, $graded + array( '_ebay_export_category_id' => '180006', '_ebay_export_category_name' => '' ) );
 
 echo json_encode( $out );
 $GLOBALS['harness_done'] = true;

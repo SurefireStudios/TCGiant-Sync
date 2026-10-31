@@ -83,9 +83,9 @@ function built( WC_Product $product ) {
 	return array( descriptors( $xml ), warnings_from( $from ), $xml );
 }
 
-/** The warning for a card grade with no eBay ID, word for word. */
-function no_grade_id_warning( $product, $grade ) {
-	return sprintf( 'Push: the grade "%s" of WC #%d is not one eBay takes for a graded trading card, so it was not sent and eBay will ask for it. Choose the grade again in the product\'s eBay Listing tab.', $grade, $product );
+/** The warning for a card grade with no eBay ID, word for word: a push's, or Verify's (3.28.5). */
+function no_grade_id_warning( $product, $grade, $for = 'Push' ) {
+	return $for . sprintf( ': the grade "%s" of WC #%d is not one eBay takes for a graded trading card, so it was not sent and eBay will ask for it. Choose the grade again in the product\'s eBay Listing tab.', $grade, $product );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -121,11 +121,11 @@ check( '  a label with spaces round it reads as the label: 275021', $d['27502'] 
 // A grade with no ID: no 27502 at all, and one warning naming the product and the value.
 list( $d, $warned, $xml ) = built( graded( 950, 'MS/PR 65' ) );
 check( 'a coin\'s grade on a card (MS/PR 65): no 27502, the grader and the rest still sent', array( isset( $d['27502'] ), $d['27501'] ?? '', false !== strpos( $xml, 'MS/PR 65' ) ), array( false, '275010', false ) );
-check( '  one warning, naming the product and the value', $warned, array( no_grade_id_warning( 950, 'MS/PR 65' ) ) );
+check( '  one warning, naming the product and the value, in Verify\'s words, as Verify built it', $warned, array( no_grade_id_warning( 950, 'MS/PR 65', 'Verify' ) ) );
 list( $d, $warned ) = built( graded( 951, '11' ) );
-check( '  a grade of 11: the same', array( isset( $d['27502'] ), $warned ), array( false, array( no_grade_id_warning( 951, '11' ) ) ) );
+check( '  a grade of 11: the same', array( isset( $d['27502'] ), $warned ), array( false, array( no_grade_id_warning( 951, '11', 'Verify' ) ) ) );
 list( $d, $warned ) = built( graded( 952, '275099' ) );
-check( '  a number shaped like an ID that is not one of eBay\'s: the same', array( isset( $d['27502'] ), $warned ), array( false, array( no_grade_id_warning( 952, '275099' ) ) ) );
+check( '  a number shaped like an ID that is not one of eBay\'s: the same', array( isset( $d['27502'] ), $warned ), array( false, array( no_grade_id_warning( 952, '275099', 'Verify' ) ) ) );
 list( $d, $warned ) = built( graded( 953, '' ) );
 check( '  no grade at all: no 27502 and nothing said (the push refuses it first: "Grade (required for graded items)")', array( isset( $d['27502'] ), $warned ), array( false, array() ) );
 
@@ -135,10 +135,10 @@ $from  = count( $GLOBALS['W']['log'] );
 $build = private_method( 'TCGiant_Sync_Exporter', 'build_item_xml' );
 item_xml( $twice, push_settings( $twice ) );
 $build->invoke( exporter(), $twice, push_settings( $twice ) );
-check( 'built twice in one push, the warning is given once', warnings_from( $from ), array( no_grade_id_warning( 954, 'MS/PR 65' ) ) );
+check( 'built twice in one build, the warning is given once', warnings_from( $from ), array( no_grade_id_warning( 954, 'MS/PR 65', 'Verify' ) ) );
 $from = count( $GLOBALS['W']['log'] );
 item_xml( $twice, push_settings( $twice ) );
-check( '  and again for the next push or Verify, which decides afresh', warnings_from( $from ), array( no_grade_id_warning( 954, 'MS/PR 65' ) ) );
+check( '  and again for the next push or Verify, which decides afresh', warnings_from( $from ), array( no_grade_id_warning( 954, 'MS/PR 65', 'Verify' ) ) );
 $pushed = graded( 955, '11' );
 $push   = private_method( 'TCGiant_Sync_Exporter', 'do_push' );
 $from   = count( $GLOBALS['W']['log'] );

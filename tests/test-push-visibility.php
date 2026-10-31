@@ -494,6 +494,10 @@ class TCGiant_Sync_DB {
 }
 class TCGiant_Sync_Inventory {
 	const SETTLE_KEYS = array( '_ebay_stock_settled_at', '_ebay_stock_settled_item' );
+	// eBay's reason for an end, read from the answer in hand (3.28.5): its
+	// rules are test-sold-view.php's, Auto-Relist's use test-relist-guard.php's.
+	public static function note_ebay_end( $product_id, array $item ) {}
+	public static function ended_by_shop( $product_id, $item_id ) { return false; }
 	// What the real class names (3.28.0): the auction the shop listed from
 	// WooCommerce, and the figures an auction import records.
 	const AUCTION_LISTED_KEY  = '_ebay_auction_listed_item';
@@ -1560,7 +1564,7 @@ update_option( 'tcgiant_sync_ebay_settings', array( 'auto_relist_enabled' => 1 )
 check( 'the daily auto-relist does not relist its ended listing as well', array( live_on_ebay( 7201 ), meta( 7201, '_ebay_item_id' ) ), array( array( '960072010002' ), '960072010001' ) );
 check( '  so what it was told still holds: Unlink the ended listing, Link the new one', array( meta( 7201, '_ebay_export_status' ), false !== strpos( (string) meta( 7201, '_ebay_export_error' ), 'Unlink it from listing 960072010001, then use Link with item number 960072010002;' ) ), array( 'failed', true ) );
 check( 'the one whose last push finished is relisted, as before', array( live_on_ebay( 7202 ), meta( 7202, '_ebay_item_id' ) ), array( array( '960072020002' ), '960072020002' ) );
-check( '  and the run says why the other may not have been', array_column( said( 'Auto-Relist: Complete' ), 1 ), array( 'Auto-Relist: Complete. 1 relisted, 1 not relisted (no stock, sold out on eBay, already live, on another eBay site, or its last push is still under way or did not finish).' ) );
+check( '  and the run says why the other may not have been', array_column( said( 'Auto-Relist: Complete' ), 1 ), array( 'Auto-Relist: Complete. 1 relisted, 1 not relisted (no stock, sold out on eBay, ended by you on eBay, already live, on another eBay site, or its last push is still under way or did not finish).' ) );
 
 // Relist, then Push, on the Listings screen: one whose relist the host killed
 // once eBay had made the new listing, beside one whose last push finished.

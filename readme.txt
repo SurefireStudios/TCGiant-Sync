@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.28.4
+Stable tag: 3.28.5
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -139,6 +139,22 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.28.5 - 2026-10-31 =
+* FIX: A new listing for a trading card whose category is not one of the three eBay takes card grading and condition details in, CCG Individual Cards (183454), Non-Sport Trading Card Singles (183050) and Sports Trading Card Singles (261328), is now refused before it reaches eBay, and so are Verify, Check with eBay and "Check push settings only" for it. The product's eBay tab already said such a product was not ready, but a push sent it to eBay without its grading or condition. The message names the three and says to choose one with Browse eBay Categories, or to set the Item Type to All Other. This is for shops on eBay US, UK, Australia and Canada, which file single cards under the same three.
+* A push that updates a live listing still sends it without the card details, as before, and the eBay tab now shows that as a warning. So does a push on another eBay site.
+* A grader or card condition eBay's table does not list for the category is still sent, with a warning, as the eBay tab says.
+* FIX: The coin categories in TCGiant Sync's list (Coins: US, World, Canada, Ancient and Medieval) are parent categories on eBay US, which eBay does not take as a listing's category. A new listing in one of them, Verify, Check with eBay and "Check push settings only" are now refused before anything is sent to eBay, asking you to choose a subcategory with Browse eBay Categories, and the eBay tab says so. A push that updates a live listing goes as before, with a warning on the tab. A shop on another eBay site is not affected.
+* FIX: Ticking one of those coin categories in "eBay Standard Categories to Import" imported nothing, because eBay files every listing in a subcategory. It now imports the listings in any subcategory under it. A listing TCGiant Sync learnt about before this version is taken at the next weekly full sync, or straight away with Fetch Inventory.
+* FIX: Auto-Relist checks each ended listing with eBay before relisting it, and now leaves alone one you ended in Seller Hub while your website still had stock. The Listings screen says "Ended by you" for it, and you can still relist it yourself. A listing that ended by selling every unit is shown as sold. A listing the sync had already brought in before you updated may still be relisted.
+* FIX: Auto-Relist relists up to 50 listings a day. Listings it could not relist, for reasons of their own, could take all 50 places every day, so the others were never reached. It now takes them in turn: listings it has not tried first, then the ones it tried longest ago.
+* FIX: A photo with no address on your website and no copy on eBay, such as one deleted from the Media Library but still on the product, was left out of the listing with nothing said. On a listing that is already live, that takes the photo off eBay. The log now names those photos once a push.
+* FIX: Verify and Check with eBay said "Push:" in the log for some warnings about photos and grades, when nothing was listed. They now say "Verify:".
+* FIX: A listing too long for eBay's 500,000-character description limit could still be sent when a push had to rebuild it, after finding its listing had ended or had been relisted on eBay. Every rebuilt listing is now checked too.
+* FIX: The import filter's line about a retired category now names, for each one, the category to tick instead. "Non-Sport Trading Card Games" goes to Non-Sport Trading Card Singles, not CCG Individual Cards.
+* The warning for the old "Trading Cards" default (2536) now says that sports cards belong in Sports Trading Card Singles (261328), the only one of the three that takes CSG as a grader.
+* A trading card moved into CCG Individual Cards by 3.28.1 is checked against that category's required item specifics. If eBay requires "Game" there, add it as a product attribute.
+* FIX: On a site that had WP-Lister for eBay active when it updated to 3.28.0, website stock changes could be sent to eBay if that update was interrupted at the wrong moment. They now stay off until you set "Send website stock changes to eBay?" to Yes.
 
 = 3.28.4 - 2026-10-30 =
 * FIX: A shop that imports only some categories ("eBay Standard Categories to Import", or its store categories) no longer spends an eBay call on most changed listings just to learn their category. eBay's list of changes leaves the category out, so the sync asked eBay about each changed listing and then mostly skipped it: on one shop, about 440 calls a day for about 2 imports. TCGiant Sync now remembers each listing's categories from the weekly full sync and from the eBay answers it already gets, and skips a changed listing outside your categories without asking. A listing in your categories, or one it has not learnt about in the last 8 days, is asked about as before.
@@ -1489,6 +1505,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.28.5 =
+Auto-Relist checks each ended listing with eBay before relisting it, and now leaves alone one you ended in Seller Hub while your website still had stock. A new listing for a trading card outside eBay's three single-card categories, or in one of the coin categories TCGiant Sync offered, which are parent categories on eBay, is now refused before it reaches eBay, with a message saying which category to choose instead. Updates to live listings go as before.
 
 = 3.28.3 =
 If Auto-Relist is on, it will now start relisting ended eBay listings that still have stock on your website: up to 50 a day, each using 2 eBay calls and charged eBay's usual fees for a relist. Until now, listings that had sold took all 50 places every day, so on many shops it relisted nothing. Listings that sold stay ended, and so does a listing you end with End Listing in TCGiant Sync from this version on. A listing you ended before this version, with End Listing or in Seller Hub, carries no such mark and may be relisted if it still has stock: if that matters, turn Auto-Relist off before updating, and check the Listings screen's Ended view. To turn it off: TCGiant Sync, Settings, Import Settings, Scheduling, set "Auto-relist ended listings?" to No and save. It is off unless you turned it on. Also: the Listings screen has a Sold view, and its counts no longer include products in the trash.

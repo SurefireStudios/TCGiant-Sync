@@ -573,7 +573,9 @@ class TCGiant_Sync_Jobs {
 				case 'bulk_verify':
 					$exporter = TCGiant_Sync_Exporter::instance();
 					$settings = $exporter->get_export_settings( $product_id );
-					$valid    = $exporter->validate_export_settings( $settings );
+					// As the push checks it (3.28.5): a new listing's only for a
+					// product with no live listing.
+					$valid    = $exporter->validate_export_settings( $settings, TCGiant_Sync_Exporter::pushes_new_listing( $product_id ) );
 					if ( is_wp_error( $valid ) ) {
 						$failed++;
 						$errors[] = sprintf( '#%d: %s', $product_id, $valid->get_error_message() );
@@ -633,7 +635,8 @@ class TCGiant_Sync_Jobs {
 					$settled = TCGiant_Sync_Inventory::apply_ended_listing_stock(
 						$product_id,
 						isset( $detail['Item']['Quantity'] ) ? $detail['Item']['Quantity'] : null,
-						isset( $detail['Item']['SellingStatus']['QuantitySold'] ) ? $detail['Item']['SellingStatus']['QuantitySold'] : null
+						isset( $detail['Item']['SellingStatus']['QuantitySold'] ) ? $detail['Item']['SellingStatus']['QuantitySold'] : null,
+						$detail['Item']
 					);
 
 					if ( null === $settled ) {

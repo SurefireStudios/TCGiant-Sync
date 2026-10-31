@@ -1858,7 +1858,10 @@ class TCGiant_Sync_Admin {
 		$keep_status = in_array( (string) get_post_meta( $product_id, '_ebay_export_status', true ), array( 'failed', 'pushing' ), true );
 
 		$settings = $exporter->get_export_settings( $product_id );
-		$valid    = $exporter->validate_export_settings( $settings );
+		// As the push itself validates (3.28.5): a new listing's checks only
+		// when it makes one, so a revise of a live listing is never refused
+		// here, nor the product marked errored, for what the revise sends.
+		$valid    = $exporter->validate_export_settings( $settings, TCGiant_Sync_Exporter::pushes_new_listing( $product_id ) );
 		if ( is_wp_error( $valid ) ) {
 			// Save error to product meta so it shows on page reload too.
 			if ( ! $keep_status ) {
@@ -3913,7 +3916,7 @@ class TCGiant_Sync_Admin {
 							TCGiant_Sync_Catalog::CARD_CATEGORY_NAMES[ $cat_retired['to'] ] ?? $cat_retired['to'],
 							$cat_retired['to'],
 							'product' === ( $cat_retired['source'] ?? '' ) ? __( 'Choose a category here to replace it.', 'tcgiant-sync' ) : __( 'Choose one here for this product, or the default again in Settings.', 'tcgiant-sync' )
-						) );
+						) . ( '' !== TCGiant_Sync_Catalog::retired_category_note( $cat_retired['from'] ) ? ' ' . TCGiant_Sync_Catalog::retired_category_note( $cat_retired['from'] ) : '' ) );
 					?></p>
 				<?php endif; ?>
 				<input type="text" name="_ebay_export_category_id_custom" id="_ebay_export_category_id_custom" value="<?php echo esc_attr( $is_custom_cat ? $cat_override : '' ); ?>" placeholder="<?php esc_attr_e( 'Enter eBay leaf category ID', 'tcgiant-sync' ); ?>" style="width:100%;font-size:12px;<?php echo 'custom' === $select_val ? '' : 'display:none;'; ?>">
@@ -4154,6 +4157,12 @@ class TCGiant_Sync_Admin {
 				  $cd = sprintf( __( '%1$s (%2$s), in place of the retired %3$s', 'tcgiant-sync' ), TCGiant_Sync_Catalog::CARD_CATEGORY_NAMES[ $eff_cat ] ?? $eff_cat, $eff_cat, $cat_retired['from'] );
 				  $mm = ! empty( $merged_settings['_category_mismatch'] );
 				  $checks[] = array( 'ok' => ! $mm, 'label' => $mm ? sprintf( __( 'Category: %s - item type mismatch', 'tcgiant-sync' ), $cd ) : sprintf( __( 'Category: %s', 'tcgiant-sync' ), $cd ) );
+			  } elseif ( '' !== TCGiant_Sync_Catalog::coin_parent_problem( $eff_cat ) ) {
+				  // A coin parent, which eBay refuses as a listing's category (3.28.5):
+				  // a new listing is refused it; a revise of the live one sends it.
+				  // An Item Type that is not coins is still said, as a push refuses it.
+				  $mm = ! empty( $merged_settings['_category_mismatch'] );
+				  $checks[] = array( 'ok' => $revises && ! $mm, 'warn' => $revises && ! $mm, 'label' => sprintf( __( 'Category: %s', 'tcgiant-sync' ), TCGiant_Sync_Catalog::coin_parent_problem( $eff_cat ) ) . ( $mm ? __( ' - item type mismatch', 'tcgiant-sync' ) : '' ) );
 			  } elseif ( ! empty( $eff_cat ) ) {
 				  $cd = $cat_name_saved ? $cat_name_saved . ' (' . $eff_cat . ')' : $eff_cat;
 				  $mm = ! empty( $merged_settings['_category_mismatch'] );
@@ -4193,13 +4202,19 @@ class TCGiant_Sync_Admin {
 					  if ( ! $co ) { $cl .= ' - condition required'; }
 				  }
 				  // eBay's table for trading cards (3.28.1), in the category a push
-				  // sends: their details go only in its three single-card categories,
-				  // which a push keeps to. Some graders and conditions it lists in
-				  // only one or two of them; one it does not list goes all the same,
-				  // as the table is behind eBay's own data, and is said.
+				  // sends: their details go only in its three single-card categories.
+				  // Elsewhere a new listing is refused, in the push's words (3.28.5);
+				  // a revise of the live listing, or a push on a site whose card
+				  // categories were not checked, sends the item without them. Some
+				  // graders and conditions it lists in only one or two of them; one
+				  // it does not list goes all the same, as the table is behind eBay's
+				  // own data, and is said.
 				  if ( $co && '' !== $sent_cat && TCGiant_Sync_Exporter::takes_card_descriptors( $sent_settings ) ) {
-					  if ( ! in_array( $sent_cat, TCGiant_Sync_Exporter::DESCRIPTOR_CATEGORIES_TCG, true ) ) {
-						  $co = false; $cl .= ' - eBay takes card grading and condition details only in CCG Individual Cards, Non-Sport Trading Card Singles and Sports Trading Card Singles';
+					  $cp = TCGiant_Sync_Exporter::card_category_problem( $sent_settings );
+					  if ( '' !== $cp && ! $revises ) {
+						  $co = false; $cl .= ' - ' . $cp;
+					  } elseif ( ! in_array( $sent_cat, TCGiant_Sync_Exporter::DESCRIPTOR_CATEGORIES_TCG, true ) ) {
+						  $cw = true; $cl .= ' - ' . __( 'sent without card details: this category takes none', 'tcgiant-sync' );
 					  } elseif ( 'graded' === $cte && ! TCGiant_Sync_Exporter::grader_valid_in( $gi, $sent_cat ) ) {
 						  $cw = true; $cl .= ' - eBay\'s table of card graders does not list it for this category: sent as it is, eBay may refuse it';
 					  } elseif ( 'graded' !== $cte && ! TCGiant_Sync_Exporter::ungraded_valid_in( $uv, $sent_cat ) ) {

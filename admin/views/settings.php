@@ -448,7 +448,24 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 							</div>
 							<p class="tc-hint" style="margin-top:8px;"><?php esc_html_e( 'Only import items that belong to these standard eBay categories.', 'tcgiant-sync' ); ?></p>
 							<?php if ( $retired_filters ) : ?>
-								<p class="tc-hint tc-retired-category" style="color:#8a6d3b;"><?php esc_html_e( 'A category marked (retired) was wrong in TCGiant Sync\'s list until 3.28.1, and no card listing is filed under it, so it imports none. Tick the category its label points to instead, and untick the retired one.', 'tcgiant-sync' ); ?></p>
+								<p class="tc-hint tc-retired-category" style="color:#8a6d3b;"><?php esc_html_e( 'A category marked (retired) was wrong in TCGiant Sync\'s list until 3.28.1, and no card listing is filed under it, so it imports none.', 'tcgiant-sync' ); ?></p>
+								<?php
+								// Each box's own replacement, by name (3.28.5): not all
+								// of them go to CCG Individual Cards.
+								foreach ( $retired_filters as $id ) :
+									$retired_to = TCGiant_Sync_Catalog::RETIRED_CATEGORIES[ (string) $id ];
+								?>
+									<p class="tc-hint tc-retired-category" style="color:#8a6d3b;margin-top:2px;"><?php
+										echo esc_html( sprintf(
+											/* translators: 1: the old label, 2: its ID, 3: the category to tick, 4: that category's ID */
+											__( '%1$s (%2$s): tick %3$s (%4$s) instead, and untick this one.', 'tcgiant-sync' ),
+											TCGiant_Sync_Catalog::RETIRED_CATEGORY_LABELS[ (string) $id ] ?? $id,
+											$id,
+											TCGiant_Sync_Catalog::CARD_CATEGORY_NAMES[ $retired_to ],
+											$retired_to
+										) );
+									?></p>
+								<?php endforeach; ?>
 							<?php endif; ?>
 						</div>
 					</div>
@@ -657,7 +674,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 							<label><input type="radio" name="tcgiant_sync_ebay_settings[auto_relist_enabled]" value="1" <?php checked( $settings['auto_relist_enabled'] ?? '0', '1' ); ?>> Yes</label>
 							<label><input type="radio" name="tcgiant_sync_ebay_settings[auto_relist_enabled]" value="0" <?php checked( $settings['auto_relist_enabled'] ?? '0', '0' ); ?>> No</label>
 						</div>
-						<p class="tc-hint"><?php esc_html_e( 'Automatically relist ended eBay listings during daily maintenance (3 AM) if WooCommerce stock is still > 0. Max 50 per day, each costing 2 eBay calls and eBay\'s usual fees for a relist. A listing you end with End Listing in TCGiant Sync from version 3.28.3 on stays ended. One you ended before then, or in Seller Hub, is not known here and may be relisted if it still has stock.', 'tcgiant-sync' ); ?></p>
+						<p class="tc-hint"><?php esc_html_e( 'Automatically relist ended eBay listings during daily maintenance (3 AM) if WooCommerce stock is still > 0. Max 50 per day, each costing 2 eBay calls and eBay\'s usual fees for a relist. A listing you end with End Listing in TCGiant Sync from version 3.28.3 on stays ended. From 3.28.5 on, Auto-Relist also checks each ended listing with eBay before relisting it, and leaves one you ended in Seller Hub while your website still had stock. One the sync had brought in before then may be relisted if it still has stock.', 'tcgiant-sync' ); ?></p>
 					</div>
 				</div>
 
@@ -772,7 +789,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 								$current_category,
 								TCGiant_Sync_Catalog::CARD_CATEGORY_NAMES[ $retired_to ],
 								$retired_to
-							) );
+							) . ( '' !== TCGiant_Sync_Catalog::retired_category_note( $current_category ) ? ' ' . TCGiant_Sync_Catalog::retired_category_note( $current_category ) : '' ) );
 						?></p>
 					<?php endif; ?>
 					<input type="text" class="tc-input" id="export_category_id_custom"

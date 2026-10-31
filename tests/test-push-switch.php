@@ -1241,6 +1241,22 @@ if ( 'child=wplister' === $MODE ) {
 	} );
 	check( 'two requests racing: the second inserts the same record, which changes nothing - one line, one write', array( count_logged( 'Updated to 3.28.0' ), $tcg_writes, settings()['push_stock_to_ebay'] ?? null, switch_record()['held'] ?? null, switch_record()['notice'] ?? null ), array( 1, 1, '0', 'wplister', 'pending' ) );
 
+	// The request that claimed the run died between the claim and the settings
+	// write (3.28.5): the record says held, and no key is stored. Off all the
+	// same, by the record, as the write would have made it.
+	fresh_shop( array( 'enable_order_sync' => '0' ) );
+	product( 702, 3, '700000000702' );
+	add_option( TCGiant_Sync_Inventory::PUSH_SWITCH_OPTION, array( 'since' => '3.28.0', 'legacy' => '0', 'flipped' => false, 'notice' => 'pending', 'flip' => true, 'held' => 'wplister' ), '', true );
+	upgraded();
+	hand_edit( 702, 2 );
+	run_queue( true );
+	check( 'held for WP-Lister, no key stored (a request died between the two writes): pushes off, a hand edit queues and sends nothing', array( isset( settings()['push_stock_to_ebay'] ), TCGiant_Sync_Inventory::pushes_enabled(), TCGiant_Sync_Inventory::push_switch_state(), pushes(), calls() ), array( false, false, 'off', array(), array() ) );
+	set_setting( 'push_stock_to_ebay', '1' );
+	check( '  the shop then sets Yes: on, the stored choice deciding', TCGiant_Sync_Inventory::pushes_enabled(), true );
+	fresh_shop( array( 'enable_order_sync' => '1' ) );
+	add_option( TCGiant_Sync_Inventory::PUSH_SWITCH_OPTION, array( 'since' => '3.28.0', 'legacy' => '1', 'flipped' => false, 'notice' => 'none', 'flip' => true ), '', true );
+	check( '  a record not held, no key stored: on, as before', TCGiant_Sync_Inventory::pushes_enabled(), true );
+
 	// Only where the upgrade would turn sending on: every other shop is as without WP-Lister.
 	foreach ( array(
 		'saved as Yes'                      => array( array( 'enable_order_sync' => '1' ), '1', true ),

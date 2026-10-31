@@ -858,9 +858,121 @@ TCGiant_Sync_Category_Memory::end();
 check( '  and one learnt in a batch, then forgotten in it, is not written at its end', remembered( E ), null );
 
 // ---------------------------------------------------------------------------
+echo "\nM14. A ticked coin parent takes the listings in its subcategories (3.28.5)\n";
+// eBay files no listing under the five coin categories the plugin's list
+// offers: each is a parent. Ticked, one matched nothing. eBay's path for a
+// listing's category names the parent second, and the full sync's pages and
+// GetItem carry it; the memory keeps which parent each coin category is
+// under, so a remembered listing is decided without a GetItem.
+const F = '110000000006'; // a Lincoln cent, under Coins: US
+const G = '110000000007'; // a Canadian dollar, under Coins: Canada
+const H = '110000000008'; // a card
+const I = '110000000009'; // another Lincoln cent, never on a page
+const PATH_US = 'Coins & Paper Money:Coins: US:Small Cents:Lincoln (1959-Now)';
+$COINS_US = array( 'import_standard_category_ids' => array( '253' ) );
+/** A listing with eBay's path for its category, as GetItem and the full sync's pages give it. */
+function ebay_has_path( $id, $cats, $path ) {
+	ebay_has( $id, $cats );
+	$GLOBALS['EBAY']['items'][ $id ]['Item']['PrimaryCategory']['CategoryName'] = $path;
+	return whole( $id );
+}
+function coin_shop( array $settings ) {
+	shop( $settings );
+	ebay_has_path( F, array( '11980', '0', '0' ), PATH_US );
+	ebay_has_path( G, array( '3390', '0', '0' ), 'Coins & Paper Money:Coins: Canada:Dollars' );
+	ebay_has_path( H, array( '183454', '0', '0' ), 'Toys & Hobbies:Collectible Card Games:CCG Individual Cards' );
+	ebay_has_path( I, array( '11980', '0', '0' ), PATH_US );
+}
+coin_shop( $COINS_US );
+watch_memory_writes();
+full_sync( array( whole( F ), whole( G ), whole( H ) ) );
+check( 'Coins: US (253) ticked, the full sync: the Lincoln cent imported, by its path; the Canadian dollar and the card not', saved_ids(), array( F ) );
+check( '  and which parent each coin category is under kept, the one not ticked too; the card\'s not', array( TCGiant_Sync_Category_Memory::coin_parent( '11980' ), TCGiant_Sync_Category_Memory::coin_parent( '3390' ), TCGiant_Sync_Category_Memory::coin_parent( '183454' ) ), array( '253', '3377', '' ) );
+check( '  in one option of the memory\'s name, not autoloaded, written once', array( count( array_filter( $MEM_WRITES, function ( $w ) { return TCGiant_Sync_Category_Memory::COIN_LEAVES_OPTION === $w[0]; } ) ), array_values( array_unique( array_column( $MEM_WRITES, 1 ) ) ), $TABLE[ TCGiant_Sync_Category_Memory::COIN_LEAVES_OPTION ] ?? null ), array( 1, array( false ), array( '11980' => '253', '3390' => '3377' ) ) );
+check( '  still no GetItem', calls_of( 'GetItem' ), 0 );
+delta( array( bare( G ), bare( H ) ) );
+check( 'the delta, remembered and under no ticked parent: skipped with no GetItem', array( get_items(), saved_ids(), summary() ), array( array(), array(), 'Delta sync complete! 0 imported, 0 errors out of 2 modified items, 2 skipped (category filter, remembered).' ) );
+delta( array( bare( F ) ) );
+check( '  remembered under the ticked one: its GetItem, as for any listing the filter takes, and imported from it', array( get_items(), saved_ids() ), array( array( F ), array( F ) ) );
+delta( array( bare( I ) ) );
+check( 'not remembered: one GetItem, whose path the filter takes', array( get_items(), saved_ids() ), array( array( I ), array( I ) ) );
+settings( array( 'import_standard_category_ids' => array( '253', '3377' ) ) );
+delta( array( bare( G ) ) );
+check( 'Coins: Canada ticked as well: the Canadian dollar, remembered, now taken', array( get_items(), saved_ids() ), array( array( G ), array( G ) ) );
+settings( array( 'import_standard_category_ids' => array( '11980' ) ) );
+delta( array( bare( F ), bare( G ) ) );
+check( 'the leaf itself ticked: taken by its ID, as before; the other skipped', array( get_items(), saved_ids() ), array( array( F ), array( F ) ) );
+
+echo "\n   In one delta batch, and from a row that carries its path\n";
+coin_shop( $COINS_US );
+TCGiant_Sync_Category_Memory::note( whole( H ) ); // the memory in use
+const J = '110000000010'; // a third Lincoln cent, remembered by its category alone
+ebay_has_path( J, array( '11980', '0', '0' ), PATH_US );
+plant( J, J . ',11980,0,0,' . time() );
+delta( array( bare( I ), bare( J ) ) );
+check( 'a GetItem earlier in the batch teaches the category: a listing remembered by it alone is then decided by it', array( get_items(), saved_ids() ), array( array( I, J ), array( I, J ) ) );
+coin_shop( $COINS_US );
+TCGiant_Sync_Category_Memory::note( whole( H ) );
+$tcg_row = bare( F, 'Active', array( 'PrimaryCategory' => array( 'CategoryID' => '11980', 'CategoryName' => PATH_US ), 'Storefront' => array( 'StoreCategoryID' => '0', 'StoreCategory2ID' => '0' ) ) );
+delta( array( $tcg_row ) );
+check( 'a row of the list of changes that carries its category and path: taken by the path, nothing remembered needed', saved_ids(), array( F ) );
+
+echo "\n   Only eBay's full path decides over what was learnt (the review's L4)\n";
+coin_shop( $COINS_US );
+TCGiant_Sync_Category_Memory::note( whole( F ) ); // 11980 learnt under 253
+check( 'a name that is not the full path: what was learnt stands', array( TCGiant_Sync_Category_Memory::coin_parent( '11980', 'Lincoln (1959-Now)' ), TCGiant_Sync_Category_Memory::coin_parent( '11980', 'Small Cents:Lincoln (1959-Now)' ) ), array( '253', '253' ) );
+check( '  the full path decides, even against it', array( TCGiant_Sync_Category_Memory::coin_parent( '11980', PATH_US ), TCGiant_Sync_Category_Memory::coin_parent( '11980', 'Coins & Paper Money:Coins: Canada:Dollars' ), TCGiant_Sync_Category_Memory::coin_parent( '11980', 'Coins & Paper Money:Paper Money: US' ) ), array( '253', '3377', '' ) );
+$tcg_row = bare( F, 'Active', array( 'PrimaryCategory' => array( 'CategoryID' => '11980', 'CategoryName' => 'Lincoln (1959-Now)' ), 'Storefront' => array( 'StoreCategoryID' => '0', 'StoreCategory2ID' => '0' ) ) );
+delta( array( $tcg_row ) );
+check( '  a row of the list of changes with a short name: taken by what was learnt, as the full sync takes it', saved_ids(), array( F ) );
+
+echo "\n   Each write merges what the database holds\n";
+coin_shop( $COINS_US );
+TCGiant_Sync_Category_Memory::note( whole( H ) );
+TCGiant_Sync_Category_Memory::begin();
+TCGiant_Sync_Category_Memory::note( whole( F ) );
+get_option( TCGiant_Sync_Category_Memory::COIN_LEAVES_OPTION ); // this request\'s copy: none
+elsewhere( TCGiant_Sync_Category_Memory::COIN_LEAVES_OPTION, array( '3390' => '3377' ) );
+TCGiant_Sync_Category_Memory::end();
+check( 'what another request learnt meanwhile is kept', $TABLE[ TCGiant_Sync_Category_Memory::COIN_LEAVES_OPTION ] ?? null, array( '3390' => '3377', '11980' => '253' ) );
+
+echo "\n   Learnt before 3.28.5, remembered with no parent known: skipped until the next full sync\n";
+coin_shop( $COINS_US );
+TCGiant_Sync_Category_Memory::note( whole( H ) ); // the memory in use
+plant( I, I . ',11980,0,0,' . time() );
+delta( array( bare( I ) ) );
+check( 'a Lincoln cent remembered by 3.28.4 (its category, no parent): skipped as remembered, no GetItem', array( get_items(), saved_ids() ), array( array(), array() ) );
+full_sync( array( whole( I ) ) );
+check( '  the next full sync imports it, by its path, and learns its parent', array( saved_ids(), TCGiant_Sync_Category_Memory::coin_parent( '11980' ) ), array( array( I ), '253' ) );
+
+echo "\n   Kept only while the shop filters; bounded\n";
+shop( array() );
+TCGiant_Sync_Category_Memory::note( ebay_has_path( F, array( '11980', '0', '0' ), PATH_US ) );
+check( 'no filter: nothing kept', array( TCGiant_Sync_Category_Memory::coin_parent( '11980' ), isset( $TABLE[ TCGiant_Sync_Category_Memory::COIN_LEAVES_OPTION ] ) ), array( '', false ) );
+coin_shop( $COINS_US );
+TCGiant_Sync_Category_Memory::note( whole( F ) );
+check( '  learnt from a GetItem answer, written at once', $TABLE[ TCGiant_Sync_Category_Memory::COIN_LEAVES_OPTION ] ?? null, array( '11980' => '253' ) );
+watch_memory_writes();
+TCGiant_Sync_Category_Memory::note( whole( I ) );
+check( '  another listing in the same category: its line written, the coin categories not', in_array( TCGiant_Sync_Category_Memory::COIN_LEAVES_OPTION, array_column( $MEM_WRITES, 0 ), true ), false );
+settings( array() );
+full_sync( array( whole( H ) ) );
+check( 'a full sync with the filter off deletes it, with the rest', isset( $TABLE[ TCGiant_Sync_Category_Memory::COIN_LEAVES_OPTION ] ), false );
+coin_shop( $COINS_US );
+$tcg_page = array();
+for ( $i = 0; $i <= TCGiant_Sync_Category_Memory::COIN_LEAVES_MAX; $i++ ) {
+	$tcg_page[] = array( 'ItemID' => (string) ( 720000000000 + $i ), 'PrimaryCategory' => array( 'CategoryID' => (string) ( 900000 + $i ), 'CategoryName' => 'Coins & Paper Money:Coins: World:Europe:' . $i ) );
+}
+TCGiant_Sync_Category_Memory::note_page( $tcg_page );
+$tcg_kept = $TABLE[ TCGiant_Sync_Category_Memory::COIN_LEAVES_OPTION ] ?? array();
+check( 'at most COIN_LEAVES_MAX coin categories: past it, the one learnt first goes', array( count( $tcg_kept ), isset( $tcg_kept['900000'] ), $tcg_kept[ (string) ( 900000 + TCGiant_Sync_Category_Memory::COIN_LEAVES_MAX ) ] ?? null ), array( TCGiant_Sync_Category_Memory::COIN_LEAVES_MAX, false, '256' ) );
+check( '  uninstall sweeps it with the memory\'s options', 0 === strpos( TCGiant_Sync_Category_Memory::COIN_LEAVES_OPTION, TCGiant_Sync_Category_Memory::OPTION_PREFIX ), true );
+check( 'not an ID, not a path: nothing', array( TCGiant_Sync_Category_Memory::coin_parent( '', PATH_US ), TCGiant_Sync_Category_Memory::coin_parent( array( '11980' ) ), TCGiant_Sync_Category_Memory::coin_parent( '11980', array( PATH_US ) ) === TCGiant_Sync_Category_Memory::coin_parent( '11980' ) ), array( '', '', true ) );
+
+// ---------------------------------------------------------------------------
 echo "\nTHE CODE\n";
 $memory_src = (string) file_get_contents( $ROOT . '/includes/class-tcgiant-sync-category-memory.php' );
-check( 'every write of an option is not autoloaded', array( substr_count( $memory_src, 'update_option(' ), preg_match_all( '/update_option\( [^;]*, false \);/', $memory_src ) ), array( 1, 1 ) );
+check( 'every write of an option is not autoloaded: the listings\' and the coin categories\'', array( substr_count( $memory_src, 'update_option(' ), preg_match_all( '/update_option\( [^;]*, false \);/', $memory_src ) ), array( 2, 2 ) );
 check( 'it asks eBay nothing', 0 === preg_match( '/TCGiant_Sync_API|wp_remote_|get_item\(/', $memory_src ), true );
 
 echo "\n  $pass passed, $fail failed\n\n";

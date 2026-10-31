@@ -447,6 +447,14 @@ class TCGiant_Sync_Inventory {
 	public static function auctions_seen() {
 		Harness_Real_Inventory::auctions_seen();
 	}
+	// eBay's reason for an end, from the answer in hand, and whether the
+	// shop's end is recorded: the real class's (3.28.5).
+	public static function note_ebay_end( $product_id, array $item ) {
+		Harness_Real_Inventory::note_ebay_end( $product_id, $item );
+	}
+	public static function ended_by_shop( $product_id, $item_id ) {
+		return Harness_Real_Inventory::ended_by_shop( $product_id, $item_id );
+	}
 	public static function apply_ended_listing_stock( $product_id, $listed, $sold ) {
 		$GLOBALS['SETTLED'][] = array( 'apply_ended_listing_stock', (int) $product_id, null === $listed ? null : (int) $listed, null === $sold ? null : (int) $sold );
 		if ( null === $listed || null === $sold || ! empty( $GLOBALS['SETTLE_FAILS'] ) ) {
@@ -2953,7 +2961,64 @@ TCGiant_Sync_Cron::instance()->auto_relist_ended_items();
 check( 'pushed before, recorded on eBay United Kingdom: not relisted by auto-relist', $ebay->relists_of( $pushed_coin ), array() );
 check( '  nor asked about: only the coin on the shop\'s own site is', array_values( array_unique( array_column( $ebay->calls, 1 ) ) ), array( $us_coin ) );
 check( '  because the query lets nothing on another site through', false === strpos( (string) end( $GLOBALS['QUERIES'] ), 'tcg_own' ), true );
-check( 'the summary names other sites among the reasons a product is passed over', logged( 'Auto-Relist: Complete. 1 relisted, 0 not relisted (no stock, sold out on eBay, already live, on another eBay site, or its last push is still under way or did not finish).' ), true );
+check( 'the summary names other sites among the reasons a product is passed over', logged( 'Auto-Relist: Complete. 1 relisted, 0 not relisted (no stock, sold out on eBay, ended by you on eBay, already live, on another eBay site, or its last push is still under way or did not finish).' ), true );
+
+echo "\nAUTO-RELIST READS EBAY'S REASON FROM ITS OWN GETITEM, AND LEAVES WHAT THE SELLER ENDED (3.28.5)\n" . str_repeat( '=', 126 ) . "\n";
+
+// eBay's list of changes need not say why a listing ended, so a listing
+// ended in Seller Hub is settled with no reason. Auto-Relist's own GetItem
+// of it says, and was thrown away: ended_listing_check() returned first, as
+// the listing was settled and sold nothing.
+/** An ended coin, settled with or without stock (or by a version that did not say), its GetItem giving $why. */
+function hub_ended( $id, $with_stock, $why = 'NotAvailable', array $meta = array() ) {
+	$item = coin( $id, $meta + array( '_ebay_stock_settled_at' => '2026-10-12 12:00:00' ) );
+	$GLOBALS['META'][ $id ]['_ebay_stock_settled_item'] = $item;
+	if ( null !== $with_stock ) {
+		$GLOBALS['META'][ $id ]['_ebay_settled_with_stock'] = $with_stock ? '1' : '0';
+	}
+	$answer                   = ebay_says_on( 'US', 'Completed', 3, 0 );
+	$answer['Item']['ItemID'] = $item;
+	if ( null !== $why ) {
+		$answer['Item']['ListingDetails'] = array( 'EndingReason' => $why );
+	}
+	$GLOBALS['ENDED_ROWS'][]       = array( 'product_id' => (string) $id, 'ebay_item_id' => $item );
+	$GLOBALS['HUB_ITEMS'][ $item ] = $answer;
+	return $item;
+}
+$ebay = fresh_shop();
+$OPTIONS['tcgiant_sync_ebay_settings'] = $only_us;
+$ENDED_ROWS = array();
+$HUB_ITEMS  = array();
+$hub     = hub_ended( 1501, true );
+$plugin0 = hub_ended( 1502, false );
+$older   = hub_ended( 1503, null );
+$noword  = hub_ended( 1504, true, null );
+$fresh   = coin( 1505 );
+$f_ans   = ebay_says_on( 'US', 'Completed', 3, 0 );
+$f_ans['Item']['ItemID']         = $fresh;
+$f_ans['Item']['ListingDetails'] = array( 'EndingReason' => 'NotAvailable' );
+$HUB_ITEMS[ $fresh ] = $f_ans;
+$ENDED_ROWS[]        = array( 'product_id' => '1505', 'ebay_item_id' => $fresh );
+$ebay->items   = $HUB_ITEMS;
+$ebay->relists = function ( $item_id ) { return relisted_as( '9' . substr( $item_id, 1 ) ); };
+TCGiant_Sync_Cron::instance()->auto_relist_ended_items();
+check( 'settled with stock, sold nothing, eBay\'s GetItem says NotAvailable: not relisted, ended by the shop recorded', array( $ebay->relists_of( $hub ), meta( 1501, '_ebay_end_reason' ), meta( 1501, '_ebay_end_reason_item' ) ), array( array(), 'by_shop', $hub ) );
+check( '  settled with none (the plugin\'s own end at 0, restocked since): relisted, no reason', array( count( $ebay->relists_of( $plugin0 ) ), meta( 1502, '_ebay_end_reason' ) ), array( 1, null ) );
+check( '  settled by a version that did not say: relisted, as before', array( count( $ebay->relists_of( $older ) ), meta( 1503, '_ebay_end_reason' ) ), array( 1, null ) );
+check( '  eBay gives no reason: relisted', count( $ebay->relists_of( $noword ) ), 1 );
+check( '  not settled yet, sold nothing, the shop holding stock: not relisted, ended by the shop', array( $ebay->relists_of( $fresh ), meta( 1505, '_ebay_end_reason' ) ), array( array(), 'by_shop' ) );
+check( '  one GetItem each, nothing else asked', array_count_values( array_column( array_filter( $ebay->calls, function ( $c ) { return 'GetItem' === $c[0]; } ), 1 ) ), array_fill_keys( array( $hub, $plugin0, $older, $noword, $fresh ), 1 ) );
+check( '  the summary counts the two left, and names the reason among the others', logged( 'Auto-Relist: Complete. 3 relisted, 2 not relisted (no stock, sold out on eBay, ended by you on eBay, already live, on another eBay site, or its last push is still under way or did not finish).' ), true );
+check( '  and each left is said, once, in Auto-Relist\'s words (the re-verify\'s N1)', array( count( log_lines_naming( 'Auto-Relist: Did not relist eBay #' . $hub . ' (WC #1501): the seller ended it on eBay. Relist it by hand to put it back up.' ) ), count( log_lines_naming( 'Auto-Relist: Did not relist eBay #' . $fresh . ' (WC #1505): the seller ended it on eBay. Relist it by hand to put it back up.' ) ), count( log_lines_naming( 'Auto-Relist: Did not relist eBay #' . $plugin0 ) ) ), array( 1, 1, 0 ) );
+// The same listing reached twice in one run (a second row for it): said once.
+$LOG        = array();
+$ENDED_ROWS = array( array( 'product_id' => '1501', 'ebay_item_id' => $hub ), array( 'product_id' => '1501', 'ebay_item_id' => $hub ) );
+TCGiant_Sync_Cron::instance()->auto_relist_ended_items();
+check( '  a listing reached twice in a run: said once, counted each time', array( count( log_lines_naming( 'Auto-Relist: Did not relist eBay #' . $hub ) ), logged( 'Auto-Relist: Complete. 0 relisted, 2 not relisted' ) ), array( 1, true ) );
+$ebay->calls = array();
+$TCG_HAND    = relist( 1501, 'Relist' );
+check( 'a relist the shop asks for by hand still goes', array( is_wp_error( $TCG_HAND ) ? $TCG_HAND->get_error_message() : 'relisted', count( $ebay->relists_of( $hub ) ) ), array( 'relisted', 1 ) );
+check( '  Auto-Relist\'s refusal is said in its words', TCGiant_Sync_Exporter::instance()->relist_ended_listing( 1505, 'Auto-Relist' )->get_error_message(), 'the seller ended it on eBay' );
 
 echo "\nTHE HOURLY ENDED CHECK RECORDS THE SITE EBAY GIVES (3.27.5)\n" . str_repeat( '=', 126 ) . "\n";
 

@@ -41,13 +41,16 @@ $stored = array(
 	'marketplace'                  => 'EBAY_US',
 	'export_category_id'           => '180006',
 	'export_category_name'         => '',
-	'import_standard_category_ids' => array( '183454', '69243' ),
+	'import_standard_category_ids' => array( '183454', '69243', '261068' ),
 );
 if ( 'custom' === ( $argv[1] ?? '' ) ) {
 	$stored['custom_saved_categories'] = '180006: My desiccant packs';
 }
 if ( 'gb' === ( $argv[1] ?? '' ) ) {
 	$stored['marketplace'] = 'EBAY_GB';
+}
+if ( 'sports' === ( $argv[1] ?? '' ) ) {
+	$stored['export_category_id'] = '2536';
 }
 if ( 'typed' === ( $argv[1] ?? '' ) ) {
 	$stored['export_category_typed'] = '180006';

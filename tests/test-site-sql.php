@@ -44,12 +44,15 @@ define( 'ARRAY_A', 'ARRAY_A' );
 class WP_Error {
 	private $code;
 	private $message;
-	public function __construct( $code = '', $message = '' ) {
+	private $data;
+	public function __construct( $code = '', $message = '', $data = '' ) {
 		$this->code    = $code;
 		$this->message = $message;
+		$this->data    = $data;
 	}
 	public function get_error_code() { return $this->code; }
 	public function get_error_message() { return $this->message; }
+	public function get_error_data() { return $this->data; }
 }
 function is_wp_error( $thing ) { return $thing instanceof WP_Error; }
 function __( $text ) { return $text; }
@@ -118,6 +121,10 @@ class Sqlite_Wpdb {
 		$v = $this->db->querySingle( $this->prepare( 'SELECT meta_value FROM wp_postmeta WHERE post_id = %d AND meta_key = %s ORDER BY meta_id LIMIT 1', $id, $key ) );
 		return null === $v ? '' : (string) $v;
 	}
+	public function set_meta( $id, $key, $value ) {
+		$this->db->exec( $this->prepare( 'DELETE FROM wp_postmeta WHERE post_id = %d AND meta_key = %s', $id, $key ) );
+		$this->db->exec( $this->prepare( 'INSERT INTO wp_postmeta ( post_id, meta_key, meta_value ) VALUES ( %d, %s, %s )', $id, $key, (string) $value ) );
+	}
 	// Filling it.
 	public function product( $id, array $meta, $status = 'publish' ) {
 		$this->db->exec( $this->prepare( 'INSERT INTO wp_posts VALUES ( %d, %s, %s )', $id, 'product', $status ) );
@@ -138,6 +145,8 @@ class Sqlite_Wpdb {
 $wpdb = new Sqlite_Wpdb();
 // Auto-relist reads a product's own marks before asking eBay (3.28.0).
 function get_post_meta( $id, $key = '', $single = false ) { return $GLOBALS['wpdb']->meta( (int) $id, (string) $key ); }
+// And marks each row's turn (3.28.5).
+function update_post_meta( $id, $key, $value ) { $GLOBALS['wpdb']->set_meta( (int) $id, (string) $key, $value ); return true; }
 
 // A live shop, by wp-config, for TCGiant_Sync_Environment (3.28.0), which
 // the push, Relist and auto-relist ask before anything goes to eBay.

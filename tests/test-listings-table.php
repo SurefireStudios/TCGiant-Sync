@@ -188,7 +188,8 @@ echo "\nTHE ANSWER TO \"WHAT IS BEING COMPARED\"\n" . str_repeat( '=', 118 ) . "
 // the product is compared with anything on eBay: the push follows eBay's own
 // record of the listing it already had.
 $do_push = substr( $exporter, (int) strpos( $exporter, 'private function do_push(' ) );
-$do_push = substr( $do_push, 0, (int) strpos( $do_push, 'private function' ) ?: 12000 );
+// To its closing brace: it outgrew a fixed 12,000 characters in 3.28.5.
+$do_push = substr( $do_push, 0, (int) strpos( $do_push, "\n\t}\n" ) );
 $ended   = (int) strpos( $do_push, 'is_ended_listing_error(' );
 check( 'the push recognises a listing eBay says has ended', $ended > 0, true );
 foreach ( array( 'GetItem', 'get_item(', 'GetSellerList', 'GetMyeBaySelling', 'find_product_id_by_sku' ) as $lookup ) {

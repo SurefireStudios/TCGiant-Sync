@@ -310,6 +310,22 @@ class TCGiant_Sync_Catalog {
 		'custom' => 'Custom Category ID...',
 	);
 
+	/**
+	 * The coin categories CATEGORIES offers, and eBay US's name for each
+	 * (3.28.5). Each is a parent on eBay US, not a leaf: eBay takes none of
+	 * them as a listing's category, and files no listing under one. A listing
+	 * in a subcategory has the parent's name as the second part of the path
+	 * eBay gives with its category: "Coins & Paper Money:Coins: US:Small
+	 * Cents:Lincoln (1959-Now)".
+	 */
+	const COIN_PARENT_CATEGORIES = array(
+		'253'   => 'Coins: US',
+		'256'   => 'Coins: World',
+		'3377'  => 'Coins: Canada',
+		'4733'  => 'Coins: Ancient',
+		'18466' => 'Coins: Medieval',
+	);
+
 	/** eBay US's names for the three single-card categories. */
 	const CARD_CATEGORY_NAMES = array(
 		'183454' => 'CCG Individual Cards',
@@ -413,6 +429,86 @@ class TCGiant_Sync_Catalog {
 		$marketplace = is_array( $settings ) && is_string( $settings['marketplace'] ?? null ) ? $settings['marketplace'] : '';
 
 		return '' === $marketplace || 'EBAY_US' === $marketplace;
+	}
+
+	/**
+	 * The eBay sites whose single-card leaf categories are the three eBay
+	 * US's (183454, 183050, 261328), as checked on each site (3.28.5).
+	 */
+	const CARD_LEAF_SITES = array( 'EBAY_US', 'EBAY_GB', 'EBAY_AU', 'EBAY_CA' );
+
+	/**
+	 * Whether this shop's Primary eBay Marketplace is one of CARD_LEAF_SITES,
+	 * or unset, which every call reads as eBay US.
+	 *
+	 * @return bool
+	 */
+	public static function card_leaves_verified() {
+		$settings    = TCGiant_Sync_OAuth::instance()->get_settings();
+		$marketplace = is_array( $settings ) && is_string( $settings['marketplace'] ?? null ) ? $settings['marketplace'] : '';
+
+		return '' === $marketplace || in_array( $marketplace, self::CARD_LEAF_SITES, true );
+	}
+
+	/**
+	 * What the warnings for a retired ID add where the category it goes to
+	 * may not be what the shop meant (3.28.5); '' for the others. "Trading
+	 * Cards" (2536) covered sports cards too, and goes to CCG Individual
+	 * Cards.
+	 *
+	 * @param string $category_id A retired ID.
+	 * @return string
+	 */
+	public static function retired_category_note( $category_id ) {
+		if ( '2536' !== trim( (string) $category_id ) ) {
+			return '';
+		}
+
+		return __( 'Sports cards belong in Sports Trading Card Singles (261328), the only one of the three single-card categories that takes CSG as a grader: choose that one for them.', 'tcgiant-sync' );
+	}
+
+	/**
+	 * Why a category cannot be a listing's (3.28.5), when it is one of the
+	 * coin parents (COIN_PARENT_CATEGORIES), for a shop on eBay US or with no
+	 * marketplace saved, as maps_retired_categories() asks: they are eBay
+	 * US's IDs. '' for any other. The push, Verify, Bulk Verify and the
+	 * product's eBay tab say it in these words.
+	 *
+	 * @param string $category_id Category ID.
+	 * @return string
+	 */
+	public static function coin_parent_problem( $category_id ) {
+		$category_id = trim( (string) $category_id );
+		if ( ! isset( self::COIN_PARENT_CATEGORIES[ $category_id ] ) || ! self::maps_retired_categories() ) {
+			return '';
+		}
+
+		return sprintf(
+			/* translators: 1: category name, 2: its ID */
+			__( '%1$s (%2$s) is a parent category on eBay, which takes only a bottom-level one: choose a subcategory of it with Browse eBay Categories', 'tcgiant-sync' ),
+			self::COIN_PARENT_CATEGORIES[ $category_id ],
+			$category_id
+		);
+	}
+
+	/**
+	 * The coin parent a listing's category path puts it under: its ID, or ''.
+	 *
+	 * @param mixed $path PrimaryCategory.CategoryName as eBay sends it.
+	 * @return string
+	 */
+	public static function coin_parent_in_path( $path ) {
+		if ( ! is_string( $path ) ) {
+			return '';
+		}
+
+		foreach ( self::COIN_PARENT_CATEGORIES as $id => $name ) {
+			if ( 0 === stripos( $path, 'Coins & Paper Money:' . $name . ':' ) ) {
+				return (string) $id;
+			}
+		}
+
+		return '';
 	}
 
 	/**

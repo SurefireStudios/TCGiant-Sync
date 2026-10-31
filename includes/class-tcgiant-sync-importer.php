@@ -18,6 +18,11 @@ if ( ! class_exists( 'TCGiant_Sync_Category_Memory', false ) ) {
 	require_once __DIR__ . '/class-tcgiant-sync-category-memory.php';
 }
 
+// And the coin parents its filter takes the subcategories of (3.28.5).
+if ( ! class_exists( 'TCGiant_Sync_Catalog', false ) ) {
+	require_once __DIR__ . '/class-tcgiant-sync-catalog.php';
+}
+
 /**
  * TCGiant_Sync_Importer class
  */
@@ -2161,7 +2166,7 @@ class TCGiant_Sync_Importer {
 					// Nothing to judge by even after asking eBay — import it.
 					$match = '' === (string) $primary_cat && '' === (string) $store_cat1 && '' === (string) $store_cat2;
 
-					if ( ! $match && ! self::category_filter_takes( $primary_cat, $store_cat1, $store_cat2, $standard_cats, $valid_custom_ids ) ) {
+					if ( ! $match && ! self::category_filter_takes( $primary_cat, $store_cat1, $store_cat2, $standard_cats, $valid_custom_ids, $ebay_item['PrimaryCategory']['CategoryName'] ?? '' ) ) {
 						$skipped++;
 						continue;
 					}
@@ -2929,7 +2934,8 @@ class TCGiant_Sync_Importer {
 			}
 		}
 
-		foreach ( array( 'StartTime', 'EndTime' ) as $key ) {
+		// And why it ended, when the row says (3.28.5): the ended settle reads it.
+		foreach ( array( 'StartTime', 'EndTime', 'EndingReason' ) as $key ) {
 			if ( ! empty( $item['ListingDetails'][ $key ] ) && ! is_array( $item['ListingDetails'][ $key ] ) ) {
 				$row['ListingDetails'][ $key ] = $item['ListingDetails'][ $key ];
 			}
@@ -5539,7 +5545,8 @@ class TCGiant_Sync_Importer {
 				$item['Storefront']['StoreCategoryID'] ?? '',
 				$item['Storefront']['StoreCategory2ID'] ?? '',
 				$standard_cats,
-				$valid_custom_ids
+				$valid_custom_ids,
+				$item['PrimaryCategory']['CategoryName'] ?? ''
 			) ) {
 				continue;
 			}
@@ -5709,18 +5716,30 @@ class TCGiant_Sync_Importer {
 	 * differently. A standard category must be the primary category; a custom
 	 * one may be the primary category or either store category.
 	 *
+	 * Or, for a ticked coin parent (3.28.5), under which eBay files no
+	 * listing, the primary category one of its subcategories: by eBay's path
+	 * for it when the answer has one, or by what the category memory learnt
+	 * of that category (TCGiant_Sync_Category_Memory::coin_parent()).
+	 *
 	 * @param mixed    $primary_cat      PrimaryCategory.CategoryID.
 	 * @param mixed    $store_cat1       Storefront.StoreCategoryID.
 	 * @param mixed    $store_cat2       Storefront.StoreCategory2ID.
 	 * @param string[] $standard_cats    "eBay Standard Categories to Import".
 	 * @param string[] $valid_custom_ids get_allowed_category_ids().
+	 * @param mixed    $primary_path     PrimaryCategory.CategoryName, eBay's path, if in hand.
 	 * @return bool
 	 */
-	private static function category_filter_takes( $primary_cat, $store_cat1, $store_cat2, $standard_cats, $valid_custom_ids ) {
-		return in_array( (string) $primary_cat, $standard_cats, true )
+	private static function category_filter_takes( $primary_cat, $store_cat1, $store_cat2, $standard_cats, $valid_custom_ids, $primary_path = '' ) {
+		if ( in_array( (string) $primary_cat, $standard_cats, true )
 			|| in_array( (string) $primary_cat, $valid_custom_ids, true )
 			|| in_array( (string) $store_cat1, $valid_custom_ids, true )
-			|| in_array( (string) $store_cat2, $valid_custom_ids, true );
+			|| in_array( (string) $store_cat2, $valid_custom_ids, true ) ) {
+			return true;
+		}
+
+		$parents = array_intersect( array_map( 'strval', (array) $standard_cats ), array_map( 'strval', array_keys( TCGiant_Sync_Catalog::COIN_PARENT_CATEGORIES ) ) );
+
+		return $parents && in_array( TCGiant_Sync_Category_Memory::coin_parent( $primary_cat, $primary_path ), $parents, true );
 	}
 
 	/**
@@ -6033,7 +6052,7 @@ class TCGiant_Sync_Importer {
 			return $used_get;
 		}
 
-		$remaining = TCGiant_Sync_Inventory::apply_ended_listing_stock( (int) $existing_id, $listed, $sold );
+		$remaining = TCGiant_Sync_Inventory::apply_ended_listing_stock( (int) $existing_id, $listed, $sold, $ebay_item );
 
 		if ( null === $remaining ) {
 			TCGiant_Sync_Logger::log( sprintf(

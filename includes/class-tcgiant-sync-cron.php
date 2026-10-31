@@ -23,6 +23,12 @@ class TCGiant_Sync_Cron {
 	const MIN_INTERVAL_SECONDS = 120;
 
 	/**
+	 * Post meta: when Auto-Relist last took the product's row, in Unix
+	 * seconds (3.28.5). Rows are taken in turn by it.
+	 */
+	const RELIST_TRIED_KEY = '_ebay_relist_tried';
+
+	/**
 	 * Instance.
 	 *
 	 * @var self|null
@@ -245,7 +251,8 @@ class TCGiant_Sync_Cron {
 							$settled = TCGiant_Sync_Inventory::apply_ended_listing_stock(
 								$pid,
 								isset( $expired['Item']['Quantity'] ) ? $expired['Item']['Quantity'] : null,
-								isset( $expired['Item']['SellingStatus']['QuantitySold'] ) ? $expired['Item']['SellingStatus']['QuantitySold'] : null
+								isset( $expired['Item']['SellingStatus']['QuantitySold'] ) ? $expired['Item']['SellingStatus']['QuantitySold'] : null,
+								$expired['Item']
 							);
 
 							if ( null !== $settled ) {
@@ -383,7 +390,8 @@ class TCGiant_Sync_Cron {
 				$settled = TCGiant_Sync_Inventory::apply_ended_listing_stock(
 					$pid,
 					isset( $item['Quantity'] ) ? $item['Quantity'] : null,
-					isset( $item['SellingStatus']['QuantitySold'] ) ? $item['SellingStatus']['QuantitySold'] : null
+					isset( $item['SellingStatus']['QuantitySold'] ) ? $item['SellingStatus']['QuantitySold'] : null,
+					$item
 				);
 
 				if ( null !== $settled ) {
@@ -957,15 +965,27 @@ class TCGiant_Sync_Cron {
 		// product follows. It was taken off eBay on purpose, stock and all.
 		// With the sold rows out of the way, Auto-Relist would otherwise reach
 		// it and put it straight back up, fees and all. A relist the shop
-		// asks for by hand still goes. An end made in Seller Hub records no
-		// reason, so it is not known here. The mark is spent when a new
-		// listing starts (SETTLE_KEYS). The listing is compared within
+		// asks for by hand still goes. An end made in Seller Hub carries the
+		// same mark once eBay's reason for it is read (3.28.5): at its settle,
+		// or by the GetItem relist_ended_listing() makes of each row below,
+		// which then leaves it in the same run. The mark is spent when a new listing starts
+		// (SETTLE_KEYS). The listing is compared within
 		// wp_postmeta, never with the listings table's column: two tables can
 		// differ in collation (TCGiant_Sync_DB::out_of_stock_sql()).
 		$shop_ended = " AND NOT EXISTS ( SELECT 1 FROM {$wpdb->postmeta} er
 				   INNER JOIN {$wpdb->postmeta} eri ON eri.post_id = er.post_id AND eri.meta_key = '_ebay_end_reason_item'
 				   INNER JOIN {$wpdb->postmeta} eci ON eci.post_id = er.post_id AND eci.meta_key = '_ebay_item_id' AND eci.meta_value = eri.meta_value
 				   WHERE er.post_id = {$product_column} AND er.meta_key = '_ebay_end_reason' AND er.meta_value = 'by_shop' )";
+
+		// The 50 in turn (3.28.5): never tried first, then the one tried
+		// longest ago, by the mark each row taken gets below. A row refused
+		// every day for a reason of its own - eBay no longer has the item, a
+		// relist another product follows, stock only on variations a relist
+		// cannot send, a push under way - took a place every day in table
+		// order, and 50 of them left every other row waiting for good. A
+		// number, compared as one in MySQL and in SQLite alike.
+		$in_turn = " ORDER BY COALESCE( ( SELECT MAX( CAST( rt.meta_value AS UNSIGNED ) ) FROM {$wpdb->postmeta} rt
+				   WHERE rt.post_id = {$product_column} AND rt.meta_key = '" . self::RELIST_TRIED_KEY . "' ), 0 ) ASC, {$product_column} ASC";
 
 		// Check if custom table exists.
 		if ( ! TCGiant_Sync_DB::table_exists() ) {
@@ -977,7 +997,7 @@ class TCGiant_Sync_Cron {
 				 INNER JOIN {$wpdb->posts} p ON pm1.post_id = p.ID{$stock_join}
 				 WHERE pm1.meta_key = '_ebay_item_id'
 				   AND pm2.meta_value = 'Ended'
-				   AND p.post_status = 'publish'{$other_sites_out}{$sold_out}{$shop_ended}
+				   AND p.post_status = 'publish'{$other_sites_out}{$sold_out}{$shop_ended}{$in_turn}
 				 LIMIT 50",
 				ARRAY_A
 			);
@@ -992,7 +1012,7 @@ class TCGiant_Sync_Cron {
 				 FROM {$table} l
 				 INNER JOIN {$wpdb->posts} p ON p.ID = l.product_id{$stock_join}
 				 WHERE l.listing_status = 'Ended'
-				   AND p.post_status = 'publish'{$other_sites_out}{$sold_out}{$shop_ended}
+				   AND p.post_status = 'publish'{$other_sites_out}{$sold_out}{$shop_ended}{$in_turn}
 				 LIMIT 50",
 				ARRAY_A
 			);
@@ -1006,6 +1026,9 @@ class TCGiant_Sync_Cron {
 		$api = TCGiant_Sync_API::instance();
 		$relisted = 0;
 		$skipped = 0;
+		// The listings left this run as ended by the seller on eBay (3.28.5):
+		// each said once.
+		$left_by_shop = array();
 
 		foreach ( $ended_products as $row ) {
 			$product_id   = (int) ( $row['product_id'] ?? $row['post_id'] ?? 0 );
@@ -1014,6 +1037,9 @@ class TCGiant_Sync_Cron {
 			if ( empty( $ebay_item_id ) || ! $product_id ) {
 				continue;
 			}
+
+			// Its turn taken, whatever comes of it: to the back of the queue.
+			update_post_meta( $product_id, self::RELIST_TRIED_KEY, time() );
 
 			// A listing eBay no longer has: a relist would only fail, every day.
 			if ( (string) $ebay_item_id === (string) get_post_meta( $product_id, '_ebay_unreadable_item', true ) ) {
@@ -1051,6 +1077,18 @@ class TCGiant_Sync_Cron {
 
 			if ( is_wp_error( $result ) && 'relist_refused' === $result->get_error_code() ) {
 				$skipped++;
+
+				// Ended by the seller - in Seller Hub, as eBay's answer said, or
+				// with End Listing here: said, once a listing a run, as nothing
+				// else in the log would say why it stays ended.
+				$ended = $result->get_error_data();
+				if ( is_array( $ended ) && ! empty( $ended['ended_by_shop'] ) && ! isset( $left_by_shop[ (string) $ended['ended_by_shop'] ] ) ) {
+					$left_by_shop[ (string) $ended['ended_by_shop'] ] = true;
+					TCGiant_Sync_Logger::log( sprintf(
+						'Auto-Relist: Did not relist eBay #%s (WC #%d): %s. Relist it by hand to put it back up.',
+						$ended['ended_by_shop'], $product_id, $result->get_error_message()
+					) );
+				}
 				continue;
 			}
 
@@ -1066,7 +1104,7 @@ class TCGiant_Sync_Cron {
 		}
 
 		TCGiant_Sync_Logger::log( sprintf(
-			'Auto-Relist: Complete. %d relisted, %d not relisted (no stock, sold out on eBay, already live, on another eBay site, or its last push is still under way or did not finish).',
+			'Auto-Relist: Complete. %d relisted, %d not relisted (no stock, sold out on eBay, ended by you on eBay, already live, on another eBay site, or its last push is still under way or did not finish).',
 			$relisted, $skipped
 		), $relisted > 0 ? 'success' : 'info' );
 	}

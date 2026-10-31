@@ -49,8 +49,12 @@ class TCGiant_Sync_Inventory {
 	const AUCTION_FIGURE_KEYS = array();
 	public static function __callStatic( $name, $args ) { return null; }
 	public static function restocked_after_website_sale( $product_id ) { return 0; }
-	public static function listing_already_settled( $product_id, $item_id ) { return false; }
-	public static function apply_ended_listing_stock( $product_id, $listed, $sold ) { return (int) wc_get_product( $product_id )->get_stock_quantity(); }
+	public static $settled = array();
+	public static function listing_already_settled( $product_id, $item_id ) { return isset( self::$settled[ $product_id . '|' . $item_id ] ); }
+	public static function apply_ended_listing_stock( $product_id, $listed, $sold, $item = null ) {
+		self::$settled[ $product_id . '|' . get_post_meta( $product_id, '_ebay_item_id', true ) ] = true;
+		return (int) wc_get_product( $product_id )->get_stock_quantity();
+	}
 }
 class TCGiant_Sync_DB {
 	public static function upsert( $row ) { return 1; }
@@ -118,6 +122,15 @@ function retired_warning( $product, $from, $to, $source = 'product', $for = 'Pus
 function linked( $id, array $meta, $status = 'Active' ) {
 	return card( $id, $meta + array( '_ebay_item_id' => '1100000009' . substr( (string) $id, -2 ), '_ebay_listing_type' => 'FixedPriceItem', '_ebay_listing_status' => $status ) );
 }
+/** A push refused, or not: its error code and message, the calls made, the warnings. */
+function refused( WC_Product $product ) {
+	$GLOBALS['API']->calls = array();
+	$from                  = count( $GLOBALS['W']['log'] );
+	$res                   = private_method( 'TCGiant_Sync_Exporter', 'do_push' )->invoke( exporter(), $product );
+	return array( is_wp_error( $res ) ? $res->get_error_code() : 'pushed', is_wp_error( $res ) ? $res->get_error_message() : '', array_column( $GLOBALS['API']->calls, 0 ), warnings_from( $from ) );
+}
+const CARD_WORDS   = 'eBay takes card grading and condition details only in 183454 CCG Individual Cards, 183050 Non-Sport Trading Card Singles and 261328 Sports Trading Card Singles: choose one of them with Browse eBay Categories, or set Item Type to All Other';
+const REFUSED_CARD = 'Cannot push to eBay — missing required settings: eBay Category — ' . CARD_WORDS;
 /** Every call the last push made: its name, and the category its item named. */
 function calls_made() {
 	return array_map( function ( $c ) { return array( $c[0], category_of( $c[1] ) ); }, $GLOBALS['API']->calls );
@@ -252,7 +265,14 @@ list( $xml, $warned ) = built( $p );
 check( 'Verify of the same product checks a new listing: 183454, in Verify\'s words', array( category_of( $xml ), $warned ), array( '183454', array( retired_warning( 950, '180006', '183454', 'product', 'Verify' ) ) ) );
 $p = linked( 951, GRADED + array( '_ebay_export_item_type' => 'tcg', '_ebay_export_category_id' => '183446', '_ebay_export_category_name' => 'Disney Lorcana' ) );
 list( $xml, $warned, $call ) = pushed( $p );
-check( 'Item Type "Trading Cards", saved as 183446, a live listing: revised in 183446, so no card details, as the category gate says', array( $call, category_of( $xml ), condition_of( $xml ), descriptors( $xml ), $warned ), array( 'ReviseFixedPriceItem', '183446', '2750', array(), array( TCGiant_Sync_Exporter::card_category_warning( 951, '183446' ), TCGiant_Sync_Exporter::kept_category_warning( 951, array( 'from' => '183446', 'to' => '183454', 'source' => 'product' ), '110000000951' ) ) ) );
+check( 'Item Type "Trading Cards", saved as 183446, a live listing: revised in 183446, so no card details, as the category gate says, and not refused (3.28.5 ruling)', array( $call, category_of( $xml ), condition_of( $xml ), descriptors( $xml ), $warned ), array( 'ReviseFixedPriceItem', '183446', '2750', array(), array( TCGiant_Sync_Exporter::card_category_warning( 951, '183446' ), TCGiant_Sync_Exporter::kept_category_warning( 951, array( 'from' => '183446', 'to' => '183454', 'source' => 'product' ), '110000000951' ) ) ) );
+$p = linked( 958, GRADED + array( '_ebay_export_item_type' => 'tcg', '_ebay_export_category_id' => '183446', '_ebay_export_category_name' => 'Disney Lorcana' ), 'Ended' );
+$API->answers['ReviseFixedPriceItem'] = new WP_Error( 'api_error', 'You are not allowed to revise ended listings.' );
+$API->answers['GetItem']              = array( 'Ack' => 'Success', 'Item' => array( 'ItemID' => '110000000958', 'Quantity' => '1', 'SellingStatus' => array( 'QuantitySold' => '0', 'ListingStatus' => 'Completed' ), 'Site' => 'US' ) );
+list( , $warned ) = pushed( $p );
+$tcg_add = end( $API->calls );
+check( '  the same with its listing known to have ended: not refused for it, as the new listing goes to 183454 with its card details', array( calls_made(), descriptors( $tcg_add[1] ) ), array( array( array( 'ReviseFixedPriceItem', '183446' ), array( 'GetItem', null ), array( 'AddFixedPriceItem', '183454' ) ), array( '27501' => '275010', '27502' => '275022' ) ) );
+unset( $API->answers['ReviseFixedPriceItem'], $API->answers['GetItem'] );
 $tcg_keep = TCGiant_Sync_OAuth::$settings;
 TCGiant_Sync_OAuth::$settings['export_category_id'] = '261068';
 list( $xml, $warned, $call ) = pushed( linked( 952, GRADED ) );
@@ -341,9 +361,9 @@ $from = count( $GLOBALS['W']['log'] );
 item_xml( $p, push_settings( $p ) );
 $build->invoke( exporter(), $p, push_settings( $p ) );
 check( '  built twice in one push: said once', count( warnings_from( $from ) ), 1 );
-list( $xml, $warned ) = pushed( $p );
-list( , $warned2 ) = pushed( $p );
-check( '  pushed: the same item, and two pushes say it once each', array( condition_of( $xml ), descriptors( $xml ), count( $warned ), count( $warned2 ) ), array( '2750', array(), 1, 1 ) );
+check( '  pushed: refused before any call (3.28.5), as the eBay tab says it is not ready', refused( $p ), array( 'missing_export_settings', REFUSED_CARD, array(), array() ) );
+$tcg_valid = exporter()->validate_export_settings( push_settings( $p ) );
+check( '  and Verify and Bulk Verify refuse it, in the same words', is_wp_error( $tcg_valid ) ? $tcg_valid->get_error_data()['missing'] : $tcg_valid, array( 'eBay Category — ' . CARD_WORDS ) );
 list( $xml, $warned ) = built( card( 743, $tcg_graded + array( '_ebay_export_item_type' => 'tcg', '_ebay_export_category_id' => '261328' ) ) );
 check( 'Item Type "Trading Cards" in one of the three: its descriptors, nothing said', array( descriptors( $xml ), $warned ), array( array( '27501' => '275010', '27502' => '275022' ), array() ) );
 list( $xml, $warned ) = built( card( 744, array( '_ebay_export_item_type' => 'coins', '_ebay_export_category_id' => '253', '_ebay_export_condition_type' => 'graded', '_ebay_export_grader_id' => '14', '_ebay_export_grade_value' => 'MS/PR 70' ) ) );
@@ -430,6 +450,180 @@ check( 'a grader eBay\'s table does not list (AGS, 2750124): sent as it is, noth
 check( 'the check itself: outside the three, and an unlisted grader, valid; Ace in 183454 and not 183050', array( TCGiant_Sync_Exporter::grader_valid_in( '2750119', '183456' ), TCGiant_Sync_Exporter::grader_valid_in( '2750129', '261328' ), TCGiant_Sync_Exporter::grader_valid_in( '2750119', '183454' ), TCGiant_Sync_Exporter::grader_valid_in( '2750119', '183050' ) ), array( true, true, true, false ) );
 
 // ─────────────────────────────────────────────────────────────────────────────
+echo "\nTHE LOCAL CHECKS REFUSE WHAT THE EBAY TAB CALLS NOT READY, AND NOTHING ELSE (3.28.5)\n" . str_repeat( '=', 124 ) . "\n";
+
+check( 'the words, shared: a card in another category; none in one of the three, for a coin, for All Other, or with no condition type', array(
+	TCGiant_Sync_Exporter::card_category_problem( array( 'item_type' => 'tcg', 'category_id' => '183456', 'condition_type' => 'graded' ) ),
+	TCGiant_Sync_Exporter::card_category_problem( array( 'item_type' => 'tcg', 'category_id' => '261328', 'condition_type' => 'ungraded' ) ),
+	TCGiant_Sync_Exporter::card_category_problem( array( 'item_type' => 'coins', 'category_id' => '11980', 'condition_type' => 'graded' ) ),
+	TCGiant_Sync_Exporter::card_category_problem( array( 'item_type' => 'other', 'category_id' => '183456', 'condition_type' => 'graded' ) ),
+	TCGiant_Sync_Exporter::card_category_problem( array( 'item_type' => 'tcg', 'category_id' => '183456', 'condition_type' => '' ) ),
+), array( CARD_WORDS, '', '', '', '' ) );
+$p = card( 980, array( '_ebay_export_category_id' => '261328', '_ebay_export_condition_type' => 'graded', '_ebay_export_grader_id' => '2750119', '_ebay_export_grade_value' => '9' ) );
+$tcg_r = refused( $p );
+check( 'a grader eBay\'s table does not list for the category (Ace in 261328): passes, and is sent with its warning, as the tab warns', array( exporter()->validate_export_settings( push_settings( $p ) ), $tcg_r[0], $tcg_r[2], count( $tcg_r[3] ) ), array( true, 'pushed', array( 'AddFixedPriceItem' ), 1 ) );
+$p = card( 981, array( '_ebay_export_category_id' => '183454', '_ebay_export_condition_type' => 'ungraded', '_ebay_export_ungraded_condition' => '400011' ) );
+check( '  an ungraded condition it does not list there (Excellent in 183454): the same', array( exporter()->validate_export_settings( push_settings( $p ) ), refused( $p )[2] ), array( true, array( 'AddFixedPriceItem' ) ) );
+
+// Only where a new listing is made (the coordinator's ruling 3): a revise of
+// a live listing goes as 3.28.4 sent it, without the details, said.
+$p = linked( 986, GRADED + array( '_ebay_export_item_type' => 'tcg', '_ebay_export_category_id' => '183456' ) );
+list( $xml, $warned, $call ) = pushed( $p );
+check( 'a card in 183456 with a live listing: revised, without card details, with the category warning, not refused', array( $call, condition_of( $xml ), descriptors( $xml ), $warned ), array( 'ReviseFixedPriceItem', '2750', array(), array( TCGiant_Sync_Exporter::card_category_warning( 986, '183456' ) ) ) );
+$p = linked( 987, GRADED + array( '_ebay_export_item_type' => 'tcg', '_ebay_export_category_id' => '183456' ) );
+$API->answers['ReviseFixedPriceItem'] = new WP_Error( 'api_error', 'You are not allowed to revise ended listings.' );
+$API->answers['GetItem']              = array( 'Ack' => 'Success', 'Item' => array( 'ItemID' => '110000000987', 'Quantity' => '1', 'SellingStatus' => array( 'QuantitySold' => '0', 'ListingStatus' => 'Completed' ), 'ListingDetails' => array( 'EndTime' => '2026-10-20T08:00:00.000Z' ), 'Site' => 'US' ) );
+$tcg_r = refused( $p );
+check( '  its listing found ended: the new listing in its place refused before it is made', array( $tcg_r[0], $tcg_r[1], $tcg_r[2] ), array( 'missing_export_settings', REFUSED_CARD, array( 'ReviseFixedPriceItem', 'GetItem' ) ) );
+check( '    and the ended listing\'s site kept, as when eBay refuses the add', get_post_meta( 987, '_ebay_site', true ), 'US' );
+check( '    and the listing recorded as ended, with eBay\'s end time', array( get_post_meta( 987, '_ebay_listing_status', true ), get_post_meta( 987, '_ebay_end_time', true ), TCGiant_Sync_Exporter::pushes_new_listing( 987 ) ), array( 'Ended', '2026-10-20T08:00:00.000Z', true ) );
+$tcg_r = refused( $p );
+check( '    so the next push is refused before any call', array( $tcg_r[0], $tcg_r[2] ), array( 'missing_export_settings', array() ) );
+unset( $API->answers['ReviseFixedPriceItem'], $API->answers['GetItem'] );
+$tcg_valid = exporter()->validate_export_settings( push_settings( $p ), false );
+check( '  the check itself: passes for a revise, refuses for a new listing (the default)', array( $tcg_valid, is_wp_error( exporter()->validate_export_settings( push_settings( $p ) ) ) ), array( true, true ) );
+check( 'which a push makes: none, an ended one, an item number of "0", a live one', array( TCGiant_Sync_Exporter::pushes_new_listing( 742 ), TCGiant_Sync_Exporter::pushes_new_listing( 958 ), TCGiant_Sync_Exporter::pushes_new_listing( ( card( 989, array( '_ebay_item_id' => '0' ) ) )->get_id() ), TCGiant_Sync_Exporter::pushes_new_listing( 986 ) ), array( true, true, true, false ) );
+
+// LOW 8: the three leaves are eBay UK's, Australia's and Canada's too; the
+// mapping stays eBay US's, and the refusal applies there.
+$tcg_keep = TCGiant_Sync_OAuth::$settings;
+foreach ( array( 'EBAY_GB', 'EBAY_AU', 'EBAY_CA' ) as $i => $tcg_mp ) {
+	TCGiant_Sync_OAuth::$settings['marketplace'] = $tcg_mp;
+	$p = card( 982 + $i, GRADED + array( '_ebay_export_item_type' => 'tcg', '_ebay_export_category_id' => '180006', '_ebay_export_category_name' => '' ) );
+	check( 'a shop on ' . $tcg_mp . ', a trading card saved as 180006: not mapped, and refused before any call, naming the three and Browse eBay Categories', refused( $p ), array( 'missing_export_settings', REFUSED_CARD, array(), array() ) );
+}
+$p = card( 985, GRADED + array( '_ebay_export_item_type' => 'tcg', '_ebay_export_category_id' => '183454' ) );
+$tcg_r = refused( $p );
+check( '  one saved as 183454 there: pushed, with its card details', array( $tcg_r[0], calls_made(), descriptors( $API->calls[0][1] ?? '' ) ), array( 'pushed', array( array( 'AddFixedPriceItem', '183454' ) ), array( '27501' => '275010', '27502' => '275022' ) ) );
+// Ruling 2: only there. Elsewhere, where the three were not checked, as 3.28.4.
+TCGiant_Sync_OAuth::$settings['marketplace'] = 'EBAY_DE';
+$p = card( 988, GRADED + array( '_ebay_export_item_type' => 'tcg', '_ebay_export_category_id' => '180006', '_ebay_export_category_name' => '' ) );
+$tcg_r = refused( $p );
+check( 'a shop on eBay Germany, a card saved as 180006: not refused; listed without card details, with the category warning, as 3.28.4', array( $tcg_r[0], calls_made(), descriptors( $API->calls[0][1] ?? '' ), $tcg_r[3] ), array( 'pushed', array( array( 'AddFixedPriceItem', '180006' ) ), array(), array( TCGiant_Sync_Exporter::card_category_warning( 988, '180006' ) ) ) );
+check( '  the helpers say so', array( TCGiant_Sync_Catalog::card_leaves_verified(), TCGiant_Sync_Exporter::card_category_problem( push_settings( $p ) ), exporter()->validate_export_settings( push_settings( $p ) ) ), array( false, '', true ) );
+check( '  the sites where it applies', TCGiant_Sync_Catalog::CARD_LEAF_SITES, array( 'EBAY_US', 'EBAY_GB', 'EBAY_AU', 'EBAY_CA' ) );
+TCGiant_Sync_OAuth::$settings['marketplace'] = '';
+check( '  no marketplace saved (read as eBay US): it applies', TCGiant_Sync_Catalog::card_leaves_verified(), true );
+TCGiant_Sync_OAuth::$settings = $tcg_keep;
+
+// LOW 5: 2536 went to CCG Individual Cards, and sports cards do not belong there.
+check( 'the default saved as 2536: the warning says where sports cards go, and that CSG is taken only there', retired_warning( 990, '2536', '183454', 'default' ), 'Push: WC #990 is saved with eBay category 2536 ("Trading Cards"), an ID TCGiant Sync\'s category list had wrong until 3.28.1, so the listing went to 183454, CCG Individual Cards, where eBay files those cards. Choose the category again on Settings, Push to eBay (the default eBay category) to stop this message. Sports cards belong in Sports Trading Card Singles (261328), the only one of the three single-card categories that takes CSG as a grader: choose that one for them.' );
+$tcg_note = 'Sports cards belong in Sports Trading Card Singles (261328), the only one of the three single-card categories that takes CSG as a grader: choose that one for them.';
+check( '  in Verify\'s words too; no other retired ID says it', array( substr( retired_warning( 990, '2536', '183454', 'product', 'Verify' ), -strlen( $tcg_note ) ) === $tcg_note, 0 === strpos( retired_warning( 990, '2536', '183454', 'product', 'Verify' ), 'Verify: ' ), false !== strpos( retired_warning( 990, '180006', '183454' ), 'Sports cards' ), false !== strpos( retired_warning( 990, '261068', '183050' ), 'Sports cards' ) ), array( true, true, false, false ) );
+$tcg_keep = TCGiant_Sync_OAuth::$settings;
+TCGiant_Sync_OAuth::$settings['export_category_id'] = '2536';
+list( $xml, $warned ) = pushed( card( 991, GRADED ) );
+check( '  a push with that default: still 183454, the warning with the note', array( category_of( $xml ), $warned ), array( '183454', array( retired_warning( 991, '2536', '183454', 'default' ) ) ) );
+TCGiant_Sync_OAuth::$settings = $tcg_keep;
+
+// ─────────────────────────────────────────────────────────────────────────────
+echo "\nTHE COIN CATEGORIES ARE PARENTS: REFUSED BEFORE ANY CALL (3.28.5)\n" . str_repeat( '=', 124 ) . "\n";
+
+$tcg_coin = array( '_ebay_export_item_type' => 'coins', '_ebay_export_condition_type' => 'graded', '_ebay_export_grader_id' => '14', '_ebay_export_grade_value' => 'MS/PR 70' );
+$tcg_got  = array();
+foreach ( TCGiant_Sync_Catalog::COIN_PARENT_CATEGORIES as $tcg_id => $tcg_name ) {
+	$tcg_got[ $tcg_id ] = refused( card( 1000 + (int) $tcg_id % 1000, $tcg_coin + array( '_ebay_export_category_id' => (string) $tcg_id ) ) );
+}
+check( 'each of the five, saved on the product: refused, naming it, before any call', array_map( function ( $r ) { return array( $r[0], $r[2] ); }, $tcg_got ), array_fill_keys( array( 253, 256, 3377, 4733, 18466 ), array( 'missing_export_settings', array() ) ) );
+check( '  the words, word for word', $tcg_got[253][1], 'Cannot push to eBay — missing required settings: eBay Category — Coins: US (253) is a parent category on eBay, which takes only a bottom-level one: choose a subcategory of it with Browse eBay Categories' );
+check( '  the list\'s coin entries are exactly these five', array_map( 'strval', array_keys( TCGiant_Sync_Catalog::COIN_PARENT_CATEGORIES ) ), array_values( array_intersect( array_map( 'strval', array_keys( TCGiant_Sync_Catalog::CATEGORIES ) ), TCGiant_Sync_Exporter::DESCRIPTOR_CATEGORIES_COINS ) ) );
+$tcg_keep = TCGiant_Sync_OAuth::$settings;
+TCGiant_Sync_OAuth::$settings['export_category_id'] = '3377';
+$tcg_valid = exporter()->validate_export_settings( push_settings( card( 1010, $tcg_coin ) ) );
+check( 'the default saved as 3377, the product with none of its own: Verify and Bulk Verify refuse it too', is_wp_error( $tcg_valid ) ? $tcg_valid->get_error_data()['missing'] : $tcg_valid, array( 'eBay Category — Coins: Canada (3377) is a parent category on eBay, which takes only a bottom-level one: choose a subcategory of it with Browse eBay Categories' ) );
+TCGiant_Sync_OAuth::$settings = $tcg_keep;
+$p = linked( 1013, $tcg_coin + array( '_ebay_export_category_id' => '253' ) );
+check( 'a coin parent with a live listing: revised as before, not refused (ruling 3)', refused( $p )[2], array( 'ReviseFixedPriceItem' ) );
+$API->answers['ReviseFixedPriceItem'] = new WP_Error( 'api_error', 'You are not allowed to revise ended listings.' );
+$API->answers['GetItem']              = array( 'Ack' => 'Success', 'Item' => array( 'ItemID' => '110000000913', 'Quantity' => '1', 'SellingStatus' => array( 'QuantitySold' => '0', 'ListingStatus' => 'Completed' ), 'Site' => 'US' ) );
+$tcg_r = refused( $p );
+check( '  its listing found ended: the new listing refused before it is made', array( $tcg_r[0], $tcg_r[2] ), array( 'missing_export_settings', array( 'ReviseFixedPriceItem', 'GetItem' ) ) );
+unset( $API->answers['ReviseFixedPriceItem'], $API->answers['GetItem'] );
+$p = card( 1011, $tcg_coin + array( '_ebay_export_category_id' => '11980', '_ebay_export_category_name' => 'Coins & Paper Money > Coins: US > Small Cents' ) );
+$tcg_r = refused( $p );
+check( 'a coin leaf, chosen with Browse eBay Categories: pushed, with its coin details', array( $tcg_r[0], calls_made(), descriptors( $API->calls[0][1] ?? '' ) ), array( 'pushed', array( array( 'AddFixedPriceItem', '11980' ) ), array( '1' => '14', '3' => '18', '4' => '32' ) ) );
+$tcg_keep = TCGiant_Sync_OAuth::$settings;
+TCGiant_Sync_OAuth::$settings['marketplace'] = 'EBAY_GB';
+check( 'a shop on eBay UK, saved as 253: not judged, the IDs being eBay US\'s', array( TCGiant_Sync_Catalog::coin_parent_problem( '253' ), refused( card( 1012, $tcg_coin + array( '_ebay_export_category_id' => '253' ) ) )[2] ), array( '', array( 'AddFixedPriceItem' ) ) );
+TCGiant_Sync_OAuth::$settings = $tcg_keep;
+check( 'the helper: a parent, with spaces; a leaf; a card leaf; nothing', array( TCGiant_Sync_Catalog::coin_parent_problem( ' 18466 ' ), TCGiant_Sync_Catalog::coin_parent_problem( '11980' ), TCGiant_Sync_Catalog::coin_parent_problem( '183454' ), TCGiant_Sync_Catalog::coin_parent_problem( '' ) ), array( 'Coins: Medieval (18466) is a parent category on eBay, which takes only a bottom-level one: choose a subcategory of it with Browse eBay Categories', '', '', '' ) );
+check( 'the path helper: the parent named second in eBay\'s path, in any case; not a name that only begins the same; not the parent itself; not one further down a path; not a non-string', array(
+	TCGiant_Sync_Catalog::coin_parent_in_path( 'Coins & Paper Money:Coins: US:Small Cents:Lincoln (1959-Now)' ),
+	TCGiant_Sync_Catalog::coin_parent_in_path( 'coins & paper money:coins: canada:Dollars' ),
+	TCGiant_Sync_Catalog::coin_parent_in_path( 'Coins & Paper Money:Coins: USA:Dollars' ),
+	TCGiant_Sync_Catalog::coin_parent_in_path( 'Coins & Paper Money:Coins: US' ),
+	TCGiant_Sync_Catalog::coin_parent_in_path( 'Stamps:Coins & Paper Money:Coins: US:Dollars' ),
+	TCGiant_Sync_Catalog::coin_parent_in_path( 'Toys & Hobbies:Collectible Card Games:CCG Individual Cards' ),
+	TCGiant_Sync_Catalog::coin_parent_in_path( array( 'Coins & Paper Money:Coins: US:Dollars' ) ),
+), array( '253', '3377', '', '', '', '', '' ) );
+
+// ─────────────────────────────────────────────────────────────────────────────
+echo "\nEVERY ITEM A PUSH BUILDS IS MEASURED BEFORE IT IS SENT (3.28.5)\n" . str_repeat( '=', 124 ) . "\n";
+
+// eBay, answering GetItem by the item asked about.
+class Size_Gate_API extends Template_World_API {
+	public $items = array();
+	public $ended = array();
+	public function trading_api_request( $call_name, $xml_body, $allow_retry = true, $max_body_bytes = 0 ) {
+		if ( 'ReviseFixedPriceItem' === $call_name && preg_match( '#<ItemID>(\d+)</ItemID>#', $xml_body, $m ) && isset( $this->ended[ $m[1] ] ) ) {
+			$this->calls[] = array( $call_name, $xml_body );
+			return new WP_Error( 'api_error', 'You are not allowed to revise ended listings.' );
+		}
+		if ( 'GetItem' === $call_name && preg_match( '#<ItemID>(\d+)</ItemID>#', $xml_body, $m ) && isset( $this->items[ $m[1] ] ) ) {
+			$this->calls[] = array( $call_name, $xml_body );
+			return array( 'Ack' => 'Success', 'Item' => $this->items[ $m[1] ] );
+		}
+		return parent::trading_api_request( $call_name, $xml_body, $allow_retry, $max_body_bytes );
+	}
+}
+// What following a relist reads of the import's rules: no SKU of another item.
+if ( ! class_exists( 'TCGiant_Sync_Mapper', false ) ) {
+	class TCGiant_Sync_Mapper {
+		public static function instance() { return new self(); }
+		public function map_ebay_to_woo( $item ) { return array(); }
+		public function other_goods_sku( ...$args ) { return ''; }
+		public function goods_sku( ...$args ) { return ''; }
+	}
+}
+$tcg_api = $API;
+$API     = new Size_Gate_API();
+$tcg_slot->setValue( null, $API );
+$API->ended = array( '110000000970' => true, '110000000971' => true );
+$tcg_tpl = (string) make_template( array( 'html' => '{{{description}}}' ) );
+// The description goes over eBay's ceiling from the push's second build on.
+$GLOBALS['tcg_builds'] = 0;
+$tcg_long = function ( $html ) {
+	$GLOBALS['tcg_builds']++;
+	return $GLOBALS['tcg_builds'] >= 2 ? str_repeat( 'a', 500001 ) : $html;
+};
+add_filter( 'tcgiant_sync_ebay_description', $tcg_long );
+
+// The ended listing's own sales brought into the stock: built again, then
+// checked a second time and found settled, so nothing builds after.
+$p = linked( 970, GRADED + array( '_ebay_export_category_id' => '183454', TCGiant_Sync_Templates::OVERRIDE_META => $tcg_tpl ) );
+$API->items['110000000970'] = array( 'ItemID' => '110000000970', 'Quantity' => '2', 'SellingStatus' => array( 'QuantitySold' => '1', 'ListingStatus' => 'Completed' ), 'Site' => 'US' );
+$GLOBALS['tcg_builds'] = 0;
+$tcg_r = refused( $p );
+check( 'its listing ended with a sale, the item built again from the stock that leaves: over 500,000 characters, refused, nothing listed', array( $tcg_r[0], $tcg_r[2], $GLOBALS['tcg_builds'] ), array( 'description_too_long', array( 'ReviseFixedPriceItem', 'GetItem' ), 2 ) );
+
+// Its listing relisted on eBay, live: built again for that listing.
+$p = linked( 971, GRADED + array( '_ebay_export_category_id' => '183454', TCGiant_Sync_Templates::OVERRIDE_META => $tcg_tpl ) );
+$API->items['110000000971'] = array( 'ItemID' => '110000000971', 'Quantity' => '1', 'SellingStatus' => array( 'QuantitySold' => '0', 'ListingStatus' => 'Completed' ), 'ListingDetails' => array( 'RelistedItemID' => '110000000972' ), 'Site' => 'US' );
+$API->items['110000000972'] = array( 'ItemID' => '110000000972', 'Quantity' => '1', 'SellingStatus' => array( 'QuantitySold' => '0', 'ListingStatus' => 'Active' ), 'Site' => 'US' );
+$GLOBALS['tcg_builds'] = 0;
+$tcg_r = refused( $p );
+check( 'its listing relisted on eBay, the item built again for the relist: over 500,000 characters, refused, the relist not revised', array( $tcg_r[0], $tcg_r[2], $GLOBALS['tcg_builds'] ), array( 'description_too_long', array( 'ReviseFixedPriceItem', 'GetItem', 'GetItem' ), 2 ) );
+
+// Under the ceiling every time: both go ahead, as before.
+remove_filter( 'tcgiant_sync_ebay_description', $tcg_long );
+TCGiant_Sync_Inventory::$settled = array();
+$tcg_r1 = refused( wc_get_product( 970 ) );
+$tcg_r2 = refused( $p );
+check( '  under it: the new listing made, and the relist revised', array( $tcg_r1[0], $tcg_r1[2], $tcg_r2[0], $tcg_r2[2] ), array( 'pushed', array( 'ReviseFixedPriceItem', 'GetItem', 'AddFixedPriceItem' ), 'pushed', array( 'ReviseFixedPriceItem', 'GetItem', 'GetItem', 'ReviseFixedPriceItem' ) ) );
+$API = $tcg_api;
+$tcg_slot->setValue( null, $API );
+
+// ─────────────────────────────────────────────────────────────────────────────
 echo "\nTHE MAPPING IS EBAY US'S: ONLY FOR A SHOP ON EBAY US, OR WITH NO MARKETPLACE SAVED\n" . str_repeat( '=', 124 ) . "\n";
 
 $tcg_keep = TCGiant_Sync_OAuth::$settings;
@@ -465,7 +659,8 @@ check( '  not a blank custom entry: the custom field is hidden', 1 === preg_matc
 check( '  with a line saying why', false !== strpos( $page, 'The default saved here, Pokémon Individual Cards (180006), was wrong in TCGiant Sync&#039;s list until 3.28.1' ), true );
 check( '  the three single-card categories are offered', array( substr_count( $page, '<option value="183454"' ) >= 1, substr_count( $page, '<option value="183050"' ) >= 1, substr_count( $page, '<option value="261328"' ) >= 1 ), array( true, true, true ) );
 check( 'the import filter keeps a ticked retired ID, ticked, as what it is', 1 === preg_match( '#value="69243" checked>\s*\(retired\) Yu-Gi-Oh! Individual Cards \(69243\) → CCG Individual Cards \(183454\)#u', $page ), true );
-check( '  with a line saying it imports none, and to tick the category its label points to', array( false !== strpos( $page, 'no card listing is filed under it, so it imports none. Tick the category its label points to instead' ), false !== strpos( $page, 'Individual Cards (183454): tick that' ) ), array( true, false ) );
+check( '  with a line saying it imports none', false !== strpos( $page, 'no card listing is filed under it, so it imports none.' ), true );
+check( '  and one for each box, naming the category to tick in its place (3.28.5): 261068\'s is Non-Sport Trading Card Singles', array( false !== strpos( $page, 'Yu-Gi-Oh! Individual Cards (69243): tick CCG Individual Cards (183454) instead, and untick this one.' ), false !== strpos( $page, 'Non-Sport Trading Card Games (261068): tick Non-Sport Trading Card Singles (183050) instead, and untick this one.' ), false !== strpos( $page, 'Tick the category its label points to' ) ), array( true, true, false ) );
 check( '  the default\'s typed field, empty: 180006 was chosen from the list', 1 === preg_match( '#<input type="hidden" id="export_category_typed" name="tcgiant_sync_ebay_settings\[export_category_typed\]" value="">#', $page ), true );
 check( '  and the valid one stays ticked', 1 === preg_match( '#value="183454"\s*checked="checked">#', $page ), true );
 
@@ -473,6 +668,8 @@ list( $tcg_code, $tcg_child ) = settings_child( 'custom' );
 $page = (string) ( $tcg_child['page'] ?? '' );
 check( 'a retired ID the shop typed as one of its custom categories: its own entry, no "(retired)"', array( 1 === preg_match( '#<option value="180006"\s*selected="selected">\s*My desiccant packs \(180006\)#', $page ), false !== strpos( $page, '(retired) Pokémon' ) ), array( true, false ) );
 
+list( $tcg_code, $tcg_child ) = settings_child( 'sports' );
+check( 'the default saved as 2536: Settings\' line says where sports cards go (3.28.5)', array( $tcg_code, false !== strpos( (string) ( $tcg_child['page'] ?? '' ), 'The default saved here, Trading Cards (2536), was wrong in TCGiant Sync&#039;s list until 3.28.1: eBay does not file trading cards under 2536. Pushes send CCG Individual Cards (183454) instead, where eBay files those cards, and the log says so. Choose a category here to replace it. Sports cards belong in Sports Trading Card Singles (261328), the only one of the three single-card categories that takes CSG as a grader: choose that one for them.' ) ), array( 0, true ) );
 list( $tcg_code, $tcg_child ) = settings_child( 'typed' );
 $page = (string) ( $tcg_child['page'] ?? '' );
 preg_match( '#<select class="tc-select" id="export_category_select".*?</select>#s', $page, $tcg_select );
@@ -502,20 +699,20 @@ $b = $tab['browsed'] ?? array();
 check( 'a retired ID chosen from eBay\'s tree (Building Toys): a custom category, as before, with no line', array( $b['selected'] ?? null, $b['custom_hidden'] ?? null, $b['line'] ?? null, isset( $b['options']['183446'] ) ), array( 'custom', false, '', false ) );
 $c = $tab['custom'] ?? array();
 check( 'a custom category (CCG Sealed Boxes): custom, its readiness line as before', array( $c['selected'] ?? null, $c['line'] ?? null, $c['readiness'][0] ?? null ), array( 'custom', '', '✔ Category: Toys & Hobbies > Collectible Card Games > CCG Sealed Boxes (183456)' ) );
-check( '  Item Type "Trading Cards", graded, there: the condition not ready, saying where eBay takes card details', $c['readiness'][1] ?? null, '✘ Condition: Graded - Professional Sports Authenticator (PSA) 9 - eBay takes card grading and condition details only in CCG Individual Cards, Non-Sport Trading Card Singles and Sports Trading Card Singles' );
+check( '  Item Type "Trading Cards", graded, there: the condition not ready, in the push\'s own words', $c['readiness'][1] ?? null, '✘ Condition: Graded - Professional Sports Authenticator (PSA) 9 - ' . CARD_WORDS );
 check( 'Ace in Sports Trading Card Singles: a warning, not "not ready": eBay\'s table does not list it there, it is sent as it is', $tab['grader']['readiness'][1] ?? null, '● Condition: Graded - Ace Grading (Ace) 9 - eBay\'s table of card graders does not list it for this category: sent as it is, eBay may refuse it' );
 check( '  Ace in CCG Individual Cards: ready', $tab['grader_ok']['readiness'][1] ?? null, '✔ Condition: Graded - Ace Grading (Ace) 9' );
 check( '  the retired 180006, mapped to 183454, graded by PSA: ready', $r['readiness'][1] ?? null, '✔ Condition: Graded - Professional Sports Authenticator (PSA) 9' );
 $g = $tab['gb'] ?? array();
 check( 'a shop on eBay UK, a product saved as 180006: its custom ID, no "(retired)" option, no line', array( $g['selected'] ?? null, $g['custom_hidden'] ?? null, isset( $g['options']['180006'] ), $g['line'] ?? null, $g['readiness'][0] ?? null ), array( 'custom', false, false, '', '✔ Category: 180006' ) );
 $d = $tab['default'] ?? array();
-check( 'the default saved as 2536, the product with none of its own: the line says so, and where to change it', $d['line'] ?? null, 'The category saved as the default in Settings, Trading Cards (2536), was wrong in TCGiant Sync\'s list until 3.28.1: eBay does not file trading cards under 2536. Pushes send CCG Individual Cards (183454) instead, where eBay files those cards, and the log says so. Choose one here for this product, or the default again in Settings.' );
+check( 'the default saved as 2536, the product with none of its own: the line says so, and where to change it', $d['line'] ?? null, 'The category saved as the default in Settings, Trading Cards (2536), was wrong in TCGiant Sync\'s list until 3.28.1: eBay does not file trading cards under 2536. Pushes send CCG Individual Cards (183454) instead, where eBay files those cards, and the log says so. Choose one here for this product, or the default again in Settings. Sports cards belong in Sports Trading Card Singles (261328), the only one of the three single-card categories that takes CSG as a grader: choose that one for them.' );
 check( '  the product\'s own choice stays on the default, and no retired option is added', array( $d['selected'] ?? null, isset( $d['options']['2536'] ) ), array( '', false ) );
 $u = $tab['ungraded'] ?? array();
 check( 'Very Good, ungraded, in CCG Individual Cards: a warning on the readiness line, as the table does not list it there', $u['readiness'][1] ?? null, '● Condition: Ungraded - Very Good - eBay\'s table of card conditions does not list it for this category: sent as it is, eBay may refuse it' );
 $l = $tab['linked'] ?? array();
 check( 'saved as 180006, with a live listing: the line says the listing stays there, and how to move it', $l['line'] ?? null, 'The category saved for this product, Pokémon Individual Cards (180006), was wrong in TCGiant Sync\'s list until 3.28.1: eBay does not file trading cards under 180006. Its eBay listing 110000000509 stays there, as eBay does not move a live listing to another category once it has sales, and a push revises it as it is. To move it to CCG Individual Cards (183454), end the listing and push again: the new listing goes there.' );
-check( '  the readiness line: the category as a warning, and the card details by the category sent', array( $l['readiness'][0] ?? null, $l['readiness'][1] ?? null ), array( '● Category: Pokémon Individual Cards (180006) - its eBay listing stays in this category, which eBay US does not file single trading cards under: to move it to CCG Individual Cards (183454), end the listing and push again', '✘ Condition: Graded - Professional Sports Authenticator (PSA) 9 - eBay takes card grading and condition details only in CCG Individual Cards, Non-Sport Trading Card Singles and Sports Trading Card Singles' ) );
+check( '  the readiness line: the category as a warning, and the card details by the category sent', array( $l['readiness'][0] ?? null, $l['readiness'][1] ?? null ), array( '● Category: Pokémon Individual Cards (180006) - its eBay listing stays in this category, which eBay US does not file single trading cards under: to move it to CCG Individual Cards (183454), end the listing and push again', '● Condition: Graded - Professional Sports Authenticator (PSA) 9 - sent without card details: this category takes none' ) );
 $e = $tab['linked_ended'] ?? array();
 check( '  its listing ended: a push makes a new listing, in 183454, as the line and the readiness say', array( 0 === strpos( (string) ( $e['line'] ?? '' ), 'The category saved for this product, Pokémon Individual Cards (180006), was wrong in TCGiant Sync\'s list until 3.28.1: eBay does not file trading cards under 180006. Pushes send CCG Individual Cards (183454) instead' ), $e['readiness'][0] ?? null, $e['readiness'][1] ?? null ), array( true, '✔ Category: CCG Individual Cards (183454), in place of the retired 180006', '✔ Condition: Graded - Professional Sports Authenticator (PSA) 9' ) );
 $t = $tab['typed'] ?? array();
@@ -526,5 +723,27 @@ $export_src = (string) file_get_contents( dirname( __DIR__ ) . '/admin/views/exp
 check( 'the Push to eBay page names a retired default the same way, in both of its summaries', substr_count( $export_src, "esc_html( TCGiant_Sync_Catalog::retired_category_label( \$settings['export_category_id'] ) )" ), 2 );
 check( '  unless it was typed into Settings\' box', substr_count( $export_src, "TCGiant_Sync_Catalog::retired_category( \$settings['export_category_id'], \$settings['export_category_name'] ?? '', \$settings['export_category_typed'] ?? '' )" ), 2 );
 check( 'the products list: a typed 183446 is not named "(retired)"', array( '' !== (string) ( $tab['column_typed'] ?? '' ), false !== strpos( (string) ( $tab['column_typed'] ?? '' ), '(retired)' ) ), array( true, false ) );
+check( 'a coin parent (Coins: US, 253): the category not ready, in the push\'s own words (3.28.5)', $tab['coin_parent']['readiness'][0] ?? null, '✘ Category: Coins: US (253) is a parent category on eBay, which takes only a bottom-level one: choose a subcategory of it with Browse eBay Categories' );
+check( '  a coin leaf under it: ready', $tab['coin_leaf']['readiness'][0] ?? null, '✔ Category: Coins & Paper Money > Coins: US > Small Cents (11980)' );
+check( 'a shop on eBay UK, a trading card saved as 180006: the condition not ready, as the push refuses it', $tab['gb_card']['readiness'][1] ?? null, '✘ Condition: Graded - Professional Sports Authenticator (PSA) 9 - ' . CARD_WORDS );
+check( '  on eBay Germany: a warning, as the push sends it without (ruling 2)', $tab['de_card']['readiness'][1] ?? null, '● Condition: Graded - Professional Sports Authenticator (PSA) 9 - sent without card details: this category takes none' );
+check( 'a card in CCG Sealed Boxes with a live listing: a warning, as its revise sends it without (ruling 3)', $tab['custom_live']['readiness'][1] ?? null, '● Condition: Graded - Professional Sports Authenticator (PSA) 9 - sent without card details: this category takes none' );
+check( '  a coin parent with a live listing: a warning, in the same words as the refusal', $tab['coin_live']['readiness'][0] ?? null, '● Category: Coins: US (253) is a parent category on eBay, which takes only a bottom-level one: choose a subcategory of it with Browse eBay Categories' );
+
+// ─────────────────────────────────────────────────────────────────────────────
+echo "\nTHE PUSH BUTTON CHECKS AS THE PUSH DOES (A RUN OF ITS OWN)\n" . str_repeat( '=', 124 ) . "\n";
+
+exec( escapeshellarg( PHP_BINARY ) . ' ' . escapeshellarg( __DIR__ . '/support/category-push-run.php' ) . ' 2>&1', $tcg_pout, $tcg_pcode );
+$push = json_decode( (string) end( $tcg_pout ), true );
+$tcg_queued = array( 'ok' => true, 'message' => 'Product queued for push to eBay. Check the Activity Log for results.', 'queued' => true, 'status' => 'queued' );
+check( 'the run finished', array( $tcg_pcode, is_array( $push ) ), array( 0, true ) );
+check( 'Push on a card in CCG Sealed Boxes with a live listing: queued, as its revise goes (the review\'s H1)', $push['live_card'] ?? null, $tcg_queued );
+check( '  on a coin in Coins: US (253) with a live listing: queued', $push['live_coin'] ?? null, $tcg_queued );
+check( '  the same card with no listing: refused, in the push\'s words, marked errored, nothing queued', $push['card'] ?? null, array( 'ok' => false, 'message' => REFUSED_CARD, 'queued' => false, 'status' => 'error' ) );
+check( '  the same coin with no listing: refused', $push['coin'] ?? null, array( 'ok' => false, 'message' => 'Cannot push to eBay — missing required settings: eBay Category — Coins: US (253) is a parent category on eBay, which takes only a bottom-level one: choose a subcategory of it with Browse eBay Categories', 'queued' => false, 'status' => 'error' ) );
+check( '  the card with its listing recorded as ended: refused, as its push makes a new listing', array( $push['ended_card']['ok'] ?? null, $push['ended_card']['queued'] ?? null ), array( false, false ) );
+check( 'Item Type Trading Cards in Coins: US, live: not ready, still saying the mismatch (the review\'s L1)', $push['mismatch_live'] ?? null, '✘ Category: Coins: US (253) is a parent category on eBay, which takes only a bottom-level one: choose a subcategory of it with Browse eBay Categories - item type mismatch' );
+check( '  with no listing: the same', $push['mismatch'] ?? null, '✘ Category: Coins: US (253) is a parent category on eBay, which takes only a bottom-level one: choose a subcategory of it with Browse eBay Categories - item type mismatch' );
+check( '  and its Push is refused for it', array( $push['mismatch_push']['ok'] ?? null, false !== strpos( (string) ( $push['mismatch_push']['message'] ?? '' ), 'this is a Trading Cards item but the eBay category is set to Coins' ) ), array( false, true ) );
 
 done();
