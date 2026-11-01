@@ -292,8 +292,64 @@ class TCGiant_Sync_Importer {
 	 * sync outright: a busy window returns hundreds of items, the request dies
 	 * part way through, and because the run never reaches its own completion the
 	 * position is never advanced and the state is never cleared.
+	 *
+	 * Since 3.28.6 it counts the listings that may need eBay: an unchanged
+	 * monthly renewal recorded without asking (record_renewal()) is not one of
+	 * them, and neither is a row left out before that check - another site's
+	 * listing, one held back by the free limit or by the category filter
+	 * without a GetItem. The rows a run looks at are DELTA_ROWS_PER_RUN, and
+	 * the time and memory budget before each.
 	 */
 	const DELTA_ITEMS_PER_RUN = 40;
+
+	/**
+	 * The most rows of its window one delta run looks at (3.28.6).
+	 */
+	const DELTA_ROWS_PER_RUN = 500;
+
+	/**
+	 * How far a listing's end time must have moved on since its last full
+	 * read for the change to be taken for its monthly renewal (3.28.6): 20
+	 * days. eBay renews a Good 'Til Cancelled listing on the same day of the
+	 * next month, 28 to 31 days on; a revision does not move it at all.
+	 */
+	const DELTA_RENEWAL_MIN_ADVANCE = 1728000;
+
+	/**
+	 * A window read longer than this after its start records no renewals
+	 * without a full read (3.28.6): 48 hours, eBay's widest window. Behind
+	 * by more, a revision eBay's list of changes does not show is the more
+	 * likely to have landed in the same window as a renewal.
+	 */
+	const DELTA_LIGHT_MAX_LAG = self::DELTA_WINDOW_MAX_MINUTES * 60;
+
+	/**
+	 * A listing last read in full longer ago than this is read in full again
+	 * at its next renewal (3.28.6): 90 days.
+	 */
+	const DELTA_LIGHT_MAX_AGE = 7776000;
+
+	/**
+	 * When the delta last stepped over changes it could not read (3.28.6). A
+	 * record of a full read from before then is not trusted: what the listing
+	 * did in the gap was never seen.
+	 */
+	const DELTA_LIGHT_AFTER_OPTION = 'tcgiant_sync_light_after';
+
+	/**
+	 * The seller's Out-of-Stock control preference as eBay last gave it
+	 * (3.28.6): pref ("true", "false", or "" when eBay did not say), ok
+	 * (false when the call failed) and at (when it was asked). Asked at most
+	 * once in OOS_PREF_SECONDS, and only when a renewal needs it. Never
+	 * autoloaded.
+	 *
+	 * GetSellerEvents leaves Quantity out at 0 and at 1 alike. With the
+	 * control off a listing of one at 0 has ended, so a renewal row without
+	 * Quantity is a listing of one with one left; with it on, or not known,
+	 * it may be one the seller set to 0 in Seller Hub, and is read in full.
+	 */
+	const OOS_PREF_OPTION  = 'tcgiant_sync_oos_control';
+	const OOS_PREF_SECONDS = 86400;
 
 	/**
 	 * Where the delta is inside the window it is working through.
@@ -1392,6 +1448,7 @@ class TCGiant_Sync_Importer {
 
 		if ( empty( $mod_from ) ) {
 			TCGiant_Sync_Logger::error( 'Delta events: No delta_mod_from timestamp in state.' );
+			self::distrust_event_records();
 			self::update_sync_state( array(
 				'status'                  => 'complete',
 				'last_completed'          => current_time( 'mysql' ),
@@ -1565,6 +1622,7 @@ class TCGiant_Sync_Importer {
 				$kills
 			) );
 
+			self::distrust_event_records();
 			self::update_sync_state( array_merge( self::fresh_delta_window(), array(
 				'status'                  => 'complete',
 				'last_completed'          => current_time( 'mysql' ),
@@ -1588,6 +1646,9 @@ class TCGiant_Sync_Importer {
 			$response   = array( 'Ack' => 'Success', 'ItemArray' => array( 'Item' => $cached ) );
 			$body_bytes = (int) ( $progress['body_bytes'] ?? 0 );
 			$settled    = ! empty( $progress['settled'] );
+			// When eBay was read for it. A window kept by 3.28.4 has no time,
+			// and records no renewal without a full read (3.28.6).
+			$read_ts    = (int) ( $progress['read_at'] ?? 0 );
 			unset( $cached );
 		} else {
 			self::update_sync_state( array(
@@ -1623,6 +1684,10 @@ class TCGiant_Sync_Importer {
 
 			$settled = ( ( false !== $read_at ? $read_at : time() ) - strtotime( $mod_to ) ) >= self::DELTA_OVERLAP_NEAR_SECONDS
 				&& ( ! $resuming || ! empty( $progress['settled'] ) );
+
+			// When eBay was read for it, kept with the place so that later
+			// runs of the window know (3.28.6): by eBay's clock, as above.
+			$read_ts = false !== $read_at ? (int) $read_at : time();
 
 			// Answered, one way or another, so this request was not killed reading it.
 			$answered = array(
@@ -1744,6 +1809,7 @@ class TCGiant_Sync_Importer {
 				self::DELTA_WINDOW_MIN_MINUTES
 			) );
 
+			self::distrust_event_records();
 			self::update_sync_state( array_merge( self::fresh_delta_window(), array(
 				'status'                  => 'complete',
 				'last_completed'          => current_time( 'mysql' ),
@@ -1779,6 +1845,18 @@ class TCGiant_Sync_Importer {
 				'delta_paused_code' => $passing ? (string) $response->get_error_code() : '',
 			) );
 			return;
+		}
+
+		// A window read more than DELTA_LIGHT_MAX_LAG after its start is a
+		// backlog's (3.28.6). A listing changed in it, and changed again
+		// before it was read, is only in a later window - where its renewal
+		// would look like nothing else had changed. So no record of a full
+		// read made before now is trusted, as after a step-over. On eBay's
+		// answer only, empty or not: later runs of the window, read from the
+		// rows kept in brief, must not distrust the records its own full
+		// reads have written since.
+		if ( ! $from_cache && $read_ts > 0 && ( $read_ts - $from_ts ) > self::DELTA_LIGHT_MAX_LAG ) {
+			self::distrust_event_records();
 		}
 
 		// Parse items from response.
@@ -1848,6 +1926,7 @@ class TCGiant_Sync_Importer {
 			// Nothing shorter to ask for. Import what eBay did send and say
 			// plainly that there may be more - once, not on every run through.
 			if ( $first_run ) {
+				self::distrust_event_records();
 				TCGiant_Sync_Logger::warning( sprintf(
 					'eBay sent its maximum of %d changed listings even for the %d minutes from %s, so some changes in that period may not have been sent. Importing the ones that were — run Fetch Inventory to pick up the rest.',
 					$total_items,
@@ -1892,8 +1971,10 @@ class TCGiant_Sync_Importer {
 			$remaining = array_slice( $items, $offset );
 		}
 
+		// Up to DELTA_ROWS_PER_RUN rows, of which DELTA_ITEMS_PER_RUN may need
+		// eBay: see the loop.
 		$done  = $total_items - count( $remaining );
-		$items = array_slice( $remaining, 0, self::DELTA_ITEMS_PER_RUN );
+		$items = array_slice( $remaining, 0, self::DELTA_ROWS_PER_RUN );
 		$more  = count( $remaining ) > count( $items );
 		unset( $remaining );
 
@@ -1907,9 +1988,27 @@ class TCGiant_Sync_Importer {
 			'in_flight'  => '',
 			'body_bytes' => $body_bytes,
 			'settled'    => $settled,
+			'read_at'    => $read_ts,
 			'ts'         => time(),
 		) );
 		self::save_delta_progress( $progress );
+
+		// Whether this run may record an unchanged monthly renewal without a
+		// full read (3.28.6): only while the window was read within
+		// DELTA_LIGHT_MAX_LAG of its start, under the import settings each
+		// listing's record was made with, and from a record made after the
+		// last changes the delta stepped over. Photos must be downloaded,
+		// unless the shop keeps eBay-hosted photos. Never while "Include
+		// shipping in the price" is on: the website's price then depends on
+		// the shipping cost, which eBay's list of changes leaves out.
+		$light_settings = TCGiant_Sync_OAuth::instance()->get_settings();
+		$light          = array(
+			'on'     => $read_ts > 0 && ( $read_ts - strtotime( $mod_from ) ) <= self::DELTA_LIGHT_MAX_LAG
+				&& ! ( is_array( $light_settings ) && '1' === (string) ( $light_settings['bake_shipping_into_price'] ?? '' ) ),
+			'fp'     => TCGiant_Sync_Mapper::settings_fingerprint(),
+			'after'  => (int) get_option( self::DELTA_LIGHT_AFTER_OPTION, 0 ),
+			'photos' => ! is_array( $light_settings ) || empty( $light_settings['disable_image_localization'] ),
+		);
 
 		// Category filtering (same logic as process_page_items).
 		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
@@ -1930,6 +2029,10 @@ class TCGiant_Sync_Importer {
 		$remembered_skips = 0;
 		$other_site = 0; // Listings on other eBay sites left out - see TCGiant_Sync_Sites.
 		$sites_on   = TCGiant_Sync_Sites::primary_only();
+		// Unchanged monthly renewals recorded without a full read, and the
+		// rows that went on to one - which may need eBay (3.28.6).
+		$renewals  = 0;
+		$ebay_rows = 0;
 
 		// The whole window, not this run's slice of it: "40 found" on every run
 		// of a 2,000 item window made it impossible to see how far along it was.
@@ -1956,7 +2059,7 @@ class TCGiant_Sync_Importer {
 		self::update_sync_state( $update );
 
 		TCGiant_Sync_Logger::log( sprintf(
-			'Delta events: %d modified items found. Processing %d to %d [delta].',
+			'Delta events: %d modified items found. Processing %d to at most %d [delta].',
 			$total_items,
 			$done + 1,
 			$done + count( $items )
@@ -2007,6 +2110,12 @@ class TCGiant_Sync_Importer {
 				}
 			}
 
+			// Forty listings that may need eBay a run, as before 3.28.6: the
+			// rest of the slice is the next run's.
+			if ( $ebay_rows >= self::DELTA_ITEMS_PER_RUN ) {
+				break;
+			}
+
 			$current = (string) ( $ebay_item['ItemID'] ?? '' );
 
 			// Before the work, so that if this request dies on this listing the
@@ -2029,6 +2138,8 @@ class TCGiant_Sync_Importer {
 			// Whether $ebay_item is eBay's whole answer for the listing rather
 			// than the brief row from the list of changes.
 			$whole_item = false;
+			// Whether the row has been past the renewal check (3.28.6).
+			$asks_ebay = false;
 
 			try {
 				// A listing on another eBay site, when the shop imports only its
@@ -2131,9 +2242,23 @@ class TCGiant_Sync_Importer {
 						$known = TCGiant_Sync_Category_Memory::recall( array( $item_id ) );
 						$known = $known[ $item_id ] ?? null;
 						if ( null !== $known && ! self::category_filter_takes( $known[0], $known[1], $known[2], $standard_cats, $valid_custom_ids ) ) {
+							// Its change is not read, so a product linked to it
+							// has no record to trust once the filter takes it
+							// again (3.28.6).
+							self::forget_event_record( $item_id );
 							$remembered_skips++;
 							continue;
 						}
+
+						// An unchanged monthly renewal of a product here: its
+						// new end date is recorded before the GetItem, which
+						// would only have said its category (3.28.6).
+						$asks_ebay = true;
+						if ( self::record_renewal( $ebay_item, $light ) ) {
+							$renewals++;
+							continue;
+						}
+						$ebay_rows++;
 
 						TCGiant_Sync_Runtime::stage( 'asking eBay for its category (GetItem)' );
 						$full_for_filter = TCGiant_Sync_API::instance()->get_item( $item_id );
@@ -2167,9 +2292,23 @@ class TCGiant_Sync_Importer {
 					$match = '' === (string) $primary_cat && '' === (string) $store_cat1 && '' === (string) $store_cat2;
 
 					if ( ! $match && ! self::category_filter_takes( $primary_cat, $store_cat1, $store_cat2, $standard_cats, $valid_custom_ids, $ebay_item['PrimaryCategory']['CategoryName'] ?? '' ) ) {
+						self::forget_event_record( $item_id ); // As above (3.28.6).
 						$skipped++;
 						continue;
 					}
+				}
+
+				// An unchanged monthly renewal: its new end date is all there
+				// is to record, without a GetItem or a save (3.28.6). Checked
+				// above, before the category filter's GetItem, when the filter
+				// had to ask.
+				if ( ! $asks_ebay ) {
+					$asks_ebay = true;
+					if ( self::record_renewal( $ebay_item, $light ) ) {
+						$renewals++;
+						continue;
+					}
+					$ebay_rows++;
 				}
 
 				// Don't create products for listings that have already ended.
@@ -2295,6 +2434,7 @@ class TCGiant_Sync_Importer {
 						}
 
 						$errors++;
+						self::forget_event_record( $item_id );
 						TCGiant_Sync_Logger::error( sprintf( 'Delta fallback failed for item %s. Skipping.', $item_id ) );
 						continue;
 					}
@@ -2387,14 +2527,17 @@ class TCGiant_Sync_Importer {
 					), 'success' );
 				} elseif ( ! TCGiant_Sync_Mapper::$last_skipped ) {
 					$errors++;
+					self::forget_event_record( $item_id );
 					TCGiant_Sync_Logger::error( sprintf( 'Delta: Failed to save product for eBay Item: %s (%s)', $item_id, $title ) );
 				}
 
 			} catch ( Exception $e ) {
 				$errors++;
+				self::forget_event_record( $current );
 				TCGiant_Sync_Logger::error( 'Delta import exception: ' . $e->getMessage() );
 			} catch ( Error $e ) {
 				$errors++;
+				self::forget_event_record( $current );
 				TCGiant_Sync_Logger::error( 'Delta import fatal: ' . $e->getMessage() );
 			}
 		}
@@ -2430,11 +2573,12 @@ class TCGiant_Sync_Importer {
 		$remembered_label = $remembered_skips > 0 ? sprintf( ', %d skipped (category filter, remembered)', $remembered_skips ) : '';
 		$site_label = $other_site > 0 ? sprintf( ', %d left out (on other eBay sites)', $other_site ) : '';
 		$fallback_label = $fallback_count > 0 ? sprintf( ', %d GetItem fallbacks', $fallback_count ) : '';
+		$renewal_label  = $renewals > 0 ? sprintf( ', %d renewals (end date moved, nothing else changed)', $renewals ) : '';
 		TCGiant_Sync_Logger::log( sprintf(
 			$more || null !== $read_stop
-				? 'Delta batch done: %d imported, %d errors out of %d modified items%s%s%s%s.'
-				: 'Delta sync complete! %d imported, %d errors out of %d modified items%s%s%s%s.',
-			$processed, $errors, $handled, $filter_label, $remembered_label, $site_label, $fallback_label
+				? 'Delta batch done: %d imported, %d errors out of %d modified items%s%s%s%s%s.'
+				: 'Delta sync complete! %d imported, %d errors out of %d modified items%s%s%s%s%s.',
+			$processed, $errors, $handled, $renewal_label, $filter_label, $remembered_label, $site_label, $fallback_label
 		), 'success' );
 
 		// eBay could not be read. Keep the window and the place, stay running
@@ -2661,6 +2805,7 @@ class TCGiant_Sync_Importer {
 			) );
 
 			self::hold_back_listing( $dead_on, $mod_from, self::HELD_KILLED );
+			self::forget_event_record( $dead_on );
 			self::queue_settle( $dead_on );
 
 			$progress['cursor']    = $dead_on;
@@ -2744,6 +2889,7 @@ class TCGiant_Sync_Importer {
 			) );
 		}
 		self::hold_back_listing( $item_id, $mod_from, self::HELD_UNREAD );
+		self::forget_event_record( $item_id );
 		self::queue_settle( $item_id );
 
 		return null;
@@ -2872,10 +3018,12 @@ class TCGiant_Sync_Importer {
 	 * Keep the window's listings in brief.
 	 *
 	 * Only what the loop reads before it decides whether to ask eBay for the
-	 * whole listing: its ID, status, quantities, times and categories. Nothing
-	 * a GetItem would not supply again - which it does, because a brief row
-	 * carries no item specifics or pictures, and in practice eBay's events
-	 * answer did not either.
+	 * whole listing: its ID, status, type, quantities, times and categories.
+	 * Nothing a GetItem would not supply again - which it does, because a
+	 * brief row carries no item specifics or pictures, and in practice eBay's
+	 * events answer did not either. And the renewal check's signature of the
+	 * row as eBay sent it (TCGiant_Sync_Mapper::event_signature(), 3.28.6),
+	 * which needs the title and price the brief row leaves out.
 	 *
 	 * @param string $from  Start of the window.
 	 * @param string $to    End of the window.
@@ -2928,6 +3076,16 @@ class TCGiant_Sync_Importer {
 			$row['Quantity'] = $item['Quantity'];
 		}
 
+		// What the renewal check reads (3.28.6): the type, and the signature
+		// of the whole row, made now - the brief row has no title or price
+		// to make it from later. The import settings are compared when the
+		// row is, not baked in here, so a change made part way through the
+		// window still counts.
+		if ( isset( $item['ListingType'] ) && ! is_array( $item['ListingType'] ) ) {
+			$row['ListingType'] = (string) $item['ListingType'];
+		}
+		$row['_sig'] = TCGiant_Sync_Mapper::event_signature( $item );
+
 		foreach ( array( 'ListingStatus', 'QuantitySold' ) as $key ) {
 			if ( isset( $item['SellingStatus'][ $key ] ) && ! is_array( $item['SellingStatus'][ $key ] ) ) {
 				$row['SellingStatus'][ $key ] = $item['SellingStatus'][ $key ];
@@ -2971,6 +3129,259 @@ class TCGiant_Sync_Importer {
 		}
 
 		return $row;
+	}
+
+	/**
+	 * A monthly Good 'Til Cancelled renewal of a listing on which nothing else
+	 * eBay's list of changes shows has changed since its last full read: its
+	 * new end date is recorded, and nothing else - no GetItem, no product
+	 * save (3.28.6).
+	 *
+	 * eBay counts each renewal as a change to the listing, so a shop with
+	 * 15,000 fixed-price listings had about 450 a day, each read in full and
+	 * saved again for nothing; one window held 1,795. The row is compared
+	 * with what eBay showed at the product's last full read
+	 * (TCGiant_Sync_Mapper::EVENT_RECORD_META) - eBay's own figures, not the
+	 * product's, which settings and the shop's own edits make different.
+	 *
+	 * Never while "Include shipping in the price" is on, whose price eBay's
+	 * list of changes cannot show, nor for a window read more than
+	 * DELTA_LIGHT_MAX_LAG after its start, after which no record from
+	 * before it is trusted.
+	 *
+	 * Everything else takes the full path, as before: a row with any of its
+	 * fields changed, or whose end has not moved on DELTA_RENEWAL_MIN_ADVANCE
+	 * (a revision); an auction, a variation listing, one ended or settled, one
+	 * with nothing left to sell; a product whose stock is not eBay's figure,
+	 * with a stock change on its way to eBay, whose record of eBay's sales
+	 * (3.28.0) is not eBay's figure, whose photos are not downloaded (unless
+	 * the shop keeps eBay-hosted photos), or whose Listings row is not Active;
+	 * a record made under other import settings, before the last changes the
+	 * delta stepped over, or longer ago than DELTA_LIGHT_MAX_AGE; a row with
+	 * no Quantity unless eBay said in the last day that Out-of-Stock control
+	 * is off (out_of_stock_control_off()); and every row of a window read
+	 * more than DELTA_LIGHT_MAX_LAG after its start.
+	 *
+	 * Never written here: stock, status, price, title, photos, the record of
+	 * eBay's sales, the stock push's marks, the settle marks, the product's
+	 * sync log or the category memory. The row can be hours old; what eBay
+	 * says now about stock and status comes from the sale check and the
+	 * listing's next change, as for any row.
+	 *
+	 * @param array $row   The listing as the window holds it.
+	 * @param array $light This run's: on, fp (the import settings) and after.
+	 * @return int The product whose end date was recorded, or 0 to read the
+	 *             listing in full.
+	 */
+	private static function record_renewal( array $row, array $light ) {
+		if ( empty( $light['on'] ) ) {
+			return 0;
+		}
+
+		$item_id = TCGiant_Sync_API::scalar_value( $row['ItemID'] ?? '' );
+		$status  = TCGiant_Sync_API::scalar_value( $row['SellingStatus']['ListingStatus'] ?? '' );
+		$type    = TCGiant_Sync_API::scalar_value( $row['ListingType'] ?? '' );
+		$end     = TCGiant_Sync_API::scalar_value( $row['ListingDetails']['EndTime'] ?? '' );
+		$sold    = TCGiant_Sync_API::scalar_value( $row['SellingStatus']['QuantitySold'] ?? '' );
+		// eBay leaves Quantity out of this answer for a listing of one.
+		$listed  = isset( $row['Quantity'] ) ? TCGiant_Sync_API::scalar_value( $row['Quantity'] ) : '1';
+
+		if ( '' === $item_id || 'Active' !== $status
+			|| ! in_array( $type, array( 'FixedPriceItem', 'StoresFixedPrice' ), true )
+			|| ! empty( $row['Variations'] ) || '' === $end
+			|| ! is_numeric( $sold ) || ! is_numeric( $listed ) ) {
+			return 0;
+		}
+
+		$available = (int) $listed - (int) $sold;
+		if ( $available <= 0 ) {
+			return 0;
+		}
+
+		$sig = isset( $row['_sig'] ) && is_string( $row['_sig'] ) ? $row['_sig'] : TCGiant_Sync_Mapper::event_signature( $row );
+		if ( '' === $sig ) {
+			return 0;
+		}
+
+		$pid = self::find_live_product_for_item( $item_id );
+		if ( ! $pid ) {
+			return 0;
+		}
+
+		// eBay's fields as the last full read saw them, under the same import
+		// settings, since the last gap, and not too long ago.
+		$record = get_post_meta( $pid, TCGiant_Sync_Mapper::EVENT_RECORD_META, true );
+		if ( ! is_array( $record )
+			|| TCGiant_Sync_Mapper::EVENT_RECORD_SCHEMA !== (int) ( $record['v'] ?? 0 )
+			|| $item_id !== (string) ( $record['item'] ?? '' )
+			|| $sig !== (string) ( $record['sig'] ?? '' )
+			|| (string) $light['fp'] !== (string) ( $record['fp'] ?? '' ) ) {
+			return 0;
+		}
+
+		// A read time in the future - a server clock since put back - says
+		// nothing about how old the record is.
+		$read = (int) ( $record['read'] ?? 0 );
+		if ( $read <= 0 || $read > time() || $read < (int) $light['after'] || time() - $read > self::DELTA_LIGHT_MAX_AGE ) {
+			return 0;
+		}
+
+		// A month on: a renewal. From the record's end, not the product's,
+		// which the hourly ended-listing check moves on by itself.
+		$was = strtotime( (string) ( $record['end'] ?? '' ) );
+		$now = strtotime( $end );
+		if ( false === $was || false === $now || $now - $was < self::DELTA_RENEWAL_MIN_ADVANCE ) {
+			return 0;
+		}
+
+		// Live and not settled here, with no stock change on its way to eBay.
+		if ( 'Active' !== (string) get_post_meta( $pid, '_ebay_listing_status', true )
+			|| TCGiant_Sync_Inventory::listing_already_settled( $pid, $item_id )
+			|| TCGiant_Sync_Mapper::push_pending( $pid ) ) {
+			return 0;
+		}
+
+		// Holding eBay's figure, with eBay's sales so far recorded as taken
+		// off it: a full read would write the same.
+		$product = wc_get_product( $pid );
+		if ( ! $product || ! $product->is_type( 'simple' ) || ! $product->managing_stock()
+			|| null === $product->get_stock_quantity() || (int) $product->get_stock_quantity() !== $available
+			|| TCGiant_Sync_Inventory::sold_seen( $pid, $item_id ) !== (int) $sold ) {
+			return 0;
+		}
+
+		// Its photos downloaded: the full path is where a product without
+		// them heals. Not asked of a shop that keeps eBay-hosted photos,
+		// whose products never have downloaded ones.
+		if ( ! empty( $light['photos'] )
+			&& ( 1 !== (int) get_post_meta( $pid, '_tcgiant_images_localized', true )
+				|| ! TCGiant_Sync_Image_Localizer::has_local_thumbnail( $pid ) ) ) {
+			return 0;
+		}
+
+		// Active on the Listings screen too, for this listing - a product in
+		// its Sold or Ended view is never touched - with a row to mark rather
+		// than one to make.
+		$has_table = TCGiant_Sync_DB::table_exists();
+		$listing   = $has_table ? TCGiant_Sync_DB::get_by_product( $pid ) : null;
+		if ( $has_table && ( ! is_array( $listing )
+			|| 'Active' !== (string) ( $listing['listing_status'] ?? '' )
+			|| $item_id !== (string) ( $listing['ebay_item_id'] ?? '' ) ) ) {
+			return 0;
+		}
+
+		// No Quantity: eBay's 0 or 1. Taken for 1 only while eBay says the
+		// seller's Out-of-Stock control is off - asked last, so that a delta
+		// with no renewal to record asks nothing.
+		if ( ! isset( $row['Quantity'] ) && ! self::out_of_stock_control_off() ) {
+			return 0;
+		}
+
+		// The end date, which the Listings row follows, and the record's.
+		update_post_meta( $pid, '_ebay_end_time', $end );
+
+		$record['end']   = $end;
+		$record['light'] = (int) ( $record['light'] ?? 0 ) + 1;
+		update_post_meta( $pid, TCGiant_Sync_Mapper::EVENT_RECORD_META, $record );
+
+		if ( $has_table ) {
+			TCGiant_Sync_DB::upsert( array(
+				'product_id'  => $pid,
+				'last_synced' => current_time( 'mysql' ),
+			) );
+		}
+
+		TCGiant_Sync_Logger::log( sprintf(
+			'Delta: eBay item %1$s renewed to %2$s with nothing else changed - WC #%3$d\'s end date moved, without a GetItem.',
+			$item_id,
+			$end,
+			$pid
+		), 'debug' );
+
+		return $pid;
+	}
+
+	/**
+	 * A listing whose full read failed, or was stepped over: its next change
+	 * takes the full path, renewal or not (3.28.6). Its record would otherwise
+	 * still match, and a change the failed read was for be passed by again.
+	 *
+	 * @param string $item_id eBay ItemID.
+	 * @return void
+	 */
+	private static function forget_event_record( $item_id ) {
+		if ( '' === (string) $item_id ) {
+			return;
+		}
+
+		$pid = self::find_live_product_for_item( (string) $item_id );
+		if ( $pid ) {
+			delete_post_meta( $pid, TCGiant_Sync_Mapper::EVENT_RECORD_META );
+		}
+	}
+
+	/**
+	 * The delta stepped over changes it could not read: no record of a full
+	 * read made before now is trusted at a renewal (3.28.6). Every product
+	 * takes the full path once more, at its next change.
+	 *
+	 * @return void
+	 */
+	private static function distrust_event_records() {
+		update_option( self::DELTA_LIGHT_AFTER_OPTION, time(), false );
+	}
+
+	/**
+	 * Whether eBay said, within OOS_PREF_SECONDS, that the seller's
+	 * Out-of-Stock control is off (3.28.6). See OOS_PREF_OPTION.
+	 *
+	 * Asked with one GetUserPreferences when what eBay last said is older
+	 * than that, dated in the future, or was never asked - at most once in
+	 * OOS_PREF_SECONDS (a request killed during the call asks again),
+	 * whatever the answer, a failure included. Not asked with no eBay
+	 * connection or at the day's call ceiling: then, as with the control on,
+	 * an answer that did not say, a failure or an answer gone stale, the
+	 * answer is no.
+	 *
+	 * @return bool
+	 */
+	private static function out_of_stock_control_off() {
+		$known = get_option( self::OOS_PREF_OPTION, array() );
+		// Asked in the future - a server clock since put back - is stale.
+		$age = is_array( $known ) && isset( $known['at'] ) ? time() - (int) $known['at'] : -1;
+
+		if ( $age >= 0 && $age < self::OOS_PREF_SECONDS ) {
+			return ! empty( $known['ok'] ) && 'false' === (string) ( $known['pref'] ?? '' );
+		}
+
+		$api = TCGiant_Sync_API::instance();
+		if ( ! TCGiant_Sync_OAuth::instance()->is_authenticated() || $api->is_daily_budget_exhausted() ) {
+			return false;
+		}
+
+		TCGiant_Sync_Runtime::stage( 'asking eBay whether Out-of-Stock control is on (GetUserPreferences)' );
+		$answer = $api->get_out_of_stock_preference();
+		$ok     = ! is_wp_error( $answer ) && is_array( $answer );
+		$pref   = $ok ? strtolower( TCGiant_Sync_API::scalar_value( $answer['OutOfStockControlPreference'] ?? '' ) ) : '';
+
+		update_option( self::OOS_PREF_OPTION, array(
+			'pref' => $pref,
+			'ok'   => $ok,
+			'at'   => time(),
+		), false );
+
+		if ( ! $ok ) {
+			TCGiant_Sync_Logger::log( sprintf(
+				'eBay could not say whether your Out-of-Stock control is on (%s), so renewals of listings of one are read in full until it is asked again, tomorrow.',
+				is_wp_error( $answer ) ? $answer->get_error_message() : 'no answer'
+			), 'warning' );
+		} elseif ( 'false' !== $pref ) {
+			TCGiant_Sync_Logger::log( 'true' === $pref
+				? 'eBay says your Out-of-Stock control is on, so renewals of listings of one are read in full: eBay\'s list of changes shows 0 and 1 alike.'
+				: 'eBay did not say whether your Out-of-Stock control is on, so renewals of listings of one are read in full.' );
+		}
+
+		return $ok && 'false' === $pref;
 	}
 
 	/**

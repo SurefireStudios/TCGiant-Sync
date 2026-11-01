@@ -101,6 +101,9 @@ class TCGiant_Sync_Listing_Link {
 			'_ebay_unsent_qty',
 			// The failed tries of a variation's own push for a pool (3.28.0).
 			'_ebay_own_push_tries',
+			// What that listing showed at its last full read, which the
+			// delta checks a renewal against (3.28.6).
+			'_ebay_event_sig',
 			'_sync_last_updated',
 			// Push state belonging to the original.
 			'_ebay_export_status',

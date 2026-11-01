@@ -191,6 +191,8 @@ $tcgiant_options = array(
 	'tcgiant_sync_delta_progress',     // Delta's place in its window, 3.27.0.
 	'tcgiant_sync_delta_window',       // Delta's window kept in brief, 3.27.0.
 	'tcgiant_sync_delta_held',         // Listings the delta stepped over, 3.27.0.
+	'tcgiant_sync_light_after',        // When the delta last stepped over changes, 3.28.6.
+	'tcgiant_sync_oos_control',        // eBay's Out-of-Stock control preference, and when it was asked, 3.28.6.
 	'tcgiant_sync_scan_progress',      // The full sync's place in its pages, 3.27.6.
 	'tcgiant_sync_scan_page',          // The listings of the page it is on, 3.27.6.
 	'tcgiant_sync_prune_pending',      // Listings the clean-up has still to ask eBay about, 3.27.6.

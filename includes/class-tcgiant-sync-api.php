@@ -995,11 +995,14 @@ class TCGiant_Sync_API {
 	}
 
 	/**
-	 * Get modified items with full detail via GetSellerEvents (Trading API).
+	 * The listings changed in a period, via GetSellerEvents (Trading API).
 	 *
-	 * Unlike GetSellerList, GetSellerEvents returns complete item data inline
-	 * (Description, ItemSpecifics, Variations, PictureDetails, ShippingPackageDetails, etc.)
-	 * so individual GetItem calls are not needed.
+	 * In brief: each listing's ItemID, Title, ListingType, ListingDetails
+	 * (StartTime, EndTime), SellingStatus (CurrentPrice, QuantitySold,
+	 * ListingStatus), Quantity only when it is more than 1, and Variations.
+	 * No Description, ItemSpecifics, PictureDetails, SKU or category, so the
+	 * delta reads a listing it imports with GetItem. IncludeItemSpecifics is
+	 * not one of this call's inputs, and is not sent (3.28.6).
 	 *
 	 * @param string $mod_time_from ISO 8601 UTC timestamp (start of window).
 	 * @param string $mod_time_to   ISO 8601 UTC timestamp (end of window). Max 48hr span.
@@ -1015,7 +1018,6 @@ class TCGiant_Sync_API {
 <ModTimeFrom>' . $mod_time_from . '</ModTimeFrom>
 <ModTimeTo>' . $mod_time_to . '</ModTimeTo>
 <DetailLevel>ReturnAll</DetailLevel>
-<IncludeItemSpecifics>true</IncludeItemSpecifics>
 <IncludeVariationSpecifics>true</IncludeVariationSpecifics>
 <HideVariations>false</HideVariations>';
 
@@ -1035,6 +1037,18 @@ class TCGiant_Sync_API {
 	 */
 	public function get_official_time() {
 		return $this->trading_api_request( 'GeteBayOfficialTime', '' );
+	}
+
+	/**
+	 * The seller's Out-of-Stock control preference, via GetUserPreferences
+	 * (3.28.6): the answer's OutOfStockControlPreference is "true" or
+	 * "false". A read, so a staging copy makes it too, and like every call it
+	 * is counted, held back at the day's ceiling and refused with no token.
+	 *
+	 * @return array|WP_Error
+	 */
+	public function get_out_of_stock_preference() {
+		return $this->trading_api_request( 'GetUserPreferences', '<ShowOutOfStockControlPreference>true</ShowOutOfStockControlPreference>' );
 	}
 
 	public function get_item( $item_id ) {

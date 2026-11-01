@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.28.5
+Stable tag: 3.28.6
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -139,6 +139,16 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.28.6 - 2026-10-31 =
+* FIX: A Good 'Til Cancelled listing that eBay renews each month no longer costs an eBay call and a full save of its product when nothing else about it has changed. eBay reports every monthly renewal as a change, so a shop with 15,000 fixed-price listings spent about 450 eBay calls a day on renewals, and one window of 1,795 of them took 45 runs of the sync. TCGiant Sync now notes what eBay showed for each listing when it last read it in full. A renewal that shows nothing else changed has only its new end date written: no eBay call, and the product is not saved. The same window now takes 4 runs, with no eBay call for the renewals.
+* The saving starts for each listing after its next full read: at the latest the next weekly full sync, or straight away with Fetch Inventory.
+* Everything else is read in full, as before: a price, title or quantity change that eBay lists as a change, a sale, an ended listing, an auction, a listing with variations. So is a renewal when the product's stock on your website differs from eBay's, a stock change is on its way to eBay, its photos are not downloaded yet (unless you keep eBay-hosted photos), you have changed an import setting since its last full read, or its last full read was more than 90 days ago.
+* With "Include shipping in the price" on, every renewal is read in full: the price on your website then depends on the shipping cost, which eBay's list of changes leaves out.
+* Once the sync has read changes more than 48 hours late, or had to step over changes it could not read, every listing is read in full once more at its next change. So is a listing your category filter skipped, once the filter takes it again.
+* What a renewal read this way cannot see: eBay's list of changes leaves out the description, item specifics, photos, SKU, package size, shipping and business policy details, and the original price shown struck through beside a sale price. A change to one of those, made in the same sync interval as the listing's monthly renewal while the sync is up to date, now reaches the website at the next weekly full sync, with the listing's next price, title or quantity change, or within 90 days, rather than at once. A change to one of those made at any other time is reported by eBay as a change of its own, and is read in full as before. A change eBay does not report as a change at all, if there is one (an edit to a business policy may be one), used to arrive with the listing's next monthly renewal and now arrives at the next full sync.
+* A listing of one is recorded this way only while your eBay Out-of-Stock control is off. eBay's list of changes shows 0 and 1 the same way, so with it on, a listing you set to 0 in Seller Hub could look like one still for sale. TCGiant Sync asks eBay for the setting at most once a day, with one call, and only when a renewal needs it. While Out-of-Stock control is on, or eBay cannot be asked, renewals of listings of one are read in full as before. Listings of more than one are not affected.
+* The sync log's summary counts these as "renewals (end date moved, nothing else changed)". One run of the sync now looks at up to 500 changed listings, of which up to 40 that need an eBay call, as before.
 
 = 3.28.5 - 2026-10-31 =
 * FIX: A new listing for a trading card whose category is not one of the three eBay takes card grading and condition details in, CCG Individual Cards (183454), Non-Sport Trading Card Singles (183050) and Sports Trading Card Singles (261328), is now refused before it reaches eBay, and so are Verify, Check with eBay and "Check push settings only" for it. The product's eBay tab already said such a product was not ready, but a push sent it to eBay without its grading or condition. The message names the three and says to choose one with Browse eBay Categories, or to set the Item Type to All Other. This is for shops on eBay US, UK, Australia and Canada, which file single cards under the same three.

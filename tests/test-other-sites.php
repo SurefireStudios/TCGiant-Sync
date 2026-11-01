@@ -1139,10 +1139,12 @@ check( '  with no word of other sites', logged( 'other eBay sites' ), false );
 
 // A window too long for one run: the second run carries on from the rows kept
 // in brief, without asking eBay for the window again. Those rows keep each
-// listing's site, so the copies are still left out without a GetItem.
+// listing's site, so the copies are still left out without a GetItem. Since
+// 3.28.6 a run's forty counts only the rows that may need eBay, which the
+// copies left out are not: forty-five eBay.com listings take two runs.
 fresh_shop( $ONLY_US );
 $events = array();
-for ( $i = 0; $i < 10; $i++ ) {
+for ( $i = 0; $i < 45; $i++ ) {
 	$us = sprintf( '43000000%04d', $i );
 	ebay_has( $us, listing( $us, 'US' ) );
 	$events[] = event( $us, 'US' );
@@ -1152,10 +1154,10 @@ for ( $i = 0; $i < 10; $i++ ) {
 }
 delta( $events );
 $runs = drain_delta();
-check( 'eighty changes: more than one run', $runs > 0, true );
+check( '360 changes: more than one run', $runs > 0, true );
 check( '  eBay\'s list read once - the later runs use the rows kept in brief', $EBAY['event_reads'], 1 );
-check( '  GetItem only for the ten eBay.com listings, in every run', count( $EBAY['get_items'] ), 10 );
-check( '  ten products', count( $CREATED ), 10 );
+check( '  GetItem only for the 45 eBay.com listings, in every run', count( $EBAY['get_items'] ), 45 );
+check( '  45 products', count( $CREATED ), 45 );
 check( '  the window finishes', state()['status'] ?? null, 'complete' );
 
 // A window kept in brief by 3.27.4, whose rows carry no site, carried on after

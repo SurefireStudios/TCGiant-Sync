@@ -183,6 +183,12 @@ class TCGiant_Sync_Entitlements {
 }
 
 class TCGiant_Sync_Mapper {
+	// The renewal check's record (3.28.6): no signature, so no row is ever
+	// taken for an unchanged renewal here - see test-delta-renewal.php.
+	const EVENT_RECORD_META   = '_ebay_event_sig';
+	const EVENT_RECORD_SCHEMA = 1;
+	public static function event_signature( $item ) { return ''; }
+	public static function settings_fingerprint() { return ''; }
 	public static $last_skipped = false;
 	public static $last_deferred = null;
 	public $relist_parent_error = null;

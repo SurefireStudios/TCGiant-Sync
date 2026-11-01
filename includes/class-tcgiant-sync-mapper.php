@@ -109,6 +109,99 @@ class TCGiant_Sync_Mapper {
 	const ATTR_CONDITION = 'Condition';
 
 	/**
+	 * What the last full read of a listing saw of the fields eBay's list of
+	 * changes carries (event_signature()), with its end time, when it was
+	 * read and under which import settings (3.28.6). Written by every full
+	 * save, from map_ebay_to_woo()'s meta. The delta compares a renewal with
+	 * it: one whose fields are all as they were, and whose end has moved on
+	 * a month, has its new end date recorded without a GetItem or a save -
+	 * see TCGiant_Sync_Importer::record_renewal().
+	 */
+	const EVENT_RECORD_META   = '_ebay_event_sig';
+	const EVENT_RECORD_SCHEMA = 1;
+
+	/**
+	 * The settings that decide what a full read writes to a product already
+	 * linked to its listing: this class's and the image localiser's. A change
+	 * to any of them sends every listing down the full path once, at its
+	 * next change, so that the change reaches it. import_status is not here:
+	 * it is for new products only, and the light path makes none.
+	 */
+	const IMPORT_SETTING_KEYS = array(
+		'bake_shipping_into_price',
+		'import_specs_as_tags',
+		'marketplace',
+		'overwrite_attributes',
+		'overwrite_desc',
+		'overwrite_price',
+		'overwrite_taxonomy',
+		'overwrite_title',
+		'overwrite_weight_dims',
+		'sku_maps_to',
+		'sku_prefix',
+		'overwrite_images',
+		'import_image_width',
+		'disable_image_localization',
+		// Read by the import since 3.27.0 (3.28.0, 3.27.5).
+		'import_auctions',
+		'import_sites',
+	);
+
+	/**
+	 * The fields eBay's list of changes (GetSellerEvents) carries about a
+	 * listing, as one string: the same for a GetItem, GetSellerList or
+	 * GetSellerEvents answer about a listing that has not changed. '' for a
+	 * variation listing, which never takes the light path.
+	 *
+	 * Quantity counts 0, 1 and "not sent" as one: GetSellerEvents leaves it
+	 * out unless it is more than 1. No currency: the answer's currencyID
+	 * attribute does not survive the XML decode.
+	 *
+	 * @param array $item A listing, as eBay sent it.
+	 * @return string
+	 */
+	public static function event_signature( array $item ) {
+		if ( ! empty( $item['Variations'] ) || empty( $item['ItemID'] ) || is_array( $item['ItemID'] ) ) {
+			return '';
+		}
+
+		$quantity = TCGiant_Sync_API::scalar_value( $item['Quantity'] ?? '' );
+		$price    = TCGiant_Sync_API::scalar_value( $item['SellingStatus']['CurrentPrice'] ?? '' );
+
+		return md5( implode( "\x1f", array(
+			(string) $item['ItemID'],
+			TCGiant_Sync_API::scalar_value( $item['ListingType'] ?? '' ),
+			TCGiant_Sync_API::scalar_value( $item['ListingDetails']['StartTime'] ?? '' ),
+			TCGiant_Sync_API::scalar_value( $item['Title'] ?? '' ),
+			is_numeric( $price ) ? sprintf( '%.4F', (float) $price ) : '',
+			(string) max( 1, is_numeric( $quantity ) ? (int) $quantity : 1 ),
+			TCGiant_Sync_API::scalar_value( $item['SellingStatus']['QuantitySold'] ?? '' ),
+		) ) );
+	}
+
+	/**
+	 * The import settings in force, as one string (IMPORT_SETTING_KEYS), with
+	 * WooCommerce's weight and dimension units, which the import converts
+	 * eBay's package figures into.
+	 *
+	 * @return string
+	 */
+	public static function settings_fingerprint() {
+		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
+		$settings = is_array( $settings ) ? $settings : array();
+		$picked   = array();
+
+		foreach ( self::IMPORT_SETTING_KEYS as $key ) {
+			$picked[ $key ] = $settings[ $key ] ?? null;
+		}
+
+		$picked['woocommerce_weight_unit']    = get_option( 'woocommerce_weight_unit', 'lbs' );
+		$picked['woocommerce_dimension_unit'] = get_option( 'woocommerce_dimension_unit', 'in' );
+
+		return md5( serialize( $picked ) );
+	}
+
+	/**
 	 * Main instance.
 	 *
 	 * @return self
@@ -395,6 +488,20 @@ class TCGiant_Sync_Mapper {
 		if ( '' !== (string) $product_data['meta']['_ebay_listing_type'] ) {
 			$product_data['meta']['_ebay_listing_type_item'] = (string) $item_id;
 		}
+
+		// What this full read saw, for the delta's renewal check (3.28.6):
+		// saved with the product, so every full save - the delta's, a queued
+		// import's, Sync Specific Items' and the full sync's - writes it anew.
+		// A variation listing's is '', which no renewal matches.
+		$product_data['meta'][ self::EVENT_RECORD_META ] = array(
+			'v'     => self::EVENT_RECORD_SCHEMA,
+			'item'  => (string) $item_id,
+			'sig'   => self::event_signature( $ebay_item ),
+			'fp'    => self::settings_fingerprint(),
+			'end'   => TCGiant_Sync_API::scalar_value( $ebay_item['ListingDetails']['EndTime'] ?? '' ),
+			'read'  => time(),
+			'light' => 0,
+		);
 
 		// What the website shows for a running auction: its opening bid, the
 		// bid it has reached, how many bids, and Buy It Now while eBay still
