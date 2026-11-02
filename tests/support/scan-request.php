@@ -516,6 +516,8 @@ if ( 'apixml' !== $DO ) {
 		const DAILY_CALL_LIMIT        = 50000;
 		const DAILY_CALL_SOFT_CEILING = 0.80;
 		public static function instance() { return new self(); }
+		// The push mark in ApplicationData (3.28.7) is test-push-mark.php's: none here.
+		public static function count_push_marks( array $items ) { return 0; }
 		public function get_remaining_daily_budget() { return 40000; }
 		public function get_item( $item_id ) {
 			$item_id = (string) $item_id;

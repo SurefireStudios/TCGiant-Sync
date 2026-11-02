@@ -36,6 +36,8 @@ class TCGiant_Sync_API {
 		'EBAY_GB' => array( 'label' => 'United Kingdom', 'site' => 'UK' ),
 	);
 	public static function scalar_value( $value ) { return is_scalar( $value ) ? (string) $value : ''; }
+	// The push mark in ApplicationData (3.28.7) is test-push-mark.php's: none here.
+	public static function count_push_marks( array $items ) { return 0; }
 	public static function instance() { static $i; return $i ?: ( $i = new self() ); }
 	public static function get_events_byte_limit() { return 26843545; }
 	public function get_last_body_bytes() { return 2048; }

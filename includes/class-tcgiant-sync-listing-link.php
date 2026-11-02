@@ -110,6 +110,14 @@ class TCGiant_Sync_Listing_Link {
 			'_ebay_export_error',
 			'_ebay_export_last_pushed',
 			'_ebay_export_pushing_since',
+			// When the first push of the original that has not finished
+			// began, and the latest, and the sales order sync took off it by
+			// listing meanwhile (3.28.7, TCGiant_Sync_Mapper::
+			// link_unfinished_push()). The Unlink button keeps them for a
+			// push that did not finish, as it keeps what that push said.
+			'_ebay_push_attempt',
+			'_ebay_push_attempt_last',
+			'_ebay_unlinked_sold',
 			'_ebay_auction_listed_item',
 			// What the import recorded about the auction - its bids and prices.
 			'_ebay_start_price',

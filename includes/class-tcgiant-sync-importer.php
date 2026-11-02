@@ -1957,6 +1957,16 @@ class TCGiant_Sync_Importer {
 
 		if ( ! $from_cache ) {
 			self::cache_delta_rows( $mod_from, $mod_to, $items );
+
+			// How many of eBay's changed listings carry this site's push mark
+			// in their ApplicationData (3.28.7), at debug level. GetSellerEvents
+			// does not give it back, by eBay's call reference, so the import
+			// reads it from GetItem; a count above 0 here would say otherwise.
+			TCGiant_Sync_Logger::log( sprintf(
+				'Delta: %1$d of %2$d changed listings read carry this site\'s push mark (ApplicationData).',
+				TCGiant_Sync_API::count_push_marks( $items ),
+				$total_items
+			), 'debug' );
 		}
 
 		if ( '' !== $cursor ) {
@@ -2348,6 +2358,14 @@ class TCGiant_Sync_Importer {
 							continue;
 						}
 
+						// Nor a relist: a listing a push of one of our products made,
+						// ended before any sync read it, whose push did not live to
+						// save it (3.28.7) - by eBay's answer the relist check above
+						// just read, at no further cost.
+						if ( ! $existing_id ) {
+							$existing_id = self::link_ended_push( $ebay_item );
+						}
+
 						if ( $existing_id ) {
 							$listing_status = (string) ( $ebay_item['SellingStatus']['ListingStatus'] ?? $listing_status );
 						}
@@ -2462,6 +2480,11 @@ class TCGiant_Sync_Importer {
 								}
 								$errors++;
 								continue;
+							}
+
+							// Or a listing a push that did not finish made (3.28.7).
+							if ( ! $existing_id ) {
+								$existing_id = self::link_ended_push( $ebay_item );
 							}
 						}
 
@@ -5785,6 +5808,19 @@ class TCGiant_Sync_Importer {
 		$new_here = array_values( array_diff( $ids_here, $known ) );
 		self::append_active_ids( $new_here );
 
+		// How many listings new on the page carry this site's push mark in
+		// their ApplicationData (3.28.7), at debug level: eBay's call
+		// reference says GetSellerList gives it back at ReturnAll, and a
+		// shop that has pushed can see here whether it does.
+		if ( $new_here ) {
+			TCGiant_Sync_Logger::log( sprintf(
+				'Full sync page %1$d: %2$d of %3$d listings read carry this site\'s push mark (ApplicationData).',
+				$page_number,
+				TCGiant_Sync_API::count_push_marks( array_values( array_intersect_key( $by_id, array_flip( $new_here ) ) ) ),
+				count( $new_here )
+			), 'debug' );
+		}
+
 		// And their categories, matched by the filter or not, for the delta
 		// (TCGiant_Sync_Category_Memory): written as the batch ends, by
 		// scan_all_pages(). A page read again adds only what is new on it.
@@ -5908,6 +5944,11 @@ class TCGiant_Sync_Importer {
 			// its product alone.
 			if ( ! self::is_live_listing( $item ) ) {
 				$existing_id = self::find_live_product_for_item( $item_id );
+				// One a push that did not finish made (3.28.7), by the page's
+				// own ApplicationData: no call.
+				if ( ! $existing_id ) {
+					$existing_id = self::link_ended_push( $item );
+				}
 				if ( $existing_id ) {
 					self::settle_ended_listing( $existing_id, $item, (string) $item['SellingStatus']['ListingStatus'], 'Full sync' );
 				}
@@ -6262,6 +6303,158 @@ class TCGiant_Sync_Importer {
 	}
 
 	/**
+	 * Only for a product whose latest push began within this many days is an
+	 * ended listing read on that chance (3.28.7): the next sync reads a
+	 * listing a dead push made within hours, live or ended. A product left
+	 * saying its push did not finish would otherwise keep those reads going
+	 * for good.
+	 */
+	const PUSH_MARK_DAYS = 7;
+
+	/**
+	 * At most this many ended listings older than the relist check's day are
+	 * read in one request on the chance a push that did not finish made them
+	 * (3.28.7, unfinished_push_could_have_made()).
+	 */
+	const PUSH_MARK_READS = 10;
+
+	/**
+	 * The earliest time a push of one of our products began that is still
+	 * under way or did not finish, or 0: read once a request.
+	 *
+	 * @var int|null
+	 */
+	private static $push_since = null;
+
+	/**
+	 * Ended listings read this request on that chance.
+	 *
+	 * @var int
+	 */
+	private static $mark_reads = 0;
+
+	/**
+	 * An ended listing no product holds, which a push of one of our products
+	 * made and did not live to save (3.28.7): linked to that product, as the
+	 * push would have linked it, so that the caller settles it through the
+	 * product and eBay's sales of it reach its stock - once: the link takes
+	 * them off (TCGiant_Sync_Mapper::link_stock()), and the settle only lowers
+	 * the stock to what eBay has left. The same rules as the import's link
+	 * (TCGiant_Sync_Mapper::link_by_mark()). Only from an answer that carries
+	 * ApplicationData - GetItem's, a GetSellerList page's - so it asks eBay
+	 * nothing itself.
+	 *
+	 * @param array $ebay_item eBay's answer for the listing.
+	 * @return int The product linked, or 0.
+	 */
+	private static function link_ended_push( array $ebay_item ) {
+		if ( empty( $ebay_item['ApplicationData'] ) ) {
+			return 0;
+		}
+
+		TCGiant_Sync_Runtime::stage( 'linking an ended listing a push made' );
+
+		return (int) TCGiant_Sync_Mapper::instance()->link_by_mark( $ebay_item );
+	}
+
+	/**
+	 * Whether to read, on the chance an unfinished push made it, an ended
+	 * listing no product holds that started more than a day before the
+	 * changes being read - which the relist check leaves unread (3.28.7).
+	 *
+	 * A listing such a push made and that ended before any sync saw it is
+	 * found only from eBay's answer for it: GetSellerEvents carries no
+	 * ApplicationData. The relist check already reads every such listing that
+	 * started within a day of the changes, so the common case costs nothing
+	 * more. This is for the rest - the sync behind, or a listing it met live
+	 * and could not link then - and it costs nothing in normal running:
+	 *
+	 * - only while some product says a push of it is under way or did not
+	 *   finish, with the time that push began (_ebay_push_attempt, written by
+	 *   TCGiant_Sync_Exporter::process_single_push()), when the latest push
+	 *   of it began within the last PUSH_MARK_DAYS - one query a request;
+	 * - only for a listing that started no earlier than
+	 *   TCGiant_Sync_API::PUSH_MARK_SLACK before the earliest such push, as
+	 *   the link itself (TCGiant_Sync_Mapper::link_unfinished_push());
+	 * - at most PUSH_MARK_READS a request - a PHP request, which may run
+	 *   one sync's changes or several; rows past it are not read, and are
+	 *   not read later either: a finished window is not read again;
+	 * - never on a copy of the site (TCGiant_Sync_Environment): a copy's
+	 *   key is not the live shop's, so no listing the live shop pushed is
+	 *   ever its own, and it makes none of its own.
+	 *
+	 * @param int $started The listing's StartTime, Unix seconds.
+	 * @return bool
+	 */
+	private static function unfinished_push_could_have_made( $started ) {
+		if ( ! class_exists( 'TCGiant_Sync_Environment', false ) || '' !== TCGiant_Sync_Environment::reason() ) {
+			return false;
+		}
+
+		$since = self::unfinished_push_since();
+		if ( $since <= 0 || (int) $started < $since - TCGiant_Sync_API::PUSH_MARK_SLACK || self::$mark_reads >= self::PUSH_MARK_READS ) {
+			return false;
+		}
+
+		self::$mark_reads++;
+		return true;
+	}
+
+	/**
+	 * The earliest time a push began, of the products that say they are
+	 * still pushing or that their push did not finish and whose latest push
+	 * began within the last PUSH_MARK_DAYS, or 0 when none does (3.28.7).
+	 *
+	 * The earliest unfinished push of a product (_ebay_push_attempt), which
+	 * any listing its pushes since may have made started after; the latest
+	 * (_ebay_push_attempt_last, or the earliest where there is none) for the
+	 * week, so that a product pushed again a week after its first push died
+	 * is read for while its new push is recent.
+	 *
+	 * @return int
+	 */
+	private static function unfinished_push_since() {
+		if ( null === self::$push_since ) {
+			global $wpdb;
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			self::$push_since = (int) $wpdb->get_var( $wpdb->prepare(
+				"SELECT MIN( CAST( a.meta_value AS UNSIGNED ) ) FROM {$wpdb->postmeta} s
+				 INNER JOIN {$wpdb->postmeta} a ON a.post_id = s.post_id AND a.meta_key = '_ebay_push_attempt'
+				 LEFT JOIN {$wpdb->postmeta} l ON l.post_id = s.post_id AND l.meta_key = '_ebay_push_attempt_last'
+				 WHERE s.meta_key = '_ebay_export_status' AND s.meta_value IN ( 'pushing', 'failed' )
+				   AND CAST( COALESCE( l.meta_value, a.meta_value ) AS UNSIGNED ) >= %d",
+				time() - self::PUSH_MARK_DAYS * DAY_IN_SECONDS
+			) );
+		}
+
+		return self::$push_since;
+	}
+
+	/**
+	 * Note a sale order sync took off a product no listing points to, by the
+	 * listing that sold (3.28.7): only for a product that says a push of it is
+	 * under way or did not finish, which an import may yet link to that very
+	 * listing (TCGiant_Sync_Mapper::link_unfinished_push()). Its stock then
+	 * has those sales in it already, and the link does not take them off
+	 * again. Nothing is kept for any other product.
+	 *
+	 * @param int    $product_id The product whose stock came down.
+	 * @param string $item_id    The listing that sold.
+	 * @param int    $quantity   How many.
+	 */
+	private static function note_unlinked_sale( $product_id, $item_id, $quantity ) {
+		if ( '' === (string) $item_id || ! in_array( (string) get_post_meta( $product_id, '_ebay_export_status', true ), array( 'pushing', 'failed' ), true ) ) {
+			return;
+		}
+
+		$taken = get_post_meta( $product_id, '_ebay_unlinked_sold', true );
+		$taken = is_array( $taken ) ? $taken : array();
+
+		$taken[ (string) $item_id ] = (int) ( $taken[ (string) $item_id ] ?? 0 ) + max( 0, (int) $quantity );
+		update_post_meta( $product_id, '_ebay_unlinked_sold', $taken );
+	}
+
+	/**
 	 * Move a product on to an ended listing the sync never saw live, when that
 	 * listing is a relist of the one the product follows.
 	 *
@@ -6305,7 +6498,10 @@ class TCGiant_Sync_Importer {
 			$started = is_scalar( $started ) ? strtotime( (string) $started ) : false;
 			$from    = strtotime( (string) $since );
 
-			if ( empty( $ebay_item['RelistParentID'] ) && $started && $from && $started < $from - DAY_IN_SECONDS ) {
+			// Unless a push of one of our products that did not finish could
+			// have made it (3.28.7): see unfinished_push_could_have_made().
+			if ( empty( $ebay_item['RelistParentID'] ) && $started && $from && $started < $from - DAY_IN_SECONDS
+				&& ! self::unfinished_push_could_have_made( $started ) ) {
 				return 0;
 			}
 
@@ -7627,6 +7823,9 @@ class TCGiant_Sync_Importer {
 
 				if ( ! is_wp_error( $stock_reduced ) ) {
 					update_post_meta( $product_id, '_ebay_order_processed_' . $line_item_id, current_time( 'mysql' ) );
+					if ( is_numeric( $stock_reduced ) ) {
+						self::note_unlinked_sale( (int) $product_id, (string) $legacy_item_id, $quantity );
+					}
 					TCGiant_Sync_Logger::log( sprintf( 'Reduced stock for WC Product %d by %d (eBay order).', $product_id, $quantity ), 'success' );
 					$order_count++;
 				}
@@ -7713,6 +7912,12 @@ class TCGiant_Sync_Importer {
 				if ( ! $existing_id && ! empty( $ended_item['RelistParentID'] ) ) {
 					$asked       = 0;
 					$existing_id = self::adopt_unseen_relist( $ended_item, '', 'Import', $asked );
+				}
+
+				// Or one a push that did not finish made (3.28.7), from the
+				// answer in hand.
+				if ( ! $existing_id ) {
+					$existing_id = self::link_ended_push( $ended_item );
 				}
 
 				if ( $existing_id ) {

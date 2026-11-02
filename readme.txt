@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.28.6
+Stable tag: 3.28.7
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -139,6 +139,21 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.28.7 - 2026-11-02 =
+* FIX: A push your server stopped after eBay had made the listing, but before TCGiant Sync saved its item number, left a live listing that nothing on your website pointed to, and the next sync imported it as a new product: a copy of the one you pushed. Every new listing a push makes now carries a note on eBay naming your site and the product (eBay's ApplicationData field, which buyers do not see). When a sync finds a listing that no product holds, it reads that note first, and links the listing to the product it names, as the push would have. No copy is made, and the product keeps its own title, description, price and photos. For a product without variations, its stock is what your website holds now, less what eBay sold of that listing that the website has not taken off, so a website sale made in the meantime is never put back on sale; if eBay then shows another figure, eBay is sent it. The log says "Listing ... was created by a push of WC #... that didn't finish; linked it to WC #... instead of importing a copy."
+* Only a listing that started after that push began (give or take 10 minutes, for the difference between eBay's clock and your server's) and had not ended before it began is linked to it. An older listing of the same product - the one you unlinked it from, say, or the one a relist replaced - is imported as before, and its sales are not taken off the product again.
+* This finds the products the SKU match could not: products with no SKU, shops whose eBay SKU goes to the Bin Location, and products pushed again since.
+* Only a product that still says its push did not finish (or is still under way) is linked this way. A product that never pushed - after a database restore, say, when a product number is used again - or one you unlinked after its push finished is left alone, and the listing is imported as before.
+* A listing such a push made that sold out or ended before any sync read it is linked too, and its sales come off the product's stock: once, even when "Reduce WooCommerce stock on eBay sale?" already took them off by the product's SKU. Before, nothing was made for it and the product stayed for sale on your website.
+* A push that was making a new listing in place of an ended one, and was stopped, is finished the same way: the product moves on to the new listing, as a relist does, with a SKU made from the old item number following it.
+* At the next sync after such a link the product keeps its own description, with "Overwrite description" on, as after any push with a listing template or an eBay-only description.
+* What this costs: nothing more in normal running. The extra eBay calls are made only while a push of yours has not finished, for ended listings that started after that push began and that the sync would not otherwise have read: at most 10 per background request of the sync (a sync that reads many changes takes several such requests), only for 7 days after the latest push of that product began, and never on a staging copy of your site. Listings past those 10 are not read later.
+* It works for listings pushed from this version on. A listing pushed before has no such note: use Link on the product, as before.
+* A product linked to another live listing since (pushed again, and that push finished) keeps it. The other listing is imported as before, and the log warns that the product may be listed twice on eBay.
+* Nothing else changes for a listing on an eBay site you do not import from (Import listings from), a listing whose note names another site, a product that is in the Trash or no longer there, a product that is neither simple nor variable (an external or grouped product), or a product with variations for a listing without them (or the other way round). A relist still follows the product of the listing it came from. A staging copy of your site at another address never takes the live shop's listings this way.
+* Updating a listing never sends the note, so a listing that has one keeps it.
+* For a product with variations, the link is made, and the variations take eBay's stock figures at the listing's next import (for a listing that has ended, the lower of eBay's and your website's). So a variation your website sold while the listing was not linked can go back on sale: check those products' stock after the link.
 
 = 3.28.6 - 2026-10-31 =
 * FIX: A Good 'Til Cancelled listing that eBay renews each month no longer costs an eBay call and a full save of its product when nothing else about it has changed. eBay reports every monthly renewal as a change, so a shop with 15,000 fixed-price listings spent about 450 eBay calls a day on renewals, and one window of 1,795 of them took 45 runs of the sync. TCGiant Sync now notes what eBay showed for each listing when it last read it in full. A renewal that shows nothing else changed has only its new end date written: no eBay call, and the product is not saved. The same window now takes 4 runs, with no eBay call for the renewals.

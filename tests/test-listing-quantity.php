@@ -282,7 +282,9 @@ check( 'the importer records it', false !== strpos( $mapper, "'_ebay_start_time'
 check( 'the delta importer records it', false !== strpos( $importer, "'_ebay_start_time', \$ebay_item['ListingDetails']['StartTime']" ), true );
 check( 'the hourly refresh records it', false !== strpos( $cron, "'_ebay_start_time', \$item['ListingDetails']['StartTime']" ), true );
 check( 'linking records it', false !== strpos( $admin, "\$start_time = (string) ( \$item['ListingDetails']['StartTime'] ?? '' );" ), true );
-check( 'a push records it', false !== strpos( $exp, "'ebay_start_time' => gmdate(" ), true );
+// Since 3.28.7 through record_listing_made(), which an import that links a
+// listing a dead push made calls too, with eBay's own StartTime.
+check( 'a push records it', false !== strpos( $exp, "'ebay_start_time' => '' !== \$start_time ? \$start_time : gmdate(" ), true );
 
 // Every one of those is beside an existing EndTime read, so no extra eBay call
 // is made to get it.

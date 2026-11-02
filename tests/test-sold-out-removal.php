@@ -458,6 +458,27 @@ check( '  unlinked, it still says its push did not finish, in the same words', a
 check( '  then links the new listing: it says pushed', array( sold_out_ajax( $admin, 'ajax_link_ebay', array( 'product_id' => '5020', 'ebay_item_id' => '960070000222' ) ), get_post_meta( 5020, '_ebay_item_id', true ), status( 5020 ) ), array( 'ok', '960070000222', 'pushed' ) );
 check( '  that listing sells out: kept', sells_out( 5020 ), 'kept' );
 
+// And what the sync needs to link that push's listing by its mark itself
+// (3.28.7): when the push began - a listing that started before is not that
+// push's - and what order sync took off by listing meanwhile. Kept by the
+// Unlink button for a push that did not finish; gone with a Link, and with
+// an Unlink of a push that finished.
+sold_out_shop( array( 5023 => true ) );
+update_post_meta( 5023, '_ebay_export_status', 'failed' );
+update_post_meta( 5023, '_ebay_push_attempt', 1761900000 );
+update_post_meta( 5023, '_ebay_push_attempt_last', 1762500000 );
+update_post_meta( 5023, '_ebay_unlinked_sold', array( '960070000224' => 1 ) );
+sold_out_ajax( $admin, 'ajax_unlink_ebay', array( 'product_id' => '5023' ) );
+check( 'Unlink of a push that did not finish keeps when it began, when the latest did, and the note', array( status( 5023 ), get_post_meta( 5023, '_ebay_push_attempt', true ), get_post_meta( 5023, '_ebay_push_attempt_last', true ), get_post_meta( 5023, '_ebay_unlinked_sold', true ) ), array( 'failed', 1761900000, 1762500000, array( '960070000224' => 1 ) ) );
+check( '  then Link takes all three off', array( sold_out_ajax( $admin, 'ajax_link_ebay', array( 'product_id' => '5023', 'ebay_item_id' => '960070000224' ) ), status( 5023 ), get_post_meta( 5023, '_ebay_push_attempt', true ), get_post_meta( 5023, '_ebay_push_attempt_last', true ), get_post_meta( 5023, '_ebay_unlinked_sold', true ) ), array( 'ok', 'pushed', '', '', '' ) );
+sold_out_shop( array( 5024 => true ) );
+update_post_meta( 5024, '_ebay_push_attempt', 1761900000 );
+update_post_meta( 5024, '_ebay_push_attempt_last', 1762500000 );
+update_post_meta( 5024, '_ebay_unlinked_sold', array( '960070000225' => 1 ) );
+sold_out_ajax( $admin, 'ajax_unlink_ebay', array( 'product_id' => '5024' ) );
+check( 'Unlink of a push that finished takes all three off', array( get_post_meta( 5024, '_ebay_push_attempt', true ), get_post_meta( 5024, '_ebay_push_attempt_last', true ), get_post_meta( 5024, '_ebay_unlinked_sold', true ) ), array( '', '', '' ) );
+check( 'a duplicate copies none of them', array_values( array_diff( array( '_ebay_push_attempt', '_ebay_push_attempt_last', '_ebay_unlinked_sold' ), TCGiant_Sync_Listing_Link::duplicate_exclude_meta( array() ) ) ), array() );
+
 // The same, from the products list's warning before Action Scheduler has
 // given up on the push: it still says pushing, and the time it began goes
 // with the link.

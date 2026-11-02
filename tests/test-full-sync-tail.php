@@ -258,6 +258,8 @@ class TCGiant_Sync_API {
 	const DAILY_CALL_LIMIT        = 50000;
 	const DAILY_CALL_SOFT_CEILING = 0.80;
 	public static function instance() { return new self(); }
+	// The push mark in ApplicationData (3.28.7) is test-push-mark.php's: none here.
+	public static function count_push_marks( array $items ) { return 0; }
 	public function get_remaining_daily_budget() { return 40000; }
 	public function get_item( $item_id ) { $GLOBALS['GOT_ITEMS'][] = (string) $item_id; return array( 'Item' => array( 'ItemID' => $item_id, 'Title' => 'GetItem ' . $item_id, 'SellingStatus' => array( 'ListingStatus' => $GLOBALS['EBAY_STATUS'][ (string) $item_id ] ?? 'Active' ), 'ItemSpecifics' => array(), 'PictureDetails' => array( 'PictureURL' => 'u' ) ) ); }
 	public function get_active_listings( $page, $per_page = 200, $mod_from = '', $end_from = '' ) {

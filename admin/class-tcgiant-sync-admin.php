@@ -976,10 +976,17 @@ class TCGiant_Sync_Admin {
 		// that the push did not finish, what it said, and when the product was
 		// last pushed. Failed rather than pushing, because the push's start
 		// time goes with the link, and a push with no start time to judge it by
-		// would look as if it were under way for good.
+		// would look as if it were under way for good. And, for the sync that
+		// links the listing that push made by its mark (3.28.7), when the
+		// push began - a listing that started before is not that push's - and
+		// when the latest push of it began, and what order sync took off by
+		// listing meanwhile, which the link does not take off again.
 		$unfinished  = in_array( (string) get_post_meta( $product_id, '_ebay_export_status', true ), array( 'failed', 'pushing' ), true );
 		$error       = (string) get_post_meta( $product_id, '_ebay_export_error', true );
 		$last_pushed = (string) get_post_meta( $product_id, '_ebay_export_last_pushed', true );
+		$attempt     = get_post_meta( $product_id, '_ebay_push_attempt', true );
+		$latest      = get_post_meta( $product_id, '_ebay_push_attempt_last', true );
+		$taken       = get_post_meta( $product_id, '_ebay_unlinked_sold', true );
 
 		TCGiant_Sync_Listing_Link::unlink_product_from_ebay( $product_id, 'unlinked by admin' );
 
@@ -988,6 +995,15 @@ class TCGiant_Sync_Admin {
 			update_post_meta( $product_id, '_ebay_export_error', $error );
 			if ( '' !== $last_pushed ) {
 				update_post_meta( $product_id, '_ebay_export_last_pushed', $last_pushed );
+			}
+			if ( '' !== (string) $attempt ) {
+				update_post_meta( $product_id, '_ebay_push_attempt', $attempt );
+			}
+			if ( '' !== (string) $latest ) {
+				update_post_meta( $product_id, '_ebay_push_attempt_last', $latest );
+			}
+			if ( is_array( $taken ) && $taken ) {
+				update_post_meta( $product_id, '_ebay_unlinked_sold', $taken );
 			}
 		}
 
@@ -3433,6 +3449,12 @@ class TCGiant_Sync_Admin {
 		// TCGiant_Sync_Listing_Link::complete_unfinished_push().
 		TCGiant_Sync_Listing_Link::complete_unfinished_push( $product );
 		$product->delete_meta_data( '_ebay_export_pushing_since' );
+		// When a push that did not finish began, and what order sync took off
+		// by listing meanwhile, are for the sync's own link of that push's
+		// listing (3.28.7): linked by hand, there is none left to make.
+		$product->delete_meta_data( '_ebay_push_attempt' );
+		$product->delete_meta_data( '_ebay_push_attempt_last' );
+		$product->delete_meta_data( '_ebay_unlinked_sold' );
 
 		TCGiant_Sync_Runtime::guard_loops();
 		try {

@@ -337,6 +337,8 @@ class TCGiant_Sync_API {
 	// What "Import listings from" (3.27.5) reads the shop's own site from.
 	const MARKETPLACES = array( 'EBAY_US' => array( 'label' => 'United States', 'site' => 'US' ) );
 	public static function scalar_value( $value ) { return is_scalar( $value ) ? (string) $value : ''; }
+	// The push mark in ApplicationData (3.28.7) is test-push-mark.php's: none here.
+	public static function count_push_marks( array $items ) { return 0; }
 	public static function instance() { static $i; return $i ?: ( $i = new self() ); }
 	public function get_remaining_daily_budget() { return (int) ( $GLOBALS['EBAY']['budget'] ?? 40000 ); }
 	public function get_item( $item_id ) {

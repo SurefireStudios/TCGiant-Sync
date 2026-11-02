@@ -38,6 +38,16 @@ class TCGiant_Sync_Mapper {
 	public static $last_deferred = null;
 
 	/**
+	 * The product the last save_as_product() call linked its listing to as
+	 * the push that made the listing would have (link_unfinished_push(),
+	 * 3.28.7), or 0. That call returns false with $last_skipped set: there
+	 * is nothing left to import, no product to save and no photos to set.
+	 *
+	 * @var int
+	 */
+	public static $last_linked = 0;
+
+	/**
 	 * Why eBay could not be asked how a relist's old listing ended, the last
 	 * time relist_parent_product() needed to know - or null. Read by the delta
 	 * sync, which pauses on a passing failure rather than pass the relist by.
@@ -520,6 +530,18 @@ class TCGiant_Sync_Mapper {
 			$relist_parent = '';
 		}
 		$product_data['relist_parent_id'] = $relist_parent;
+
+		// What the listing's ApplicationData says, which for a listing a
+		// push from this site made names the product (3.28.7): see
+		// link_unfinished_push(). '' when eBay's answer did not carry it.
+		$product_data['application_data'] = TCGiant_Sync_API::scalar_value( $ebay_item['ApplicationData'] ?? '' );
+
+		// And, for such a listing only, its description exactly as eBay holds
+		// it: what the push sent, from which the link records what was sent
+		// (TCGiant_Sync_Exporter::description_record_from()).
+		if ( '' !== $product_data['application_data'] && isset( $ebay_item['Description'] ) && is_string( $ebay_item['Description'] ) ) {
+			$product_data['ebay_description'] = $ebay_item['Description'];
+		}
 
 		// Kept on the product too, so a duplicate made by an earlier version -
 		// the old product beside the copy that follows the relist - can be told
@@ -1381,6 +1403,7 @@ class TCGiant_Sync_Mapper {
 	public function save_as_product( &$product_data ) {
 		self::$last_skipped  = false;
 		self::$last_deferred = null;
+		self::$last_linked   = 0;
 		$this->parent_over   = array();
 
 		$item_id = $product_data['meta']['_ebay_item_id'];
@@ -1574,6 +1597,36 @@ class TCGiant_Sync_Mapper {
 				return false;
 			} elseif ( $leaving_out && $this->relist_decline_final ) {
 				set_transient( $declined_once, 1, 10 * DAY_IN_SECONDS );
+			}
+		}
+
+		// 1c. A listing a push from this site made, when the push did not
+		//     live to save its item number (3.28.7).
+		//
+		// The host killed the push after eBay's AddFixedPriceItem had made
+		// the listing and before the product was saved, so nothing here
+		// pointed to it, and it was made into a new product - a copy of the
+		// one pushed - unless the SKU match below caught it. That cannot when
+		// the product has no SKU, the eBay SKU goes to the Bin Location, or
+		// the product was pushed again since. The push wrote which product it
+		// was into the listing's ApplicationData, and that is read here,
+		// before the SKU: the product is linked to the listing as the push
+		// would have linked it, and nothing is imported.
+		//
+		// After the relist step, and never for a relist: a relist carries the
+		// ApplicationData of the listing it came from, and RelistParentID is
+		// eBay's own word for which listing that was. Only when no product of
+		// any status holds this listing, as for a relist.
+		if ( ! $product_id && ! $found && '' === (string) ( $product_data['relist_parent_id'] ?? '' )
+			&& '' !== (string) ( $product_data['application_data'] ?? '' ) ) {
+			$linked = $this->link_unfinished_push( $product_data, (string) $item_id );
+			if ( $linked ) {
+				// Nothing is left to import: no product to save and no photos
+				// to set, so what every caller does for a deliberate skip is
+				// what this needs.
+				self::$last_skipped = true;
+				self::$last_linked  = $linked;
+				return false;
 			}
 		}
 
@@ -2278,6 +2331,397 @@ class TCGiant_Sync_Mapper {
 		}
 
 		return $saved_id;
+	}
+
+	/**
+	 * Link a listing to the product whose push made it, when that push did
+	 * not live to save it (3.28.7): the product the listing's ApplicationData
+	 * names, as a push from this site wrote it (TCGiant_Sync_API::push_mark()).
+	 *
+	 * Only when that product is here to take it: a product, not in the
+	 * Trash, simple or variable and of the listing's kind - variable for a
+	 * listing with variations, not otherwise - and saying that a push of it
+	 * is under way or did not finish, which began no later than this listing
+	 * started, by eBay's clock give or take TCGiant_Sync_API::PUSH_MARK_SLACK:
+	 * the mark names the product, and an older listing carrying it is one an
+	 * earlier push made. Linked to no listing, or to this one;
+	 * or to a listing that has ended, as its records say, which that push was
+	 * making this one in place of: then it is moved on to this one, as that
+	 * push would have moved it.
+	 *
+	 * It is linked as the push would have linked it, through the push's own
+	 * save (TCGiant_Sync_Exporter::record_listing_made()), with the record of
+	 * the description the listing holds (TCGiant_Sync_Exporter::
+	 * description_record_from()), and stays as the shop has it: its title,
+	 * description, price and photos are not taken from eBay. Its stock is
+	 * worked out by link_stock().
+	 *
+	 * A product on another listing keeps it otherwise, and this listing is
+	 * imported as any other is, with a warning. Another site's mark, the
+	 * probe plugin's, a seller's own value: none of them is a product here,
+	 * and the listing is imported as it would have been.
+	 *
+	 * @param array  $product_data Mapped listing.
+	 * @param string $item_id      eBay ItemID.
+	 * @return int The product linked, or 0 when none was.
+	 */
+	private function link_unfinished_push( array $product_data, $item_id ) {
+		$product_id = TCGiant_Sync_API::marked_product( $product_data['application_data'] ?? '' );
+		if ( $product_id <= 0 || '' === (string) $item_id || ! class_exists( 'TCGiant_Sync_Exporter' ) ) {
+			return 0;
+		}
+
+		$status = get_post_status( $product_id );
+		if ( 'product' !== get_post_type( $product_id ) || false === $status || 'trash' === $status ) {
+			TCGiant_Sync_Logger::log( sprintf(
+				'eBay listing %1$s was made by a push of WC #%2$d, which is %3$s: the listing is imported as any other.',
+				$item_id,
+				$product_id,
+				'trash' === $status ? 'in the Trash' : 'not a product here'
+			), 'debug' );
+			return 0;
+		}
+
+		$product  = wc_get_product( $product_id );
+		$variable = ! empty( $product_data['variations'] );
+
+		// Only a simple or a variable product: a listing is one or the other.
+		// An external or grouped product - any other type - cannot hold a
+		// listing's stock: WooCommerce refuses to manage it, by throwing, so
+		// linking it would fail on every sync. Left as the kind check below
+		// leaves a product of the wrong kind.
+		if ( $product && ! $product->is_type( 'simple' ) && ! $product->is_type( 'variable' ) ) {
+			TCGiant_Sync_Logger::log( sprintf(
+				'eBay listing %1$s was made by a push of WC #%2$d, but WC #%2$d is a product of type "%3$s", not simple or variable: the listing is imported as any other.',
+				$item_id,
+				$product_id,
+				(string) $product->get_type()
+			), 'debug' );
+			return 0;
+		}
+
+		if ( ! $product || $variable !== $product->is_type( 'variable' ) ) {
+			TCGiant_Sync_Logger::log( sprintf(
+				'eBay listing %1$s was made by a push of WC #%2$d, but the listing %3$s variations and the product %4$s: the listing is imported as any other.',
+				$item_id,
+				$product_id,
+				$variable ? 'has' : 'has no',
+				$variable ? 'is not variable' : 'is variable'
+			), 'debug' );
+			return 0;
+		}
+
+		// What the product says of its last push: under way, or did not
+		// finish - the two states a push killed between eBay's answer and the
+		// save leaves: pushing, written before eBay is asked, and failed,
+		// written once the death is seen (TCGiant_Sync_Exporter). Clear keeps
+		// both, and Unlink keeps one as failed. Any other is not that push's:
+		// a product number used again after a database restore or a rebuild
+		// at the same address, which never pushed, or a finished push the shop
+		// has since unlinked on purpose.
+		$state      = (string) get_post_meta( $product_id, '_ebay_export_status', true );
+		$unfinished = in_array( $state, array( 'pushing', 'failed' ), true );
+
+		// The mark names the product, not the push: every listing a push of
+		// it has made carries the same. The one an unfinished push made
+		// started after that push began (_ebay_push_attempt, kept from the
+		// first of them until one finishes, and across Unlink), less eBay's
+		// clock against this server's. An older listing is one an earlier
+		// push made - the listing the product was unlinked from, or moved on
+		// from by a relist in place - whose sales its stock already holds:
+		// linked again, they came off a second time, and the unfinished
+		// push's own listing was imported as a copy. Nor without either time,
+		// which every push since 3.28.7 writes and eBay always gives. Nor one
+		// that ended before that push began: the listing a push makes cannot
+		// have, and with no slack this shuts out an older ended listing that
+		// started within the slack too - all the clocks could cost is the
+		// link of a listing that ended within seconds of being made, which is
+		// then treated as before 3.28.7.
+		if ( $unfinished ) {
+			$attempt  = (int) get_post_meta( $product_id, '_ebay_push_attempt', true );
+			$started  = TCGiant_Sync_API::scalar_value( $product_data['meta']['_ebay_start_time'] ?? '' );
+			$started  = '' !== $started ? (int) strtotime( $started ) : 0;
+			$ended_at = TCGiant_Sync_API::scalar_value( $product_data['meta']['_ebay_end_time'] ?? '' );
+			$ended_at = '' !== $ended_at ? (int) strtotime( $ended_at ) : 0;
+			if ( $attempt <= 0 || $started <= 0 || $started < $attempt - TCGiant_Sync_API::PUSH_MARK_SLACK
+				|| ( $ended_at > 0 && $ended_at < $attempt ) ) {
+				if ( $attempt <= 0 ) {
+					$why = sprintf( 'WC #%d does not say when its push that did not finish began', $product_id );
+				} elseif ( $started <= 0 ) {
+					$why = 'eBay gave no start time for it';
+				} elseif ( $started < $attempt - TCGiant_Sync_API::PUSH_MARK_SLACK ) {
+					$why = sprintf( 'it started before the push of WC #%1$d that did not finish began (%2$s UTC), so an earlier push made it', $product_id, gmdate( 'Y-m-d H:i:s', $attempt ) );
+				} else {
+					$why = sprintf( 'it ended before the push of WC #%1$d that did not finish began (%2$s UTC), so an earlier push made it', $product_id, gmdate( 'Y-m-d H:i:s', $attempt ) );
+				}
+				TCGiant_Sync_Logger::log( sprintf(
+					'eBay listing %1$s was made by a push of WC #%2$d, but %3$s: the listing is imported as any other.',
+					$item_id,
+					$product_id,
+					$why
+				), 'debug' );
+				return 0;
+			}
+		}
+
+		// On another listing. One that has ended, as the product's records say
+		// - a push that finds its listing ended records so before it asks eBay
+		// for the new one (TCGiant_Sync_Exporter::do_push()) - while its push
+		// did not finish: that push was making this listing in place of the
+		// ended one, and the product moves on to it as the push would have
+		// moved it. Otherwise the product keeps its own, and this listing is
+		// imported as it always was: which to keep is the shop's to say. Said
+		// once a day per listing: an auction left out of the import is met on
+		// every bid.
+		$linked   = (string) get_post_meta( $product_id, '_ebay_item_id', true );
+		$previous = '';
+		if ( '' !== $linked && $linked !== (string) $item_id ) {
+			$ended = self::listing_over_for( $product_id, $linked );
+			if ( $unfinished && $ended ) {
+				$previous = $linked;
+			} else {
+				if ( ! get_transient( 'tcgiant_push_mark_warned_' . $item_id ) ) {
+					set_transient( 'tcgiant_push_mark_warned_' . $item_id, 1, DAY_IN_SECONDS );
+					TCGiant_Sync_Logger::warning( $ended
+						? sprintf(
+							'eBay listing %1$s was made by a push of WC #%2$d, but WC #%2$d is still linked to listing %3$s, which has ended, and does not say that push did not finish, so it is not moved on to %1$s: %1$s is imported as any other listing. If WC #%2$d should follow %1$s, Unlink it and Link it to %1$s.',
+							$item_id,
+							$product_id,
+							$linked
+						)
+						: sprintf(
+							'eBay listing %1$s was made by a push of WC #%2$d, but WC #%2$d is linked to listing %3$s, so it is not linked to %1$s: %1$s is imported as any other listing. If both are live on eBay, WC #%2$d is listed twice: end the one you do not want, or Unlink WC #%2$d and Link it to the one you keep.',
+							$item_id,
+							$product_id,
+							$linked
+						) );
+				}
+				return 0;
+			}
+		}
+
+		// A product linked to nothing, or moving on from an ended listing,
+		// must still say its push did not finish. The listing is imported as
+		// it always was, and the SKU match below still finds the product it
+		// belongs to.
+		if ( ! $unfinished ) {
+			TCGiant_Sync_Logger::log( sprintf(
+				'eBay listing %1$s was made by a push of WC #%2$d, but WC #%2$d does not say a push of it did not finish (it says "%3$s"): the listing is imported as any other.',
+				$item_id,
+				$product_id,
+				$state
+			), 'debug' );
+			return 0;
+		}
+
+		TCGiant_Sync_Runtime::stage( 'linking the listing a push of the product made' );
+
+		$meta      = (array) ( $product_data['meta'] ?? array() );
+		$decisions = array( '' !== $previous
+			? sprintf( 'Moved on to eBay listing %1$s in place of ended listing %2$s: a push of this product made it and did not live to save it. Title, description, price and photos kept (WooCommerce won)', $item_id, $previous )
+			: sprintf( 'Linked to eBay listing %s, which a push of this product made and did not live to save. Title, description, price and photos kept (WooCommerce won)', $item_id ) );
+		$push      = false;
+
+		// A product's own stock: see link_stock(). A variable product's is on
+		// its variations, which the listing's next import matches and sets as
+		// it always has.
+		if ( $variable ) {
+			$decisions[] = 'Stock left as it is: its variations take eBay\'s figures at the listing\'s next import';
+		} else {
+			$stock       = $this->link_stock( $product, $product_data, (string) $item_id );
+			$decisions[] = $stock['said'];
+			$push        = $stock['push'];
+		}
+
+		$logs = $product->get_meta( '_tcgiant_sync_log', true );
+		$logs = is_array( $logs ) ? $logs : array();
+		array_unshift( $logs, array(
+			'timestamp' => current_time( 'mysql' ),
+			'decisions' => $decisions,
+		) );
+		$product->update_meta_data( '_tcgiant_sync_log', array_slice( $logs, 0, 20 ) );
+
+		// As the push would have saved it, had it lived: the item number, the
+		// push complete and dated, the listing live, its site and type, the
+		// listing it replaced, the description it was sent, and the Listings
+		// row - with eBay's dates, which a push does not have. So the first
+		// import after this keeps the product's own description, as after any
+		// push, "Overwrite description" or not. What order sync took off for
+		// this listing while nothing pointed to it is in the stock now
+		// (link_stock()), and the note of it goes with the push's start time.
+		TCGiant_Sync_Exporter::record_listing_made( $product, array(
+			'item_id'          => (string) $item_id,
+			'action'           => '' !== $previous ? 'relisted' : 'created',
+			'previous_item_id' => $previous,
+			'listing_type'     => TCGiant_Sync_API::scalar_value( $meta['_ebay_listing_type'] ?? '' ),
+			'start_time'       => TCGiant_Sync_API::scalar_value( $meta['_ebay_start_time'] ?? '' ),
+			'end_time'         => TCGiant_Sync_API::scalar_value( $meta['_ebay_end_time'] ?? '' ),
+			'desc'             => TCGiant_Sync_Exporter::description_record_from( $product, (string) ( $product_data['ebay_description'] ?? '' ) ),
+		) );
+
+		// eBay shows another figure than the stock now holds: it is told, as
+		// after any sale it has not heard of, now that the product points to
+		// the listing.
+		if ( $push ) {
+			TCGiant_Sync_Inventory::queue_after_ebay_sale( $product_id );
+		}
+
+		TCGiant_Sync_Logger::log( sprintf(
+			'Listing %1$s was created by a push of WC #%2$d that didn\'t finish; linked it to WC #%2$d instead of importing a copy.',
+			$item_id,
+			$product_id
+		), 'success' );
+
+		return $product_id;
+	}
+
+	/**
+	 * Whether the listing a product is linked to is over, as the product's
+	 * own records say (3.28.7): marked Ended, or a fixed-length listing past
+	 * its end (TCGiant_Sync_Exporter::linked_listing_ended()), or settled, or
+	 * given a reason for its end. No call to eBay.
+	 *
+	 * @param int    $product_id The product.
+	 * @param string $item_id    The listing it is linked to.
+	 * @return bool
+	 */
+	private static function listing_over_for( $product_id, $item_id ) {
+		return TCGiant_Sync_Exporter::linked_listing_ended( $product_id )
+			|| (string) get_post_meta( (int) $product_id, '_ebay_stock_settled_item', true ) === (string) $item_id
+			|| (string) get_post_meta( (int) $product_id, '_ebay_end_reason_item', true ) === (string) $item_id;
+	}
+
+	/**
+	 * The stock of a simple product link_unfinished_push() links (3.28.7).
+	 *
+	 * The listing was made from the product's stock. Since then the website
+	 * may have sold some, which its stock has, and eBay may have sold some,
+	 * which it has not - unless order sync's "Reduce WooCommerce stock on
+	 * eBay sale?" took them off by the product's SKU while nothing pointed to
+	 * the listing, which it notes by listing (_ebay_unlinked_sold, by
+	 * TCGiant_Sync_Importer::note_unlinked_sale()). So the stock is
+	 * WooCommerce's now less eBay's sales of the listing it has not taken off:
+	 * a website sale is never put back on sale, and no eBay sale is taken off
+	 * twice. When eBay shows another figure, a live listing is sent it once
+	 * linked. The record of eBay's sales is written with the stock (3.28.0):
+	 * it has taken off all of them now. A product that keeps no count takes
+	 * eBay's figure and is counted from now on, as the import does.
+	 *
+	 * Saved with the stock push held back, as the import's save is.
+	 *
+	 * @param WC_Product $product      The product.
+	 * @param array      $product_data Mapped listing.
+	 * @param string     $item_id      eBay ItemID.
+	 * @return array said: the sync log's line; push: eBay is to be sent the figure.
+	 */
+	private function link_stock( $product, array $product_data, $item_id ) {
+		$ebay_left = max( 0, (int) ( $product_data['stock_quantity'] ?? 0 ) );
+		$sold      = $product_data['quantity_sold'] ?? null;
+		$live      = 'Active' === (string) ( $product_data['meta']['_ebay_listing_status'] ?? '' );
+		$auction   = 'Chinese' === (string) ( $product_data['meta']['_ebay_listing_type'] ?? '' );
+		$held_now  = $product->managing_stock() ? $product->get_stock_quantity() : null;
+
+		if ( null === $held_now ) {
+			$figure = $ebay_left;
+			$push   = false;
+			$said   = sprintf( 'Stock set to %d, eBay\'s figure, and counted from now on: WooCommerce kept no count of it', $figure );
+		} else {
+			$taken  = get_post_meta( $product->get_id(), '_ebay_unlinked_sold', true );
+			$taken  = is_array( $taken ) ? max( 0, (int) ( $taken[ (string) $item_id ] ?? 0 ) ) : 0;
+			$unseen = null === $sold ? 0 : max( 0, (int) $sold - $taken );
+			$figure = max( 0, (int) $held_now - $unseen );
+			// An auction is one item: only its running out is ever sent.
+			$push   = $live && ( $auction ? ( 0 === $figure && $ebay_left > 0 ) : $figure !== $ebay_left );
+			$said   = $unseen > 0
+				? sprintf( 'Stock set to %1$d: WooCommerce\'s %2$d less the %3$d eBay sold of this listing that it had not taken off', $figure, (int) $held_now, $unseen )
+				: sprintf( 'Stock kept at %d: WooCommerce had taken off every eBay sale of this listing', $figure );
+			if ( $push ) {
+				$said .= sprintf( '. eBay showed %d and is sent it', $ebay_left );
+			}
+		}
+
+		$product->set_manage_stock( true );
+		$product->set_stock_quantity( $figure );
+
+		// Every eBay sale of the listing so far is in the stock now, recorded
+		// with it as the import's save records it.
+		$armed = null !== $sold
+			? TCGiant_Sync_Inventory::arm_record(
+				$product,
+				null,
+				function () use ( $product, $item_id, $sold ) {
+					update_post_meta( (int) $product->get_id(), '_ebay_sold_seen', array( 'item' => (string) $item_id, 'sku' => '', 'sold' => (int) $sold ) );
+				},
+				function ( $now ) use ( $figure ) {
+					return (int) $now === (int) $figure;
+				}
+			)
+			: null;
+
+		TCGiant_Sync_Inventory::begin_ebay_origin();
+		TCGiant_Sync_Runtime::guard_loops();
+		try {
+			$product->save();
+		} finally {
+			TCGiant_Sync_Runtime::unguard_loops();
+			TCGiant_Sync_Inventory::end_ebay_origin();
+			TCGiant_Sync_Inventory::disarm_record( $armed );
+		}
+
+		return array(
+			'said' => $said,
+			'push' => $push,
+		);
+	}
+
+	/**
+	 * A listing nothing here holds, linked to the product a push from this
+	 * site made it for, when that push did not live to save it (3.28.7) - for
+	 * a caller holding eBay's whole answer for a listing it makes no product
+	 * of: an ended one (TCGiant_Sync_Importer), which it then settles through
+	 * the product, so that eBay's sales of it reach the product's stock. The
+	 * same decision and link as save_as_product()'s step 1c: never for a
+	 * relist, nor a listing a product of any status holds, nor - as step 1a
+	 * leaves it out before 1c - a listing on an eBay site the shop does not
+	 * import from (TCGiant_Sync_Sites).
+	 *
+	 * @param array $ebay_item eBay's answer for the listing: GetItem's, or a
+	 *                         GetSellerList page's.
+	 * @return int The product linked, or 0.
+	 */
+	public function link_by_mark( array $ebay_item ) {
+		$item_id = self::listing_number( $ebay_item['ItemID'] ?? '' );
+		if ( '' === $item_id || TCGiant_Sync_API::marked_product( $ebay_item['ApplicationData'] ?? '' ) <= 0
+			|| TCGiant_Sync_Sites::leaves_out( TCGiant_Sync_Sites::site_of( $ebay_item ) ) ) {
+			return 0;
+		}
+
+		$product_data = $this->map_ebay_to_woo( $ebay_item );
+		if ( '' !== (string) ( $product_data['relist_parent_id'] ?? '' ) || $this->held_by_any_product( $item_id ) ) {
+			return 0;
+		}
+
+		return $this->link_unfinished_push( $product_data, $item_id );
+	}
+
+	/**
+	 * Whether a product of any status, the Trash included, holds the listing:
+	 * the same question as save_as_product()'s first step.
+	 *
+	 * @param string $item_id eBay ItemID.
+	 * @return bool
+	 */
+	private function held_by_any_product( $item_id ) {
+		global $wpdb;
+		return null !== $wpdb->get_row( $wpdb->prepare(
+			"SELECT pm.post_id, p.post_status FROM {$wpdb->postmeta} pm
+			 INNER JOIN {$wpdb->posts} p ON pm.post_id = p.ID
+			 WHERE pm.meta_key = '_ebay_item_id' AND pm.meta_value = %s
+			   AND p.post_type = 'product'
+			 ORDER BY ( p.post_status = 'trash' ) ASC
+			 LIMIT 1",
+			$item_id
+		) );
 	}
 
 	/**

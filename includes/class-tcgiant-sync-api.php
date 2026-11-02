@@ -1450,6 +1450,138 @@ class TCGiant_Sync_API {
 	}
 
 	/**
+	 * How a push mark begins (3.28.7): see push_mark(). Not "tcgprobe-",
+	 * which the probe plugin writes, and not anything a seller would type.
+	 * The 1 is the format's version.
+	 */
+	const PUSH_MARK_PREFIX = 'tcgsync1.';
+
+	/**
+	 * eBay keeps at most 32 characters of ApplicationData.
+	 */
+	const PUSH_MARK_MAX = 32;
+
+	/**
+	 * How long before a push began a listing it made may say it started:
+	 * eBay's clock against this server's (3.28.7). The listing an unfinished
+	 * push made started after that push began, less this; an older listing
+	 * carrying the same mark is one an earlier push of the product made.
+	 * Ten minutes: a server and eBay keep time to within seconds, and the
+	 * wider this is, the more of an older listing of the product that started
+	 * just before the push gets in. A server further out loses only the link,
+	 * and the listing is imported as before 3.28.7.
+	 */
+	const PUSH_MARK_SLACK = 600;
+
+	/**
+	 * The ApplicationData a new listing pushed from this site carries
+	 * (3.28.7): "tcgsync1.", this site's key (push_site_key()), ".", and the
+	 * product's ID - "tcgsync1.3fa9c2d1.4717". ASCII letters, digits and
+	 * dots, so it needs no escaping, and at most 32 characters, as eBay
+	 * keeps: an ID too long to fit gives none rather than a cut one.
+	 *
+	 * eBay stores it with the listing and gives it back in GetItem, and,
+	 * by its call references, in GetSellerList at DetailLevel ReturnAll. It
+	 * is not in GetSellerEvents' answer.
+	 *
+	 * @param int $product_id The product being pushed.
+	 * @return string '' when there is no site key or no product.
+	 */
+	public static function push_mark( $product_id ) {
+		$key = self::push_site_key();
+		$id  = (int) $product_id;
+
+		if ( '' === $key || $id <= 0 ) {
+			return '';
+		}
+
+		$mark = self::PUSH_MARK_PREFIX . $key . '.' . $id;
+
+		return strlen( $mark ) <= self::PUSH_MARK_MAX ? $mark : '';
+	}
+
+	/**
+	 * This site's key in a push mark: 8 hex characters of a hash of the
+	 * site's own address - TCGiant_Sync_Environment::address() of its
+	 * current_url(), the home address the staging guard goes by, the same in
+	 * a web request, WP-CLI and system cron. Made from the address each
+	 * time, never stored, so a copy of the database at another address - a
+	 * staging site - has a key of its own, and does not take the live shop's
+	 * listings for its own pushes. Moving to https, or between www and the
+	 * bare domain, keeps it.
+	 *
+	 * @return string '' when the site has no address to make it from.
+	 */
+	public static function push_site_key() {
+		if ( ! class_exists( 'TCGiant_Sync_Environment', false ) ) {
+			return '';
+		}
+
+		$address = TCGiant_Sync_Environment::address( TCGiant_Sync_Environment::current_url() );
+
+		return '' === $address ? '' : substr( md5( 'tcgiant-sync push mark|' . $address ), 0, 8 );
+	}
+
+	/**
+	 * A listing's ApplicationData read as a push mark: the site key and the
+	 * product it names - or null when it is not one: empty, the probe
+	 * plugin's, a seller's own, or anything not exactly in push_mark()'s
+	 * form.
+	 *
+	 * @param mixed $raw Item.ApplicationData as eBay's answer gave it.
+	 * @return array|null array( 'site' => key, 'product' => ID ), or null.
+	 */
+	public static function read_push_mark( $raw ) {
+		$value = self::scalar_value( $raw );
+
+		if ( ! preg_match( '/^' . preg_quote( self::PUSH_MARK_PREFIX, '/' ) . '([0-9a-f]{8})\.([1-9][0-9]{0,13})$/D', $value, $m ) ) {
+			return null;
+		}
+
+		return array(
+			'site'    => $m[1],
+			'product' => (int) $m[2],
+		);
+	}
+
+	/**
+	 * The product a listing's ApplicationData says a push from this site
+	 * made it for, or 0: not a push mark, or another site's.
+	 *
+	 * @param mixed $raw Item.ApplicationData as eBay's answer gave it.
+	 * @return int
+	 */
+	public static function marked_product( $raw ) {
+		$mark = self::read_push_mark( $raw );
+		if ( null === $mark ) {
+			return 0;
+		}
+
+		$key = self::push_site_key();
+
+		return ( '' !== $key && hash_equals( $key, $mark['site'] ) ) ? $mark['product'] : 0;
+	}
+
+	/**
+	 * How many of these listings carry this site's push mark: for the debug
+	 * line that says whether a list call gives ApplicationData back.
+	 *
+	 * @param array $items Listings, as eBay's answer gave them.
+	 * @return int
+	 */
+	public static function count_push_marks( array $items ) {
+		$count = 0;
+
+		foreach ( $items as $item ) {
+			if ( is_array( $item ) && self::marked_product( $item['ApplicationData'] ?? '' ) > 0 ) {
+				$count++;
+			}
+		}
+
+		return $count;
+	}
+
+	/**
 	 * Relist an ended eBay listing.
 	 *
 	 * @param string $item_id eBay Item ID of the ended listing.

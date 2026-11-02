@@ -146,7 +146,11 @@ function remove_action( $hook, $callback, $priority = 10 ) {
 	return true;
 }
 function add_filter( $hook, $callback, $priority = 10, $accepted_args = 1 ) { return true; }
-function apply_filters( $hook, $value ) { return $value; }
+// A filter a test puts in $FILTERS (hook => callable) is applied; any other
+// hands back its value.
+function apply_filters( $hook, $value, ...$args ) {
+	return isset( $GLOBALS['FILTERS'][ $hook ] ) ? call_user_func_array( $GLOBALS['FILTERS'][ $hook ], array_merge( array( $value ), $args ) ) : $value;
+}
 function do_action( $hook, ...$args ) {}
 function did_action( $hook ) { return 0; }
 function wp_clear_scheduled_hook() {}
@@ -328,6 +332,27 @@ class WC_Product_Simple extends WC_Product {}
 class WC_Product_Variable extends WC_Product {
 	protected $kind = 'variable';
 }
+// WooCommerce's exception for a value a product of its type refuses.
+class WC_Data_Exception extends Exception {}
+// An external and a grouped product: neither holds stock, and WooCommerce
+// throws when asked to manage it, as WC_Product_External and
+// WC_Product_Grouped do.
+class WC_Product_External extends WC_Product {
+	protected $kind = 'external';
+	public function set_manage_stock( $on ) {
+		if ( $on ) {
+			throw new WC_Data_Exception( 'External products cannot be stock managed.' );
+		}
+	}
+}
+class WC_Product_Grouped extends WC_Product {
+	protected $kind = 'grouped';
+	public function set_manage_stock( $on ) {
+		if ( $on ) {
+			throw new WC_Data_Exception( 'Grouped products cannot be stock managed.' );
+		}
+	}
+}
 class WC_Product_Attribute {
 	private $d = array( 'id' => 0, 'name' => '', 'options' => array(), 'position' => 0, 'visible' => true, 'variation' => false );
 	public function set_id( $v ) { $this->d['id'] = $v; }
@@ -345,7 +370,9 @@ function wc_get_product( $id ) {
 	if ( ! isset( $GLOBALS['POSTS'][ $id ] ) ) {
 		return false;
 	}
-	return 'variable' === ( $GLOBALS['POSTS'][ $id ]['product_type'] ?? 'simple' ) ? new WC_Product_Variable( $id ) : new WC_Product_Simple( $id );
+	$classes = array( 'variable' => 'WC_Product_Variable', 'external' => 'WC_Product_External', 'grouped' => 'WC_Product_Grouped' );
+	$class   = $classes[ $GLOBALS['POSTS'][ $id ]['product_type'] ?? 'simple' ] ?? 'WC_Product_Simple';
+	return new $class( $id );
 }
 function wc_get_product_id_by_sku( $sku ) {
 	if ( '' === (string) $sku ) {
@@ -566,6 +593,17 @@ function new_request() {
 		$p->setAccessible( true );
 	}
 	$p->setValue( null, false );
+	// And what the importer read once a request about pushes that did not
+	// finish (3.28.7).
+	foreach ( array( 'push_since' => null, 'mark_reads' => 0 ) as $name => $value ) {
+		if ( property_exists( 'TCGiant_Sync_Importer', $name ) ) {
+			$p = new ReflectionProperty( 'TCGiant_Sync_Importer', $name );
+			if ( PHP_VERSION_ID < 80100 ) {
+				$p->setAccessible( true );
+			}
+			$p->setValue( null, $value );
+		}
+	}
 	$_SERVER['REQUEST_TIME_FLOAT'] = microtime( true );
 }
 

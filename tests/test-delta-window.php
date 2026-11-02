@@ -233,6 +233,8 @@ class TCGiant_Sync_API {
 		'EBAY_GB' => array( 'label' => 'United Kingdom', 'site' => 'UK' ),
 	);
 	public static function scalar_value( $raw ) { return is_scalar( $raw ) ? (string) $raw : ''; }
+	// The push mark in ApplicationData (3.28.7) is test-push-mark.php's: none here.
+	public static function count_push_marks( array $items ) { return 0; }
 	const DAILY_CALL_LIMIT        = 50000;
 	const DAILY_CALL_SOFT_CEILING = 0.80;
 	private $last_bytes = 0;

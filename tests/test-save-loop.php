@@ -1431,7 +1431,9 @@ check( 'moving another site\'s product to the trash', array( preg_match( '/Runti
 $exporter = file_get_contents( $ROOT . '/includes/class-tcgiant-sync-exporter.php' );
 $admin    = file_get_contents( $ROOT . '/admin/class-tcgiant-sync-admin.php' );
 $guarded  = '/TCGiant_Sync_Runtime::guard_loops\(\);\s*try \{\s*\$product->save\(\);\s*\} finally \{\s*TCGiant_Sync_Runtime::unguard_loops\(\);\s*\}/';
-$push     = method_body( $exporter, 'process_single_push' );
+// The push's save once eBay has answered is record_listing_made()'s since
+// 3.28.7, which an import linking a listing a dead push made calls too.
+$push     = method_body( $exporter, 'process_single_push' ) . method_body( $exporter, 'record_listing_made' );
 check( 'a push queued from the product screen, round its save', 1 === preg_match( $guarded, method_body( $exporter, 'push_product' ) ), true );
 check( 'the push itself, round each of its saves', array( preg_match_all( $guarded, $push ), substr_count( $push, '->save()' ) ), array( 2, 2 ) );
 check( 'clearing a product\'s export error, round its save', 1 === preg_match( $guarded, method_body( $admin, 'ajax_clear_export_error' ) ), true );

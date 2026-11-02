@@ -840,7 +840,26 @@ class TCGiant_Sync_Exporter {
 			update_post_meta( $product_id, '_ebay_export_status', 'pushing' );
 			update_post_meta( $product_id, '_ebay_export_pushing_since', time() );
 
-			// The product read its meta before those two writes. Read it again,
+			// And when a push of it began, kept until a push of it finishes or
+			// the listing one made is linked (record_listing_made(), 3.28.7) -
+			// unlike the time above, which Unlink, a refusal and a throw take
+			// off. After an earlier push that did not finish, that one's time
+			// stands: its listing may still be out there. An ended listing such
+			// a push made is the one the import has to ask eBay about to find,
+			// and it asks only about listings started since
+			// (TCGiant_Sync_Importer::unfinished_push_since()).
+			if ( null === $unfinished || '' === (string) get_post_meta( $product_id, '_ebay_push_attempt', true ) ) {
+				update_post_meta( $product_id, '_ebay_push_attempt', time() );
+			}
+			// And when this push began, whatever earlier one did not finish,
+			// cleared with the time above: the import reads eBay about ended
+			// listings only for a week after the latest push of a product
+			// that did not finish (TCGiant_Sync_Importer::PUSH_MARK_DAYS),
+			// so that one pushed again a week after its first push died is
+			// still read for.
+			update_post_meta( $product_id, '_ebay_push_attempt_last', time() );
+
+			// The product read its meta before those writes. Read it again,
 			// so its own save below updates those rows instead of adding a
 			// second row of each beside them.
 			$product->read_meta_data( true );
@@ -901,150 +920,18 @@ class TCGiant_Sync_Exporter {
 				TCGiant_Sync_Category_Memory::forget( array( (string) $item_id, (string) ( $result['previous_item_id'] ?? '' ) ) );
 				TCGiant_Sync_Runtime::stage( 'saving the link' );
 
-				$product->update_meta_data( '_ebay_item_id', $item_id );
-				$product->update_meta_data( '_ebay_export_status', 'pushed' );
-				$product->update_meta_data( '_ebay_export_error', '' );
-				$product->update_meta_data( '_ebay_export_last_pushed', current_time( 'mysql' ) );
+				// do_push() may have written to the table since the product
+				// read its meta: that the listing it replaced has ended, with
+				// eBay's end (3.28.7). WooCommerce saves only what differs from
+				// what the product read, so "Active" set over the "Active" it
+				// read was not written, and the new live listing stayed
+				// recorded as ended. Read again, as above.
+				$product->read_meta_data( true );
 
-				// Record which build sent this. Without it there is no way to tell a
-				// listing carrying the right item specifics from one sent before a fix
-				// that added them — the listing on eBay looks the same from here.
-				$product->update_meta_data( '_ebay_export_pushed_version', TCGIANT_SYNC_VERSION );
-
-				// And the description eBay now has: which template and version,
-				// and the hashes 3.28.1's re-send compares. Only here, once eBay
-				// has accepted it - never in build_item_xml(), which Verify and
-				// the preview call too.
-				self::record_description_sent( $product, $result['desc'] ?? null, (string) $item_id );
-
-				// A newly created listing is live, so clear any stale "Ended"
-				// state left over from the listing it replaced — otherwise the
-				// product keeps showing as ended and the ended-listing cron
-				// would mark it so again.
-				if ( 'updated' !== $action ) {
-					$product->update_meta_data( '_ebay_listing_status', 'Active' );
-					$product->delete_meta_data( '_ebay_end_time' );
-
-					// The new listing is on the shop's own site - build_item_xml()
-					// sends <Site> from the same setting - whatever site the one it
-					// replaced was on. Left as the old one's, the next push to find
-					// this listing ended would be refused for a site it is not on,
-					// for want of a sync that saves it again.
-					$product->update_meta_data( '_ebay_site', TCGiant_Sync_API::instance()->get_marketplace_config()['site'] );
-
-					// What was settled about the listing this replaces is spent.
-					foreach ( TCGiant_Sync_Inventory::SETTLE_KEYS as $settle_key ) {
-						$product->delete_meta_data( $settle_key );
-					}
-					delete_transient( 'tcgiant_restocked_after_sale' );
-
-					// Record what was created. The revise path picks its eBay call from
-					// this, so a product relisted as an auction that still read as
-					// fixed-price would have been revised through the wrong one.
-					if ( ! empty( $result['listing_type'] ) ) {
-						$product->update_meta_data( '_ebay_listing_type', $result['listing_type'] );
-						// Known to be this listing's: the stock push may end a
-						// fixed-price one without asking eBay what it is (3.28.0).
-						$product->update_meta_data( '_ebay_listing_type_item', (string) $item_id );
-						if ( 'Chinese' === (string) $result['listing_type'] ) {
-							TCGiant_Sync_Inventory::auctions_seen();
-						}
-
-						// An auction this push put up is the shop's own: once it
-						// ends unsold, the product goes back on sale at its price.
-						if ( 'Chinese' === $result['listing_type'] ) {
-							$product->update_meta_data( TCGiant_Sync_Inventory::AUCTION_LISTED_KEY, (string) $item_id );
-						} else {
-							$product->delete_meta_data( TCGiant_Sync_Inventory::AUCTION_LISTED_KEY );
-						}
-					}
-
-					// The last auction's bids and prices describe a listing
-					// this one replaces.
-					foreach ( TCGiant_Sync_Inventory::AUCTION_FIGURE_KEYS as $figure_key ) {
-						$product->delete_meta_data( $figure_key );
-					}
-				}
-
-				if ( ! empty( $result['previous_item_id'] ) ) {
-					$product->update_meta_data( '_ebay_previous_item_id', $result['previous_item_id'] );
-					TCGiant_Sync_Logger::log( sprintf(
-						'Relisted "%s" (WC #%d): ended listing %s replaced by new listing %s.',
-						$title,
-						$product_id,
-						$result['previous_item_id'],
-						$item_id
-					), 'success' );
-				}
-
-				$product->delete_meta_data( '_ebay_export_pushing_since' );
-				TCGiant_Sync_Runtime::guard_loops();
-				try {
-					$product->save();
-				} finally {
-					TCGiant_Sync_Runtime::unguard_loops();
-				}
-
-				// A SKU made from the ended listing's number moves to the new one.
-				if ( ! empty( $result['previous_item_id'] ) ) {
-					TCGiant_Sync_Inventory::follow_item_number_sku( $product_id, (string) $result['previous_item_id'], (string) $item_id );
-				}
-
-				// Put it on the Listings screen.
-				//
-				// Nothing here ever wrote to that table. Only the importer did, so a
-				// shop that lists by pushing from WooCommerce - never importing -
-				// had an empty Listings screen no matter how much it had listed,
-				// which put End Listing, Relist and bulk Push out of reach for
-				// exactly the products the plugin had created.
-				//
-				// A no-op when the table is missing, so it cannot fail a push.
-				$row = array(
-					'product_id'     => $product_id,
-					'ebay_item_id'   => $item_id,
-					'listing_status' => 'Active',
-					'ebay_url'       => 'https://www.ebay.com/itm/' . $item_id,
-					'ebay_title'     => $title,
-					// A push creates the listing, so it started now. Without this a
-					// freshly listed item would sort as though it had no start date
-					// until the hourly refresh next looked at it.
-					'ebay_start_time' => gmdate( 'Y-m-d\TH:i:s.000\Z' ),
-					'last_synced'    => current_time( 'mysql' ),
-					'last_pushed'    => current_time( 'mysql' ),
-				);
-
-				// The type eBay gave, or none: the listings table writes a row's
-				// type to the product too, and the stock push took a written
-				// FixedPriceItem nobody had from eBay for eBay's word.
-				if ( '' !== (string) $product->get_meta( '_ebay_listing_type' ) ) {
-					$row['listing_type'] = (string) $product->get_meta( '_ebay_listing_type' );
-				}
-
-				// Price and quantity only where this product carries the real
-				// figures. A variable product's live on its variations, so reading
-				// them here would record 0.00 and 0 and the Listings screen would
-				// show every variable listing as free and sold out. A column left
-				// out keeps whatever the last import knew, which is the honest
-				// answer rather than a confident wrong one.
-				if ( ! $product->is_type( 'variable' ) ) {
-					$price = $product->get_regular_price();
-					if ( is_numeric( $price ) ) {
-						$row['ebay_price'] = (float) $price;
-					}
-
-					$stock = $product->get_stock_quantity();
-					if ( null !== $stock && '' !== $stock ) {
-						$row['ebay_quantity'] = max( 0, (int) $stock );
-					}
-				}
-
-				// An auction is one item however many are in stock, and that is what
-				// was sent.
-				if ( isset( $row['listing_type'] ) && 'Chinese' === $row['listing_type'] ) {
-					$row['ebay_quantity'] = 1;
-				}
-
-				TCGiant_Sync_DB::upsert( $row );
+				// What a push saves once eBay has answered, in one place: an
+				// import that finds a listing a push made, when the push did not
+				// live to save it, links it through the same (3.28.7).
+				self::record_listing_made( $product, $result );
 
 				self::count_outcome( $product_id, 'total_pushed', array( 'last_item_title' => $title ) );
 
@@ -1073,6 +960,198 @@ class TCGiant_Sync_Exporter {
 		}
 
 		$this->check_export_completion( $product_id );
+	}
+
+	/**
+	 * What a push saves on its product once eBay has answered: the item
+	 * number, the export status and date, and the description it sent; for a
+	 * new listing its status, site and type, with what the listing it
+	 * replaced left behind taken off; then the save, and the Listings row.
+	 *
+	 * The push's own (process_single_push()), and since 3.28.7 the import's
+	 * too. A listing whose ApplicationData says a push of a product here made
+	 * it, when that push did not live to save it, is linked to the product
+	 * through this, exactly as the push would have linked it
+	 * (TCGiant_Sync_Mapper::link_unfinished_push()).
+	 *
+	 * @param WC_Product $product The product pushed.
+	 * @param array      $result  What do_push() gave: item_id, action
+	 *                            ('created', 'updated' or 'relisted'), and
+	 *                            previous_item_id, listing_type and desc where
+	 *                            it has them. An import adds the listing's
+	 *                            start_time and end_time, which eBay told it.
+	 */
+	public static function record_listing_made( WC_Product $product, array $result ) {
+		$product_id = (int) $product->get_id();
+		$title      = $product->get_name();
+		$item_id    = $result['item_id'];
+		$action     = $result['action'];
+		$start_time = (string) ( $result['start_time'] ?? '' );
+		$end_time   = (string) ( $result['end_time'] ?? '' );
+
+		$product->update_meta_data( '_ebay_item_id', $item_id );
+		$product->update_meta_data( '_ebay_export_status', 'pushed' );
+		$product->update_meta_data( '_ebay_export_error', '' );
+		$product->update_meta_data( '_ebay_export_last_pushed', current_time( 'mysql' ) );
+
+		// Record which build sent this. Without it there is no way to tell a
+		// listing carrying the right item specifics from one sent before a fix
+		// that added them — the listing on eBay looks the same from here.
+		$product->update_meta_data( '_ebay_export_pushed_version', TCGIANT_SYNC_VERSION );
+
+		// And the description eBay now has: which template and version,
+		// and the hashes 3.28.1's re-send compares. Only here, once eBay
+		// has accepted it - never in build_item_xml(), which Verify and
+		// the preview call too.
+		self::record_description_sent( $product, $result['desc'] ?? null, (string) $item_id );
+
+		// A newly created listing is live, so clear any stale "Ended"
+		// state left over from the listing it replaced — otherwise the
+		// product keeps showing as ended and the ended-listing cron
+		// would mark it so again.
+		if ( 'updated' !== $action ) {
+			$product->update_meta_data( '_ebay_listing_status', 'Active' );
+			// When it began and when it ends, where eBay has said: an import
+			// linking a listing it has read (3.28.7). A push has neither until
+			// a sync reads the listing.
+			if ( '' !== $end_time ) {
+				$product->update_meta_data( '_ebay_end_time', $end_time );
+			} else {
+				$product->delete_meta_data( '_ebay_end_time' );
+			}
+			if ( '' !== $start_time ) {
+				$product->update_meta_data( '_ebay_start_time', $start_time );
+			}
+
+			// The new listing is on the shop's own site - build_item_xml()
+			// sends <Site> from the same setting - whatever site the one it
+			// replaced was on. Left as the old one's, the next push to find
+			// this listing ended would be refused for a site it is not on,
+			// for want of a sync that saves it again.
+			$product->update_meta_data( '_ebay_site', TCGiant_Sync_API::instance()->get_marketplace_config()['site'] );
+
+			// What was settled about the listing this replaces is spent.
+			foreach ( TCGiant_Sync_Inventory::SETTLE_KEYS as $settle_key ) {
+				$product->delete_meta_data( $settle_key );
+			}
+			delete_transient( 'tcgiant_restocked_after_sale' );
+
+			// Record what was created. The revise path picks its eBay call from
+			// this, so a product relisted as an auction that still read as
+			// fixed-price would have been revised through the wrong one.
+			if ( ! empty( $result['listing_type'] ) ) {
+				$product->update_meta_data( '_ebay_listing_type', $result['listing_type'] );
+				// Known to be this listing's: the stock push may end a
+				// fixed-price one without asking eBay what it is (3.28.0).
+				$product->update_meta_data( '_ebay_listing_type_item', (string) $item_id );
+				if ( 'Chinese' === (string) $result['listing_type'] ) {
+					TCGiant_Sync_Inventory::auctions_seen();
+				}
+
+				// An auction this push put up is the shop's own: once it
+				// ends unsold, the product goes back on sale at its price.
+				if ( 'Chinese' === $result['listing_type'] ) {
+					$product->update_meta_data( TCGiant_Sync_Inventory::AUCTION_LISTED_KEY, (string) $item_id );
+				} else {
+					$product->delete_meta_data( TCGiant_Sync_Inventory::AUCTION_LISTED_KEY );
+				}
+			}
+
+			// The last auction's bids and prices describe a listing
+			// this one replaces.
+			foreach ( TCGiant_Sync_Inventory::AUCTION_FIGURE_KEYS as $figure_key ) {
+				$product->delete_meta_data( $figure_key );
+			}
+		}
+
+		if ( ! empty( $result['previous_item_id'] ) ) {
+			$product->update_meta_data( '_ebay_previous_item_id', $result['previous_item_id'] );
+			TCGiant_Sync_Logger::log( sprintf(
+				'Relisted "%s" (WC #%d): ended listing %s replaced by new listing %s.',
+				$title,
+				$product_id,
+				$result['previous_item_id'],
+				$item_id
+			), 'success' );
+		}
+
+		$product->delete_meta_data( '_ebay_export_pushing_since' );
+		// The push is over: there is no listing of it left to look for, nor
+		// to keep order sync's sales of off the link's stock (3.28.7).
+		$product->delete_meta_data( '_ebay_push_attempt' );
+		$product->delete_meta_data( '_ebay_push_attempt_last' );
+		$product->delete_meta_data( '_ebay_unlinked_sold' );
+		TCGiant_Sync_Runtime::guard_loops();
+		try {
+			$product->save();
+		} finally {
+			TCGiant_Sync_Runtime::unguard_loops();
+		}
+
+		// A SKU made from the ended listing's number moves to the new one.
+		if ( ! empty( $result['previous_item_id'] ) ) {
+			TCGiant_Sync_Inventory::follow_item_number_sku( $product_id, (string) $result['previous_item_id'], (string) $item_id );
+		}
+
+		// Put it on the Listings screen.
+		//
+		// Nothing here ever wrote to that table. Only the importer did, so a
+		// shop that lists by pushing from WooCommerce - never importing -
+		// had an empty Listings screen no matter how much it had listed,
+		// which put End Listing, Relist and bulk Push out of reach for
+		// exactly the products the plugin had created.
+		//
+		// A no-op when the table is missing, so it cannot fail a push.
+		$row = array(
+			'product_id'     => $product_id,
+			'ebay_item_id'   => $item_id,
+			'listing_status' => 'Active',
+			'ebay_url'       => 'https://www.ebay.com/itm/' . $item_id,
+			'ebay_title'     => $title,
+			// A push creates the listing, so it started now. Without this a
+			// freshly listed item would sort as though it had no start date
+			// until the hourly refresh next looked at it. An import linking a
+			// listing it has read gives eBay's own StartTime (3.28.7).
+			'ebay_start_time' => '' !== $start_time ? $start_time : gmdate( 'Y-m-d\TH:i:s.000\Z' ),
+			'last_synced'    => current_time( 'mysql' ),
+			'last_pushed'    => current_time( 'mysql' ),
+		);
+		if ( '' !== $end_time ) {
+			$row['ebay_end_time'] = $end_time;
+		}
+
+		// The type eBay gave, or none: the listings table writes a row's
+		// type to the product too, and the stock push took a written
+		// FixedPriceItem nobody had from eBay for eBay's word.
+		if ( '' !== (string) $product->get_meta( '_ebay_listing_type' ) ) {
+			$row['listing_type'] = (string) $product->get_meta( '_ebay_listing_type' );
+		}
+
+		// Price and quantity only where this product carries the real
+		// figures. A variable product's live on its variations, so reading
+		// them here would record 0.00 and 0 and the Listings screen would
+		// show every variable listing as free and sold out. A column left
+		// out keeps whatever the last import knew, which is the honest
+		// answer rather than a confident wrong one.
+		if ( ! $product->is_type( 'variable' ) ) {
+			$price = $product->get_regular_price();
+			if ( is_numeric( $price ) ) {
+				$row['ebay_price'] = (float) $price;
+			}
+
+			$stock = $product->get_stock_quantity();
+			if ( null !== $stock && '' !== $stock ) {
+				$row['ebay_quantity'] = max( 0, (int) $stock );
+			}
+		}
+
+		// An auction is one item however many are in stock, and that is what
+		// was sent.
+		if ( isset( $row['listing_type'] ) && 'Chinese' === $row['listing_type'] ) {
+			$row['ebay_quantity'] = 1;
+		}
+
+		TCGiant_Sync_DB::upsert( $row );
 	}
 
 	// -------------------------------------------------------------------------
@@ -1893,6 +1972,19 @@ class TCGiant_Sync_Exporter {
 				$product->get_id()
 			) );
 
+			// That it has ended, as eBay has just said, recorded before eBay is
+			// asked for the new listing (3.28.7). Should the host kill this
+			// push once eBay has made it, the import that finds the new listing
+			// knows from the product that it was made in place of this one, and
+			// moves the product on to it as this push would have
+			// (TCGiant_Sync_Mapper::link_unfinished_push()). If eBay lists
+			// nothing, it is true all the same, as the refusal above records it.
+			update_post_meta( $product->get_id(), '_ebay_listing_status', 'Ended' );
+			$ended_at = TCGiant_Sync_API::scalar_value( $ended_item['ListingDetails']['EndTime'] ?? '' );
+			if ( '' !== $ended_at ) {
+				update_post_meta( $product->get_id(), '_ebay_end_time', $ended_at );
+			}
+
 			$previous_item_id = $ebay_item_id;
 			$ebay_item_id     = '';
 
@@ -1909,7 +2001,22 @@ class TCGiant_Sync_Exporter {
 		{
 			// New listing — add it. UUID prevents duplicate creation on timeout/retry.
 			$uuid = TCGiant_Sync_API::generate_ebay_uuid();
-			$full_xml = '<Item>' . "\n" . '<UUID>' . $uuid . '</UUID>' . "\n" . $item_xml . "\n" . '</Item>';
+
+			// Which product on which site the new listing is (3.28.7), kept by
+			// eBay on the listing as its ApplicationData. A push the host kills
+			// after eBay has made the listing, before the item number is saved
+			// here, left a listing nothing pointed to, and the next sync
+			// imported it as a copy of the product. The import reads this
+			// first and links the listing to the product instead
+			// (TCGiant_Sync_Mapper::link_unfinished_push()). Only here, on the
+			// call that makes a listing: never on a revise, which leaves the
+			// listing's value as it is, and never in build_item_xml(), which
+			// Verify and the revises use. '' when the site has no address to
+			// make it from: the listing then goes without, as before.
+			$mark     = TCGiant_Sync_API::push_mark( $product->get_id() );
+			$full_xml = '<Item>' . "\n" . '<UUID>' . $uuid . '</UUID>' . "\n"
+				. ( '' !== $mark ? '<ApplicationData>' . $mark . '</ApplicationData>' . "\n" : '' )
+				. $item_xml . "\n" . '</Item>';
 			$response = $fixed_price
 				? $api->add_fixed_price_item( $full_xml )
 				: $api->add_item( $full_xml );
@@ -5104,6 +5211,55 @@ class TCGiant_Sync_Exporter {
 	 */
 	public function last_render() {
 		return $this->last_render;
+	}
+
+	/**
+	 * The record of the description a listing holds, for a listing an import
+	 * links to the product whose push made it, when that push did not live to
+	 * record it (3.28.7, TCGiant_Sync_Mapper::link_unfinished_push()): what
+	 * record_description_sent() keeps once eBay accepts a push.
+	 *
+	 * Made from the listing's own description - the bytes that push sent, as
+	 * eBay holds and gives them back - not from the item rendered again. A new
+	 * render could ask eBay's Taxonomy API for the category's item specifics,
+	 * which a template's facts include, once their week in the cache is over,
+	 * and it could differ from what was sent if the template has changed since.
+	 * What reads the record - the import's region cut and its "came back as
+	 * sent" check (TCGiant_Sync_Mapper) - needs the template, the listing and
+	 * the hashes of what the listing holds, which this gives exactly. The
+	 * template is the one the listing's own <!--tcg:tpl=ID.VERSION--> names,
+	 * or, if eBay dropped that comment, the one the product is set to now.
+	 * The two hashes that only say what a push was built from are left empty,
+	 * so a later push of the product sends its description again.
+	 *
+	 * @param WC_Product $product     The product.
+	 * @param string     $description The listing's Description, as eBay gave it.
+	 * @return array|null For record_description_sent(); null with no description.
+	 */
+	public static function description_record_from( WC_Product $product, $description ) {
+		$description = (string) $description;
+		if ( '' === $description ) {
+			return null;
+		}
+
+		$tpl_id  = 0;
+		$version = 0;
+		if ( preg_match( '#<!--tcg:tpl=(\d+)\.(\d+)-->#', $description, $m ) ) {
+			$tpl_id  = (int) $m[1];
+			$version = (int) $m[2];
+		} elseif ( class_exists( 'TCGiant_Sync_Templates' ) ) {
+			$settings = self::instance()->get_export_settings( $product->get_id() );
+			$tpl_id   = (int) ( $settings['template_id'] ?? 0 );
+		}
+
+		return array(
+			'template_id'  => $tpl_id,
+			'version'      => $version,
+			'tpl_hash'     => '',
+			'content_hash' => '',
+			'hash'         => sha1( $description ),
+			'region_hash'  => $tpl_id > 0 && class_exists( 'TCGiant_Sync_Templates' ) ? sha1( TCGiant_Sync_Templates::content_region( $description, true ) ) : '',
+		);
 	}
 
 	/**
