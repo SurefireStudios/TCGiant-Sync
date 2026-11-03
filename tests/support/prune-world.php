@@ -229,10 +229,17 @@ function as_enqueue_async_action( $hook, $args = array(), $group = '' ) { $GLOBA
 function as_schedule_single_action( $when, $hook, $args = array(), $group = '' ) { $GLOBALS['QUEUE'][] = array( 'hook' => $hook, 'args' => $args, 'group' => $group, 'when' => $when ); return count( $GLOBALS['QUEUE'] ); }
 function as_next_scheduled_action( $hook, $args = null, $group = '' ) {
 	foreach ( $GLOBALS['QUEUE'] as $a ) { if ( $a['hook'] === $hook && ( null === $args || $a['args'] === $args ) ) { return true; } }
-	return false;
+	// As Action Scheduler's: true for one in progress too (RUNNING, by hook).
+	return in_array( $hook, (array) ( $GLOBALS['RUNNING'] ?? array() ), true );
 }
 function as_unschedule_all_actions( $hook, $args = null, $group = '' ) { $GLOBALS['QUEUE'] = array_values( array_filter( $GLOBALS['QUEUE'], function ( $a ) use ( $hook ) { return $a['hook'] !== $hook; } ) ); }
-function as_get_scheduled_actions( $q ) { return array_values( array_filter( $GLOBALS['QUEUE'], function ( $a ) use ( $q ) { return $a['hook'] === $q['hook']; } ) ); }
+/** What is queued is pending; running are the hooks a harness names in RUNNING (3.30.0). */
+function as_get_scheduled_actions( $q ) {
+	if ( ActionScheduler_Store::STATUS_RUNNING === ( $q['status'] ?? '' ) ) {
+		return array_values( array_filter( (array) ( $GLOBALS['RUNNING'] ?? array() ), function ( $hook ) use ( $q ) { return $hook === $q['hook']; } ) );
+	}
+	return array_values( array_filter( $GLOBALS['QUEUE'], function ( $a ) use ( $q ) { return $a['hook'] === $q['hook']; } ) );
+}
 function queued( $hook ) { return count( array_filter( $GLOBALS['QUEUE'], function ( $a ) use ( $hook ) { return $a['hook'] === $hook; } ) ); }
 /** Run what is queued, through the registered hooks, as Action Scheduler would. */
 function run_queue( $only = null, $max = 50 ) {
@@ -317,6 +324,13 @@ class TCGiant_Sync_Mapper {
 	/** As the real one: writes eBay's listed-minus-sold over the stock, and eBay's status. */
 	public function save_as_product( $data ) {
 		$item = $data['item'];
+		// A relist whose old listing eBay could not be asked about yet: put
+		// off, nothing saved (MAPPER_DEFERS; 3.30.0 fix round 2).
+		self::$last_deferred = null;
+		if ( ! empty( $GLOBALS['MAPPER_DEFERS'] ) ) {
+			self::$last_deferred = true;
+			return 0;
+		}
 		$GLOBALS['SAVED'][] = array( (string) $item['ItemID'], (string) ( $item['SellingStatus']['ListingStatus'] ?? '' ) );
 		$GLOBALS['IDS_AT_SAVE'][] = in_array( (string) $item['ItemID'], array_map( 'strval', (array) get_option( 'tcgiant_sync_active_ids', array() ) ), true );
 		$id = TCGiant_Sync_Importer::find_live_product_for_item( $item['ItemID'] );

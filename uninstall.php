@@ -202,6 +202,7 @@ $tcgiant_options = array(
 	'tcgiant_sync_last_crash_image_localiser',
 	'tcgiant_sync_last_crash_inventory_pruning',
 	'tcgiant_sync_prune_queue',        // The pruner's list to check, 3.28.0.
+	'tcgiant_sync_full_completed',     // Which full sync last completed, 3.30.0.
 	'tcgiant_sync_env_verdict',        // Staging check as last recorded, 3.28.0.
 	'tcgiant_sync_live_confirmed',     // "This is my live shop", 3.28.0.
 	'tcgiant_sync_push_failures',      // Stock pushes eBay never took, 3.28.0.

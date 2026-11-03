@@ -30,10 +30,11 @@
  *   running, so neither the delta sync's position nor the pruner followed.
  * - Resume Import read its page again and queued that page's imports twice.
  *
- * A full sync that queued no GetItem import is left as 3.27.4 had it: it
- * says importing until the dashboard's poll finds nothing queued, and never
- * moves the delta sync's position or queues the pruner. Pruning for shops
- * that have never had it waits for 3.28.0.
+ * A full sync that queued no GetItem import was left as 3.27.4 had it until
+ * 3.30.0: it said importing until the dashboard's poll found nothing queued,
+ * and never moved the delta sync's position or queued the pruner. Since
+ * 3.30.0 it completes as its last page is read (TCGiant_Sync_Importer::
+ * complete_sync(); test-full-sync-complete.php has the rest).
  *
  * Loaded for real: TCGiant_Sync_Importer and TCGiant_Sync_Runtime. WordPress,
  * Action Scheduler, eBay and the product save are played here.
@@ -376,16 +377,16 @@ check( 'the last import finishes: complete', state()['status'], 'complete' );
 check( '  the delta sync picks up from when the full sync began', state()['last_successful_sync_at'], $full_started );
 check( '  and the pruner is queued, once', count_queued( 'tcgiant_sync_prune_orphans' ), 1 );
 
-// Every listing imported inline: as in 3.27.4, nothing in the sync finishes
-// it. It says importing, the delta sync's position stays where it was, and no
-// pruner is queued - pruning for shops that have never had it is 3.28.0's.
+// Every listing imported inline: until 3.30.0 nothing in the sync finished
+// it, and it said importing, its position unmoved and no pruner queued. Now
+// it completes as its last page is read.
 fresh_site( 1, 3 );
-check( 'a scan that queues no GetItem import: still importing at its last page, as in 3.27.4', array( fetch_and_scan(), state()['status'], state()['total_processed'], state()['total_queued'] ), array( true, 'importing', 3, 0 ) );
-check( '  its position not moved, no pruner queued, nothing said to be complete', array( state()['last_successful_sync_at'], count_queued( 'tcgiant_sync_prune_orphans' ), logged( 'Sync complete!' ) ), array( '2026-10-01T00:00:00.000Z', 0, 0 ) );
-// The dashboard's poll is what ends it, as in 3.27.4: complete, and nothing more.
+check( 'a scan that queues no GetItem import: complete at its last page (3.30.0)', array( fetch_and_scan(), state()['status'], state()['total_processed'], state()['total_queued'] ), array( true, 'complete', 3, 0 ) );
+check( '  its position moved to when it began, the pruner queued once, said complete once', array( state()['last_successful_sync_at'], count_queued( 'tcgiant_sync_prune_orphans' ), logged( 'Sync complete!' ) ), array( state()['full_started_at'], 1, 1 ) );
+// The dashboard's poll finishes nothing itself now: the importer does.
 $admin = (string) file_get_contents( $ROOT . '/admin/class-tcgiant-sync-admin.php' );
 preg_match( '/public function ajax_sync_status\(\) \{(.*?)\n\t\}/s', $admin, $poll );
-check( '  until the dashboard\'s poll marks it complete: no position moved, no pruner', array( 1 === preg_match( "/'importing' === \\\$state\\['status'\\].*'status'\\s*=> 'complete'/s", $poll[1] ?? '' ), false !== strpos( $poll[1] ?? '', 'last_successful_sync_at' ), false !== strpos( $poll[1] ?? '', 'tcgiant_sync_prune_orphans' ) ), array( true, false, false ) );
+check( '  and the dashboard\'s poll completes only through the importer', array( substr_count( $poll[1] ?? '', "TCGiant_Sync_Importer::complete_sync( 'dashboard' )" ), 1 === preg_match( "/'status'\\s*=> 'complete'/", $poll[1] ?? '' ) ), array( 1, false ) );
 
 // The dashboard polls while the last import is running: no longer pending, it
 // is still not done, and the import's own check is what finishes the sync.
@@ -401,7 +402,25 @@ TCGiant_Sync_Importer::instance()->process_item_import( '1008' );
 $RUNNING = array();
 check( '  then that import finishes it: complete, its position moved, the pruner queued', array( state()['status'], state()['last_successful_sync_at'], count_queued( 'tcgiant_sync_prune_orphans' ) ), array( 'complete', $full_started, 1 ) );
 dashboard_polls();
-check( 'a poll with no import pending or running still completes one, as in 3.27.4', ( function () { fresh_site( 1, 3 ); fetch_and_scan(); dashboard_polls(); return state()['status']; } )(), 'complete' );
+check( '  a poll after that changes nothing: one pruner, said complete once', array( state()['status'], count_queued( 'tcgiant_sync_prune_orphans' ), logged( 'Sync complete!' ) ), array( 'complete', 1, 1 ) );
+// Its last import's request killed outright, nothing else completes it. The
+// dashboard's poll does once it has been quiet for five minutes (3.30.0), as
+// the importer completes any: position moved, pruner queued. Before, at once,
+// with neither.
+fresh_site( 1, 8 );
+fetch_and_scan();
+run_import( '1004' );
+$QUEUE = array();
+$state = state();
+$state['last_activity_ts'] = time() - 2 * MINUTE_IN_SECONDS;
+update_option( TCGiant_Sync_Importer::STATE_OPTION, $state );
+dashboard_polls();
+check( 'its last import killed, two minutes quiet: the dashboard\'s poll leaves it importing', array( state()['status'], state()['last_successful_sync_at'] ), array( 'importing', '2026-10-01T00:00:00.000Z' ) );
+$state = state();
+$state['last_activity_ts'] = time() - 6 * MINUTE_IN_SECONDS;
+update_option( TCGiant_Sync_Importer::STATE_OPTION, $state );
+dashboard_polls();
+check( '  six minutes quiet: complete, from when it began, with no pruner - that waits for the next full sync to finish on its own (3.30.0 fix round 1)', array( state()['status'], state()['last_successful_sync_at'], count_queued( 'tcgiant_sync_prune_orphans' ), logged( 'Inventory pruning: runs after the next full sync that finishes on its own' ) ), array( 'complete', state()['full_started_at'], 0, 1 ) );
 
 // ─────────────────────────────────────────────────────────────────────────────
 echo "\nTHE PRUNER LEAVES ALONE A PRODUCT GIVEN ITS LISTING SINCE THE FULL SYNC BEGAN\n" . str_repeat( '=', 124 ) . "\n";
@@ -495,15 +514,19 @@ check( 'importing, its last import put off 45 minutes by a rate limit: the hourl
 run_import( '1008' );
 check( '  then that import completes it: position moved, pruner queued', array( state()['status'], state()['last_successful_sync_at'], count_queued( 'tcgiant_sync_prune_orphans' ) ), array( 'complete', $full_started, 1 ) );
 
-// With nothing left queued it is not waited for: replaced after 30 minutes idle, as in 3.27.4.
-fresh_site( 1, 3 );
+// With nothing left queued it is not waited for. Until 3.30.0 it was replaced
+// after 30 minutes idle, its position unmoved; now the hourly sync completes
+// it first, then runs the delta from when it began.
+fresh_site( 1, 8 );
 fetch_and_scan();
+$full_started = state()['full_started_at'];
+$QUEUE = array();
 $state = state();
 $state['last_activity_ts'] = time() - 45 * MINUTE_IN_SECONDS;
 update_option( TCGiant_Sync_Importer::STATE_OPTION, $state );
 $LOG = array();
 $IMP->start_delta_sync();
-check( 'importing with nothing queued, idle 45 minutes: replaced by a delta sync, as in 3.27.4', array( logged( 'presumed to have failed' ), state()['sync_mode'] ), array( 1, 'delta' ) );
+check( 'importing with nothing queued, idle 45 minutes: completed with no pruner, then a delta from when it began', array( logged( 'presumed to have failed' ), logged( 'Sync complete!' ), count_queued( 'tcgiant_sync_prune_orphans' ), state()['sync_mode'], state()['delta_mod_from'] ), array( 0, 1, 0, 'delta', gmdate( 'Y-m-d\TH:i:s.000\Z', strtotime( $full_started ) - 300 ) ) );
 
 // Resume Import after eBay's rate limit stopped the scan on page 2 of 3.
 fresh_site( 3, 8, array( 'status' => 'rate_limited', 'sync_mode' => 'full', 'current_page' => 1, 'total_pages' => 3, 'total_queued' => 2, 'total_processed' => 6 ) );
@@ -521,19 +544,24 @@ sort( $queued_ids );
 check( '  reading that page again: each listing queued once, the one already run queued again', $queued_ids, array( '1004', '1008' ) );
 check( '  and counted once more, not twice', state()['total_queued'], 3 );
 
-// The scan had read every page; eBay's rate limit stopped the imports. Its
-// completion is decided as 3.27.4 decided it, and moves nothing: no position,
-// no pruner. Its import is kept, and runs.
-fresh_site( 3, 8, array( 'status' => 'rate_limited', 'sync_mode' => 'full', 'current_page' => 4, 'total_pages' => 3, 'total_queued' => 2, 'total_processed' => 21, 'scan_complete_clean' => true, 'full_started_at' => '2026-10-19T08:00:00.000Z' ) );
+// A scan 3.27.5 began had read every page; eBay's rate limit stopped the
+// imports. Resume Import: importing again, its import kept, and that import
+// completes it, as any (3.30.0). Until then it was judged by the counts - 2
+// queued against 21 imported said complete with the import still queued -
+// and moved nothing: no position, no pruner.
+// Begun an hour ago: one whose pages were read over eight days ago gets no
+// pruner (test-full-sync-complete.php).
+$legacy_start = gmdate( 'Y-m-d\TH:i:s.000\Z', time() - HOUR_IN_SECONDS );
+fresh_site( 3, 8, array( 'status' => 'rate_limited', 'sync_mode' => 'full', 'current_page' => 4, 'total_pages' => 3, 'total_queued' => 2, 'total_processed' => 21, 'scan_complete_clean' => true, 'full_started_at' => $legacy_start ) );
 $QUEUE = array( array( 'tcgiant_sync_process_item_import', array( 'item_id' => '3008' ), 'tcgiant_sync_imports' ) );
 $IMP->resume_sync();
-check( 'Resume Import after the scan: its import still queued, no position moved, no pruner', array( count_queued( 'tcgiant_sync_process_item_import' ), state()['last_successful_sync_at'], count_queued( 'tcgiant_sync_prune_orphans' ) ), array( 1, '2026-10-01T00:00:00.000Z', 0 ) );
+check( 'Resume Import after the scan: importing, its import still queued, no position moved yet, no pruner', array( state()['status'], count_queued( 'tcgiant_sync_process_item_import' ), state()['last_successful_sync_at'], count_queued( 'tcgiant_sync_prune_orphans' ) ), array( 'importing', 1, '2026-10-01T00:00:00.000Z', 0 ) );
 run_import( '3008' );
-check( '  and the import runs, still moving no position', array( in_array( '3008', $SAVED, true ), state()['last_successful_sync_at'] ), array( true, '2026-10-01T00:00:00.000Z' ) );
-// The same with every listing imported inline: complete, as 3.27.4 said, and nothing more.
-fresh_site( 3, 8, array( 'status' => 'rate_limited', 'sync_mode' => 'full', 'current_page' => 4, 'total_pages' => 3, 'total_queued' => 0, 'total_processed' => 24, 'scan_complete_clean' => true, 'full_started_at' => '2026-10-19T08:00:00.000Z' ) );
+check( '  and the import runs and completes it: position moved to when it began, the pruner queued once', array( in_array( '3008', $SAVED, true ), state()['status'], state()['last_successful_sync_at'], count_queued( 'tcgiant_sync_prune_orphans' ) ), array( true, 'complete', $legacy_start, 1 ) );
+// The same with every listing imported inline: complete at once, as any.
+fresh_site( 3, 8, array( 'status' => 'rate_limited', 'sync_mode' => 'full', 'current_page' => 4, 'total_pages' => 3, 'total_queued' => 0, 'total_processed' => 24, 'scan_complete_clean' => true, 'full_started_at' => $legacy_start ) );
 $IMP->resume_sync();
-check( 'Resume Import after an all-inline scan: complete as in 3.27.4, no position moved, no pruner', array( state()['status'], state()['last_successful_sync_at'], count_queued( 'tcgiant_sync_prune_orphans' ) ), array( 'complete', '2026-10-01T00:00:00.000Z', 0 ) );
+check( 'Resume Import after an all-inline scan: complete, position moved to when it began, the pruner queued once', array( state()['status'], state()['last_successful_sync_at'], count_queued( 'tcgiant_sync_prune_orphans' ) ), array( 'complete', $legacy_start, 1 ) );
 
 // ─────────────────────────────────────────────────────────────────────────────
 echo "\nFETCH INVENTORY DOES NOT START AGAIN A SYNC STILL SCANNING, OR STILL IMPORTING WHAT IT QUEUED\n" . str_repeat( '=', 124 ) . "\n";

@@ -1461,38 +1461,17 @@ class TCGiant_Sync_Admin {
 		
 		$state = TCGiant_Sync_Importer::get_sync_state();
 
-		// Self-heal: if status says 'importing' but no pending jobs remain, auto-complete.
-		if ( 'importing' === $state['status'] && function_exists( 'as_get_scheduled_actions' ) ) {
-			// Item imports live in GROUP_IMPORTS. Querying the scan group here
-			// always came back empty, so an in-progress sync was flipped to
-			// "complete" the first time the dashboard polled.
-			$pending = as_get_scheduled_actions( array(
-				'hook'     => 'tcgiant_sync_process_item_import',
-				'group'    => TCGiant_Sync_Importer::GROUP_IMPORTS,
-				'status'   => ActionScheduler_Store::STATUS_PENDING,
-				'per_page' => 1,
-			) );
-			// Nor while one is running. The last import is no longer pending
-			// while it runs, and completed here, the sync was complete before
-			// that import's own check, which is what moves the delta sync's
-			// position and queues the pruner - so neither happened.
-			$running = as_get_scheduled_actions( array(
-				'hook'     => 'tcgiant_sync_process_item_import',
-				'group'    => TCGiant_Sync_Importer::GROUP_IMPORTS,
-				'status'   => ActionScheduler_Store::STATUS_RUNNING,
-				'per_page' => 1,
-			) );
-			if ( empty( $pending ) && empty( $running ) ) {
-				TCGiant_Sync_Importer::update_sync_state( array(
-					'status'         => 'complete',
-					'last_completed' => current_time( 'mysql' ),
-				) );
-				TCGiant_Sync_Logger::log( sprintf(
-					'Sync complete! %d imported, %d errors out of %d total.',
-					$state['total_processed'], $state['total_errors'], $state['total_queued']
-				), 'success' );
-				$state = TCGiant_Sync_Importer::get_sync_state(); // Refresh.
-			}
+		// Self-heal: a sync whose import phase is over, that nothing else has
+		// completed - its last import's request killed outright, say - is
+		// completed here, as the importer completes any: with no item import
+		// pending or running, and the sync quiet for a few minutes. A full
+		// sync then gets the delta sync's position and, after a clean scan,
+		// the clean-up, once. Until 3.30.0 this marked a full sync complete
+		// itself, at once and with neither. A delta batch, which never says
+		// "importing" now, is never touched. See
+		// TCGiant_Sync_Importer::complete_sync().
+		if ( TCGiant_Sync_Importer::complete_sync( 'dashboard' ) ) {
+			$state = TCGiant_Sync_Importer::get_sync_state(); // Refresh.
 		}
 
 		$stats = $this->get_sync_stats();

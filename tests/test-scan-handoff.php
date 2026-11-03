@@ -334,7 +334,8 @@ check( '  one that climbs from 75% to 82% of it hands on all the same, past 80%'
 world( array( 'pages' => 3, 'per_page' => 3, 'cost' => 25 ) );
 fetch();
 run_by_itself();
-check( 'a batch out of time as its page ends reads no further page: each page read once', array( count( lines( 'reads' ) ), state()['status'], count( saved_ids() ) ), array( 3, 'importing', 9 ) );
+// Every listing imported as it was read: complete as the last page is read (3.30.0).
+check( 'a batch out of time as its page ends reads no further page: each page read once', array( count( lines( 'reads' ) ), state()['status'], count( saved_ids() ) ), array( 3, 'complete', 9 ) );
 // One that kills at 300 s never meets a batch: each hands on at 60 s.
 world( array( 'pages' => 3, 'per_page' => 8, 'cost' => 10, 'host_kills_after' => 30 ) );
 fetch();
@@ -614,11 +615,13 @@ fetch();
 run_by_itself();
 check( 'a listing ended since the scan began: not saved, not counted, still on the live list', array( in_array( '1002', saved_ids(), true ), state()['total_found'], in_array( '1002', (array) option( 'tcgiant_sync_active_ids' ), true ) ), array( false, 7, true ) );
 
-// Every listing imported inline: as 3.27.4 left it, importing, nothing moved.
+// Every listing imported inline, over several batches: complete as its last
+// page is read, from when it began, with the clean-up queued once (3.30.0).
+// 3.27.4 to 3.29.2 left it importing, nothing moved.
 world( array( 'pages' => 1, 'per_page' => 3, 'cost' => 25 ) );
 fetch();
 run_by_itself();
-check( 'an all-inline full sync, however many batches: importing, no position moved, no pruner', array( state()['status'], state()['last_successful_sync_at'], count( pending( 'tcgiant_sync_prune_orphans' ) ), count( saved_ids() ) ), array( 'importing', '2026-10-01T00:00:00.000Z', 0, 3 ) );
+check( 'an all-inline full sync, however many batches: complete, position moved, the clean-up queued once', array( state()['status'], state()['last_successful_sync_at'], count( pending( 'tcgiant_sync_prune_orphans' ) ), count( saved_ids() ) ), array( 'complete', state()['full_started_at'], 1, 3 ) );
 
 // ─────────────────────────────────────────────────────────────────────────────
 echo "\nA SCAN AT WORK UNDER ANOTHER STATUS, OR AFTER A BATCH DEATH: NOTHING STARTS OVER IT (FAILS ON THE FIRST 3.27.6 CANDIDATE)\n" . str_repeat( '=', 140 ) . "\n";

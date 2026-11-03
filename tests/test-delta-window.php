@@ -877,8 +877,11 @@ echo "\nTHE DASHBOARD, AND ITEMS SYNCED BY HAND\n" . str_repeat( '=', 122 ) . "\
 // complete! 120 imported, 0 errors out of 0 total". The dashboard finishes any
 // sync showing "importing" whose queue of item imports is empty, and a delta
 // batch showed exactly that for as long as it ran, alive or dead.
+// Since 3.30.0 it finishes nothing itself: TCGiant_Sync_Importer::complete_sync()
+// does, and never a delta saying "scanning" (test-full-sync-complete.php).
 $admin = (string) file_get_contents( dirname( __DIR__ ) . '/admin/class-tcgiant-sync-admin.php' );
-check( 'the dashboard still finishes only what says "importing"', false !== strpos( $admin, "if ( 'importing' === \$state['status'] && function_exists( 'as_get_scheduled_actions' ) ) {" ), true );
+preg_match( '/public function ajax_sync_status\(\) \{(.*?)\n\t\}/s', $admin, $poll );
+check( 'the dashboard finishes a sync only through the importer\'s completion', array( substr_count( $poll[1] ?? '', "TCGiant_Sync_Importer::complete_sync( 'dashboard' )" ), substr_count( $poll[1] ?? '', "=> 'complete'" ) ), array( 1, 0 ) );
 
 fresh_site( 'UTC', array( 'last_successful_sync_at' => iso( $NOW - HOUR_IN_SECONDS ) ) );
 add_changes( changes( 100, $NOW - 50 * MINUTE_IN_SECONDS, $NOW - 60, 5000, 1300000 ) );
@@ -942,7 +945,9 @@ fresh_site( 'UTC', array(
 	'last_successful_sync_at' => iso( $NOW - DAY_IN_SECONDS ),
 ) );
 $complete->invoke( $IMP );
-check( 'a full sync from before 3.27 still moves it to now', strtotime( state()['last_successful_sync_at'] ) >= $NOW - 5, true );
+// Since 3.30.0 one with a position already keeps it: "now" skipped every
+// change since then. With none, now, as before (test-full-sync-complete.php).
+check( 'a full sync from before 3.27, with no start recorded, keeps the position the delta had', state()['last_successful_sync_at'], iso( $NOW - DAY_IN_SECONDS ) );
 
 // But to when it STARTED. A sale on a page already read, made before the
 // scan finished, lies between the two - and recording the finish skipped it.

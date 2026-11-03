@@ -169,7 +169,10 @@ class TCGiant_Sync_Importer {
 	 * TCGiant_Sync_Importer Constructor.
 	 */
 	public function __construct() {
-		add_action( 'tcgiant_sync_process_item_import', array( $this, 'process_item_import' ), 10, 1 );
+		// Two arguments: the listing, and how often eBay has already answered
+		// for it with an error it reads as a rate limit that is not the call
+		// allowance (3.30.0; see process_item_import()).
+		add_action( 'tcgiant_sync_process_item_import', array( $this, 'process_item_import' ), 10, 2 );
 		add_action( 'tcgiant_sync_scan_all_pages', array( $this, 'scan_all_pages' ) );
 		add_action( 'tcgiant_sync_scan_resume', array( $this, 'scan_all_pages' ) ); // WP-Cron resume hook.
 		add_action( 'tcgiant_sync_fetch_delta_events', array( $this, 'fetch_delta_events' ) );
@@ -601,6 +604,50 @@ class TCGiant_Sync_Importer {
 	const SYNC_STALL_MINUTES = 30;
 
 	/**
+	 * Which full sync was last completed: its completion_key(), when it
+	 * began. Claimed by compare-and-swap (claim_full_completion()), so that of
+	 * two requests finishing the same full sync at once - its last two
+	 * imports, or one and the dashboard - only one completes it and queues
+	 * the clean-up. Never autoloaded (3.30.0).
+	 */
+	const FULL_COMPLETED_OPTION = 'tcgiant_sync_full_completed';
+
+	/**
+	 * How long a sync in its import phase must have recorded nothing before
+	 * the dashboard's poll or the hourly sync completes it, with no import
+	 * left (complete_sync()): five minutes.
+	 */
+	const COMPLETE_IDLE_SECONDS = 300;
+
+	/**
+	 * Tries, in all, of one listing's queued import that eBay answers with a
+	 * rate-limit error that is not the call allowance - its 10007, say -
+	 * before it is counted as an error (process_item_import(); 3.30.0).
+	 */
+	const IMPORT_SOFT_TRIES = 3;
+
+	/**
+	 * How long a full sync whose pages are all read may hold the hourly sync
+	 * and the weekly full sync off while an import of its own waits to run,
+	 * with nothing recorded meanwhile (full_imports_waiting()): a day.
+	 */
+	const IMPORTS_WAIT_SECONDS = 86400;
+
+	/**
+	 * How long after a full sync completes the hourly sync waits for the
+	 * clean-up it queued to begin before starting the delta, which would
+	 * leave the clean-up nothing to run on (start_delta_sync()): two hours.
+	 */
+	const PRUNE_FIRST_WAIT_SECONDS = 7200;
+
+	/**
+	 * A full sync whose pages were read longer ago than this is completed
+	 * with no clean-up: its list of live listings is too old to prune
+	 * against (complete_sync()). Eight days, a weekly full sync and a day.
+	 */
+	const PRUNE_MAX_SCAN_AGE = 691200;
+
+	/**
 	 * Update sync state.
 	 *
 	 * @param array $updates Key-value pairs to merge into current state.
@@ -610,8 +657,12 @@ class TCGiant_Sync_Importer {
 	 *                       imports it queued write theirs in other requests:
 	 *                       merged into its own copy, it put back their old
 	 *                       figures, and an Emergency Stop pressed meanwhile.
+	 * @param bool  $keep_stop Keep an Emergency Stop the table has even over
+	 *                       a status this write gives (3.30.0): for the
+	 *                       scan's last write and an import's retry, which a
+	 *                       Stop pressed while they worked must stand against.
 	 */
-	public static function update_sync_state( $updates, $fresh = false ) {
+	public static function update_sync_state( $updates, $fresh = false, $keep_stop = false ) {
 		// Other requests change the state while this one runs, and this one
 		// writes back its own copy, read before they did. Two things are taken
 		// from the table unless this write says otherwise:
@@ -622,7 +673,7 @@ class TCGiant_Sync_Importer {
 		//   of an older scan, overtaken by a newer one, used to put its own
 		//   back - after which nothing could tell the two apart.
 		$table = self::state_from_table();
-		if ( ! array_key_exists( 'status', $updates ) && 'stopped' === ( $table['status'] ?? '' ) ) {
+		if ( ( $keep_stop || ! array_key_exists( 'status', $updates ) ) && 'stopped' === ( $table['status'] ?? '' ) ) {
 			$updates['status'] = 'stopped';
 		}
 		if ( ! array_key_exists( 'full_started_at', $updates ) && isset( $table['full_started_at'] ) ) {
@@ -881,14 +932,33 @@ class TCGiant_Sync_Importer {
 		}
 
 		// Guard: don't restart if a sync is already in progress (prevents cron overlap).
+		//
+		// Nor, since 3.30.0, over a full sync whose pages are all read and
+		// whose imports are still to run, whatever it says: "rate_limited"
+		// when eBay put one off, which this started again from page 1,
+		// cancelling it (full_imports_waiting()).
+		//
+		// But a delta sync that has died - no progress for SYNC_STALL_MINUTES,
+		// no run of it queued - is taken over, as the hourly sync takes one
+		// over (delta_has_died()). Its "scanning" turned the weekly full sync
+		// away week after week, on the shops whose deltas died most. Its place
+		// in its window (DELTA_PROGRESS_OPTION) is kept: should this full sync
+		// not complete, the next delta carries on from there.
 		if ( ! $force ) {
-			$current = self::get_sync_state();
-			if ( in_array( $current['status'], array( 'scanning', 'importing' ), true ) || self::scan_still_running( $current ) ) {
+			$current    = self::get_sync_state();
+			$dead_delta = self::delta_has_died( $current );
+			if ( ! $dead_delta && ( in_array( $current['status'], array( 'scanning', 'importing' ), true ) || self::scan_still_running( $current ) || self::full_imports_waiting( $current ) ) ) {
 				TCGiant_Sync_Logger::log( 'Sync already in progress - skipping duplicate request.' );
 				return new WP_Error(
 					'already_running',
 					__( 'A sync is already running.', 'tcgiant-sync' )
 				);
+			}
+			if ( $dead_delta ) {
+				TCGiant_Sync_Logger::warning( sprintf(
+					'The delta sync has shown no progress for over %d minutes and no run of it is queued, so the full sync takes it over. Its place in the window it was reading is kept.',
+					self::SYNC_STALL_MINUTES
+				) );
 			}
 		}
 
@@ -1090,7 +1160,37 @@ class TCGiant_Sync_Importer {
 	 * Falls back to a full sync if there is no previous sync timestamp (e.g., first run).
 	 */
 	public function start_delta_sync() {
+		// A sync whose import phase is over that nothing has completed - its
+		// last import's request killed outright, with nobody at the dashboard
+		// - is completed first, as the dashboard's poll would (complete_sync(),
+		// 3.30.0). A full sync then hands on to this delta from when it began.
+		// It used to say "importing" until it was taken for dead below and
+		// replaced, with no position moved and no clean-up; on a shop with no
+		// position yet, the full sync it fell back to was refused over it.
+		self::complete_sync( 'poll' );
+
 		$state = self::get_sync_state();
+
+		// A full sync whose pages are all read, with imports of its own still
+		// to run: they complete it. Under "importing", as below; and since
+		// 3.30.0 under "rate_limited", which was taken for idle - the full sync
+		// replaced, or on a shop with no position yet started again, and the
+		// import eBay had put off cancelled (full_imports_waiting()).
+		if ( self::full_imports_waiting( $state ) ) {
+			TCGiant_Sync_Logger::log( 'Sync already in progress — skipping delta sync request.' );
+			return;
+		}
+
+		// A full sync that has just completed, with its clean-up queued: the
+		// clean-up runs on the state that sync left, and a delta started
+		// first leaves it nothing to run on (build_prune_queue()). So the
+		// delta waits for it, at most PRUNE_FIRST_WAIT_SECONDS (3.30.0), and
+		// then starts from when that full sync began.
+		if ( self::prune_first_waiting( $state ) ) {
+			TCGiant_Sync_Logger::log( 'Delta sync not started yet: the inventory pruning queued when the full sync completed has still to run, and a delta started first would leave it nothing to run on. The delta starts at a later scheduled sync, from when that full sync began.' );
+			return;
+		}
+
 		$last_sync = ! empty( $state['last_successful_sync_at'] ) ? $state['last_successful_sync_at'] : '';
 
 		// No previous sync? Fall back to full sync.
@@ -1253,7 +1353,11 @@ class TCGiant_Sync_Importer {
 		// sync's status let check_sync_completion() finish it early, part way
 		// through a window, and a scheduled run then started that window again
 		// from the top.
-		if ( ! in_array( $state['status'], array( 'scanning', 'importing' ), true ) ) {
+		//
+		// A full sync in its import phase under "rate_limited" or
+		// "limit_reached" is still running too (in_import_phase(), 3.30.0):
+		// taken over, it would complete as these items alone.
+		if ( ! in_array( $state['status'], array( 'scanning', 'importing' ), true ) && ! self::in_import_phase( $state ) ) {
 			$update['status']    = 'importing';
 			$update['sync_mode'] = 'specific';
 		}
@@ -3936,13 +4040,15 @@ class TCGiant_Sync_Importer {
 		// one of the queued imports hit eBay's rate limit, say. The sync goes
 		// back to where finalize_scan() left it, so the imports still queued
 		// complete it as before. Queued again, the scan found nothing to read
-		// and left the sync "scanning", for good.
+		// and left the sync "scanning", for good. With none left - the last
+		// ran while it was paused - it is complete now (3.30.0).
 		if ( '' !== $key && $key === (string) ( $state['scan_finished'] ?? '' ) ) {
 			self::update_sync_state( array(
 				'status'             => 'importing',
 				'rate_limit_retries' => 0,
 			), true );
 			TCGiant_Sync_Logger::log( 'Resuming import phase: every page was read already, and the listings the scan queued carry on importing.', 'success' );
+			self::complete_sync( 'resume' );
 			return;
 		}
 
@@ -3994,22 +4100,17 @@ class TCGiant_Sync_Importer {
 			), 'success' );
 			self::queue_scan_batch( $key );
 		} else {
-			// All pages were scanned but import phase was interrupted.
-			// Transition to importing — any pending item imports will be re-processed.
-			if ( $state['total_queued'] > ( $state['total_processed'] + $state['total_errors'] ) ) {
-				self::update_sync_state( array( 'status' => 'importing' ), true );
-				TCGiant_Sync_Logger::log( sprintf(
-					'Resuming import phase. %d/%d items still pending.',
-					$state['total_queued'] - $state['total_processed'] - $state['total_errors'],
-					$state['total_queued']
-				), 'success' );
-			} else {
-				self::update_sync_state( array(
-					'status'         => 'complete',
-					'last_completed' => current_time( 'mysql' ),
-				), true );
-				TCGiant_Sync_Logger::log( 'Resume check: all items were already processed. Sync complete.', 'success' );
-			}
+			// All pages were scanned - by a sync 3.27.5 began, which marked
+			// nothing - but the import phase was interrupted. Back to
+			// importing: the imports still queued complete it, and with none,
+			// it is complete now (complete_sync(), 3.30.0). Not by the counts,
+			// which measured the listings the scan imported itself against the
+			// imports it queued (see check_sync_completion()): they said
+			// complete with imports still queued, and, complete, it moved no
+			// position and queued no clean-up.
+			self::update_sync_state( array( 'status' => 'importing' ), true );
+			TCGiant_Sync_Logger::log( 'Resuming import phase: every page was read already.', 'success' );
+			self::complete_sync( 'resume' );
 		}
 	}
 
@@ -4318,10 +4419,12 @@ class TCGiant_Sync_Importer {
 		if ( '' !== $key && $key === (string) ( $state['scan_finished'] ?? '' ) ) {
 			// Saying "scanning" with every page read can only be a sync put
 			// back to scanning by mistake: nothing would ever read a page for
-			// it again. Back to where finalize_scan() left it.
+			// it again. Back to where finalize_scan() leaves it: importing,
+			// and complete once nothing it queued is left (3.30.0).
 			if ( 'scanning' === $state['status'] ) {
-				self::update_sync_state( array( 'status' => ( (int) ( $state['total_queued'] ?? 0 ) > 0 || (int) ( $state['total_processed'] ?? 0 ) > 0 ) ? 'importing' : 'complete' ), true );
+				self::update_sync_state( array( 'status' => 'importing' ), true );
 				TCGiant_Sync_Logger::warning( 'Full sync scan: every page had been read already, so the sync goes back to importing what it queued.' );
+				self::complete_sync( 'scan' );
 			}
 			return;
 		}
@@ -5662,11 +5765,28 @@ class TCGiant_Sync_Importer {
 	private static function full_sync_position( array $state ) {
 		$started = (string) ( $state['full_started_at'] ?? '' );
 
-		return '' !== $started && false !== strtotime( $started ) ? $started : gmdate( 'Y-m-d\TH:i:s.000\Z' );
+		if ( '' !== $started && false !== strtotime( $started ) ) {
+			return $started;
+		}
+
+		// A full sync begun before 3.27, which kept no start, leaves the
+		// position where the delta has it, if it has one (3.30.0): "now"
+		// skipped every change on eBay since then.
+		$kept = (string) ( $state['last_successful_sync_at'] ?? '' );
+
+		return '' !== $kept && false !== strtotime( $kept ) ? $kept : gmdate( 'Y-m-d\TH:i:s.000\Z' );
 	}
 
 	/**
-	 * Finalize the scan — transition to importing or complete state.
+	 * Finalize the scan: every page is read. The sync goes to importing, and
+	 * is completed at once if no import it queued is still waiting
+	 * (complete_sync()); otherwise the last of them completes it.
+	 *
+	 * Until 3.30.0 a scan that had imported listings went to importing and
+	 * stopped there whenever none was still queued - every one imported as
+	 * the pages were read, or its queued imports all run while the scan read
+	 * on - and only the dashboard's poll ever said it was complete: no
+	 * position moved, no clean-up.
 	 *
 	 * @param bool        $clean True when every page was scanned without error. Only a
 	 *                           clean scan may authorise orphan pruning, since the
@@ -5708,33 +5828,29 @@ class TCGiant_Sync_Importer {
 
 		$finished = null !== $key && '' !== (string) $key ? array( 'scan_finished' => (string) $key ) : array();
 
+		// An Emergency Stop pressed while this worked stands (3.30.0): the
+		// write keeps it, and nothing below completes a stopped sync. Written
+		// over, the sync completed and its clean-up ran.
+		self::update_sync_state( array_merge( array(
+			'status'              => 'importing',
+			'scan_complete_clean' => (bool) $clean,
+			// When every page had been read, for complete_sync()'s age limit.
+			'scan_finished_at'    => time(),
+		), $finished ), true, true );
+		if ( self::stop_pressed() ) {
+			self::update_sync_state( array( 'scan_complete_clean' => false ), true );
+			TCGiant_Sync_Logger::log( 'Full sync scan: Emergency Stop was pressed as it read its last page, so it stays stopped. Every page was read: Resume Import completes it.' );
+			self::release_lock();
+			return;
+		}
+
 		if ( $state['total_queued'] > 0 || $state['total_processed'] > 0 ) {
-			self::update_sync_state( array_merge( array(
-				'status'              => 'importing',
-				'scan_complete_clean' => (bool) $clean,
-			), $finished ), true );
 			TCGiant_Sync_Logger::log( sprintf(
 				'Scan complete. %d found, %d imported inline, %d queued for GetItem across %d pages.',
 				$state['total_found'], $state['total_processed'], $state['total_queued'], $state['total_pages']
 			) );
-
-			// The prune runs when the last queued import finishes. With none
-			// queued it does not run at all - say so, rather than leave a shop
-			// to think its products were checked.
-			if ( $clean && 0 === (int) $state['total_queued'] ) {
-				TCGiant_Sync_Logger::log( 'Inventory pruning: not started. Every listing was imported during the scan, and pruning runs only after a full sync that queued listings for import.' );
-			}
 		} else {
-			self::update_sync_state( array_merge( array(
-				'status'                  => 'complete',
-				'last_completed'          => current_time( 'mysql' ),
-				'last_successful_sync_at' => self::full_sync_position( $state ),
-				'scan_complete_clean'     => (bool) $clean,
-			), $finished ), true );
 			TCGiant_Sync_Logger::log( 'Scan complete. No matching items found.' );
-			if ( $clean ) {
-				as_enqueue_async_action( 'tcgiant_sync_prune_orphans', array(), 'tcgiant_sync_group' );
-			}
 		}
 
 		// A full sync that read the whole account and found nothing on the
@@ -5755,6 +5871,11 @@ class TCGiant_Sync_Importer {
 
 		// Release the concurrent execution lock.
 		self::release_lock();
+
+		// Complete now, unless an import it queued is still waiting: the last
+		// of those to run completes it. The position, and the clean-up after
+		// a clean scan, come with the completion.
+		self::complete_sync( 'scan' );
 	}
 
 	/**
@@ -6051,8 +6172,7 @@ class TCGiant_Sync_Importer {
 					// about yet: imported on its own, where a rate limit
 					// waits and tries again - once, as for any queued import.
 					if ( ! $product_id && TCGiant_Sync_Mapper::$last_deferred ) {
-						if ( ! function_exists( 'as_next_scheduled_action' )
-							|| false === as_next_scheduled_action( 'tcgiant_sync_process_item_import', array( 'item_id' => $item_id ), 'tcgiant_sync_imports' ) ) {
+						if ( ! self::import_queued( $item_id ) ) {
 							$delay = min( (int) ( $progress['tally']['queued'] ?? 0 ), 60 );
 							as_schedule_single_action( time() + $delay, 'tcgiant_sync_process_item_import', array( 'item_id' => $item_id ), 'tcgiant_sync_imports' );
 							self::scan_count( $progress, 'queued' );
@@ -6100,8 +6220,7 @@ class TCGiant_Sync_Importer {
 				// Unless its import is already waiting. Resume Import reads again
 				// the page it stopped on, and leaves the imports the scan had
 				// queued to run, so that page's were queued a second time.
-				if ( function_exists( 'as_next_scheduled_action' )
-					&& false !== as_next_scheduled_action( 'tcgiant_sync_process_item_import', array( 'item_id' => $item_id ), 'tcgiant_sync_imports' ) ) {
+				if ( self::import_queued( $item_id ) ) {
 					continue;
 				}
 				$delay = min( (int) ( $progress['tally']['queued'] ?? 0 ), 60 );
@@ -7843,9 +7962,13 @@ class TCGiant_Sync_Importer {
 	/**
 	 * Process a single eBay Item ID.
 	 *
-	 * @param string $item_id The eBay Item ID to import.
+	 * @param string $item_id    The eBay Item ID to import.
+	 * @param int    $soft_tries How many times eBay has already answered for
+	 *                           it with a rate-limit error that is not the
+	 *                           call allowance (is_out_of_calls()), in the
+	 *                           retries IMPORT_SOFT_TRIES allows (3.30.0).
 	 */
-	public function process_item_import( $item_id ) {
+	public function process_item_import( $item_id, $soft_tries = 0 ) {
 		try {
 			// Per-item license check.
 			//
@@ -7861,7 +7984,7 @@ class TCGiant_Sync_Importer {
 				if ( ! self::$limit_reported ) {
 					self::$limit_reported = true;
 					if ( ! self::stop_pressed() ) {
-						self::update_sync_state( array( 'status' => 'limit_reached' ) );
+						self::update_sync_state( array( 'status' => 'limit_reached' ), true );
 					}
 					TCGiant_Sync_Logger::log(
 						sprintf(
@@ -7872,6 +7995,10 @@ class TCGiant_Sync_Importer {
 						'warning'
 					);
 				}
+				// Held back, it is still one of the imports the sync waits on:
+				// the last to run completes the sync, "limit_reached" or not
+				// (3.30.0). Before, nothing ever did.
+				self::complete_sync( 'limit' );
 				return;
 			}
 
@@ -7879,15 +8006,37 @@ class TCGiant_Sync_Importer {
 			$ebay_response = $api->get_item( $item_id );
 
 			// Handle rate limiting: reschedule this item for later with escalating backoff.
+			//
+			// Not for ever for an answer that is not a call allowance, this
+			// shop's, every shop's or eBay's (is_out_of_calls()): eBay's 10007,
+			// "Internal error to the application", comes back as a rate limit
+			// too, and one listing can keep giving it. Retried for ever, it
+			// kept the full sync in its import phase, and with it the delta,
+			// which waits for that import (3.30.0). Tried IMPORT_SOFT_TRIES
+			// times in all, it is counted as an error, and the sync completes;
+			// the next full sync tries it again.
 			if ( is_wp_error( $ebay_response ) && 'rate_limited' === $ebay_response->get_error_code() ) {
-				$this->retry_import_later( $item_id );
+				$soft_tries = max( 0, (int) $soft_tries );
+				if ( ! self::is_out_of_calls( $ebay_response ) ) {
+					$soft_tries++;
+					if ( $soft_tries >= self::IMPORT_SOFT_TRIES ) {
+						self::count_import( 'total_errors' );
+						TCGiant_Sync_Logger::error( sprintf(
+							'Import failed for eBay Item ID: %s. eBay answered %d times with an error that is not its call limit (last: %s), so it is counted as an error and the sync goes on without it. The next full sync tries it again.',
+							$item_id,
+							$soft_tries,
+							$ebay_response->get_error_message()
+						) );
+						$this->check_sync_completion();
+						return;
+					}
+				}
+				$this->retry_import_later( $item_id, $soft_tries );
 				return;
 			}
 
 			if ( is_wp_error( $ebay_response ) || ! isset( $ebay_response['Item'] ) ) {
-				self::update_sync_state( array(
-					'total_errors' => self::get_sync_state()['total_errors'] + 1,
-				) );
+				self::count_import( 'total_errors' );
 				TCGiant_Sync_Logger::error( 'Import failed for eBay Item ID: ' . $item_id );
 				$this->check_sync_completion();
 				return;
@@ -7930,9 +8079,7 @@ class TCGiant_Sync_Importer {
 						(string) $ebay_item['SellingStatus']['ListingStatus']
 					), 'warning' );
 				}
-				self::update_sync_state( array(
-					'total_processed' => self::get_sync_state()['total_processed'] + 1,
-				) );
+				self::count_import( 'total_processed' );
 				$this->check_sync_completion();
 				return;
 			}
@@ -7956,7 +8103,7 @@ class TCGiant_Sync_Importer {
 			// A relist whose old listing eBay could not be asked about - out
 			// of calls, or no token: tried again later, as for a rate limit.
 			if ( ! $product_id && TCGiant_Sync_Mapper::$last_deferred ) {
-				$this->retry_import_later( $item_id );
+				$this->retry_import_later( $item_id, (int) $soft_tries );
 				return;
 			}
 
@@ -7975,11 +8122,7 @@ class TCGiant_Sync_Importer {
 					TCGiant_Sync_Image_Localizer::set_external_images( $product_id, $product_data['images'] );
 				}
 
-				$state = self::get_sync_state();
-				self::update_sync_state( array(
-					'total_processed' => $state['total_processed'] + 1,
-					'last_item_title' => $title,
-				) );
+				self::count_import( 'total_processed', array( 'last_item_title' => $title ) );
 
 				$price_display = ! empty( $product_data['price'] ) ? '$' . $product_data['price'] : 'No price';
 				$attr_count = count( $product_data['attributes'] );
@@ -7989,24 +8132,18 @@ class TCGiant_Sync_Importer {
 					$title, $product_id, $price_display, $product_data['stock_quantity'], $attr_count, $weight_display
 				), 'success' );
 			} elseif ( ! TCGiant_Sync_Mapper::$last_skipped ) {
-				self::update_sync_state( array(
-					'total_errors' => self::get_sync_state()['total_errors'] + 1,
-				) );
+				self::count_import( 'total_errors' );
 				TCGiant_Sync_Logger::error( sprintf( 'Failed to save product for eBay Item: %s (%s)', $item_id, $title ) );
 			}
 
 			$this->check_sync_completion();
 			
 		} catch ( Exception $e ) {
-			self::update_sync_state( array(
-				'total_errors' => self::get_sync_state()['total_errors'] + 1,
-			) );
+			self::count_import( 'total_errors' );
 			TCGiant_Sync_Logger::error( 'Exception importing item ' . $item_id . ': ' . $e->getMessage() );
 			$this->check_sync_completion();
 		} catch ( Error $e ) {
-			self::update_sync_state( array(
-				'total_errors' => self::get_sync_state()['total_errors'] + 1,
-			) );
+			self::count_import( 'total_errors' );
 			TCGiant_Sync_Logger::error( 'Fatal error importing item ' . $item_id . ': ' . $e->getMessage() );
 			$this->check_sync_completion();
 		}
@@ -8016,9 +8153,11 @@ class TCGiant_Sync_Importer {
 	 * Queue one listing's import again, later each time the call limit stops
 	 * it, and say so.
 	 *
-	 * @param string $item_id eBay ItemID.
+	 * @param string $item_id    eBay ItemID.
+	 * @param int    $soft_tries Errors so far that were not the call
+	 *                           allowance, carried in the action's arguments.
 	 */
-	private function retry_import_later( $item_id ) {
+	private function retry_import_later( $item_id, $soft_tries = 0 ) {
 		$state_for_retry = self::state_from_table();
 		$retries = (int) ( $state_for_retry['rate_limit_retries'] ?? 0 );
 		$retry_delay = $this->get_rate_limit_backoff_delay( $retries );
@@ -8032,14 +8171,27 @@ class TCGiant_Sync_Importer {
 			&& self::scan_unfinished( $state_for_retry ) ) ) {
 			$paused['status'] = 'rate_limited';
 		}
-		self::update_sync_state( $paused, true );
+		// An Emergency Stop pressed while this import ran stands (3.30.0),
+		// and nothing is queued again: the "rate_limited" written here used
+		// to be written over it, with the retry queued.
+		self::update_sync_state( $paused, true, true );
+		if ( self::stop_pressed() ) {
+			TCGiant_Sync_Logger::log( sprintf(
+				'eBay put off the import of item %s, but Emergency Stop has been pressed, so it is not tried again.',
+				$item_id
+			), 'warning' );
+			return;
+		}
 		TCGiant_Sync_Logger::log( sprintf(
 			'eBay API rate limit hit while importing item %s (attempt %d). Rescheduled for %d minutes later.',
 			$item_id,
 			$retries + 1,
 			$retry_delay / 60
 		), 'warning' );
-		as_schedule_single_action( time() + $retry_delay, 'tcgiant_sync_process_item_import', array( 'item_id' => $item_id ), 'tcgiant_sync_imports' );
+		// The listing alone, as the scan queues it, until eBay has given an
+		// error that is not the call allowance; then with that count.
+		$args = (int) $soft_tries > 0 ? array( 'item_id' => $item_id, 'soft_tries' => (int) $soft_tries ) : array( 'item_id' => $item_id );
+		as_schedule_single_action( time() + $retry_delay, 'tcgiant_sync_process_item_import', $args, 'tcgiant_sync_imports' );
 	}
 
 	/**
@@ -8087,8 +8239,74 @@ class TCGiant_Sync_Importer {
 	}
 
 	/**
-	 * Check if the sync is complete: its scan has read every page (it says
-	 * importing), and no item import is still waiting to run.
+	 * Whether this listing's import is already waiting, or running: queued
+	 * with the listing alone, as the scan queues it, or as a retry carrying
+	 * a count of eBay errors that are not the call allowance (3.30.0; see
+	 * process_item_import()). Action Scheduler matches the arguments
+	 * exactly, so each shape is asked for: a page read again used to queue a
+	 * listing whose 10007 retry was waiting a second time.
+	 *
+	 * @param string $item_id eBay ItemID.
+	 * @return bool
+	 */
+	private static function import_queued( $item_id ) {
+		if ( ! function_exists( 'as_next_scheduled_action' ) ) {
+			return false;
+		}
+
+		if ( false !== as_next_scheduled_action( 'tcgiant_sync_process_item_import', array( 'item_id' => $item_id ), self::GROUP_IMPORTS ) ) {
+			return true;
+		}
+
+		for ( $tries = 1; $tries < self::IMPORT_SOFT_TRIES; $tries++ ) {
+			if ( false !== as_next_scheduled_action( 'tcgiant_sync_process_item_import', array( 'item_id' => $item_id, 'soft_tries' => $tries ), self::GROUP_IMPORTS ) ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Whether an item import is running now.
+	 *
+	 * @return bool
+	 */
+	private static function item_imports_running() {
+		if ( ! function_exists( 'as_get_scheduled_actions' ) || ! class_exists( 'ActionScheduler_Store' ) ) {
+			return false;
+		}
+
+		return ! empty( as_get_scheduled_actions( array(
+			'hook'     => 'tcgiant_sync_process_item_import',
+			'group'    => self::GROUP_IMPORTS,
+			'status'   => ActionScheduler_Store::STATUS_RUNNING,
+			'per_page' => 1,
+		), 'ids' ) );
+	}
+
+	/**
+	 * Add one to a total for an import that has ended, merged into the state
+	 * as the table holds it now (3.30.0).
+	 *
+	 * Imports run in requests of their own, beside one another and the scan,
+	 * and each wrote back its own copy of the state, read when its request
+	 * began: one that began before another completed the sync put back
+	 * "importing" and the delta's old position, and of two at once, one
+	 * count was lost.
+	 *
+	 * @param string $total total_processed or total_errors.
+	 * @param array  $more  Anything else to write with it.
+	 */
+	private static function count_import( $total, array $more = array() ) {
+		$state = self::state_from_table();
+
+		self::update_sync_state( array_merge( $more, array( $total => (int) ( $state[ $total ] ?? 0 ) + 1 ) ), true );
+	}
+
+	/**
+	 * Check if the sync is complete, as each import ends: see
+	 * complete_sync().
 	 *
 	 * Not from the counters. total_processed counts the listings the scan
 	 * imported inline as well as the GetItem imports, and total_queued only
@@ -8097,40 +8315,387 @@ class TCGiant_Sync_Importer {
 	 * the next hourly run started a delta sync, which cancelled them.
 	 */
 	private function check_sync_completion() {
-		$state = self::get_sync_state();
-		if ( 'importing' !== $state['status'] ) {
-			return;
+		self::complete_sync( 'import' );
+	}
+
+	/**
+	 * Complete a sync whose import phase is over: the one way a sync that
+	 * imports is finished, once its scan, if it has one, has read every page
+	 * (3.30.0).
+	 *
+	 * Called by everything that can finish one:
+	 * - 'scan': finalize_scan(), as the scan reads its last page, and a batch
+	 *   that finds a sync put back to "scanning" with every page read;
+	 * - 'import': each import the scan queued, as it ends
+	 *   (check_sync_completion());
+	 * - 'limit': each one the free limit holds back;
+	 * - 'resume': Resume Import, once every page has been read;
+	 * - 'dashboard': the dashboard's status poll, and 'poll': the hourly
+	 *   sync and the weekly full sync - for a sync nothing else finished,
+	 *   its last import's request killed outright, say. Those two only with
+	 *   no import running either, and the sync quiet for
+	 *   COMPLETE_IDLE_SECONDS, and they queue no clean-up.
+	 *
+	 * Only in its import phase (in_import_phase()), and never while an item
+	 * import is still waiting to run: the last one to run completes it. A
+	 * sync stopped by hand or by an error is not completed here, nor a delta
+	 * at work, which completes its own windows.
+	 *
+	 * A full sync, completed:
+	 * - says complete, with last_completed;
+	 * - moves the delta sync's position to when it began
+	 *   (full_sync_position()), so a shop's first full sync hands on to the
+	 *   delta, and a sale made while it ran is still read;
+	 * - queues the clean-up (prune_orphaned_items()) once, and only after a
+	 *   clean scan of every page: scan_complete_clean, which finalize_scan()
+	 *   gives only a full scan, and its list of live listings kept in full
+	 *   (scan_ids_lost); only when finished by the sync's own work, not by
+	 *   the dashboard or the hourly sync (start_delta_sync() then starts the
+	 *   delta, which the clean-up refuses to run after); and only on a list
+	 *   read in the last PRUNE_MAX_SCAN_AGE. build_prune_queue() checks
+	 *   again, with its own guards.
+	 * Until 3.30.0 one whose every listing was imported as the scan read the
+	 * pages - most of them - said "importing" until the dashboard's poll
+	 * marked it complete, with neither: the clean-up never ran, and a new
+	 * shop's hourly sync started a full sync again rather than a delta.
+	 *
+	 * Once. Two requests can finish the same full sync together - its last
+	 * two imports, or one and the dashboard - so its completion is claimed
+	 * first (claim_full_completion()), and only the request that claims it
+	 * writes the completion and queues the clean-up. One that finds it
+	 * claimed already, with the sync put back in its import phase since by a
+	 * request writing an older copy of the state, puts back "complete" and
+	 * the position, and queues nothing.
+	 *
+	 * Items synced by hand on their own, and a delta from before 3.27 that
+	 * said "importing", complete as they did: no position moved, no clean-up.
+	 *
+	 * @param string $by Who is finishing it: scan, import, limit, resume,
+	 *                   dashboard or poll.
+	 * @return bool Whether this call wrote the sync complete.
+	 */
+	public static function complete_sync( $by = 'import' ) {
+		$state = self::state_from_table();
+
+		if ( ! self::in_import_phase( $state ) ) {
+			return false;
 		}
 
-		$is_done = ! self::item_imports_pending();
+		$outside = in_array( (string) $by, array( 'dashboard', 'poll' ), true );
 
-		if ( $is_done ) {
-			$mode       = $state['sync_mode'] ?? 'full';
-			$mode_label = ( 'delta' === $mode ) ? 'Delta sync' : 'Sync';
-			$done_state = array(
+		// From outside the sync, only once it has gone quiet.
+		if ( $outside ) {
+			$idle = self::sync_idle_seconds( $state );
+			if ( null !== $idle && $idle < self::COMPLETE_IDLE_SECONDS ) {
+				return false;
+			}
+		}
+
+		// The last import to run completes it. One running is the caller,
+		// for an import; from outside, one running has not finished yet.
+		if ( self::item_imports_pending() || ( $outside && self::item_imports_running() ) ) {
+			return false;
+		}
+
+		$mode = (string) ( $state['sync_mode'] ?? 'full' );
+
+		// Only a full sync has read everything up to now, so only a full
+		// sync may say so. Finishing a few hand-picked items moved the
+		// position the delta sync reads from to the present as well, and
+		// every change on eBay since its last window - an hour's worth on a
+		// shop in step, far more on one catching up - was never read.
+		if ( 'full' !== $mode ) {
+			self::update_sync_state( array(
 				'status'             => 'complete',
 				'last_completed'     => current_time( 'mysql' ),
 				'rate_limit_retries' => 0,
-			);
-
-			// Only a full sync has read everything up to now, so only a full
-			// sync may say so. Finishing a few hand-picked items moved the
-			// position the delta sync reads from to the present as well, and
-			// every change on eBay since its last window - an hour's worth on
-			// a shop in step, far more on one catching up - was never read.
-			if ( 'full' === $mode ) {
-				$done_state['last_successful_sync_at'] = self::full_sync_position( $state );
-			}
-
-			self::update_sync_state( $done_state );
+			), true );
 			TCGiant_Sync_Logger::log( sprintf(
 				'%s complete! %d imported, %d errors out of %d total.',
-				$mode_label, $state['total_processed'], $state['total_errors'], $state['total_queued']
+				'delta' === $mode ? 'Delta sync' : 'Sync',
+				(int) ( $state['total_processed'] ?? 0 ),
+				(int) ( $state['total_errors'] ?? 0 ),
+				(int) ( $state['total_queued'] ?? 0 )
 			), 'success' );
-
-			// Trigger cleanup of sold/ended items.
-			as_enqueue_async_action( 'tcgiant_sync_prune_orphans', array(), 'tcgiant_sync_group' );
+			return true;
 		}
+
+		$key  = self::completion_key( $state );
+		$done = array(
+			'status'                  => 'complete',
+			'last_successful_sync_at' => self::full_sync_position( $state ),
+			'rate_limit_retries'      => 0,
+		);
+
+		$claimed = self::claim_full_completion( $key );
+
+		// As the table has it now. A newer full sync started since this was
+		// read is its own; Emergency Stop pressed since stands, and nothing
+		// is queued - Resume Import completes it, with no clean-up.
+		$state = self::state_from_table();
+		if ( self::completion_key( $state ) !== $key ) {
+			return false;
+		}
+		if ( 'stopped' === (string) ( $state['status'] ?? '' ) ) {
+			if ( $claimed ) {
+				TCGiant_Sync_Logger::log( 'Full sync: Emergency Stop was pressed as it completed, so it stays stopped. Resume Import completes it.' );
+			}
+			return false;
+		}
+
+		// Completed already, by another request. Only put back as it was
+		// left where something has put it back in its import phase since.
+		if ( ! $claimed ) {
+			if ( ! self::in_import_phase( $state ) ) {
+				return false;
+			}
+			self::update_sync_state( $done, true );
+			return true;
+		}
+
+		$scan  = self::scan_key( $state );
+		$clean = ! empty( $state['scan_complete_clean'] )
+			&& ! ( '' !== $scan && $scan === (string) ( $state['scan_ids_lost'] ?? '' ) );
+
+		self::update_sync_state( array_merge( $done, array(
+			'last_completed'    => current_time( 'mysql' ),
+			// For start_delta_sync()'s wait for the clean-up, as a plain
+			// timestamp: last_completed is the site's local time.
+			'last_completed_ts' => time(),
+		) ), true );
+
+		$inline = (int) ( $state['scan_inline'] ?? 0 );
+		TCGiant_Sync_Logger::log( sprintf(
+			'Sync complete! %d listings found, %d imported (%d as the scan read them, %d of the %d it queued for GetItem), %d errors. The delta sync carries on from when this full sync began, %s.',
+			(int) ( $state['total_found'] ?? 0 ),
+			(int) ( $state['total_processed'] ?? 0 ),
+			$inline,
+			max( 0, (int) ( $state['total_processed'] ?? 0 ) - $inline ),
+			(int) ( $state['total_queued'] ?? 0 ),
+			(int) ( $state['total_errors'] ?? 0 ),
+			$done['last_successful_sync_at']
+		), 'success' );
+
+		if ( ! $clean ) {
+			// finalize_scan() has said why, for a list that could not be kept.
+			if ( '' === $scan || $scan !== (string) ( $state['scan_ids_lost'] ?? '' ) ) {
+				TCGiant_Sync_Logger::log( 'Inventory pruning: not run after this full sync. Its list of live eBay listings is not known to be whole - Emergency Stop was pressed while it imported, or items synced by hand joined it - and pruning against it could take live listings for gone. It runs after the next full sync that completes without either.' );
+			}
+			return true;
+		}
+
+		// Not when the dashboard or the hourly sync (or the weekly full
+		// sync, before it starts its own) finishes a sync that nothing in it
+		// did: the hourly sync starts the delta straight after, which leaves
+		// the clean-up nothing to run on, and a shop's first clean-up stays
+		// with its weekly full sync rather than all on the day it updates.
+		if ( $outside ) {
+			TCGiant_Sync_Logger::log( 'Inventory pruning: runs after the next full sync that finishes on its own, not after this one, which was finished for it.' );
+			return true;
+		}
+
+		// Nor against a list of live listings read more than
+		// PRUNE_MAX_SCAN_AGE ago - a sync paused for weeks, with the
+		// automatic sync off: listings have ended and been listed since.
+		$read_at = (int) ( $state['scan_finished_at'] ?? 0 );
+		if ( $read_at <= 0 ) {
+			$read_at = (int) strtotime( (string) ( $state['full_started_at'] ?? '' ) );
+		}
+		if ( $read_at <= 0 || time() - $read_at > self::PRUNE_MAX_SCAN_AGE ) {
+			TCGiant_Sync_Logger::log( sprintf(
+				'Inventory pruning: not run after this full sync, which read your eBay listings more than %d days ago: its list of them is too old to prune against. It runs after the next full sync.',
+				(int) ( self::PRUNE_MAX_SCAN_AGE / 86400 )
+			) );
+			return true;
+		}
+
+		// Once: not beside one already waiting.
+		if ( ! function_exists( 'as_next_scheduled_action' )
+			|| false === as_next_scheduled_action( 'tcgiant_sync_prune_orphans', array(), self::GROUP_SCAN ) ) {
+			as_enqueue_async_action( 'tcgiant_sync_prune_orphans', array(), self::GROUP_SCAN );
+		}
+		TCGiant_Sync_Logger::log( sprintf(
+			'Inventory pruning: queued. It asks eBay about each linked product whose listing this full sync did not see, at most %d calls a run, and changes a product only to match eBay: stock is only ever lowered, never raised, to what the listing has left, live or ended; a listing eBay no longer has, or will not describe, is marked ended with its stock unchanged; a sold-out product goes to the trash only if "Remove products when their eBay listing sells out?" is Yes (the default), never one pushed from here or in a preserved category. Nothing changes if more than %d%% of linked products would need checking.',
+			self::PRUNE_CONFIRM_PER_RUN,
+			(int) round( self::PRUNE_MAX_RATIO * 100 )
+		) );
+
+		return true;
+	}
+
+	/**
+	 * Whether a sync is in its import phase, where complete_sync() may
+	 * finish it: "importing" - or, for any but a delta, "rate_limited" (an
+	 * import put off by eBay's rate limit) or "limit_reached" (one held back
+	 * by the free limit), once a full sync's scan has read every page. Under
+	 * those two a scan still reading pages is at work. A delta says either
+	 * of them of itself, and completes its own windows; one from before 3.27
+	 * said "importing" as it imported.
+	 *
+	 * @param array $state Sync state.
+	 * @return bool
+	 */
+	private static function in_import_phase( array $state ) {
+		$status = (string) ( $state['status'] ?? '' );
+
+		if ( 'importing' === $status ) {
+			return true;
+		}
+
+		$mode = (string) ( $state['sync_mode'] ?? 'full' );
+		if ( 'delta' === $mode || ! in_array( $status, array( 'rate_limited', 'limit_reached' ), true ) ) {
+			return false;
+		}
+
+		return 'full' !== $mode || ! self::scan_unfinished( $state );
+	}
+
+	/**
+	 * Whether a full sync has read every page and has imports of its own
+	 * still to run, which complete it. Neither the hourly sync nor the
+	 * weekly full sync starts over one (3.30.0): they waited only on one
+	 * saying "importing", and one an import's rate limit had made
+	 * "rate_limited" was replaced, the import eBay had put off cancelled.
+	 *
+	 * For no longer than IMPORTS_WAIT_SECONDS with nothing recorded: an
+	 * import that never runs - Action Scheduler stopped, say - must not hold
+	 * the delta off for good. After that they treat it as 3.29.2 did.
+	 *
+	 * @param array $state Sync state.
+	 * @return bool
+	 */
+	private static function full_imports_waiting( array $state ) {
+		if ( 'full' !== (string) ( $state['sync_mode'] ?? 'full' ) || ! self::in_import_phase( $state ) ) {
+			return false;
+		}
+
+		$idle = self::sync_idle_seconds( $state );
+		if ( null === $idle || $idle >= self::IMPORTS_WAIT_SECONDS ) {
+			return false;
+		}
+
+		return self::item_imports_pending();
+	}
+
+	/**
+	 * Whether the clean-up a full sync's completion queued has still to
+	 * begin its first run, or is in it (not a follow-up run), within
+	 * PRUNE_FIRST_WAIT_SECONDS of the completion. After that the delta does
+	 * not wait: Action Scheduler not running at all must not hold it off.
+	 *
+	 * @param array $state Sync state.
+	 * @return bool
+	 */
+	private static function prune_first_waiting( array $state ) {
+		if ( 'full' !== (string) ( $state['sync_mode'] ?? 'full' ) || 'complete' !== (string) ( $state['status'] ?? '' ) ) {
+			return false;
+		}
+
+		// One in the future - the server's clock put back since - counts as
+		// over too: it would hold the delta off for as long.
+		$at = (int) ( $state['last_completed_ts'] ?? 0 );
+		if ( $at <= 0 || $at > time() || time() - $at >= self::PRUNE_FIRST_WAIT_SECONDS ) {
+			return false;
+		}
+
+		return function_exists( 'as_next_scheduled_action' )
+			&& false !== as_next_scheduled_action( 'tcgiant_sync_prune_orphans', array(), self::GROUP_SCAN );
+	}
+
+	/**
+	 * Whether a delta sync has died, as the hourly sync judges it: still
+	 * saying it is at work, with no progress for SYNC_STALL_MINUTES and no
+	 * run of it queued.
+	 *
+	 * @param array $state Sync state.
+	 * @return bool
+	 */
+	private static function delta_has_died( array $state ) {
+		return 'delta' === (string) ( $state['sync_mode'] ?? '' )
+			&& in_array( (string) ( $state['status'] ?? '' ), array( 'scanning', 'importing' ), true )
+			&& self::sync_has_stalled( $state )
+			&& ! self::delta_run_queued();
+	}
+
+	/**
+	 * Which full sync a completion is of: when it began (scan_key()), or, for
+	 * a sync from before that was kept, when it started by the site's clock.
+	 *
+	 * @param array $state Sync state.
+	 * @return string
+	 */
+	private static function completion_key( array $state ) {
+		$key = self::scan_key( $state );
+
+		return '' !== $key ? $key : 'started ' . (string) ( $state['started_at'] ?? '' );
+	}
+
+	/**
+	 * Claim the completion of a full sync for this request: true for the one
+	 * request that records it as the full sync last completed
+	 * (FULL_COMPLETED_OPTION), false where that is recorded already.
+	 *
+	 * Written only where the record is still exactly what was read - or,
+	 * with none yet, by a plain INSERT, which only one request gets in - as
+	 * claim_scan_batch() takes the scan's place. Of two requests that read it
+	 * together, one writes it and the other finds it written. Where the
+	 * database cannot be written straight to (a harness), or will not take
+	 * either write, it is read and written as an option: a completion is
+	 * never lost for want of the claim.
+	 *
+	 * @param string $key completion_key().
+	 * @return bool
+	 */
+	private static function claim_full_completion( $key ) {
+		global $wpdb;
+
+		$key = (string) $key;
+
+		if ( isset( $wpdb ) && is_object( $wpdb ) && isset( $wpdb->options )
+			&& method_exists( $wpdb, 'query' ) && method_exists( $wpdb, 'prepare' ) && method_exists( $wpdb, 'get_var' ) ) {
+			for ( $try = 0; $try < 3; $try++ ) {
+				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+				$raw = $wpdb->get_var( $wpdb->prepare( "SELECT option_value FROM {$wpdb->options} WHERE option_name = %s LIMIT 1", self::FULL_COMPLETED_OPTION ) );
+
+				if ( is_string( $raw ) && $key === (string) maybe_unserialize( $raw ) ) {
+					return false;
+				}
+
+				if ( null === $raw ) {
+					$quiet = method_exists( $wpdb, 'suppress_errors' ) ? $wpdb->suppress_errors( true ) : false;
+					// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+					$took = $wpdb->query( $wpdb->prepare(
+						"INSERT INTO {$wpdb->options} ( option_name, option_value, autoload ) VALUES ( %s, %s, 'no' )",
+						self::FULL_COMPLETED_OPTION,
+						$key
+					) );
+					if ( method_exists( $wpdb, 'suppress_errors' ) ) {
+						$wpdb->suppress_errors( $quiet );
+					}
+				} else {
+					// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+					$took = $wpdb->query( $wpdb->prepare(
+						"UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND option_value = %s",
+						$key,
+						self::FULL_COMPLETED_OPTION,
+						(string) $raw
+					) );
+				}
+
+				self::forget_cached_option( self::FULL_COMPLETED_OPTION );
+
+				if ( 1 === (int) $took ) {
+					return true;
+				}
+			}
+		}
+
+		if ( $key === (string) get_option( self::FULL_COMPLETED_OPTION, '' ) ) {
+			return false;
+		}
+		update_option( self::FULL_COMPLETED_OPTION, $key, false );
+
+		return true;
 	}
 
 	/**
@@ -8880,7 +9445,7 @@ class TCGiant_Sync_Importer {
 		}
 
 		TCGiant_Sync_Logger::log( sprintf(
-			'Inventory pruning%s: asked eBay about %d of the %d listings %s. %d had ended and were settled as any ended listing is; %d still live (missed by the scan while it ran) and left alone; %d no longer on eBay, marked ended with stock unchanged; %d relisted; %d could not be read; %d changed since the list was made. %s',
+			'Inventory pruning%s: asked eBay about %d of the %d listings %s. %d had ended and were settled as any ended listing is; %d still live (missed by the scan while it ran) and kept, their stock lowered where eBay had fewer left; %d no longer on eBay, marked ended with stock unchanged; %d relisted; %d could not be read; %d changed since the list was made. %s',
 			$round > 0 ? sprintf( ' (follow-up %d of at most %d)', $round, self::PRUNE_FOLLOW_UP_ROUNDS ) : '',
 			$pos,
 			count( $items ),

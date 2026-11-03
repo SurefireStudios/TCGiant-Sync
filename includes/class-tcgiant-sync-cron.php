@@ -163,6 +163,13 @@ class TCGiant_Sync_Cron {
 	public function run_weekly_full_sync() {
 		TCGiant_Sync_Logger::log( 'Weekly full sync: starting a complete scan to catch anything the ordinary sync could not see.' );
 
+		// A full sync whose import phase is over that nothing has completed -
+		// its last import's request killed outright, say - would turn this
+		// sweep away for the week. Completed first, as the hourly sync
+		// completes one (3.30.0); like that one, with no clean-up of its own:
+		// this sweep's is the one that runs.
+		TCGiant_Sync_Importer::complete_sync( 'poll' );
+
 		$result = TCGiant_Sync_Importer::instance()->start_full_sync();
 
 		if ( is_wp_error( $result ) ) {

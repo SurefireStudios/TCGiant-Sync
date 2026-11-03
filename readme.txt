@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.29.2
+Stable tag: 3.30.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -143,6 +143,13 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.30.0 - 2026-11-03 =
+* FIX: A full sync now always finishes. One whose listings were all imported as it read them - most full syncs - said "Importing" and was never properly finished: the ordinary sync was not told where to carry on from, and the inventory pruning that follows a full sync did not run. On a new shop the hourly sync started a full sync again, every time, instead of reading only what changed. A full sync is now complete as soon as its last page is read with nothing left to import, or when its last queued import has run. The ordinary sync carries on from when the full sync began, so a sale made while it ran is still read. If the full sync read all your listings cleanly, inventory pruning runs once, and the ordinary sync waits for its first run to finish, for up to two hours, and starts at the next scheduled sync after that. See the Upgrade Notice.
+* A full sync held up near its end by the free product limit, or by eBay's call limit, now finishes too, once what it was waiting for has run. The hourly sync and the weekly full sync no longer start over a full sync that is only waiting for eBay's call limit, which cancelled the import eBay had put off, but they wait no longer than a day with nothing happening. A listing whose import eBay keeps refusing with an error that is not its call limit is tried three times and then counted as an error, so one listing can no longer hold the sync up.
+* The weekly full sync now runs when the ordinary sync has stopped part way, with no progress for 30 minutes and nothing of it waiting to run. It was turned away for as long as that left "Scanning" behind. The ordinary sync's place is kept. A full sync left unfinished is now finished first, rather than turning the weekly full sync away.
+* A full sync whose last import was cut off is finished by the Dashboard or the hourly sync, once it has been quiet for five minutes with nothing left to import. Inventory pruning then waits for the next full sync that finishes on its own, as it does after a full sync that read your listings more than eight days ago.
+* Emergency Stop pressed as a full sync reads its last page, or while one of its imports is being held up by eBay, now stops it: that import is no longer queued again. A full sync begun before 3.27 that is finished now leaves the ordinary sync where it was, rather than moving it on to the present.
 
 = 3.29.2 - 2026-11-03 =
 * FIX: Suggest Category from Title now asks eBay about the product's title exactly as it is. A title with "&", "#", "+" or "%" in it was cut there, or changed on its way to eBay, so the suggestions were for other words: "Pokemon & Yu-Gi-Oh! Lot" was asked as "Pokemon", "&" and quotes reached eBay as "&amp;" and "&quot;", and a "%" followed by two letters or digits was deleted. HTML tags in a title are still left out.
@@ -1594,6 +1601,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.30.0 =
+Inventory pruning now runs after every full sync that finishes on its own and reads all your eBay listings cleanly - on most shops, after the weekly full sync - including on shops where it never has. It asks eBay about each product whose listing the full sync did not see, about 300 eBay calls an hour and no more than about 7,500 per full sync, and changes a product only to match eBay: stock is only ever lowered, never raised, to what the listing has left, live or ended; a listing eBay no longer has, or won't describe, is marked ended with its stock unchanged; a sold-out product goes to the trash only if "Remove products when their eBay listing sells out?" is Yes (the default), never one pushed from here or in a preserved category. Nothing at all changes if more than 20% of your eBay-linked products would need checking. Its first run may settle many products whose listings ended while nothing was watching: see TCGiant Sync > Logs.
 
 = 3.28.9 =
 If you set Best Offer or the GPSR fields in Settings, they now reach eBay: Best Offer on new listings, and GPSR on new listings and on Updates of listings you pushed. Check them before your next push. Listings imported from eBay are not changed.
