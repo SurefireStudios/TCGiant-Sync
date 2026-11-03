@@ -107,6 +107,8 @@ final class TCGiant_Sync {
 		// Initialize Admin.
 		if ( is_admin() ) {
 			TCGiant_Sync_Admin::instance();
+			// The eBay price fields on products and variations (3.29.0).
+			TCGiant_Sync_Ebay_Price::register_admin();
 		}
 
 		// Initialize entitlements - the licence where this build has one (must be before Importer).

@@ -10,6 +10,12 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+// The eBay price fields on the Settings screen, a product's eBay tab and the
+// Listings screen (3.29.0).
+if ( ! class_exists( 'TCGiant_Sync_Ebay_Price', false ) ) {
+	require_once dirname( __DIR__ ) . '/includes/class-tcgiant-sync-ebay-price.php';
+}
+
 /**
  * TCGiant_Sync_Admin class
  */
@@ -64,6 +70,8 @@ class TCGiant_Sync_Admin {
 			'export_listing_duration', 'export_default_quantity', 'export_send_package_details', 'best_offer_enabled',
 			'best_offer_auto_accept', 'best_offer_auto_decline', 'gpsr_enabled', 'gpsr_manufacturer_name',
 			'gpsr_manufacturer_address', 'gpsr_eu_responsible',
+			// The eBay price rule and tax (3.29.0, TCGiant_Sync_Ebay_Price).
+			'ebay_price_rule', 'ebay_price_percent', 'ebay_price_fixed', 'ebay_price_rounding', 'ebay_price_tax',
 		),
 	);
 
@@ -1329,6 +1337,12 @@ class TCGiant_Sync_Admin {
 				if ( 'import' === $form ) {
 					TCGiant_Sync_Inventory::dismiss_push_notice();
 				}
+
+				// The eBay price rule's figures: a markup it can read, or the
+				// rule as it was, and the reason on screen (3.29.0).
+				if ( 'import' !== $form ) {
+					$sanitized = TCGiant_Sync_Ebay_Price::check_settings( $sanitized, $kept );
+				}
 			}
 
 			// A new marketplace, or a new choice of sites, answers the warning
@@ -1889,6 +1903,9 @@ class TCGiant_Sync_Admin {
 		if ( class_exists( 'TCGiant_Sync_Template_Admin' ) ) {
 			TCGiant_Sync_Template_Admin::save_product_fields( $product_id, $_POST );
 		}
+
+		// And its eBay price (3.29.0).
+		TCGiant_Sync_Ebay_Price::save_posted( $product_id, $_POST, 'override_ebay_price' );
 
 		// Pre-push validation: check all requirements BEFORE queuing.
 		// This gives the user instant feedback instead of async error discovery.
@@ -4296,6 +4313,13 @@ class TCGiant_Sync_Admin {
 			</div>
 		</div>
 
+		<?php
+		// == eBay PRICE: what a push sends eBay, and the product's own (3.29.0) ==
+		if ( $product ) {
+			TCGiant_Sync_Ebay_Price::render_product_section( $product );
+		}
+		?>
+
 		<?php // == STEP 5: ITEM SPECIFICS ==
 			  $entered_specifics = get_post_meta( $product_id, '_ebay_export_specifics', true );
 			  $entered_count     = is_array( $entered_specifics ) ? count( $entered_specifics ) : 0;
@@ -5439,6 +5463,9 @@ class TCGiant_Sync_Admin {
 		if ( class_exists( 'TCGiant_Sync_Template_Admin' ) ) {
 			TCGiant_Sync_Template_Admin::save_product_fields( $product_id, $_POST );
 		}
+
+		// And its eBay price (3.29.0).
+		TCGiant_Sync_Ebay_Price::save_posted( $product_id, $_POST, 'override_ebay_price' );
 
 		// Settled as a new listing's, which Verify checks (3.28.9): an eBay
 		// Motors category is verified on eBay Motors.

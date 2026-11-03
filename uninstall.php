@@ -324,12 +324,15 @@ $wpdb->query(
 );
 
 // eBay's own values for each imported listing (3.28.8, _ebay_live), which
-// the import records and its next read writes again. Who made each listing,
-// _ebay_origin, and who said so, _ebay_origin_by, stay with the product's
-// link to it.
+// the import records and its next read writes again, and eBay's price as
+// last sent or read, with its mark (3.29.0, _ebay_price_seen and
+// _ebay_price_marked). Who made each listing, _ebay_origin, and who said so,
+// _ebay_origin_by, stay with the product's link to it; so do the shop's own
+// eBay prices, _ebay_export_price, and the postage in its website prices,
+// _ebay_baked_shipping.
 $wpdb->query(
 	"DELETE FROM {$wpdb->prefix}postmeta
-	 WHERE meta_key IN ( '_ebay_live' )"
+	 WHERE meta_key IN ( '_ebay_live', '_ebay_price_seen', '_ebay_price_marked' )"
 );
 
 // Listing templates and their text blocks (3.27.8): private posts of the

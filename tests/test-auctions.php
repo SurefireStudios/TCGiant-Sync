@@ -1125,6 +1125,14 @@ auction_product( 535, $NEW, array( '_regular_price' => '50.00', '_sale_price' =>
 $html = filter_price_html( 'x', wc_get_product( 535 ) );
 check( 'one with a sale price shows its regular price as the opening bid, as eBay has it', array( false !== strpos( $html, 'opening bid <span class="amount">$50.00</span>' ), false !== strpos( $html, '$40.00' ) ), array( true, false ) );
 
+// 3.29.0: as the push sent it - its own eBay price, or its regular price
+// under the shop's eBay price rule.
+auction_product( 539, $NEW, array( '_regular_price' => '50.00', '_ebay_export_price' => '55.00', '_ebay_export_last_pushed' => '2026-10-10 10:00:00' ) );
+check( 'one with an eBay price of its own shows that as the opening bid (3.29.0)', false !== strpos( filter_price_html( 'x', wc_get_product( 539 ) ), 'opening bid <span class="amount">$55.00</span>' ), true );
+$GLOBALS['OPTIONS']['tcgiant_sync_ebay_settings'] += array( 'ebay_price_rule' => 'percent', 'ebay_price_percent' => '10' );
+check( '  one under the shop\'s rule, plus 10%: 55.00 for its 50.00', false !== strpos( filter_price_html( 'x', wc_get_product( 535 ) ), 'opening bid <span class="amount">$55.00</span>' ), true );
+unset( $GLOBALS['OPTIONS']['tcgiant_sync_ebay_settings']['ebay_price_rule'], $GLOBALS['OPTIONS']['tcgiant_sync_ebay_settings']['ebay_price_percent'] );
+
 // An auction 3.27.2 imported: its price is the bid it had reached, $37, and
 // none of eBay's auction figures are recorded until it is next imported.
 auction_product( 536, $NEW, array( '_regular_price' => '37.00', '_sync_last_updated' => '2026-10-11 10:00:00' ) );

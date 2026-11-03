@@ -12,6 +12,11 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+// What an import does with eBay's price (3.29.0).
+if ( ! class_exists( 'TCGiant_Sync_Ebay_Price', false ) ) {
+	require_once __DIR__ . '/class-tcgiant-sync-ebay-price.php';
+}
+
 // eBay's own values for each listing, and who made it, which the import
 // records (3.28.8).
 if ( ! class_exists( 'TCGiant_Sync_Ebay_Live', false ) ) {
@@ -211,6 +216,15 @@ class TCGiant_Sync_Mapper {
 			$picked[ $key ] = $settings[ $key ] ?? null;
 		}
 
+		// The eBay price rule and tax decide what a full read writes to the
+		// website price (3.29.0), but only when there is one: a shop with
+		// neither keeps the fingerprint it had, so its renewals are not all
+		// read in full once for nothing.
+		$price_rule = TCGiant_Sync_Ebay_Price::fingerprint_part( $settings );
+		if ( '' !== $price_rule ) {
+			$picked['ebay_price_rule'] = $price_rule;
+		}
+
 		$picked['woocommerce_weight_unit']    = get_option( 'woocommerce_weight_unit', 'lbs' );
 		$picked['woocommerce_dimension_unit'] = get_option( 'woocommerce_dimension_unit', 'in' );
 
@@ -371,6 +385,11 @@ class TCGiant_Sync_Mapper {
 		$product_data['price'] = $prices['regular_price']; // fallback for other usages
 		$product_data['regular_price'] = $prices['regular_price'];
 		$product_data['sale_price']    = $prices['sale_price'];
+		// eBay's own price, before any postage is added to it, and the
+		// postage that was (3.29.0): what TCGiant_Sync_Ebay_Price decides by.
+		$product_data['ebay_price']      = $prices['ebay_price'];
+		$product_data['ebay_sale_price'] = $prices['ebay_sale_price'];
+		$product_data['baked_shipping']  = $prices['shipping'];
 
 		// eBay's list of changes, and possibly a full scan's page, carry an
 		// auction's current bid but not its opening bid. A product that already
@@ -613,6 +632,9 @@ class TCGiant_Sync_Mapper {
 					'sku'            => $var['SKU'] ?? '',
 					'regular_price'  => $var_prices['regular_price'],
 					'sale_price'     => $var_prices['sale_price'],
+					'ebay_price'      => $var_prices['ebay_price'],
+					'ebay_sale_price' => $var_prices['ebay_sale_price'],
+					'baked_shipping'  => $var_prices['shipping'],
 					'stock_quantity' => max( 0, (int) ($var['Quantity'] ?? 0) - (int) ($var['SellingStatus']['QuantitySold'] ?? 0) ),
 					'sold'           => isset( $var['SellingStatus']['QuantitySold'] ) && is_numeric( $var['SellingStatus']['QuantitySold'] ) ? (int) $var['SellingStatus']['QuantitySold'] : null,
 					'attributes'     => array(),
@@ -657,13 +679,18 @@ class TCGiant_Sync_Mapper {
 	 *                         then the opening bid (StartPrice), with the
 	 *                         current bid only when eBay did not send that, and
 	 *                         never a sale price.
-	 * @return array{regular_price: string, sale_price: string} Clean numeric
-	 *               strings, each empty when the value is absent.
+	 * @return array{regular_price: string, sale_price: string, ebay_price: string, ebay_sale_price: string, shipping: float}
+	 *               Clean numeric strings, each empty when the value is
+	 *               absent: the website's, with any postage added; eBay's
+	 *               own, without it (3.29.0); and the postage added.
 	 */
 	private function extract_prices( $ebay_item, $auction = false ) {
 		$prices = array(
-			'regular_price' => '',
-			'sale_price'    => '',
+			'regular_price'   => '',
+			'sale_price'      => '',
+			'ebay_price'      => '',
+			'ebay_sale_price' => '',
+			'shipping'        => 0.0,
 		);
 
 		// Current selling price
@@ -711,6 +738,8 @@ class TCGiant_Sync_Mapper {
 		} else {
 			$prices['regular_price'] = $current_price;
 		}
+		$prices['ebay_price']      = $prices['regular_price'];
+		$prices['ebay_sale_price'] = $prices['sale_price'];
 
 		// Bake flat-rate shipping cost into price if setting is enabled.
 		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
@@ -719,6 +748,7 @@ class TCGiant_Sync_Mapper {
 			if ( $shipping_cost > 0 ) {
 				if ( '' !== $prices['regular_price'] ) {
 					$prices['regular_price'] = wc_format_decimal( (float) $prices['regular_price'] + $shipping_cost, 2 );
+					$prices['shipping']      = (float) $shipping_cost;
 				}
 				if ( '' !== $prices['sale_price'] ) {
 					$prices['sale_price'] = wc_format_decimal( (float) $prices['sale_price'] + $shipping_cost, 2 );
@@ -2004,13 +2034,28 @@ class TCGiant_Sync_Mapper {
 		// already has its price keeps it, rather than climbing with the bids.
 		$bid_only = ! $is_new && ! empty( $product_data['auction_price_is_bid'] );
 
+		// A product with an eBay price of its own, or under the shop's eBay
+		// price rule or tax (3.29.0), never has eBay's price written into its
+		// website price as it is: TCGiant_Sync_Ebay_Price decides. A variable
+		// product's prices are its variations' (save_variations()).
+		$own_listing = empty( $product_data['variations'] );
+		$price_call  = $own_listing
+			? TCGiant_Sync_Ebay_Price::import_decision( $product, (string) ( $product_data['ebay_price'] ?? '' ), (string) ( $product_data['ebay_sale_price'] ?? '' ), (float) ( $product_data['baked_shipping'] ?? 0 ), $is_new, '1' === $overwrite_price, $settings )
+			: array( 'mode' => 'today' );
+
 		if ( $bid_only ) {
 			$sync_decisions[] = 'Price kept: eBay sent this auction\'s current bid, not its opening bid';
+		} elseif ( 'today' !== $price_call['mode'] ) {
+			$sync_decisions = array_merge( $sync_decisions, TCGiant_Sync_Ebay_Price::apply_import( $product, $price_call, (string) $item_id ) );
 		} elseif ( ( $is_new || '1' === $overwrite_price ) ) {
 			$has_price = false;
 			if ( ! empty( $product_data['regular_price'] ) ) {
 				$product->set_regular_price( $product_data['regular_price'] );
 				$has_price = true;
+				// The postage now in it, for a push to take off (3.29.0).
+				if ( $own_listing ) {
+					TCGiant_Sync_Ebay_Price::note_baked( $product, (float) ( $product_data['baked_shipping'] ?? 0 ) );
+				}
 			}
 			if ( ! empty( $product_data['sale_price'] ) ) {
 				$product->set_sale_price( $product_data['sale_price'] );
@@ -2026,6 +2071,12 @@ class TCGiant_Sync_Mapper {
 			// Only reachable when the product already existed and price
 			// overwriting is off, so $is_new is necessarily false here.
 			$sync_decisions[] = 'Price skipped (WooCommerce won)';
+		}
+
+		// eBay's price as this answer gives it, for the next import to tell
+		// eBay's own changes by (3.29.0). Not an auction's current bid.
+		if ( ! $bid_only && $own_listing ) {
+			TCGiant_Sync_Ebay_Price::note_seen( $product, (string) ( $product_data['ebay_price'] ?? '' ), ! empty( $price_call['marked'] ) );
 		}
 		
 		$overwrite_taxonomy = ! empty( $settings['overwrite_taxonomy'] );
@@ -3872,7 +3923,14 @@ class TCGiant_Sync_Mapper {
 			//
 			// A variation being created now has no price to preserve, so it always
 			// takes eBay's.
-			if ( $is_new_variation || '1' === $overwrite_price ) {
+			//
+			// One with an eBay price of its own, or under the shop's eBay price
+			// rule or tax, has eBay's price dealt with as a product's is
+			// (TCGiant_Sync_Ebay_Price, 3.29.0), and eBay's price noted.
+			$var_call = TCGiant_Sync_Ebay_Price::import_decision( $variation, (string) ( $var_data['ebay_price'] ?? '' ), (string) ( $var_data['ebay_sale_price'] ?? '' ), (float) ( $var_data['baked_shipping'] ?? 0 ), $is_new_variation, '1' === $overwrite_price, $settings );
+			if ( 'today' !== $var_call['mode'] ) {
+				TCGiant_Sync_Ebay_Price::apply_import( $variation, $var_call, (string) get_post_meta( $parent_id, '_ebay_item_id', true ) );
+			} elseif ( $is_new_variation || '1' === $overwrite_price ) {
 				$variation->set_regular_price( $var_data['regular_price'] );
 				if ( ! empty( $var_data['sale_price'] ) ) {
 					$variation->set_sale_price( $var_data['sale_price'] );
@@ -3880,6 +3938,7 @@ class TCGiant_Sync_Mapper {
 					$variation->set_sale_price( '' );
 				}
 			}
+			TCGiant_Sync_Ebay_Price::note_seen( $variation, (string) ( $var_data['ebay_price'] ?? '' ), ! empty( $var_call['marked'] ) );
 			// A variation whose stock the parent keeps is left as it is: its
 			// "Manage stock" stays off and the parent holds the stock it shares
 			// with the others. Setting it here gave each one the whole of that

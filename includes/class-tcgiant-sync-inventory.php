@@ -5909,10 +5909,14 @@ class TCGiant_Sync_Inventory {
 
 		// The shop's own price is the opening bid only while no import has
 		// written over it since the shop listed it: an import before 3.28.0
-		// priced an auction at its current bid.
+		// priced an auction at its current bid. As the push sent it: its own
+		// eBay price, or the price under the shop's rule (3.29.0).
 		if ( ! is_numeric( $opening )
 			&& (string) $product->get_meta( '_ebay_export_last_pushed' ) > (string) $product->get_meta( '_sync_last_updated' ) ) {
 			$opening = (string) $product->get_regular_price();
+			if ( class_exists( 'TCGiant_Sync_Ebay_Price' ) && ( is_numeric( $opening ) || '' !== TCGiant_Sync_Ebay_Price::own_price( $product ) ) ) {
+				$opening = TCGiant_Sync_Ebay_Price::for_product( $product );
+			}
 		}
 
 		if ( $bids > 0 && is_numeric( $current ) ) {

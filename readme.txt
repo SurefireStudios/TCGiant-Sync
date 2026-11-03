@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.28.9
+Stable tag: 3.29.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -124,6 +124,10 @@ An auction is always one item, so stock changes are not sent to it. When a produ
 
 A product you listed at auction from WooCommerce goes back on sale on your website once eBay reports the auction ended unsold, which can take up to an hour. A product imported from an eBay auction does not, because its price is eBay's opening bid rather than a price you set.
 
+= Can I sell at a different price on eBay? =
+
+Yes. Give a product (or each variation) its own eBay price on its eBay tab, or set a rule for all of them in Settings, Push to eBay Settings, eBay Price: a percentage, a fixed amount or both, rounded up to .99 or a whole number if you like. Your website keeps its own price. With "Overwrite Price" on, an import puts eBay's price changes into the eBay price field, or under the rule works the website price back from eBay's, so a marked-up eBay price never becomes your website price.
+
 = What types of products are supported? =
 
 TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It includes full eBay ConditionDescriptor support for graded items (PSA, BGS, SGC, CGC, and 17 other graders) and ungraded items (Near Mint, Excellent, etc. for cards; Uncirculated, Fine to Very Fine, etc. for coins). It works with any eBay listing type.
@@ -139,6 +143,20 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.29.0 - 2026-11-03 =
+* NEW: A separate eBay price. Each product, and each variation of a variable product, now has an "eBay price" field: on the product's eBay tab under eBay Price, and in each variation's own prices under Variations. Whatever you type there is what eBay gets, and your website keeps its own price. Leave it empty and the product goes to eBay at its regular price, as before.
+* NEW: An eBay price rule for every product without an eBay price of its own (Settings, Push to eBay Settings, eBay Price): the regular price plus a percentage, plus a fixed amount, or both, with an optional rounding up to .99 or to a whole number. Both figures are a markup, zero or more, and can be typed as "10%", "$1" or "1,50". Settings does not save a minus figure, or one it cannot read, and says why. The rounding never lowers the price. With no rule and no eBay prices, every push sends exactly what it sent before.
+* A push never sends eBay less than 0.99 from the rule, tax or a product's own eBay price: it stops, and the eBay tab and the log say why. A product with no eBay price and no rule goes at its regular price (less any shipping an import added to it), as before.
+* The rule and a product's eBay price are used everywhere a push sends a price: new listings, Updates, Verify, an auction's opening bid, each variation's price, and Best Offer's auto-accept and auto-decline thresholds given as a fraction of the price. An Update never changes a running auction's opening bid to the rule's price or an eBay price of its own, whether the auction was imported from eBay or pushed from here: eBay refuses a new opening bid once there are bids. A new listing gets the rule's price. Relist keeps the price the listing had on eBay.
+* With "Overwrite Price" on, an import never writes a marked-up eBay price into your website price. A product with its own eBay price has eBay's price changes put into its eBay price field, and its website price is left alone. Under the rule, the website price changes only when the price on eBay has changed since TCGiant Sync last sent or read it, and then to the website price the rule turns into eBay's (with rounding, the nearest one that gives eBay's price exactly; where none does, the log says what the next push will send). A product new from eBay gets that website price too. Switching the rule on never takes the markup off your website prices: until a listing's eBay price has been sent or read once, it is not taken as a change. That also means a price you change on eBay in that time (up to a week after the update, until the weekly full sync has read every listing) is kept off your website price, and the next push sends the rule's price over it: change prices on your website, or push first.
+* Under a rule with a fixed amount, where no website price of 0.99 or more gives eBay's price, or its markdown price (1.98 or less under "plus 1.00"), the import writes neither from the rule: a product keeps its website price and its sale price, a new one takes eBay's prices, and the log says why. A website price is never set to a few cents, and never below its sale price, for want of one. With tax or a percentage alone, a website price under 0.99 is simply eBay's price less the tax or the markup, and the import writes it.
+* Switching the rule off, or clearing a product's eBay price, no longer lets an import put the old marked-up eBay price into the website price: while eBay's price is still the one the rule, tax or the eBay price made, the website price is kept, and only a change made on eBay comes back. With no rule, no tax and no eBay price, and none before, imports work as before.
+* NEW: "eBay Prices Include Tax" (No, Auto or Yes), for shops whose WooCommerce calculates tax on prices entered without it. On eBay UK, Germany, France, Italy, Spain and Australia, whose buyers see prices with tax in them, Yes or Auto adds your WooCommerce tax rate, for each product's tax class at your shop's address, before the rule; an import takes it off again. On eBay US and Canada nothing is added, whichever you choose: eBay adds sales tax at checkout there. It is No unless you change it, so nothing changes for anyone at the update. Nothing is added when your prices are entered with tax, or to a product's own eBay price.
+* FIX: With "Add eBay Shipping Cost to Product Price" on, the shipping cost was added to the eBay price at every push: an import put eBay's price plus shipping into the website price, a push sent that back to eBay as the price, and the next import added the shipping again. TCGiant Sync now records the shipping each import adds, and a push takes it off again, also after you turn the setting off, until the next import writes a price without shipping. A price that grew before this update is not lowered by itself: set it back by hand. A product imported before this update has its shipping recorded at its next import, so it can grow once more if it is pushed before then. Otherwise a shop that only uses this setting imports and pushes as before: with "Overwrite Price" on, the website price is eBay's price plus the shipping it has now, or eBay's price alone once the setting is off.
+* The Listings screen's Price column and the eBay tab show the price that goes to eBay, and say how it was worked out when it is not simply the regular price. The Price column shows what it showed before for a shop that uses none of the eBay price settings, also when an import added shipping to its prices. For an auction, the price shown is the opening bid a new listing would get: an Update leaves a running auction's opening bid as it is.
+* To set eBay prices in bulk, use WooCommerce's own product CSV import and export: the column is "Meta: _ebay_export_price".
+* Settings checks only the figures the chosen rule uses, so "The regular price (no rule)" always saves, whatever is left in the other boxes. Unlinking a variable product also clears its variations' record of the eBay price, and deleting the plugin with its data deletes that record everywhere.
 
 = 3.28.9 - 2026-11-03 =
 **eBay Motors Parts & Accessories**

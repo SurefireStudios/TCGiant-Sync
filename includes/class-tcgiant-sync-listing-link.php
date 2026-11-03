@@ -135,6 +135,12 @@ class TCGiant_Sync_Listing_Link {
 			'_ebay_current_price',
 			'_ebay_bid_count',
 			'_ebay_buy_it_now_price',
+			// eBay's price for that listing as last sent or read (3.29.0,
+			// TCGiant_Sync_Ebay_Price). The product's own eBay price, and the
+			// postage an import put into its website price, are the product's
+			// and go with it.
+			'_ebay_price_seen',
+			'_ebay_price_marked',
 			// History belonging to the original.
 			'_tcgiant_sync_log',
 			'_tcgiant_sync_pushed',
@@ -216,6 +222,17 @@ class TCGiant_Sync_Listing_Link {
 
 		foreach ( self::listing_identity_meta_keys() as $key ) {
 			delete_post_meta( $product_id, $key );
+		}
+
+		// eBay's price as last sent or read is the listing's, and a variable
+		// product's variations each hold their own (3.29.0): a listing linked
+		// later must not be judged by the old one's.
+		$product = function_exists( 'wc_get_product' ) ? wc_get_product( $product_id ) : null;
+		if ( $product instanceof WC_Product_Variable ) {
+			foreach ( (array) $product->get_children() as $child_id ) {
+				delete_post_meta( (int) $child_id, '_ebay_price_seen' );
+				delete_post_meta( (int) $child_id, '_ebay_price_marked' );
+			}
 		}
 
 		// Per-line-item order bookkeeping uses dynamic key names.

@@ -1053,6 +1053,9 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 					<p class="tc-hint"><?php esc_html_e( 'Only used for products with WooCommerce stock management turned off, where there is no quantity to read. Products that do track stock always list their real quantity. Leave at 1 if you sell single items.', 'tcgiant-sync' ); ?></p>
 				</div>
 
+				<?php // The eBay price rule and tax (3.29.0). ?>
+				<?php TCGiant_Sync_Ebay_Price::render_settings_fields( is_array( $settings ) ? $settings : array() ); ?>
+
 				<!-- Package weight and size -->
 				<div class="tc-field">
 					<label class="tc-label"><?php esc_html_e( 'Send Package Weight and Size to eBay?', 'tcgiant-sync' ); ?></label>

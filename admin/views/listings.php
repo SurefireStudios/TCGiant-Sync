@@ -309,7 +309,9 @@ $base_url = admin_url( 'admin.php?page=tcgiant-listings' );
 					// by nothing else, so a sale used to leave this column showing stock
 					// that had already gone - which is what a seller sees first on the
 					// Ended tab, where everything has just sold.
-					$price        = wc_price( isset( $listing['live_price'] ) ? $listing['live_price'] : $listing['ebay_price'] );
+					// What a push sends eBay, where the product has its own eBay
+					// price or the shop a rule (3.29.0).
+					$price        = TCGiant_Sync_Ebay_Price::listing_cell( $product_id, isset( $listing['live_price'] ) ? $listing['live_price'] : $listing['ebay_price'] );
 					$qty          = (int) ( isset( $listing['live_quantity'] ) ? $listing['live_quantity'] : $listing['ebay_quantity'] );
 					// eBay's own start date, not WordPress's. A product may have existed in
 					// WooCommerce for years before it was ever listed, so the post date

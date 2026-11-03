@@ -12,6 +12,11 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+// The price every push sends eBay (3.29.0).
+if ( ! class_exists( 'TCGiant_Sync_Ebay_Price', false ) ) {
+	require_once __DIR__ . '/class-tcgiant-sync-ebay-price.php';
+}
+
 // What the delta remembers of each listing's categories, which a push makes
 // out of date (3.28.4).
 if ( ! class_exists( 'TCGiant_Sync_Category_Memory', false ) ) {
@@ -121,6 +126,27 @@ class TCGiant_Sync_Exporter {
 	 * @var string
 	 */
 	private $own_content_xml = '';
+
+	/**
+	 * The prices the last build_item_xml() put in its item, by the product
+	 * or variation each is for (3.29.0): none for a live auction's revise,
+	 * which leaves its opening bid as it is. Noted as eBay's prices once
+	 * eBay has taken the item (record_listing_made()), for the import to
+	 * tell eBay's own changes by (TCGiant_Sync_Ebay_Price).
+	 *
+	 * @var array
+	 */
+	private $prices_sent = array();
+
+	/**
+	 * Why the item the last build_item_xml() made may not be sent for its
+	 * price (3.29.0): one the eBay price rule or a product's own eBay price
+	 * made, below TCGiant_Sync_Ebay_Price::MIN_PRICE. Every check after a
+	 * build gives it (description_too_long()).
+	 *
+	 * @var WP_Error|null
+	 */
+	private $price_refused = null;
 
 	/*
 	 * Kept for anyone outside the plugin who reached for these here.
@@ -951,6 +977,8 @@ class TCGiant_Sync_Exporter {
 			} else {
 				$item_id = $result['item_id'];
 				$action  = $result['action']; // 'created', 'updated' or 'relisted'
+				// The prices the item eBay took was sent (3.29.0).
+				$result['prices'] = $this->prices_sent;
 
 				// eBay has made a listing that, until the save below, only this
 				// request knows the number of. If it dies now, the record of it
@@ -1050,6 +1078,10 @@ class TCGiant_Sync_Exporter {
 			$product->update_meta_data( TCGiant_Sync_Ebay_Live::ORIGIN_META, 'push' );
 			$product->update_meta_data( TCGiant_Sync_Ebay_Live::ORIGIN_BY_META, TCGiant_Sync_Ebay_Live::BY_PUSH );
 		}
+
+		// The prices eBay was sent, as eBay's own from now on (3.29.0): the
+		// import tells eBay's changes by them. None from an import's link.
+		TCGiant_Sync_Ebay_Price::record_sent( $product, (array) ( $result['prices'] ?? array() ) );
 
 		// Record which build sent this. Without it there is no way to tell a
 		// listing carrying the right item specifics from one sent before a fix
@@ -1194,7 +1226,8 @@ class TCGiant_Sync_Exporter {
 		// out keeps whatever the last import knew, which is the honest
 		// answer rather than a confident wrong one.
 		if ( ! $product->is_type( 'variable' ) ) {
-			$price = $product->get_regular_price();
+			// The price eBay was sent, where the push sent one (3.29.0).
+			$price = $result['prices'][ $product_id ] ?? $product->get_regular_price();
 			if ( is_numeric( $price ) ) {
 				$row['ebay_price'] = (float) $price;
 			}
@@ -3296,7 +3329,12 @@ class TCGiant_Sync_Exporter {
 		$rendered          = $this->build_listing_description( $product, $settings, $title );
 		$description       = $rendered['html'];
 		$this->last_render = $rendered;
-		$price       = wc_format_decimal( $product->get_regular_price(), 2 );
+		// The price eBay is sent, from one place (3.29.0): the regular price
+		// as before, unless the product has an eBay price of its own, or the
+		// shop has a rule, tax or postage to take off.
+		$this->prices_sent   = array();
+		$this->price_refused = null;
+		$price               = TCGiant_Sync_Ebay_Price::for_product( $product );
 		// How many to offer.
 		//
 		// When the shop tracks stock, that figure decides it, floored at 1 so
@@ -3438,7 +3476,15 @@ class TCGiant_Sync_Exporter {
 			// (3.28.8): eBay refuses either once there are bids, and an auction
 			// is one item.
 			if ( ! ( $revise && $live_auction ) ) {
-				$xml .= '<StartPrice>' . esc_attr( $price ) . '</StartPrice>' . "\n";
+				// A pushed live auction's revise sends its opening bid only as
+				// 3.28 did, the regular price: never one the eBay price rule
+				// or an eBay price of its own makes (3.29.0). A new listing
+				// gets that.
+				if ( ! ( $revise && $is_auction ) || TCGiant_Sync_Ebay_Price::revises_auction_price( $product, $price ) ) {
+					$xml .= '<StartPrice>' . esc_attr( $price ) . '</StartPrice>' . "\n";
+					$this->prices_sent[ $product->get_id() ] = $price;
+					$this->price_refused                     = TCGiant_Sync_Ebay_Price::floor_refusal( $product, $price );
+				}
 				$xml .= '<Quantity>' . $qty . '</Quantity>' . "\n";
 			}
 			if ( ! empty( $sku ) ) {
@@ -3556,7 +3602,10 @@ class TCGiant_Sync_Exporter {
 				
 				$xml .= "\t<Variation>\n";
 				$xml .= "\t\t<SKU>" . esc_xml( $child->get_sku() ) . "</SKU>\n";
-				$xml .= "\t\t<StartPrice>" . esc_attr( wc_format_decimal( $child->get_regular_price(), 2 ) ) . "</StartPrice>\n";
+				$child_price = TCGiant_Sync_Ebay_Price::for_product( $child );
+				$xml        .= "\t\t<StartPrice>" . esc_attr( $child_price ) . "</StartPrice>\n";
+				$this->prices_sent[ $child_id ] = $child_price;
+				$this->price_refused            = $this->price_refused ? $this->price_refused : TCGiant_Sync_Ebay_Price::floor_refusal( $child, $child_price );
 				$xml .= "\t\t<Quantity>" . max( 0, (int) $child->get_stock_quantity() ) . "</Quantity>\n";
 				
 				$xml .= "\t\t<VariationSpecifics>\n";
@@ -6759,9 +6808,16 @@ class TCGiant_Sync_Exporter {
 	 * The plain description is sent exactly as 3.27.7 sent it, and eBay
 	 * decides, so a shop that picks no template sees no change.
 	 *
+	 * Every build is checked here before it can be sent, so its price is
+	 * too (3.29.0): one the eBay price rule, tax or an eBay price of its own
+	 * made below TCGiant_Sync_Ebay_Price::MIN_PRICE stops it first.
+	 *
 	 * @return WP_Error|null
 	 */
 	public function description_too_long() {
+		if ( $this->price_refused ) {
+			return $this->price_refused;
+		}
 		$chars = (int) ( $this->last_render['chars'] ?? 0 );
 		if ( $chars <= 500000 || ! empty( $this->last_render['plain'] ) ) {
 			return null;
