@@ -210,6 +210,8 @@ $tcgiant_options = array(
 	'tcgiant_sync_last_crash_stock_push',      // A stock push PHP killed, 3.28.0.
 	'tcgiant_auction_import_notice',   // "Import eBay auctions" decided at upgrade, 3.28.0.
 	'tcgiant_auction_listed_marked',   // Auctions listed from WooCommerce marked at upgrade, 3.28.0.
+	'tcgiant_sync_origin_sweep',       // Who made each listing, judged once at upgrade, 3.28.8's preview.
+	'tcgiant_sync_origin_sweep_2',     // Who made each listing, judged once at upgrade, 3.28.8.
 	'tcgiant_sync_last_crash_push',            // A push PHP killed, 3.27.4.
 	'tcgiant_sync_last_crash_photo_cleanup',   // Photos of deleted products, 3.27.4.
 	'tcgiant_sync_last_crash_photo_check',
@@ -314,10 +316,19 @@ $wpdb->query(
 );
 
 // The listing's own return and payment policies, recorded beside its shipping
-// one (3.27.8), for 3.28.1's revise of imported listings (item 13).
+// one (3.27.8), which an imported listing's revise keeps (3.28.8).
 $wpdb->query(
 	"DELETE FROM {$wpdb->prefix}postmeta
 	 WHERE meta_key IN ( '_ebay_return_policy_id', '_ebay_return_policy_name', '_ebay_payment_policy_id', '_ebay_payment_policy_name' )"
+);
+
+// eBay's own values for each imported listing (3.28.8, _ebay_live), which
+// the import records and its next read writes again. Who made each listing,
+// _ebay_origin, and who said so, _ebay_origin_by, stay with the product's
+// link to it.
+$wpdb->query(
+	"DELETE FROM {$wpdb->prefix}postmeta
+	 WHERE meta_key IN ( '_ebay_live' )"
 );
 
 // Listing templates and their text blocks (3.27.8): private posts of the

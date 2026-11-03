@@ -30,6 +30,7 @@ class TCGiant_Sync_Inventory {
 }
 class TCGiant_Sync_DB {
 	public static function upsert( $row ) { return 1; }
+	public static function get_by_product( $id ) { return null; }
 }
 class TCGiant_Sync_Listing_Link {
 	public static function find_products_sharing_item_id( $product_id, $item_id ) { return array(); }

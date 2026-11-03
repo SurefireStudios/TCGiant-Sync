@@ -142,14 +142,20 @@ update_post_meta( 71, TCGiant_Sync_Templates::OVERRIDE_META, (string) $tpl );
 // ─────────────────────────────────────────────────────────────────────────────
 echo "\nAN IMPORTED LISTING, AND ANOTHER LANGUAGE\n" . str_repeat( '=', 124 ) . "\n";
 
-// The import records the listing's own return policy (RP9, 14 days). A
-// 3.27.8 push sends the shop's (RP1), so the block says what is sent; 3.28.1's
-// item 13, which leaves SellerProfiles alone, will render the listing's own.
+// The import records the listing's own return policy (RP9, 14 days). Until
+// 3.28.8 a push sent the shop's (RP1), and the block said so. 3.28.8's revise
+// of an imported listing leaves SellerProfiles alone (item 13), so the block
+// says the listing's own, which eBay keeps.
 update_post_meta( 71, '_ebay_return_policy_id', 'RP9' );
 update_post_meta( 71, '_ebay_item_id', '110000000071' );
 $html = $html_of( $card );
-check( 'an imported listing with its own return policy: the block says what this push sends', array( false !== strpos( $html, 'within 30 days' ), false === strpos( $html, 'within 14 days' ) ), array( true, true ) );
-check( '  which is the policy in its SellerProfiles', false !== strpos( item_xml( $card, push_settings( $card ) ), '<ReturnProfileID>RP1</ReturnProfileID>' ), true );
+check( 'an imported listing with its own return policy: the block says the listing\'s own (3.28.8)', array( false !== strpos( $html, 'within 14 days' ), false === strpos( $html, 'within 30 days' ) ), array( true, true ) );
+$revise_xml = private_method( 'TCGiant_Sync_Exporter', 'build_item_xml' )->invoke( exporter(), $card, push_settings( $card ), true );
+check( '  which its revise leaves on eBay: no SellerProfiles sent', array( false !== strpos( $revise_xml, '<Title>' ), false === strpos( $revise_xml, '<SellerProfiles>' ) ), array( true, true ) );
+update_post_meta( 71, '_ebay_origin', 'push' );
+$html = $html_of( $card );
+check( '  a listing the shop pushed: the block and SellerProfiles say the shop\'s, as before', array( false !== strpos( $html, 'within 30 days' ), false !== strpos( item_xml( $card, push_settings( $card ) ), '<ReturnProfileID>RP1</ReturnProfileID>' ) ), array( true, true ) );
+delete_post_meta( 71, '_ebay_origin' );
 delete_post_meta( 71, '_ebay_item_id' );
 
 TCGiant_Sync_OAuth::$settings['marketplace'] = 'EBAY_DE';

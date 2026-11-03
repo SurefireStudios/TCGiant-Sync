@@ -239,6 +239,9 @@ function wp_cache_delete( $key, $group = '' ) { return true; }
  * The one query the templates make of the database themselves: how many
  * products are set to a template.
  */
+if ( ! defined( 'ARRAY_A' ) ) {
+	define( 'ARRAY_A', 'ARRAY_A' );
+}
 class Template_World_DB {
 	public $postmeta = 'wp_postmeta';
 	public $posts    = 'wp_posts';
@@ -264,6 +267,26 @@ class Template_World_DB {
 			}
 		}
 		return $n;
+	}
+	/**
+	 * The origin rule's question (3.28.8): a product's _ebay_sku and
+	 * _ebay_item_id rows, in meta_id order - here the order each key was
+	 * first written, as a real table numbers its rows.
+	 */
+	public function get_results( $query, $output = null ) {
+		list( $sql, $args ) = is_array( $query ) ? $query : array( (string) $query, array() );
+		$out = array();
+		if ( false !== strpos( $sql, 'SELECT meta_key, meta_id' ) ) {
+			$id = (int) ( $args[0] ?? 0 );
+			$n  = 0;
+			foreach ( $GLOBALS['W']['meta'][ $id ] ?? array() as $key => $value ) {
+				$n++;
+				if ( in_array( $key, array( '_ebay_sku', '_ebay_item_id' ), true ) ) {
+					$out[] = array( 'meta_key' => $key, 'meta_id' => (string) ( $id * 1000 + $n ) );
+				}
+			}
+		}
+		return $out;
 	}
 }
 $GLOBALS['wpdb'] = new Template_World_DB();

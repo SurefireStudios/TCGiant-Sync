@@ -1955,9 +1955,10 @@ check( '  where an auction takes the auction rule', false !== strpos( $inventory
 // A push records the auction as the shop's only when it put the listing up -
 // created or relisted it. An Update revises a listing that may be eBay's.
 $exporter = (string) file_get_contents( $ROOT . '/includes/class-tcgiant-sync-exporter.php' );
-// 12,000 characters: 3.27.8's record of the description sent sits in between.
 // The push's save once eBay has answered is record_listing_made()'s since
-// 3.28.7, which an import linking a listing a dead push made calls too.
+// 3.28.7, which an import linking a listing a dead push made calls too, and
+// which 3.28.8's origin record sits in: read 12,000 characters of it, as far
+// as its relist line - 3.27.8's record of the description sent sits in between.
 $push     = (string) substr( $exporter, (int) strpos( $exporter, 'function record_listing_made' ), 12000 );
 $branch   = strpos( $push, "if ( 'updated' !== \$action ) {" );
 $mark     = strpos( $push, 'update_meta_data( TCGiant_Sync_Inventory::AUCTION_LISTED_KEY' );

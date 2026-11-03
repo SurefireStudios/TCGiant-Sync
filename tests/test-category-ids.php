@@ -120,7 +120,9 @@ function retired_warning( $product, $from, $to, $source = 'product', $for = 'Pus
 }
 /** A card linked to a fixed-price eBay listing, 1100000009NN, live or ended. */
 function linked( $id, array $meta, $status = 'Active' ) {
-	return card( $id, $meta + array( '_ebay_item_id' => '1100000009' . substr( (string) $id, -2 ), '_ebay_listing_type' => 'FixedPriceItem', '_ebay_listing_status' => $status ) );
+	// A listing the shop pushed, unless said otherwise: 3.28.1's and 3.28.5's
+	// rulings for a revise are a pushed listing's (3.28.8).
+	return card( $id, $meta + array( '_ebay_item_id' => '1100000009' . substr( (string) $id, -2 ), '_ebay_listing_type' => 'FixedPriceItem', '_ebay_listing_status' => $status, '_ebay_origin' => 'push' ) );
 }
 /** A push refused, or not: its error code and message, the calls made, the warnings. */
 function refused( WC_Product $product ) {
@@ -275,8 +277,20 @@ check( '  the same with its listing known to have ended: not refused for it, as 
 unset( $API->answers['ReviseFixedPriceItem'], $API->answers['GetItem'] );
 $tcg_keep = TCGiant_Sync_OAuth::$settings;
 TCGiant_Sync_OAuth::$settings['export_category_id'] = '261068';
-list( $xml, $warned, $call ) = pushed( linked( 952, GRADED ) );
+// A listing the shop pushed: its pushes follow the shop's defaults (3.28.8).
+list( $xml, $warned, $call ) = pushed( linked( 952, GRADED + array( '_ebay_origin' => 'push' ) ) );
 check( 'the default saved as 261068, a live listing, no category of the product\'s own: revised in 261068, said', array( $call, category_of( $xml ), $warned ), array( 'ReviseFixedPriceItem', '261068', array( TCGiant_Sync_Exporter::kept_category_warning( 952, array( 'from' => '261068', 'to' => '183050', 'source' => 'default' ), '110000000952' ) ) ) );
+// One imported from eBay keeps its own category, and nothing is said of the
+// default (3.28.8). Its condition of its own is not sent into a category the
+// plugin has not read: the push is refused until it has (review round 2).
+$p = linked( 959, GRADED + array( '_ebay_export_item_type' => 'tcg', '_ebay_origin' => 'import' ) );
+list( $code, $message, $calls, $warned ) = refused( $p );
+check( '  an imported listing, the same default: its category not read, and the read (3.28.8) failing, its card condition is refused rather than judged in 261068, and nothing said of 261068', array( $code, false !== strpos( $message, 'eBay Category — the plugin has not read which category this listing is in on eBay' ), $calls, count( preg_grep( '/261068/', $warned ) ) ), array( 'missing_export_settings', true, array( 'GetItem' ), 0 ) );
+update_post_meta( 959, '_ebay_live', array( 'item_id' => '110000000959', 'category_id' => '183454', 'category_name' => 'Toys & Hobbies:Collectible Card Games:CCG Individual Cards' ) );
+list( $xml, $warned, $call ) = pushed( $p );
+check( '  once read in 183454: revised with no category at all, its card condition sent, nothing said of 261068', array( $call, category_of( $xml ), false !== strpos( (string) $xml, '<ConditionID>2750</ConditionID>' ), $warned ), array( 'ReviseFixedPriceItem', null, true, array() ) );
+list( $xml, $warned, $call ) = pushed( linked( 947, array( '_ebay_origin' => 'import' ) ) );
+check( '  one with nothing of its own, its category not read: revised with no category, and nothing said of 261068', array( $call, category_of( $xml ), $warned ), array( 'ReviseFixedPriceItem', null, array() ) );
 TCGiant_Sync_OAuth::$settings = $tcg_keep;
 $p = linked( 953, GRADED + array( '_ebay_export_category_id' => '180006', '_ebay_export_category_name' => '' ), 'Ended' );
 $API->answers['ReviseFixedPriceItem'] = new WP_Error( 'api_error', 'You are not allowed to revise ended listings.' );

@@ -327,6 +327,8 @@ check( '  the sync log says so', ( meta( 701, '_tcgiant_sync_log' )[0]['decision
 check( '  nothing sent to eBay', $EBAY['wire'], array() );
 check( '  no renewal record: its next renewal takes the full path (3.28.6)', meta( 701, '_ebay_event_sig' ), null );
 check( '  no relist mark for the duplicate-pairs check', meta( 701, '_ebay_relist_parent_id' ), null );
+check( '  the shop\'s own listing, made by its push: its Updates follow the shop\'s defaults (3.28.8)', array( meta( 701, '_ebay_origin' ), TCGiant_Sync_Ebay_Live::follows_defaults( 701 ) ), array( 'push', true ) );
+check( '  eBay\'s own values not recorded by the link, which no Update of it reads: its next full read records them', meta( 701, '_ebay_live' ), null );
 
 // Its next change: found by its item number, as any linked product.
 $EBAY['items']['960068033342']['ListingDetails']['EndTime'] = '2027-01-01T09:15:00.000Z';

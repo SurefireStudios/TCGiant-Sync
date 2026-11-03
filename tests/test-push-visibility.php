@@ -177,6 +177,19 @@ class Harness_wpdb {
 	/** Auto-relist's ended listings, from post meta: there is no Listings table here. */
 	public function get_results( $sql, $output = 'OBJECT' ) {
 		$this->asked[] = $sql;
+		// Who made a listing (3.28.8): a product's _ebay_sku and _ebay_item_id
+		// rows, in the order each key was first written, as a table numbers them.
+		if ( false !== strpos( $sql, 'SELECT meta_key, meta_id' ) && preg_match( '/post_id = (\d+)/', $sql, $m ) ) {
+			$rows = array();
+			$n    = 0;
+			foreach ( $GLOBALS['W']['meta'][ (int) $m[1] ] ?? array() as $key => $value ) {
+				$n++;
+				if ( in_array( $key, array( '_ebay_sku', '_ebay_item_id' ), true ) ) {
+					$rows[] = array( 'meta_key' => $key, 'meta_id' => (string) ( (int) $m[1] * 1000 + $n ) );
+				}
+			}
+			return $rows;
+		}
 		if ( false === strpos( $sql, "pm2.meta_value = 'Ended'" ) ) {
 			throw new RuntimeException( 'harness wpdb: a query it does not know: ' . $sql );
 		}

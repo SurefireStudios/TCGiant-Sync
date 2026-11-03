@@ -1813,6 +1813,21 @@ class TCGiant_Sync_Admin {
 	// =========================================================================
 
 	/**
+	 * Keep the shop's choice of whose values a product's listing is sent
+	 * (TCGiant_Sync_Ebay_Live::FOLLOW_META, 3.28.8): '1' the shop's defaults,
+	 * '0' eBay's own. Kept only where it differs from what the product's
+	 * origin gives - the shop's defaults for a listing the plugin pushed,
+	 * eBay's for one imported - so a box left as it was stores nothing.
+	 *
+	 * @param int  $product_id Product.
+	 * @param bool $follow     Whether the box is ticked.
+	 */
+	private static function save_follow_defaults( $product_id, $follow ) {
+		$by_origin = TCGiant_Sync_Ebay_Live::origin_follows( TCGiant_Sync_Ebay_Live::origin( $product_id ) );
+		update_post_meta( $product_id, TCGiant_Sync_Ebay_Live::FOLLOW_META, $follow === $by_origin ? '' : ( $follow ? '1' : '0' ) );
+	}
+
+	/**
 	 * AJAX: Push a single product to eBay from the product edit screen.
 	 */
 	public function ajax_push_product() {
@@ -1850,6 +1865,12 @@ class TCGiant_Sync_Admin {
 				$value = sanitize_text_field( wp_unslash( $_POST[ $post_key ] ) );
 				update_post_meta( $product_id, $meta_key, $value );
 			}
+		}
+
+		// Whose values the listing's pushes send, from its tab (3.28.8).
+		$follow_posted = isset( $_POST['override_follow_defaults'] ) ? sanitize_text_field( wp_unslash( $_POST['override_follow_defaults'] ) ) : '';
+		if ( in_array( $follow_posted, array( '0', '1' ), true ) ) {
+			self::save_follow_defaults( $product_id, '1' === $follow_posted );
 		}
 
 		// Item specifics travel with the button, because the product itself may
@@ -3099,6 +3120,11 @@ class TCGiant_Sync_Admin {
 			return;
 		}
 		// phpcs:disable WordPress.Security.NonceVerification.Missing
+		// Whose values the listing's pushes send (3.28.8): the box is on the
+		// tab only for a product with a listing.
+		if ( ! empty( $_POST['_ebay_export_follow_defaults_shown'] ) ) {
+			self::save_follow_defaults( $post_id, ! empty( $_POST['_ebay_export_follow_defaults'] ) );
+		}
 		if ( isset( $_POST['_ebay_export_category_id_select'] ) ) {
 			$cat_select = sanitize_text_field( wp_unslash( $_POST['_ebay_export_category_id_select'] ) );
 			if ( 'custom' === $cat_select ) {
@@ -3456,6 +3482,14 @@ class TCGiant_Sync_Admin {
 		$product->delete_meta_data( '_ebay_push_attempt_last' );
 		$product->delete_meta_data( '_ebay_unlinked_sold' );
 
+		// Who made the listing (3.28.8): a push of this product when the
+		// listing carries its push mark (3.28.7), as the import's link by the
+		// mark has it; otherwise one made on eBay, whose own values its
+		// Updates leave alone. Never judged from what an earlier listing left
+		// on the product.
+		$product->update_meta_data( TCGiant_Sync_Ebay_Live::ORIGIN_META, (int) $product_id === TCGiant_Sync_API::marked_product( $item['ApplicationData'] ?? '' ) ? 'push' : 'import' );
+		$product->update_meta_data( TCGiant_Sync_Ebay_Live::ORIGIN_BY_META, TCGiant_Sync_Ebay_Live::BY_LINK );
+
 		TCGiant_Sync_Runtime::guard_loops();
 		try {
 			$product->save();
@@ -3469,6 +3503,9 @@ class TCGiant_Sync_Admin {
 		if ( '' !== $type ) {
 			TCGiant_Sync_Inventory::note_listing_type( $product_id, $item_id, $type );
 		}
+
+		// eBay's own values for it, from the answer in hand (3.28.8).
+		TCGiant_Sync_Ebay_Live::record( $product_id, $item );
 
 		TCGiant_Sync_DB::upsert( ( '' !== $type ? array( 'listing_type' => $type ) : array() ) + array(
 			'product_id'     => $product_id,
@@ -4128,6 +4165,23 @@ class TCGiant_Sync_Admin {
 				<p style="margin:4px 0 0;font-size:11px;color:#888;padding-left:12px;">
 					<?php esc_html_e( 'eBay rules: Fixed Price listings always run until cancelled. Auctions support 1, 3, 5, 7, or 10 Days.', 'tcgiant-sync' ); ?>
 				</p>
+				<?php if ( ! empty( $ebay_item_id ) ) : ?>
+					<?php // Whose values this listing's pushes send (3.28.8). ?>
+					<p class="form-field" style="margin:8px 0 0;padding-left:12px;">
+						<input type="hidden" name="_ebay_export_follow_defaults_shown" value="1">
+						<label for="_ebay_export_follow_defaults" style="float:none;width:auto;margin:0;">
+							<input type="checkbox" id="_ebay_export_follow_defaults" name="_ebay_export_follow_defaults" value="1" <?php checked( TCGiant_Sync_Ebay_Live::follows_defaults( $product_id ) ); ?>>
+							<?php esc_html_e( 'Send my shop defaults (category, condition, business policies, location, handling time) to eBay with this listing', 'tcgiant-sync' ); ?>
+						</label>
+						<span style="display:block;margin-top:2px;font-size:11px;color:#888;"><?php esc_html_e( 'Unticked, an Update leaves the listing\'s own values on eBay as they are, and sends only what you set here for this product. A listing imported from eBay starts unticked; one pushed from here starts ticked.', 'tcgiant-sync' ); ?></span>
+						<?php if ( '' === (string) get_post_meta( $product_id, TCGiant_Sync_Ebay_Live::FOLLOW_META, true ) && TCGiant_Sync_Ebay_Live::UNKNOWN === TCGiant_Sync_Ebay_Live::origin( $product_id ) ) : ?>
+							<?php // Not known yet who made it (3.28.8): said, and what the push does about it. ?>
+							<span id="tc-origin-unknown" style="display:block;margin-top:2px;font-size:11px;color:#996800;"><?php echo esc_html( TCGiant_Sync_Exporter::read_held( (string) $ebay_item_id )
+								? __( 'Whether this listing was imported from eBay or pushed from here is not known yet, and eBay could not be asked in the last hour: an Update until then sends only what you set here for this product. It is asked again at an Update after the hour.', 'tcgiant-sync' )
+								: __( 'Whether this listing was imported from eBay or pushed from here is not known yet: its next Update asks eBay first, with one call, when the listing started, and goes by that. Until then it is treated as imported.', 'tcgiant-sync' ) ); ?></span>
+						<?php endif; ?>
+					</p>
+				<?php endif; ?>
 			</div>
 		</div>
 
@@ -4169,8 +4223,29 @@ class TCGiant_Sync_Admin {
 			  // What a push sends: a revise keeps a retired ID (F2, 3.28.1).
 			  $sent_settings = $revises ? TCGiant_Sync_Exporter::keep_listing_category( $merged_settings ) : $merged_settings;
 			  $sent_cat      = (string) ( $sent_settings['category_id'] ?? '' );
+			  // A listing the push could not read in the last hour is not read
+			  // again until then (3.28.8): said as the push does meanwhile -
+			  // refused where the value it waits on decides it, and otherwise
+			  // sent without the product's partial condition.
+			  $tc_held = $revises && TCGiant_Sync_Exporter::live_unknown_groups( $sent_settings ) && TCGiant_Sync_Exporter::read_held( (string) $ebay_item_id );
+			  if ( $tc_held ) {
+				  $sent_settings['_live_read_failed'] = true;
+			  }
+			  // An imported listing's Update leaves its category, condition and
+			  // business policies as they are on eBay unless this product sets
+			  // its own (3.28.8): said as such, never as missing.
+			  $keeps_live = function ( $group ) use ( $revises, $sent_settings ) {
+				  return $revises && ! TCGiant_Sync_Exporter::sends( $sent_settings, $group, true );
+			  };
+			  $as_on_ebay = __( 'as it is on eBay', 'tcgiant-sync' );
 			  // Category
-			  if ( ! empty( $cat_retired['from'] ) && $revises ) {
+			  $tc_cat_at = count( $checks );
+			  if ( $keeps_live( 'category' ) ) {
+				  $tc_path  = (string) ( $sent_settings['category_name'] ?? '' );
+				  $tc_parts = explode( ':', $tc_path );
+				  $tc_leaf  = trim( (string) end( $tc_parts ) );
+				  $checks[] = array( 'ok' => true, 'label' => sprintf( __( 'Category: %s', 'tcgiant-sync' ), 'live' === ( $sent_settings['_source']['category'] ?? '' ) && '' !== $sent_cat ? $as_on_ebay . ' - ' . ( '' !== $tc_leaf ? $tc_leaf . ' (' . $sent_cat . ')' : $sent_cat ) : $as_on_ebay ) );
+			  } elseif ( ! empty( $cat_retired['from'] ) && $revises ) {
 				  // Sent as it is, as eBay does not move a live listing: said, not refused.
 				  $cd = sprintf( __( '%1$s (%2$s) - its eBay listing stays in this category, which eBay US does not file single trading cards under: to move it to %3$s (%4$s), end the listing and push again', 'tcgiant-sync' ), TCGiant_Sync_Catalog::RETIRED_CATEGORY_LABELS[ $cat_retired['from'] ] ?? $cat_retired['from'], $cat_retired['from'], TCGiant_Sync_Catalog::CARD_CATEGORY_NAMES[ $cat_retired['to'] ] ?? $cat_retired['to'], $cat_retired['to'] );
 				  $checks[] = array( 'ok' => true, 'warn' => true, 'label' => sprintf( __( 'Category: %s', 'tcgiant-sync' ), $cd ) );
@@ -4192,7 +4267,10 @@ class TCGiant_Sync_Admin {
 			  } else { $checks[] = array( 'ok' => false, 'label' => __( 'Category: Not set', 'tcgiant-sync' ) ); }
 			  // Condition
 			  $cte = $merged_settings['condition_type'] ?? ''; $ite = $merged_settings['item_type'] ?? '';
-			  if ( 'other' === $ite ) {
+			  $tc_cond_at = count( $checks );
+			  if ( $keeps_live( 'condition' ) ) {
+				  $checks[] = array( 'ok' => true, 'label' => 'Condition: ' . $as_on_ebay );
+			  } elseif ( 'other' === $ite ) {
 				  // "All Other" uses simple ConditionID, no grading required.
 				  $conditions = TCGiant_Sync_Catalog::CONDITIONS;
 				  $cond_id    = $merged_settings['condition_id'] ?? '1000';
@@ -4239,15 +4317,58 @@ class TCGiant_Sync_Admin {
 						  $cw = true; $cl .= ' - ' . __( 'sent without card details: this category takes none', 'tcgiant-sync' );
 					  } elseif ( 'graded' === $cte && ! TCGiant_Sync_Exporter::grader_valid_in( $gi, $sent_cat ) ) {
 						  $cw = true; $cl .= ' - eBay\'s table of card graders does not list it for this category: sent as it is, eBay may refuse it';
+					  } elseif ( 'graded' !== $cte && '' !== TCGiant_Sync_Exporter::ungraded_pair( $sent_settings ) ) {
+						  // The shop's default goes as its pair (decision 17, 3.28.8).
+						  $cw = true; $cl .= ' - ' . sprintf( __( 'eBay\'s table of card conditions does not list the default for this category: sent as %s', 'tcgiant-sync' ), TCGiant_Sync_Catalog::UNGRADED_TCG[ TCGiant_Sync_Exporter::ungraded_pair( $sent_settings ) ] ?? '' );
 					  } elseif ( 'graded' !== $cte && ! TCGiant_Sync_Exporter::ungraded_valid_in( $uv, $sent_cat ) ) {
 						  $cw = true; $cl .= ' - eBay\'s table of card conditions does not list it for this category: sent as it is, eBay may refuse it';
 					  }
 				  }
 				  $checks[] = array( 'ok' => $co, 'warn' => $cw, 'label' => 'Condition: ' . $cl );
 			  } else { $checks[] = array( 'ok' => false, 'label' => __( 'Condition: Not set', 'tcgiant-sync' ) ); }
+			  // An imported listing's Update that sends its category or
+			  // condition is held to the pair the listing will have (3.28.8),
+			  // as the push refuses it: never a tick for a half not known.
+			  $tc_pair = $revises ? TCGiant_Sync_Exporter::revise_pair_problems( $sent_settings ) : array();
+			  foreach ( $tc_pair as $tc_group => $tc_problem ) {
+				  $checks[ 'category' === $tc_group ? $tc_cat_at : $tc_cond_at ] = array( 'ok' => false, 'label' => 'category' === $tc_group ? sprintf( __( 'Category: %s', 'tcgiant-sync' ), $tc_problem ) : 'Condition: ' . $tc_problem );
+			  }
+			  // One the push reads from eBay first, with one call, and then
+			  // checks (3.28.8): said, not a tick and not a refusal.
+			  $tc_unread      = $revises ? TCGiant_Sync_Exporter::live_unknown_groups( $sent_settings ) : array();
+			  $tc_unread_says = __( 'not read from eBay yet - the push reads this listing first, with one call, and checks it then', 'tcgiant-sync' );
+			  foreach ( array_intersect( $tc_unread, array( 'category', 'condition' ) ) as $tc_group ) {
+				  if ( $tc_held ) {
+					  // Refused for it above, as the push is; or a partial
+					  // condition of the product's own, left out.
+					  if ( 'condition' === $tc_group && ! isset( $tc_pair['condition'] ) ) {
+						  $checks[ $tc_cond_at ] = array( 'ok' => true, 'warn' => true, 'label' => 'Condition: ' . ( TCGiant_Sync_Exporter::goes_without_read( $sent_settings )
+							  ? __( 'eBay\'s condition could not be read in the last hour, so this product\'s partial condition is not sent - the rest of the Update goes, and the listing is read again after the hour', 'tcgiant-sync' )
+							  : __( 'eBay\'s condition could not be read in the last hour, so this product\'s partial condition is not sent; the listing is read again after the hour', 'tcgiant-sync' ) ) );
+					  }
+					  continue;
+				  }
+				  $checks[ 'category' === $tc_group ? $tc_cat_at : $tc_cond_at ] = array( 'ok' => true, 'warn' => true, 'label' => 'category' === $tc_group ? sprintf( __( 'Category: %s', 'tcgiant-sync' ), $tc_unread_says ) : 'Condition: ' . $tc_unread_says );
+			  }
 			  // Policies
 			  $hp = ! empty( $merged_settings['fulfillment_policy_id'] ) && ! empty( $merged_settings['return_policy_id'] ) && ! empty( $merged_settings['payment_policy_id'] );
-			  $checks[] = array( 'ok' => $hp, 'label' => $hp ? __( 'Business Policies: Configured', 'tcgiant-sync' ) : __( 'Business Policies: Missing - configure in Settings', 'tcgiant-sync' ) );
+			  $tc_policies = $revises ? TCGiant_Sync_Exporter::policies_unknown_problem( $sent_settings ) : '';
+			  if ( '' !== $tc_policies ) {
+				  // Its own shipping policy beside two not known (3.28.8).
+				  $checks[] = array( 'ok' => false, 'label' => sprintf( __( 'Business Policies: %s', 'tcgiant-sync' ), $tc_policies ) );
+			  } elseif ( $revises && isset( $sent_settings['_policies_ignored'] ) ) {
+				  // A listing that does not use business policies, or not all
+				  // three (Q11): the product's own shipping policy is not applied.
+				  $checks[] = array( 'ok' => true, 'warn' => true, 'label' => array() === $sent_settings['_policies_ignored']
+					  ? __( 'Business Policies: this listing doesn\'t use business policies, so the product\'s shipping policy is not applied - its shipping and returns stay as they are on eBay', 'tcgiant-sync' )
+					  : __( 'Business Policies: this listing has only some of the three business policies, which eBay changes only together, so the product\'s shipping policy is not applied - its policies stay as they are on eBay', 'tcgiant-sync' ) );
+			  } elseif ( in_array( 'policies', $tc_unread, true ) ) {
+				  $checks[] = array( 'ok' => true, 'warn' => true, 'label' => sprintf( __( 'Business Policies: %s', 'tcgiant-sync' ), $tc_unread_says ) );
+			  } elseif ( $keeps_live( 'policies' ) ) {
+				  $checks[] = array( 'ok' => true, 'label' => __( 'Business Policies: as they are on eBay', 'tcgiant-sync' ) );
+			  } else {
+				  $checks[] = array( 'ok' => $hp, 'label' => $hp ? __( 'Business Policies: Configured', 'tcgiant-sync' ) : __( 'Business Policies: Missing - configure in Settings', 'tcgiant-sync' ) );
+			  }
 			  // Images
 			  $ii = $product ? array_filter( array_merge( array( $product->get_image_id() ), $product->get_gallery_image_ids() ) ) : array();
 			  $io = count( $ii ) > 0;
@@ -4385,7 +4506,7 @@ class TCGiant_Sync_Admin {
 			// Dismiss error
 			$('#tcgiant-dismiss-export-error').on('click',function(e){e.preventDefault();$.post(ajaxUrl,{action:'tcgiant_clear_export_error',product_id:$(this).data('product-id'),_ajax_nonce:nonce});$('#tcgiant-export-error-notice').slideUp(200);});
 			// Push
-			$('#tcgiant-push-btn').on('click',function(){var btn=$(this),st=$('#tcgiant-push-status');btn.prop('disabled',true);st.css('color','#555').text('Saving & validating...');var cs=$('#_ebay_export_category_id_select').val()||'',cc=$('#_ebay_export_category_id_custom').val()||'',catId=(cs==='custom')?cc:cs,it=$('#_ebay_export_item_type').val()||'',sf=(it&&it!=='other')?'_'+it:'',gid=$('#_ebay_export_grader_id'+sf).val()||'',gv=$('#_ebay_export_grade_value'+sf).val()||'',uc=$('#_ebay_export_ungraded_condition'+sf).val()||'';$.post(ajaxUrl,{action:'tcgiant_push_product',product_id:btn.data('product-id'),override_category_id:catId,override_category_typed:(cs==='custom')?cc:'',override_condition_id:$('#_ebay_export_condition_id').val()||'',override_item_type:it,override_condition_type:$('#_ebay_export_condition_type').val()||'',override_grader_id:gid,override_grade_value:gv,override_cert_number:$('[name="_ebay_export_cert_number"]').val()||'',override_coin_year:$('[name="_ebay_export_coin_year"]').val()||'',override_ungraded_condition:uc,override_listing_type:$('#_ebay_export_listing_type').val()||'',override_listing_duration:$('#_ebay_export_listing_duration').val()||'',override_fulfillment_policy:$('#_ebay_export_fulfillment_policy').val()||'',specifics_present:tcAspectsPresent(),specifics:tcAspectValues(),_tcgiant_tpl_fields:$('#_tcgiant_tpl_override').length?1:'',_tcgiant_tpl_override:$('#_tcgiant_tpl_override').val()||'',_tcgiant_ebay_description:$('#_tcgiant_ebay_description').val()||'',_ajax_nonce:nonce},function(r){if(r.success){st.css('color','#2a8a2a').text('OK - '+r.data.message);}else{st.css('color','#cc1818').text('Error: '+(r.data?r.data.message:'Unknown error'));btn.prop('disabled',false);}});});
+			$('#tcgiant-push-btn').on('click',function(){var btn=$(this),st=$('#tcgiant-push-status');btn.prop('disabled',true);st.css('color','#555').text('Saving & validating...');var cs=$('#_ebay_export_category_id_select').val()||'',cc=$('#_ebay_export_category_id_custom').val()||'',catId=(cs==='custom')?cc:cs,it=$('#_ebay_export_item_type').val()||'',sf=(it&&it!=='other')?'_'+it:'',gid=$('#_ebay_export_grader_id'+sf).val()||'',gv=$('#_ebay_export_grade_value'+sf).val()||'',uc=$('#_ebay_export_ungraded_condition'+sf).val()||'';$.post(ajaxUrl,{action:'tcgiant_push_product',product_id:btn.data('product-id'),override_category_id:catId,override_category_typed:(cs==='custom')?cc:'',override_condition_id:$('#_ebay_export_condition_id').val()||'',override_item_type:it,override_condition_type:$('#_ebay_export_condition_type').val()||'',override_grader_id:gid,override_grade_value:gv,override_cert_number:$('[name="_ebay_export_cert_number"]').val()||'',override_coin_year:$('[name="_ebay_export_coin_year"]').val()||'',override_ungraded_condition:uc,override_listing_type:$('#_ebay_export_listing_type').val()||'',override_listing_duration:$('#_ebay_export_listing_duration').val()||'',override_fulfillment_policy:$('#_ebay_export_fulfillment_policy').val()||'',override_follow_defaults:$('#_ebay_export_follow_defaults').length?($('#_ebay_export_follow_defaults').is(':checked')?'1':'0'):'',specifics_present:tcAspectsPresent(),specifics:tcAspectValues(),_tcgiant_tpl_fields:$('#_tcgiant_tpl_override').length?1:'',_tcgiant_tpl_override:$('#_tcgiant_tpl_override').val()||'',_tcgiant_ebay_description:$('#_tcgiant_ebay_description').val()||'',_ajax_nonce:nonce},function(r){if(r.success){st.css('color','#2a8a2a').text('OK - '+r.data.message);}else{st.css('color','#cc1818').text('Error: '+(r.data?r.data.message:'Unknown error'));btn.prop('disabled',false);}});});
 			// Item specifics: ask eBay what this category requires, and show it.
 			function tcAspectValues(){var o={};$('#tc-aspect-rows [data-aspect]').each(function(){var n=$(this).data('aspect');if(n){o[n]=$.trim($(this).val()||'');}});return o;}
 			function tcAspectsPresent(){return $('#tc-aspect-rows [data-aspect]').length?1:'';}

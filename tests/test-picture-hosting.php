@@ -968,7 +968,7 @@ $adm_src = (string) file_get_contents( dirname( __DIR__ ) . '/admin/class-tcgian
 $tpl_src = (string) file_get_contents( dirname( __DIR__ ) . '/includes/class-tcgiant-sync-template-admin.php' );
 check( '  Verify and the preview\'s Check with eBay build through it', array( false !== strpos( $adm_src, '$exporter->build_item_xml_public( $product, $settings )' ), false !== strpos( $tpl_src, '$exporter->build_item_xml_public( $product, $settings )' ) ), array( true, true ) );
 $relist_src = substr( $api_src, (int) strpos( $api_src, 'public function relist_fixed_price_item(' ), (int) strpos( $api_src, 'public function get_orders(' ) - (int) strpos( $api_src, 'public function relist_fixed_price_item(' ) );
-check( '  RelistItem and RelistFixedPriceItem send no pictures: eBay keeps the listing\'s own', array( false !== strpos( $relist_src, "'RelistItem'" ), false !== strpos( $relist_src, "'RelistFixedPriceItem'" ), false === stripos( $relist_src, 'Picture' ) ), array( true, true, true ) );
+check( '  RelistItem and RelistFixedPriceItem make no pictures of their own: eBay keeps the listing\'s, unless a push hands RelistItem its item\'s (3.28.8)', array( false !== strpos( $relist_src, "'RelistItem'" ), false !== strpos( $relist_src, "'RelistFixedPriceItem'" ), false === stripos( $relist_src, 'Picture' ) ), array( true, true, true ) );
 
 // Every Revise of an item: one place, do_push(), whose item is built for it.
 $revise_sites = array();

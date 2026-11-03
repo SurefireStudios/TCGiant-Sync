@@ -105,6 +105,13 @@ class TCGiant_Sync_Listing_Link {
 			// delta checks a renewal against (3.28.6).
 			'_ebay_event_sig',
 			'_sync_last_updated',
+			// eBay's own values for that listing, who made it, and the shop's
+			// choice of whose values its pushes send (3.28.8,
+			// TCGiant_Sync_Ebay_Live): a copy has no listing to keep them for.
+			'_ebay_live',
+			'_ebay_origin',
+			'_ebay_origin_by',
+			'_ebay_export_follow_defaults',
 			// Push state belonging to the original.
 			'_ebay_export_status',
 			'_ebay_export_error',

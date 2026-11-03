@@ -25,12 +25,10 @@
  * English only in this version. The lint says so on eBay Germany, France,
  * Italy and Spain.
  *
- * For 3.28.0: an imported listing's own return and payment policies are
- * recorded on the product (_ebay_return_policy_id and the rest, in the
- * mapper) but not read here, because a 3.27.8 push sends the shop's policies
- * and the block must match what is sent. 3.28.1's item 13, the partial
- * revise, leaves SellerProfiles alone, so from then on the block must render
- * the listing's own policies for those listings.
+ * An imported listing's revise leaves its SellerProfiles alone (3.28.8), so
+ * for such a listing the IDs this block reads are the listing's own, from
+ * TCGiant_Sync_Exporter::get_export_settings() - eBay's values as the import
+ * recorded them - and the block says what the listing really offers.
  *
  * @package TCGiant_Sync
  * @license GPL-2.0-or-later

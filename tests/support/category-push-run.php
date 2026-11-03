@@ -24,6 +24,7 @@ class TCGiant_Sync_Inventory {
 }
 class TCGiant_Sync_DB {
 	public static function upsert( $row ) { return 1; }
+	public static function get_by_product( $id ) { return null; }
 }
 class TCGiant_Sync_Listing_Link {
 	public static function find_products_sharing_item_id( $product_id, $item_id ) { return array(); }
@@ -99,8 +100,10 @@ function readiness( $id ) {
 
 $card  = array( '_ebay_export_item_type' => 'tcg', '_ebay_export_condition_type' => 'graded', '_ebay_export_grader_id' => '275010', '_ebay_export_grade_value' => '9', '_ebay_export_category_id' => '183456', '_ebay_export_category_name' => 'Toys & Hobbies > Collectible Card Games > CCG Sealed Boxes' );
 $coin  = array( '_ebay_export_item_type' => 'coins', '_ebay_export_condition_type' => 'graded', '_ebay_export_grader_id' => '14', '_ebay_export_grade_value' => 'MS/PR 70', '_ebay_export_category_id' => '253', '_ebay_export_category_name' => '' );
-$live  = array( '_ebay_listing_type' => 'FixedPriceItem', '_ebay_listing_status' => 'Active' );
-$ended = array( '_ebay_listing_type' => 'FixedPriceItem', '_ebay_listing_status' => 'Ended' );
+// Listings the shop pushed (3.28.8): 3.28.1's and 3.28.5's rulings for a
+// revise are a pushed listing's.
+$live  = array( '_ebay_listing_type' => 'FixedPriceItem', '_ebay_listing_status' => 'Active', '_ebay_origin' => 'push' );
+$ended = array( '_ebay_listing_type' => 'FixedPriceItem', '_ebay_listing_status' => 'Ended', '_ebay_origin' => 'push' );
 
 product( 601, $card + $live + array( '_ebay_item_id' => '110000000601' ) );
 product( 602, $coin + $live + array( '_ebay_item_id' => '110000000602' ) );

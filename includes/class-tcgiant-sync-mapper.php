@@ -12,6 +12,12 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+// eBay's own values for each listing, and who made it, which the import
+// records (3.28.8).
+if ( ! class_exists( 'TCGiant_Sync_Ebay_Live', false ) ) {
+	require_once __DIR__ . '/class-tcgiant-sync-ebay-live.php';
+}
+
 /**
  * TCGiant_Sync_Mapper class
  */
@@ -567,6 +573,12 @@ class TCGiant_Sync_Mapper {
 		$product_data['meta_delete'] = array();
 		$this->add_shipping_meta( $ebay_item, $product_data );
 		$this->add_policy_meta( $ebay_item, $product_data );
+
+		// eBay's own values for the listing - its condition, category,
+		// business policies, location, handling time and photos - which a
+		// push of an imported product keeps (3.28.8). Only what this answer
+		// carries: save_as_product() lays it over what was recorded.
+		$product_data['live'] = TCGiant_Sync_Ebay_Live::from_item( $ebay_item );
 
 		// Map Variations.
 		$product_data['variations'] = array();
@@ -1188,11 +1200,10 @@ class TCGiant_Sync_Mapper {
 	 * as its shipping policy: a key goes only when SellerProfiles are in hand
 	 * and hold no such policy.
 	 *
-	 * Nothing reads these in 3.27.8: a push sends the shop's own policies, and
-	 * a listing template's policy blocks say what is sent. 3.28.1's item 13
-	 * revises imported listings without SellerProfiles, leaving each listing's
-	 * own policies on eBay, and its policy blocks will need these to say what
-	 * that listing really offers.
+	 * Read since 3.28.8 as a listing's own policies where no read has recorded
+	 * them in _ebay_live yet (TCGiant_Sync_Exporter::live_settings()): the
+	 * revise of an imported listing leaves its policies on eBay, and the
+	 * listing template's policy blocks say the listing's own.
 	 *
 	 * @param array $ebay_item    eBay item.
 	 * @param array $product_data Product data, given meta and meta_delete here.
@@ -1410,6 +1421,8 @@ class TCGiant_Sync_Mapper {
 		$product_id = false;
 		// Whether step 2 below gives a product this listing by its SKU.
 		$linked_by_sku = false;
+		// And whether that is a listing the product did not follow (3.28.8).
+		$sku_link_new = false;
 		// Whether step 2 completed, in the table, a push that did not finish.
 		$completed_push = false;
 
@@ -1672,6 +1685,7 @@ class TCGiant_Sync_Mapper {
 						// No eBay link or same item → safe to link.
 						$product_id = $sku_product_id;
 						$linked_by_sku = true;
+						$sku_link_new  = (string) $existing_item_id !== (string) $item_id;
 					} elseif ( 'seller' !== ( $product_data['sku_source'] ?? '' ) ) {
 						// Same SKU, different listing — but this SKU is not something
 						// that identifies a listing, so the match proves nothing.
@@ -1725,6 +1739,7 @@ class TCGiant_Sync_Mapper {
 						}
 
 						$linked_by_sku = true;
+						$sku_link_new  = true;
 						// Clear the old item ID so it gets replaced with the new one.
 						update_post_meta( $sku_product_id, '_ebay_item_id', $item_id );
 						// What was sent to the old listing is not this one's.
@@ -2173,6 +2188,28 @@ class TCGiant_Sync_Mapper {
 		// and Auto-Relist, Relist and the bulk pushes left it out for good.
 		// A re-link over an ended listing has already completed it, above.
 		$completed_push = ( $linked_by_sku && TCGiant_Sync_Listing_Link::complete_unfinished_push( $product ) ) || $completed_push;
+
+		// eBay's own values for this listing, laid over what an earlier read
+		// recorded of it; a record of another listing - the one a relist
+		// replaced - is replaced. Written only when it changes (3.28.8).
+		$live = TCGiant_Sync_Ebay_Live::merge( $product->get_meta( TCGiant_Sync_Ebay_Live::META ), (array) ( $product_data['live'] ?? array() ), (string) $item_id );
+		if ( count( $live ) > 1 && $live !== $product->get_meta( TCGiant_Sync_Ebay_Live::META ) ) {
+			$product->update_meta_data( TCGiant_Sync_Ebay_Live::META, $live );
+		}
+
+		// A product the import makes is the listing's, from eBay: its pushes
+		// keep eBay's values. So is one its SKU links to a listing it did not
+		// follow - after its own listing ended, say - as one linked by hand is
+		// (3.28.8): whatever an earlier listing left on it, unless this is the
+		// listing its own push made, as the push mark it carries says.
+		if ( $is_new ) {
+			$product->update_meta_data( TCGiant_Sync_Ebay_Live::ORIGIN_META, 'import' );
+			$product->update_meta_data( TCGiant_Sync_Ebay_Live::ORIGIN_BY_META, TCGiant_Sync_Ebay_Live::BY_IMPORT );
+		} elseif ( $sku_link_new ) {
+			$mark = (string) ( $product_data['application_data'] ?? '' );
+			$product->update_meta_data( TCGiant_Sync_Ebay_Live::ORIGIN_META, '' !== $mark && (int) $product_id === TCGiant_Sync_API::marked_product( $mark ) ? 'push' : 'import' );
+			$product->update_meta_data( TCGiant_Sync_Ebay_Live::ORIGIN_BY_META, TCGiant_Sync_Ebay_Live::BY_IMPORT );
+		}
 
 		// Set Custom Meta (including _ebay_item_id for tracking).
 		foreach ( $product_data['meta'] as $key => $val ) {

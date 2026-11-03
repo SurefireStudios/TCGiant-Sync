@@ -241,6 +241,22 @@ class TCGiant_Sync_Catalog {
 	);
 
 	/**
+	 * Each ungraded card condition and the one eBay's table gives in its
+	 * place in the other categories, by eBay's own labels: Excellent and
+	 * Lightly Played (Excellent), Very Good and Moderately Played (Very
+	 * Good), Poor and Heavily Played (Poor). The shop's default goes as its
+	 * pair where eBay does not list it (decision 17, 3.28.8).
+	 */
+	const UNGRADED_TCG_PAIRS = array(
+		'400011' => '400015',
+		'400012' => '400016',
+		'400013' => '400017',
+		'400015' => '400011',
+		'400016' => '400012',
+		'400017' => '400013',
+	);
+
+	/**
 	 * The categories each professional grader (descriptor 27501) is valid in,
 	 * from the same table of eBay's: most in all three; CSG in Sports Trading
 	 * Card Singles only; PCA, PCG, Ace, TCG and ARK in CCG Individual Cards

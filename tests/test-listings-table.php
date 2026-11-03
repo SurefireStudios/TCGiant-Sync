@@ -187,18 +187,27 @@ echo "\nTHE ANSWER TO \"WHAT IS BEING COMPARED\"\n" . str_repeat( '=', 118 ) . "
 // creating another copy beside it (test-relist-guard.php). Still nothing about
 // the product is compared with anything on eBay: the push follows eBay's own
 // record of the listing it already had.
+//
+// 3.28.8 adds one more read, before the revise, and only to learn values of
+// eBay's the Update of an imported listing needs and has not read
+// (live_unknown_groups()): the stored listing itself, once. It decides what
+// the revise sends, never whether to create or update.
 $do_push = substr( $exporter, (int) strpos( $exporter, 'private function do_push(' ) );
 // To its closing brace: it outgrew a fixed 12,000 characters in 3.28.5.
 $do_push = substr( $do_push, 0, (int) strpos( $do_push, "\n\t}\n" ) );
 $ended   = (int) strpos( $do_push, 'is_ended_listing_error(' );
 check( 'the push recognises a listing eBay says has ended', $ended > 0, true );
-foreach ( array( 'GetItem', 'get_item(', 'GetSellerList', 'GetMyeBaySelling', 'find_product_id_by_sku' ) as $lookup ) {
+foreach ( array( 'GetSellerList', 'GetMyeBaySelling', 'find_product_id_by_sku' ) as $lookup ) {
 	check( 'until then the push makes no ' . $lookup . ' call', false === strpos( substr( $do_push, 0, $ended ), $lookup ), true );
 }
+$before_ended = substr( $do_push, 0, $ended );
+$read_first   = substr( $exporter, (int) strpos( $exporter, 'private function read_listing_first(' ) );
+$read_first   = substr( $read_first, 0, (int) strpos( $read_first, "\n\t}\n" ) );
+check( 'until then its one GetItem is 3.28.8\'s read of the stored listing, only for values it has not read', array( substr_count( $before_ended, '->get_item(' ), false !== strpos( $before_ended, '$unread     = self::pushes_new_listing( $product->get_id() ) ? array() : self::live_unknown_groups( $settings );' ), false !== strpos( $before_ended, '$read = $this->read_listing_first( $product, $unread, $settings );' ), substr_count( $read_first, '->get_item(' ), false !== strpos( $read_first, "\$item_id = (string) \$product->get_meta( '_ebay_item_id' );" ) ), array( 0, true, true, 1, true ) );
 foreach ( array( 'GetSellerList', 'GetMyeBaySelling', 'find_product_id_by_sku' ) as $lookup ) {
 	check( 'nor after, a ' . $lookup . ' call', false === strpos( substr( $do_push, $ended ), $lookup ), true );
 }
-check( 'after, the one thing asked is the ended listing itself', array( substr_count( $do_push, '->get_item(' ), false !== strpos( substr( $do_push, $ended ), '->get_item( $ebay_item_id )' ) ), array( 1, true ) );
+check( 'after, the one thing asked is the ended listing itself', array( substr_count( substr( $do_push, $ended ), '->get_item(' ), false !== strpos( substr( $do_push, $ended ), '->get_item( $ebay_item_id )' ) ), array( 1, true ) );
 check( '  and a relist eBay names for it is followed', false !== strpos( substr( $do_push, $ended ), '->follow_newest_relist(' ), true );
 check( 'it branches on the stored item id', false !== strpos( $do_push, "\$ebay_item_id = \$product->get_meta( '_ebay_item_id' );" ), true );
 

@@ -1631,12 +1631,23 @@ class TCGiant_Sync_API {
 		return $result;
 	}
 
-	public function relist_item( $item_id, $quantity = null ) {
+	/**
+	 * Relist an ended auction.
+	 *
+	 * @param string   $item_id  The ended listing.
+	 * @param int|null $quantity The quantity, or none to keep eBay's.
+	 * @param string   $changes  Item fields the relist changes, as XML: a
+	 *                           push's title, description and photos
+	 *                           (3.28.8). eBay keeps everything it is not sent.
+	 * @return array|WP_Error
+	 */
+	public function relist_item( $item_id, $quantity = null, $changes = '' ) {
 		$xml = '
 <Item>
 <ItemID>' . esc_attr( $item_id ) . '</ItemID>
 <UUID>' . self::generate_ebay_uuid() . '</UUID>'
-			. ( null !== $quantity ? "\n<Quantity>" . max( 1, (int) $quantity ) . '</Quantity>' : '' ) . '
+			. ( null !== $quantity ? "\n<Quantity>" . max( 1, (int) $quantity ) . '</Quantity>' : '' )
+			. ( '' !== (string) $changes ? "\n" . rtrim( (string) $changes ) : '' ) . '
 </Item>';
 
 		$result = $this->trading_api_request( 'RelistItem', $xml );

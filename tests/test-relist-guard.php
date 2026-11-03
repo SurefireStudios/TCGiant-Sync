@@ -599,7 +599,7 @@ class Recording_eBay extends TCGiant_Sync_API {
 		$this->calls[] = array( 'GetItem', (string) $item_id );
 		return $this->items[ (string) $item_id ] ?? $this->item;
 	}
-	public function relist_item( $item_id, $quantity = null ) {
+	public function relist_item( $item_id, $quantity = null, $changes = '' ) {
 		$this->calls[] = array( 'RelistItem', (string) $item_id, $quantity );
 		return is_callable( $this->relists ) ? call_user_func( $this->relists, (string) $item_id ) : $this->relists;
 	}
@@ -3142,18 +3142,30 @@ function remember( $item_id ) {
 	update_option( $name, ( '' === $old ? '' : $old . "\n" ) . $item_id . ',261328,222,0,' . time(), false );
 }
 
-// A revise of a live listing.
+// A revise of a live listing the shop pushed, whose pushes follow its
+// defaults (3.28.8).
 $ebay = fresh_shop( $push_settings );
-$item = coin( 670, array( '_ebay_listing_status' => 'Active', '_ebay_end_time' => gmdate( 'Y-m-d\TH:i:s.000\Z', time() + 20 * DAY_IN_SECONDS ) ) );
+$item = coin( 670, array( '_ebay_listing_status' => 'Active', '_ebay_end_time' => gmdate( 'Y-m-d\TH:i:s.000\Z', time() + 20 * DAY_IN_SECONDS ), '_ebay_origin' => 'push' ) );
 remember( $item );
 remember( '226100000999' );
 check( 'a push that revises a listing', push_from_queue( 670 ), 'pushed' );
 check( '  sent its PrimaryCategory', false !== strpos( (string) end( $ebay->sent ), '<PrimaryCategory><CategoryID>9355</CategoryID></PrimaryCategory>' ), true );
 check( '  and the listing is no longer remembered; another listing still is', array( remembered_line( $item ), remembered_line( '226100000999' ) ), array( false, true ) );
 
-// A push that finds its listing ended and makes a new one in its place.
+// One imported from eBay is revised with no category (3.28.8): forgotten all
+// the same, which costs no more than a GetItem at its next change.
 $ebay = fresh_shop( $push_settings );
-$item = coin( 671 );
+$item = coin( 674, array( '_ebay_listing_status' => 'Active', '_ebay_end_time' => gmdate( 'Y-m-d\TH:i:s.000\Z', time() + 20 * DAY_IN_SECONDS ) ) );
+remember( $item );
+check( 'a push that revises an imported listing', push_from_queue( 674 ), 'pushed' );
+check( '  sent no PrimaryCategory', false === strpos( (string) end( $ebay->sent ), '<PrimaryCategory>' ), true );
+check( '  and the listing is no longer remembered', remembered_line( $item ), false );
+
+// A push that finds its listing ended and makes a new one in its place: a
+// listing the shop pushed, so its new one goes by the shop's defaults, not
+// by the category the memory holds (3.28.8).
+$ebay = fresh_shop( $push_settings );
+$item = coin( 671, array( '_ebay_origin' => 'push' ) );
 $ebay->items = array( $item => listing_says( $item, 'Completed', 3, 0 ) );
 $ebay->revises[ $item ] = new WP_Error( 'api_error', 'You are not allowed to revise ended listings.' );
 remember( $item );

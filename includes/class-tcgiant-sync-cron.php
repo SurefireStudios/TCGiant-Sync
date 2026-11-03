@@ -73,6 +73,13 @@ class TCGiant_Sync_Cron {
 		add_action( 'admin_init', array( 'TCGiant_Sync_Mapper', 'upgrade_auction_import' ) );
 		add_action( 'tcgiant_sync_check_ended_listings', array( 'TCGiant_Sync_Mapper', 'upgrade_auction_import' ), 5 );
 
+		// One-time pass at upgrade (3.28.8): who made the listing each product
+		// from before 3.28.8 follows, kept while what it holds is freshest.
+		// From the hourly check, and from admin pages at most once a minute,
+		// never from AJAX or the heartbeat.
+		add_action( 'admin_init', array( 'TCGiant_Sync_Ebay_Live', 'sweep_origins_from_admin' ) );
+		add_action( 'tcgiant_sync_check_ended_listings', array( 'TCGiant_Sync_Ebay_Live', 'sweep_origins' ), 5 );
+
 		// Keep background work moving on hosts where WP-Cron is disabled or
 		// unreliable — admin page views act as the heartbeat.
 		add_action( 'admin_init', array( __CLASS__, 'maybe_dispatch_overdue' ) );

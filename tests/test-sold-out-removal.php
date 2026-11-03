@@ -297,6 +297,9 @@ class TCGiant_Sync_API {
 		return array( 'Item' => array( 'Title' => 'Listing ' . $item_id, 'Seller' => array( 'UserID' => 'the-shop' ), 'SellingStatus' => array( 'ListingStatus' => 'Active', 'QuantitySold' => 1 ), 'Quantity' => 1 ) );
 	}
 	public function get_seller_user_id() { return 'the-shop'; }
+	// Link reads who made the listing and records eBay's values (3.28.8).
+	public static function marked_product( $raw ) { return 0; }
+	public static function scalar_value( $value ) { return is_scalar( $value ) ? (string) $value : ''; }
 }
 
 /** The shop's settings: none, so a push is refused before it reaches eBay. */

@@ -22,6 +22,7 @@ class TCGiant_Sync_Inventory {
 }
 class TCGiant_Sync_DB {
 	public static function upsert( $row ) { return 1; }
+	public static function get_by_product( $id ) { return null; }
 }
 class TCGiant_Sync_Listing_Link {
 	public static function find_products_sharing_item_id( $product_id, $item_id ) { return array(); }
@@ -100,7 +101,9 @@ TCGiant_Sync_OAuth::$settings['export_category_id'] = '2536';
 $out['default'] = tab( 505, $graded );
 
 // A live listing keeps its category; one that has ended is replaced (3.28.1).
-$listing             = array( '_ebay_listing_type' => 'FixedPriceItem', '_ebay_export_category_id' => '180006', '_ebay_export_category_name' => '' );
+// Listings the shop pushed (3.28.8): 3.28.1's and 3.28.5's rulings for a
+// revise are a pushed listing's.
+$listing             = array( '_ebay_listing_type' => 'FixedPriceItem', '_ebay_export_category_id' => '180006', '_ebay_export_category_name' => '', '_ebay_origin' => 'push' );
 $out['linked']       = tab( 509, $graded + $listing + array( '_ebay_item_id' => '110000000509', '_ebay_listing_status' => 'Active' ) );
 $out['linked_ended'] = tab( 510, $graded + $listing + array( '_ebay_item_id' => '110000000510', '_ebay_listing_status' => 'Ended' ) );
 
@@ -124,7 +127,7 @@ $out['coin_parent'] = tab( 513, $coin + array( '_ebay_export_category_id' => '25
 $out['coin_leaf']   = tab( 514, $coin + array( '_ebay_export_category_id' => '11980', '_ebay_export_category_name' => 'Coins & Paper Money > Coins: US > Small Cents' ) );
 
 // A live listing: its revise sends what a new listing is refused (ruling 3).
-$live              = array( '_ebay_listing_type' => 'FixedPriceItem', '_ebay_listing_status' => 'Active' );
+$live              = array( '_ebay_listing_type' => 'FixedPriceItem', '_ebay_listing_status' => 'Active', '_ebay_origin' => 'push' );
 $out['custom_live'] = tab( 515, $graded + $live + array( '_ebay_item_id' => '110000000515', '_ebay_export_category_id' => '183456', '_ebay_export_category_name' => 'Toys & Hobbies > Collectible Card Games > CCG Sealed Boxes' ) );
 $out['coin_live']   = tab( 516, $coin + $live + array( '_ebay_item_id' => '110000000516', '_ebay_export_category_id' => '253', '_ebay_export_category_name' => '' ) );
 

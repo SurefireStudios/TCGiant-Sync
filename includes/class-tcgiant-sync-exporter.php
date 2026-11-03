@@ -18,6 +18,12 @@ if ( ! class_exists( 'TCGiant_Sync_Category_Memory', false ) ) {
 	require_once __DIR__ . '/class-tcgiant-sync-category-memory.php';
 }
 
+// eBay's own values for a listing, and who made it, which decide what a push
+// of an imported product sends (3.28.8).
+if ( ! class_exists( 'TCGiant_Sync_Ebay_Live', false ) ) {
+	require_once __DIR__ . '/class-tcgiant-sync-ebay-live.php';
+}
+
 /**
  * TCGiant_Sync_Exporter class
  */
@@ -69,6 +75,13 @@ class TCGiant_Sync_Exporter {
 	const REFUSED_AFTER_UNFINISHED = ' The push after it was refused: ';
 
 	/**
+	 * The transient, by eBay item ID, that holds back the push's read of an
+	 * imported listing for an hour after one failed (3.28.8,
+	 * read_listing_first()). Removed on uninstall with the plugin's others.
+	 */
+	const READ_BACKOFF = 'tcgiant_sync_live_read_failed_';
+
+	/**
 	 * The push this request is working on, while it is: which product, what
 	 * it is called, the listing it was linked to when it began and whether
 	 * that listing had ended, and the listing eBay created for it once that
@@ -92,6 +105,16 @@ class TCGiant_Sync_Exporter {
 	 * @var array|null
 	 */
 	private $last_render = null;
+
+	/**
+	 * The shop's own content of the item the last build_item_xml() made: its
+	 * Title, its Description and, when that build sent any, its
+	 * PictureDetails. For the relist of an ended imported auction an Update
+	 * makes (decision 16, 3.28.8), so the shop's edits go up with it.
+	 *
+	 * @var string
+	 */
+	private $own_content_xml = '';
 
 	/*
 	 * Kept for anyone outside the plugin who reached for these here.
@@ -837,6 +860,11 @@ class TCGiant_Sync_Exporter {
 			// which would hold it in memory with everything else - a request
 			// killed while waiting for eBay must still leave this behind, so the
 			// product shows a push that began and never came back.
+			//
+			// Who made its listing is judged first, and kept, for a product
+			// from before 3.28.8 (TCGiant_Sync_Ebay_Live::origin()): this push
+			// is about to mark it pushed.
+			TCGiant_Sync_Ebay_Live::origin( $product_id, true );
 			update_post_meta( $product_id, '_ebay_export_status', 'pushing' );
 			update_post_meta( $product_id, '_ebay_export_pushing_since', time() );
 
@@ -994,6 +1022,15 @@ class TCGiant_Sync_Exporter {
 		$product->update_meta_data( '_ebay_export_error', '' );
 		$product->update_meta_data( '_ebay_export_last_pushed', current_time( 'mysql' ) );
 
+		// A listing a push created is the shop's own: its pushes follow the
+		// shop's defaults (3.28.8). So is one the import links back to the
+		// push that made it (3.28.7). An Update, or a new listing in place of
+		// an ended one, leaves who made it as it was.
+		if ( 'created' === $action && '' === (string) $product->get_meta( TCGiant_Sync_Ebay_Live::ORIGIN_META ) ) {
+			$product->update_meta_data( TCGiant_Sync_Ebay_Live::ORIGIN_META, 'push' );
+			$product->update_meta_data( TCGiant_Sync_Ebay_Live::ORIGIN_BY_META, TCGiant_Sync_Ebay_Live::BY_PUSH );
+		}
+
 		// Record which build sent this. Without it there is no way to tell a
 		// listing carrying the right item specifics from one sent before a fix
 		// that added them — the listing on eBay looks the same from here.
@@ -1012,8 +1049,10 @@ class TCGiant_Sync_Exporter {
 		if ( 'updated' !== $action ) {
 			$product->update_meta_data( '_ebay_listing_status', 'Active' );
 			// When it began and when it ends, where eBay has said: an import
-			// linking a listing it has read (3.28.7). A push has neither until
-			// a sync reads the listing.
+			// linking a listing it has read (3.28.7), and a push that relisted
+			// an imported auction as itself, with the end RelistItem gave it
+			// (3.28.8). Any other push has neither until a sync reads the
+			// listing.
 			if ( '' !== $end_time ) {
 				$product->update_meta_data( '_ebay_end_time', $end_time );
 			} else {
@@ -1608,8 +1647,39 @@ class TCGiant_Sync_Exporter {
 		$this->grade_said   = array();
 		$this->card_said    = array();
 		$this->build_for    = 'Push';
+		$this->read_missed  = null;
 
 		$settings = $this->get_export_settings( $product->get_id() );
+
+		// An imported listing's revise that sends its category, condition or
+		// business policies, and needs eBay's own value for another the
+		// plugin has not read (3.28.8): the listing is read once with GetItem
+		// first, and recorded, and eBay's values decide what goes. Not for a
+		// price, quantity, title or description change, which needs none;
+		// never again for a listing read so; not for a push refused below for
+		// a reason no read changes, nor on a staging copy. A read that fails
+		// refuses the push where the value it waited on decides it, as it
+		// would be refused without one; one for a partial condition of the
+		// product's own alone sends the rest of the Update without it
+		// (goes_without_read()). Either way the listing is not read again
+		// within the hour. A read that finds the listing ended, on whatever
+		// site, takes the ended path below with its answer: its sales are
+		// brought in, and then the site rule holds it, as when a revise is
+		// refused as ended. One still live is revised on whatever site, as
+		// before, and its site recorded.
+		$read_ended = null;
+		$unread     = self::pushes_new_listing( $product->get_id() ) ? array() : self::live_unknown_groups( $settings );
+		if ( $unread && ! $this->refused_without_a_read( $product ) ) {
+			$read = $this->read_listing_first( $product, $unread, $settings );
+			if ( null === $read ) {
+				$settings['_live_read_failed'] = true;
+			} else {
+				$settings = $this->get_export_settings( $product->get_id() );
+				if ( self::read_says_ended( $read ) ) {
+					$read_ended = array( 'Item' => $read );
+				}
+			}
+		}
 
 		// Validate required settings before hitting the API: as a new
 		// listing's when there is no live listing to revise (3.28.5).
@@ -1644,7 +1714,7 @@ class TCGiant_Sync_Exporter {
 
 		// Fail locally with the specific missing aspects rather than sending a
 		// request eBay will reject with a generic error.
-		$missing_aspects = $this->find_missing_required_aspects( $product, $sent_settings );
+		$missing_aspects = self::checks_aspects( $sent_settings, ! empty( $ebay_item_id ) ) ? $this->find_missing_required_aspects( $product, $sent_settings ) : array();
 		if ( ! empty( $missing_aspects ) ) {
 			return new WP_Error(
 				'missing_required_aspects',
@@ -1738,11 +1808,17 @@ class TCGiant_Sync_Exporter {
 		$fixed_price      = $this->uses_fixed_price_calls( $product, $settings, $ebay_item_id );
 
 		if ( ! empty( $ebay_item_id ) ) {
-			// Existing listing — revise it.
-			$full_xml = '<Item>' . "\n" . '<ItemID>' . esc_attr( $ebay_item_id ) . '</ItemID>' . "\n" . $item_xml . "\n" . '</Item>';
-			$response = $fixed_price
-				? $api->revise_fixed_price_item( $full_xml )
-				: $api->revise_item( $full_xml );
+			if ( null !== $read_ended ) {
+				// The read above found it ended (3.28.8): no revise, which
+				// eBay would refuse, and no second GetItem below.
+				$response = new WP_Error( 'listing_ended', 'The listing has ended, as eBay said when it was read for this push.' );
+			} else {
+				// Existing listing — revise it.
+				$full_xml = '<Item>' . "\n" . '<ItemID>' . esc_attr( $ebay_item_id ) . '</ItemID>' . "\n" . $item_xml . "\n" . '</Item>';
+				$response = $fixed_price
+					? $api->revise_fixed_price_item( $full_xml )
+					: $api->revise_item( $full_xml );
+			}
 
 			// The photos this revise was not sent, said once eBay has answered -
 			// unless the listing has ended: the new listing made below says what
@@ -1755,6 +1831,8 @@ class TCGiant_Sync_Exporter {
 				// ReviseItem returns ItemID in the response.
 				$returned_item_id = $response['ItemID'] ?? $ebay_item_id;
 				$this->say_category_kept( $product->get_id(), $kept_settings, (string) $ebay_item_id );
+				self::say_policies_ignored( $product->get_id(), $settings, (string) $ebay_item_id );
+				$this->say_read_missed( $product->get_id(), (string) $ebay_item_id );
 				return array( 'item_id' => $returned_item_id, 'action' => 'updated', 'desc' => $this->last_render );
 			}
 
@@ -1787,7 +1865,7 @@ class TCGiant_Sync_Exporter {
 			// new. It may have been relisted on eBay already - by the seller, or
 			// from eBay's Unsold list - and a new listing here would put a second
 			// copy of the item up for sale beside that one.
-			$ended = $api->get_item( $ebay_item_id );
+			$ended = null !== $read_ended ? $read_ended : $api->get_item( $ebay_item_id );
 
 			if ( is_wp_error( $ended ) || empty( $ended['Item'] ) ) {
 				// Said as the site check says it (3.27.5) when the site is what
@@ -1804,6 +1882,17 @@ class TCGiant_Sync_Exporter {
 			}
 
 			$ended_item = $ended['Item'];
+
+			// eBay's own values for the listing, as this answer gives them: a
+			// new listing in its place carries them (3.28.8).
+			TCGiant_Sync_Ebay_Live::record( $product->get_id(), $ended_item );
+
+			// And who made it, where nothing the product holds told: judged
+			// by when this listing started, before anything is built for a
+			// new one (3.28.8).
+			if ( TCGiant_Sync_Ebay_Live::UNKNOWN === TCGiant_Sync_Ebay_Live::origin( $product->get_id() ) ) {
+				TCGiant_Sync_Ebay_Live::learn_origin( $product->get_id(), $ended_item );
+			}
 
 			// The ended listing's own sales first, while the product still
 			// follows it: see relist_ended_listing().
@@ -1850,6 +1939,9 @@ class TCGiant_Sync_Exporter {
 				if ( ! $product ) {
 					return new WP_Error( 'relist_unchecked', __( 'the product could not be read again', 'tcgiant-sync' ) );
 				}
+
+				// And the relist's own values (3.28.8).
+				TCGiant_Sync_Ebay_Live::record( $product->get_id(), $ended_item );
 
 				// The product follows the relist now, so this push is that
 				// listing's. If PHP kills it from here on, the record of the
@@ -1928,6 +2020,50 @@ class TCGiant_Sync_Exporter {
 			}
 			$ended_on = $listed_on;
 
+			// An imported auction that has ended goes up again as the same
+			// auction, through RelistItem's guarded path, unless the shop chose
+			// another format for it (decision 16, 3.28.8): never a Buy It Now in
+			// the shop's default format at its opening bid. By eBay's answer,
+			// which the relist is handed, so eBay is not asked again.
+			if ( ! $product->is_type( 'variable' )
+				&& 'Chinese' === TCGiant_Sync_API::scalar_value( $ended_item['ListingType'] ?? '' )
+				&& '' === (string) $product->get_meta( '_ebay_export_listing_type' )
+				&& ! TCGiant_Sync_Ebay_Live::follows_defaults( $product->get_id() ) ) {
+				// With the shop's edits that made this push: the title,
+				// description and photos of an item built for a revise, so its
+				// photos go by the revise's rules - eBay's own kept while they
+				// are still the product's, never a mix, none when one would be
+				// left out. Its format, duration, opening bid and quantity
+				// stay the auction's, as RelistItem keeps what it is not sent.
+				$this->build_item_xml( $product, self::keep_listing_category( $this->get_export_settings( $product->get_id() ) ), true );
+				$too_long = $this->description_too_long();
+				if ( is_wp_error( $too_long ) ) {
+					return $too_long;
+				}
+				$relist_held = $this->pictures_held;
+
+				$relisted = $this->relist_ended_listing( $product->get_id(), 'Push', $ended_item, $this->own_content_xml );
+				if ( is_wp_error( $relisted ) ) {
+					return $relisted;
+				}
+				if ( $relist_held ) {
+					TCGiant_Sync_Logger::warning( self::photos_unchanged_warning( $product->get_id(), $relist_held ) );
+				}
+
+				return array(
+					'item_id'          => $relisted['item_id'],
+					'action'           => 'relisted',
+					'previous_item_id' => $relisted['previous_item_id'],
+					'end_time'         => $relisted['end_time'] ?? '',
+					// The description it carried, recorded as a push's is.
+					'desc'             => $this->last_render,
+				);
+			}
+
+			// What a new listing in place of an imported one carries is eBay's,
+			// as the answer above recorded it (3.28.8): read again.
+			$settings = $this->get_export_settings( $product->get_id() );
+
 			// The new listing in its place is held to what any new listing is
 			// (3.28.5), before it is built: the revise was not.
 			$validation = $this->validate_export_settings( $settings );
@@ -1943,27 +2079,28 @@ class TCGiant_Sync_Exporter {
 				return $validation;
 			}
 
-			// The stock may have come down to what is really left, and the item
-			// was built from the figure before that. And an item built for the
-			// revise without its photos is built again with them: a new listing
-			// goes without only the ones that cannot be put on eBay, and those
-			// it has no room for, said once - here, as the revise's build did not.
-			// So is one built for the revise in a retired category: the new
-			// listing goes to the category it was meant to be (3.28.1).
-			if ( $check || $held || ! empty( $kept_settings['category_kept'] ) ) {
-				if ( $check ) {
-					$product = wc_get_product( $product->get_id() );
-				}
-				$item_xml = $this->build_item_xml( $product, $settings );
-				if ( $held ) {
-					TCGiant_Sync_Logger::warning( self::left_out_warning( $product->get_id(), $held, $this->build_for ) );
-					$this->say_pictures_not_sent( $product->get_id() );
-				}
+			// Built again for the new listing, always (3.28.8): an item built for
+			// a revise leaves out what a revise does not change - an imported
+			// listing's category, condition, policies and location, a live
+			// auction's price - and a new listing is sent all of it. The stock
+			// may also have come down to what is really left since the first
+			// build. An item built for the revise without its photos gets them:
+			// a new listing goes without only the ones that cannot be put on
+			// eBay, and those it has no room for, said once - here, as the
+			// revise's build did not. And one built for the revise in a retired
+			// category goes to the category it was meant to be (3.28.1).
+			if ( $check ) {
+				$product = wc_get_product( $product->get_id() );
+			}
+			$item_xml = $this->build_item_xml( $product, $settings );
+			if ( $held ) {
+				TCGiant_Sync_Logger::warning( self::left_out_warning( $product->get_id(), $held, $this->build_for ) );
+				$this->say_pictures_not_sent( $product->get_id() );
+			}
 
-				$too_long = $this->description_too_long();
-				if ( is_wp_error( $too_long ) ) {
-					return $too_long;
-				}
+			$too_long = $this->description_too_long();
+			if ( is_wp_error( $too_long ) ) {
+				return $too_long;
 			}
 
 			TCGiant_Sync_Logger::log( sprintf(
@@ -2497,20 +2634,39 @@ class TCGiant_Sync_Exporter {
 	 * listing's times, so the hourly check does not mark a fresh relist ended
 	 * because the old end date passed.
 	 *
-	 * @param int    $product_id Product.
-	 * @param string $source     For the log, e.g. "Bulk relist".
-	 * @return array|WP_Error item_id and previous_item_id, or why not -
-	 *                        'relist_refused' when it was right not to.
+	 * A push of an imported auction that finds it ended relists it here
+	 * (3.28.8), with the GetItem answer it already holds for the listing: eBay
+	 * is not asked again, and the push under way is that push itself. It goes
+	 * up with the shop's edits that made the push - its title, description
+	 * and photos - and is not refused for being unpublished or having no
+	 * stock: the push holds a product to its own rules, as for the new
+	 * listing it would otherwise make.
+	 *
+	 * @param int        $product_id Product.
+	 * @param string     $source     For the log, e.g. "Bulk relist".
+	 * @param array|null $in_hand    eBay's GetItem answer for the listing the
+	 *                               product follows, from the push.
+	 * @param string     $changes    The push's Title, Description and
+	 *                               PictureDetails, for an auction's
+	 *                               RelistItem; only with the push's answer.
+	 * @return array|WP_Error item_id, previous_item_id and end_time, or why
+	 *                        not - 'relist_refused' when it was right not to.
 	 */
-	public function relist_ended_listing( $product_id, $source ) {
+	public function relist_ended_listing( $product_id, $source, $in_hand = null, $changes = '' ) {
 		$product_id = (int) $product_id;
 		$product    = wc_get_product( $product_id );
 
-		if ( ! $product || 'publish' !== get_post_status( $product_id ) ) {
+		if ( ! $product ) {
 			return new WP_Error( 'relist_refused', __( 'the product is not published', 'tcgiant-sync' ) );
 		}
 
 		$ebay_item_id = (string) $product->get_meta( '_ebay_item_id' );
+		$from_push    = is_array( $in_hand ) && '' !== $ebay_item_id && $ebay_item_id === TCGiant_Sync_API::scalar_value( $in_hand['ItemID'] ?? '' );
+
+		if ( ! $from_push && 'publish' !== get_post_status( $product_id ) ) {
+			return new WP_Error( 'relist_refused', __( 'the product is not published', 'tcgiant-sync' ) );
+		}
+
 		if ( '' === $ebay_item_id ) {
 			return new WP_Error( 'relist_refused', __( 'it has no eBay listing', 'tcgiant-sync' ) );
 		}
@@ -2521,7 +2677,7 @@ class TCGiant_Sync_Exporter {
 		// Auto-relist and bulk Relist then relisted this one too: the product
 		// was live on eBay twice, and its notice - Unlink this listing, Link
 		// the new one - pointed away from the listing it was now linked to.
-		if ( '' !== self::push_progress( $product_id ) ) {
+		if ( ! $from_push && '' !== self::push_progress( $product_id ) ) {
 			return new WP_Error( 'relist_refused', __( 'its last push is still under way or did not finish, and may already have made a new listing in place of this one - its eBay tab says what to do', 'tcgiant-sync' ) );
 		}
 
@@ -2531,7 +2687,7 @@ class TCGiant_Sync_Exporter {
 			? self::any_variation_in_stock( $product )
 			: $product->is_in_stock() && ! ( $product->managing_stock() && (int) $product->get_stock_quantity() < 1 );
 
-		if ( ! $has_stock ) {
+		if ( ! $has_stock && ! $from_push ) {
 			return new WP_Error( 'relist_refused', __( 'it has no stock to sell', 'tcgiant-sync' ) );
 		}
 
@@ -2554,7 +2710,7 @@ class TCGiant_Sync_Exporter {
 		}
 
 		$api    = TCGiant_Sync_API::instance();
-		$detail = $api->get_item( $ebay_item_id );
+		$detail = $from_push ? array( 'Item' => $in_hand ) : $api->get_item( $ebay_item_id );
 
 		if ( is_wp_error( $detail ) || empty( $detail['Item'] ) ) {
 			return new WP_Error( 'relist_unchecked', sprintf(
@@ -2566,6 +2722,9 @@ class TCGiant_Sync_Exporter {
 		}
 
 		$item = $detail['Item'];
+
+		// eBay's own values for the listing, from the answer (3.28.8).
+		TCGiant_Sync_Ebay_Live::record( $product_id, $item );
 
 		// This listing's own sales first, while the product still follows it.
 		// Moving on to a relist first lost them for good - nothing settles a
@@ -2613,6 +2772,8 @@ class TCGiant_Sync_Exporter {
 			if ( ! $product ) {
 				return new WP_Error( 'relist_unchecked', __( 'the product could not be read again', 'tcgiant-sync' ) );
 			}
+
+			TCGiant_Sync_Ebay_Live::record( $product_id, $item );
 
 			if ( 'Active' === TCGiant_Sync_API::scalar_value( $item['SellingStatus']['ListingStatus'] ?? '' ) ) {
 				return new WP_Error( 'relist_refused', sprintf(
@@ -2686,9 +2847,11 @@ class TCGiant_Sync_Exporter {
 			}
 		}
 
-		$result = $fixed
+		// A push's relist of an auction carries the shop's edits (3.28.8).
+		$changes = $from_push && ! $fixed ? (string) $changes : '';
+		$result  = $fixed
 			? $api->relist_fixed_price_item( $ebay_item_id, $quantity, $variations_xml )
-			: $api->relist_item( $ebay_item_id, $quantity );
+			: $api->relist_item( $ebay_item_id, $quantity, $changes );
 
 		if ( is_wp_error( $result ) ) {
 			return $result;
@@ -2714,6 +2877,14 @@ class TCGiant_Sync_Exporter {
 
 		update_post_meta( $product_id, '_ebay_item_id', $new_id );
 		update_post_meta( $product_id, '_ebay_listing_status', 'Active' );
+		// RelistItem keeps the listing as it was, so eBay's own values for it
+		// go with the product to the new number (3.28.8): its next Update
+		// leaves them alone as before.
+		$live = get_post_meta( $product_id, TCGiant_Sync_Ebay_Live::META, true );
+		if ( is_array( $live ) && (string) ( $live['item_id'] ?? '' ) === (string) $ebay_item_id ) {
+			$live['item_id'] = (string) $new_id;
+			update_post_meta( $product_id, TCGiant_Sync_Ebay_Live::META, $live );
+		}
 		// RelistItem keeps the description eBay had, so the record of what was
 		// sent follows the listing to its new number.
 		if ( (string) get_post_meta( $product_id, '_tcgiant_tpl_item', true ) === (string) $ebay_item_id ) {
@@ -2764,18 +2935,22 @@ class TCGiant_Sync_Exporter {
 		// and the old one is over: neither is remembered any more (3.28.4).
 		TCGiant_Sync_Category_Memory::forget( array( $new_id, (string) $ebay_item_id ) );
 
+		// And what a push's relist carried: the photos only when it sent them.
+		$photos_sent = false !== strpos( (string) substr( $changes, (int) strrpos( $changes, '</Description>' ) ), 'PictureDetails' );
 		TCGiant_Sync_Logger::log( sprintf(
-			'%s: WC #%d relisted on eBay as %s (was %s)%s.',
+			'%s: WC #%d relisted on eBay as %s (was %s)%s%s.',
 			$source,
 			$product_id,
 			$new_id,
 			$ebay_item_id,
-			null !== $quantity ? sprintf( ', quantity %d', $quantity ) : ''
+			null !== $quantity ? sprintf( ', quantity %d', $quantity ) : '',
+			'' === $changes ? '' : ( $photos_sent ? ', with the product\'s title, description and photos' : ', with the product\'s title and description, and its photos as they were on eBay' )
 		), 'success' );
 
 		return array(
 			'item_id'          => $new_id,
 			'previous_item_id' => $ebay_item_id,
+			'end_time'         => $end_time,
 		);
 	}
 
@@ -3069,13 +3244,22 @@ class TCGiant_Sync_Exporter {
 		}
 
 		$sku         = $product->get_sku();
-		$images      = $this->get_product_image_urls( $product, $revise );
+
+		// An imported listing whose photos are still the product's, each in
+		// its place (TCGiant_Sync_Ebay_Live::photos_match()), keeps them as
+		// they are on eBay (3.28.8): its revise is sent no PictureDetails, and
+		// nothing is decided or uploaded for it - get_product_image_urls() is
+		// not asked. Any other set is decided as before, all on eBay or all
+		// from the website, never a mix.
+		$photos_kept = $revise && ! self::sends_all( $settings, true )
+			&& TCGiant_Sync_Ebay_Live::photos_match( array_merge( array( (int) $product->get_image_id() ), array_map( 'intval', (array) $product->get_gallery_image_ids() ) ), TCGiant_Sync_Ebay_Live::snapshot( $product->get_id() ) );
+		$images      = $photos_kept ? array() : $this->get_product_image_urls( $product, $revise );
 
 		// A photo left out because the listing's others are on eBay would come
 		// off the live listing with a revise, which replaces the photos with
 		// those it is sent. So that revise is sent none: eBay's Revise calls
 		// change only what they are sent, and the listing keeps its own.
-		$this->pictures_held = $revise ? ( $this->pictures_for[ $product->get_id() ]['left_out'] ?? array() ) : array();
+		$this->pictures_held = $revise && ! $photos_kept ? ( $this->pictures_for[ $product->get_id() ]['left_out'] ?? array() ) : array();
 		if ( $this->pictures_held ) {
 			$images = array();
 		}
@@ -3091,9 +3275,15 @@ class TCGiant_Sync_Exporter {
 			$picture_xml .= '</PictureDetails>';
 		}
 
-		// Build seller profiles XML (business policies).
+		// Build seller profiles XML (business policies). Not for an imported
+		// listing's revise unless the product sets a policy of its own: its
+		// own policies stay on eBay (3.28.8). When it does, the other two are
+		// eBay's, as the last read of the listing recorded them: eBay takes
+		// one of each. Never the shop's in their place: a revise whose other
+		// two are not known is refused before it is built
+		// (validate_export_settings()), and is sent none.
 		$profiles_xml = '';
-		if ( ! empty( $settings['fulfillment_policy_id'] ) || ! empty( $settings['return_policy_id'] ) || ! empty( $settings['payment_policy_id'] ) ) {
+		if ( self::sends( $settings, 'policies', $revise ) && ( self::sends_all( $settings, $revise ) || ! ( $settings['_policies_unknown'] ?? array() ) ) && ( ! empty( $settings['fulfillment_policy_id'] ) || ! empty( $settings['return_policy_id'] ) || ! empty( $settings['payment_policy_id'] ) ) ) {
 			$profiles_xml = '<SellerProfiles>' . "\n";
 			if ( ! empty( $settings['fulfillment_policy_id'] ) ) {
 				$profiles_xml .= "\t<SellerShippingProfile>\n\t\t<ShippingProfileID>" . esc_attr( $settings['fulfillment_policy_id'] ) . "</ShippingProfileID>\n\t</SellerShippingProfile>\n";
@@ -3113,43 +3303,85 @@ class TCGiant_Sync_Exporter {
 		// sequence (common in code snippets) either breaks the request or
 		// injects raw XML into the AddItem payload.
 		$xml .= '<Description><![CDATA[' . str_replace( ']]>', ']]]]><![CDATA[>', $description ) . ']]></Description>' . "\n";
-		$xml .= '<PrimaryCategory><CategoryID>' . esc_attr( $settings['category_id'] ) . '</CategoryID></PrimaryCategory>' . "\n";
+		$this->own_content_xml = $xml . ( '' !== $picture_xml ? $picture_xml . "\n" : '' );
+		// The category, unless this is an imported listing's revise and the
+		// product sets none of its own: the listing stays where it is on eBay
+		// (3.28.8).
+		$send_category = self::sends( $settings, 'category', $revise );
+		if ( $send_category ) {
+			$xml .= '<PrimaryCategory><CategoryID>' . esc_attr( $settings['category_id'] ) . '</CategoryID></PrimaryCategory>' . "\n";
+		}
 
 		// Sent to the category a retired ID was meant to be: said once a push
 		// (get_export_settings()).
-		if ( ! empty( $settings['category_retired'] ) && empty( $this->card_said[ 'category:' . $product->get_id() ] ) ) {
+		if ( $send_category && ! empty( $settings['category_retired'] ) && empty( $this->card_said[ 'category:' . $product->get_id() ] ) ) {
 			$this->card_said[ 'category:' . $product->get_id() ] = true;
 			TCGiant_Sync_Logger::warning( self::retired_category_warning( $product->get_id(), $settings['category_retired'], $this->build_for ) );
 		}
 		
 	
+		// A live listing's own format, as the import recorded it (3.28.8).
+		$live_type       = $revise ? (string) $product->get_meta( '_ebay_listing_type' ) : '';
+		$imported_revise = $revise && ! self::sends_all( $settings, true );
+		if ( $imported_revise ) {
+			// An imported listing is revised as the format it is: a recorded
+			// auction as a live auction (decision 16), whose opening bid,
+			// quantity and format the revise never sends. One whose format no
+			// read recorded is not given an auction's one item by the shop's
+			// default format: its quantity is the product's.
+			$format       = '' !== $live_type ? $live_type : ( 'override' === ( $settings['_source']['format'] ?? '' ) ? ( $settings['listing_type'] ?? 'FixedPriceItem' ) : 'FixedPriceItem' );
+			$live_auction = 'Chinese' === $live_type;
+		} else {
+			// A product the plugin pushed, and any new listing: by the
+			// settings, as 3.28.6 sent it - a pushed auction's revise keeps its
+			// price, quantity and format (the owner's ruling on decision 16) -
+			// except a listing recorded as fixed-price, which is sent its own
+			// quantity whatever the shop's default format (finding 6B). Not
+			// when the auction format is the product's own choice: that goes
+			// as 3.28.6 sent it.
+			$format       = ( '' !== $live_type && 'Chinese' !== $live_type && 'override' !== ( $settings['_source']['format'] ?? '' ) ) ? $live_type : ( $settings['listing_type'] ?? 'FixedPriceItem' );
+			$live_auction = false;
+		}
+
 		if ( ! $product->is_type( 'variable' ) ) {
 			// Auctions are always quantity 1 on eBay.
-			$is_auction = 'Chinese' === ( $settings['listing_type'] ?? 'FixedPriceItem' );
+			$is_auction = 'Chinese' === $format;
 			$qty = $is_auction ? 1 : (int) $quantity;
-			$xml .= '<StartPrice>' . esc_attr( $price ) . '</StartPrice>' . "\n";
-			$xml .= '<Quantity>' . $qty . '</Quantity>' . "\n";
+			// A revise never changes a live auction's opening bid or quantity
+			// (3.28.8): eBay refuses either once there are bids, and an auction
+			// is one item.
+			if ( ! ( $revise && $live_auction ) ) {
+				$xml .= '<StartPrice>' . esc_attr( $price ) . '</StartPrice>' . "\n";
+				$xml .= '<Quantity>' . $qty . '</Quantity>' . "\n";
+			}
 			if ( ! empty( $sku ) ) {
 				$xml .= '<SKU>' . esc_xml( $sku ) . '</SKU>' . "\n";
 			}
 		}
 
-		$xml .= '<CategoryMappingAllowed>true</CategoryMappingAllowed>' . "\n";
+		if ( $send_category ) {
+			$xml .= '<CategoryMappingAllowed>true</CategoryMappingAllowed>' . "\n";
+		}
 
 		// Condition: use new ConditionDescriptor system for eligible categories,
-		// fall back to legacy ConditionID for everything else.
-		$descriptor_xml = $this->build_condition_descriptors_xml( $settings, $product->get_id() );
-		if ( ! empty( $descriptor_xml ) ) {
-			// ConditionID is set inside build_condition_descriptors_xml based on type.
-			$condition_id = 'graded' === $settings['condition_type'] ? '2750' : '4000';
-			$xml .= '<ConditionID>' . esc_attr( $condition_id ) . '</ConditionID>' . "\n";
-			// None left to send (an ungraded condition eBay does not take in
-			// the category): the ConditionID alone, never an empty container.
-			if ( false !== strpos( $descriptor_xml, '<ConditionDescriptor>' ) ) {
-				$xml .= $descriptor_xml . "\n";
+		// fall back to legacy ConditionID for everything else. Not for an
+		// imported listing's revise unless the product sets a condition of its
+		// own, or a category with the condition eBay has (3.28.8): a used part
+		// stays 3000, a PSA 10 slab stays graded.
+		if ( self::sends( $settings, 'condition', $revise ) ) {
+			$descriptor_xml = $this->build_condition_descriptors_xml( $settings, $product->get_id() );
+			if ( ! empty( $descriptor_xml ) ) {
+				// ConditionID is set inside build_condition_descriptors_xml based on type.
+				$condition_id = 'graded' === $settings['condition_type'] ? '2750' : '4000';
+				$xml .= '<ConditionID>' . esc_attr( $condition_id ) . '</ConditionID>' . "\n";
+				// None left to send (an ungraded condition eBay does not take in
+				// the category): the ConditionID alone, never an empty container.
+				if ( false !== strpos( $descriptor_xml, '<ConditionDescriptor>' ) ) {
+					$xml .= $descriptor_xml . "\n";
+				}
+			} else {
+				$xml .= '<ConditionID>' . esc_attr( $settings['condition_id'] ) . '</ConditionID>' . "\n";
 			}
-		} else {
-			$xml .= '<ConditionID>' . esc_attr( $settings['condition_id'] ) . '</ConditionID>' . "\n";
 		}
 
 		// ItemSpecifics: the product's WooCommerce attributes, plus the
@@ -3162,15 +3394,36 @@ class TCGiant_Sync_Exporter {
 		// Derive Country, Currency, and Site from the configured marketplace.
 		$marketplace = TCGiant_Sync_API::instance()->get_marketplace_config();
 
-		$xml .= '<Country>' . esc_attr( $marketplace['country'] ) . '</Country>' . "\n";
-		if ( ! empty( $settings['location'] ) ) {
+		// eBay's own country for an imported listing (3.28.8), which eBay's
+		// reference says a Revise call carries. Where no read has recorded
+		// it, an imported listing's revise sends none rather than the
+		// marketplace's, which may not be the listing's: eBay keeps its own,
+		// as a revise with only the ItemID showed (2026-11-02).
+		$country = (string) ( $settings['country'] ?? '' );
+		if ( '' === $country && self::sends_all( $settings, $revise ) ) {
+			$country = (string) $marketplace['country'];
+		}
+		if ( '' !== $country ) {
+			$xml .= '<Country>' . esc_attr( $country ) . '</Country>' . "\n";
+		}
+		// The location stays eBay's on an imported listing's revise (3.28.8).
+		$send_location = self::sends( $settings, 'location', $revise );
+		if ( $send_location && ! empty( $settings['location'] ) ) {
 			$xml .= '<Location>' . esc_xml( $settings['location'] ) . '</Location>' . "\n";
 		}
-		if ( ! empty( $settings['postal_code'] ) ) {
+		if ( $send_location && ! empty( $settings['postal_code'] ) ) {
 			$xml .= '<PostalCode>' . esc_xml( $settings['postal_code'] ) . '</PostalCode>' . "\n";
 		}
 		$xml .= '<Currency>' . esc_attr( $marketplace['currency'] ) . '</Currency>' . "\n";
-		$xml .= '<DispatchTimeMax>3</DispatchTimeMax>' . "\n";
+		// The handling time: a new listing in place of an imported one keeps
+		// eBay's (3.28.8); an imported listing's revise sends none, and its
+		// shipping policy decides it anyway.
+		if ( ! $revise ) {
+			$dispatch = 'live' === ( $settings['_source']['location'] ?? '' ) && is_numeric( $settings['dispatch_time'] ?? '' ) ? (string) (int) $settings['dispatch_time'] : '3';
+			$xml     .= '<DispatchTimeMax>' . $dispatch . '</DispatchTimeMax>' . "\n";
+		} elseif ( $send_location ) {
+			$xml .= '<DispatchTimeMax>3</DispatchTimeMax>' . "\n";
+		}
 		$xml .= $this->build_shipping_package_xml( $product, $settings );
 
 		// Listing type and duration: default to FixedPriceItem/GTC, overridable per-product.
@@ -3183,8 +3436,13 @@ class TCGiant_Sync_Exporter {
 			$listing_duration = $valid_durations[0]; // Fall back to first valid duration.
 		}
 
-		$xml .= '<ListingDuration>' . esc_attr( $listing_duration ) . '</ListingDuration>' . "\n";
-		$xml .= '<ListingType>' . esc_attr( $listing_type ) . '</ListingType>' . "\n";
+		// Never to an imported listing's revise (3.28.8): a live auction's
+		// format and duration eBay does not change, and another's are eBay's.
+		// A pushed listing's revise sends them, as 3.28.6 did.
+		if ( ! $revise || self::sends_all( $settings, true ) ) {
+			$xml .= '<ListingDuration>' . esc_attr( $listing_duration ) . '</ListingDuration>' . "\n";
+			$xml .= '<ListingType>' . esc_attr( $listing_type ) . '</ListingType>' . "\n";
+		}
 		$xml .= '<Site>' . esc_attr( $marketplace['site'] ) . '</Site>' . "\n";
 
 		if ( $product instanceof WC_Product_Variable ) {
@@ -3239,8 +3497,13 @@ class TCGiant_Sync_Exporter {
 			$xml .= $profiles_xml . "\n";
 		}
 
-		// Best Offer support (FixedPriceItem only).
-		if ( 'FixedPriceItem' === $listing_type ) {
+		// Best Offer support (FixedPriceItem only), by the format the item is
+		// sent as (3.28.8): an imported listing's own, a pushed one's as
+		// 3.28.6 had it but for a recorded fixed-price listing (6B). An
+		// imported listing keeps its own Best Offer terms unless the product
+		// sets its own.
+		$offer_type = $format;
+		if ( in_array( $offer_type, array( 'FixedPriceItem', 'StoresFixedPrice' ), true ) && ( self::sends_all( $settings, $revise ) || '' !== (string) $product->get_meta( '_tcgiant_best_offer_enabled' ) ) ) {
 			$best_offer_enabled = ! empty( $settings['best_offer_enabled'] );
 			$product_bo         = $product->get_meta( '_tcgiant_best_offer_enabled' );
 			// Per-product override.
@@ -3281,8 +3544,9 @@ class TCGiant_Sync_Exporter {
 			}
 		}
 
-		// GPSR (EU General Product Safety Regulation) compliance fields.
-		$gpsr_enabled = ! empty( $settings['gpsr_enabled'] );
+		// GPSR (EU General Product Safety Regulation) compliance fields: the
+		// shop's, so not to an imported listing's revise (3.28.8).
+		$gpsr_enabled = ! empty( $settings['gpsr_enabled'] ) && self::sends_all( $settings, $revise );
 		if ( $gpsr_enabled ) {
 			$gpsr_xml = '';
 			$gpsr_mfg = $settings['gpsr_manufacturer_name'] ?? '';
@@ -3352,6 +3616,33 @@ class TCGiant_Sync_Exporter {
 			'send_package_details'  => ! empty( $global['export_send_package_details'] ),
 		);
 
+		// Whose values fill what the product sets nothing of its own for
+		// (3.28.8): the shop's defaults above, for a product with no listing
+		// and one the plugin pushed; eBay's own for one imported, as the last
+		// read of its listing recorded them (TCGiant_Sync_Ebay_Live). Each
+		// group of fields comes whole from one or the other, so no default
+		// leaks into a group eBay's values fill, and the product's own
+		// settings below go over either. _source says where each group came
+		// from; a revise of an imported listing sends only the groups the
+		// product overrides (sends()).
+		$source   = array( 'category' => 'default', 'condition' => 'default', 'policies' => 'default', 'location' => 'default', 'format' => 'default' );
+		$send_all = true;
+		$live     = array();
+		if ( $product && '' !== (string) $product->get_meta( '_ebay_item_id' ) && ! TCGiant_Sync_Ebay_Live::follows_defaults( $product->get_id() ) ) {
+			$send_all = false;
+			// The shop's default coin year is no coin's in particular.
+			$settings['coin_year'] = '';
+			$live = $this->live_settings( $product );
+			foreach ( $live as $group => $fields ) {
+				$settings         = array_merge( $settings, $fields );
+				$source[ $group ] = 'live';
+			}
+		}
+		$ungraded_from = isset( $live['condition'] ) ? 'live' : 'default';
+
+		// The product's own settings, by group.
+		$own = array();
+
 		if ( $product ) {
 			// Per-product overrides take precedence if set.
 			$override_category  = $product->get_meta( '_ebay_export_category_id' );
@@ -3359,20 +3650,24 @@ class TCGiant_Sync_Exporter {
 
 			if ( ! empty( $override_category ) ) {
 				$settings['category_id'] = $override_category;
+				$own['category']['category_id'] = (string) $override_category;
 			}
 			if ( ! empty( $override_condition ) ) {
 				$settings['condition_id'] = $override_condition;
+				$own['condition']['condition_id'] = (string) $override_condition;
 			}
 
 			// ConditionDescriptor per-product overrides.
 			$override_cond_type = $product->get_meta( '_ebay_export_condition_type' );
 			if ( ! empty( $override_cond_type ) ) {
 				$settings['condition_type'] = $override_cond_type;
+				$own['condition']['condition_type'] = (string) $override_cond_type;
 			}
 
 			$override_item_type = $product->get_meta( '_ebay_export_item_type' );
 			if ( ! empty( $override_item_type ) ) {
 				$settings['item_type'] = $override_item_type;
+				$own['condition']['item_type'] = (string) $override_item_type;
 			}
 
 			$override_cat_name = $product->get_meta( '_ebay_export_category_name' );
@@ -3383,16 +3678,19 @@ class TCGiant_Sync_Exporter {
 			$override_grader = $product->get_meta( '_ebay_export_grader_id' );
 			if ( ! empty( $override_grader ) ) {
 				$settings['grader_id'] = $override_grader;
+				$own['condition']['grader_id'] = (string) $override_grader;
 			}
 
 			$override_grade = $product->get_meta( '_ebay_export_grade_value' );
 			if ( ! empty( $override_grade ) ) {
 				$settings['grade_value'] = $override_grade;
+				$own['condition']['grade_value'] = (string) $override_grade;
 			}
 
 			$override_cert = $product->get_meta( '_ebay_export_cert_number' );
 			if ( ! empty( $override_cert ) ) {
 				$settings['cert_number'] = $override_cert;
+				$own['condition']['cert_number'] = (string) $override_cert;
 			}
 
 			$override_coin_year = $product->get_meta( '_ebay_export_coin_year' );
@@ -3403,23 +3701,28 @@ class TCGiant_Sync_Exporter {
 			$override_ungraded = $product->get_meta( '_ebay_export_ungraded_condition' );
 			if ( ! empty( $override_ungraded ) ) {
 				$settings['ungraded_condition'] = $override_ungraded;
+				$own['condition']['ungraded_condition'] = (string) $override_ungraded;
+				$ungraded_from = 'override';
 			}
 
 			// Listing type & duration per-product overrides.
 			$override_listing_type = $product->get_meta( '_ebay_export_listing_type' );
 			if ( ! empty( $override_listing_type ) ) {
 				$settings['listing_type'] = $override_listing_type;
+				$own['format']['listing_type'] = (string) $override_listing_type;
 			}
 
 			$override_listing_duration = $product->get_meta( '_ebay_export_listing_duration' );
 			if ( ! empty( $override_listing_duration ) ) {
 				$settings['listing_duration'] = $override_listing_duration;
+				$own['format']['listing_duration'] = (string) $override_listing_duration;
 			}
 
 			// Per-product shipping/fulfillment policy override.
 			$override_fulfillment = $product->get_meta( '_ebay_export_fulfillment_policy' );
 			if ( ! empty( $override_fulfillment ) ) {
 				$settings['fulfillment_policy_id'] = $override_fulfillment;
+				$own['policies']['fulfillment_policy_id'] = (string) $override_fulfillment;
 			}
 
 			// Item specifics filled in on the product's eBay Listing tab.
@@ -3450,11 +3753,73 @@ class TCGiant_Sync_Exporter {
 		// and the push says so (build_item_xml()). What is stored is left as
 		// it is, for the shop to change; one chosen from eBay's own tree is a
 		// custom choice and stays.
+		// An imported listing's own condition (3.28.8) is a change to send only
+		// when it makes a whole one (whole_condition()) - with eBay's own for
+		// the fields it leaves, when the item type is eBay's, or by itself
+		// when no read has recorded the condition or it changes the item type
+		// - and never with the shop's defaults filling the rest. Step 1's
+		// Item Type alone, which every save of the eBay tab stores, is no
+		// change at all. Anything less is neither sent nor refused: the
+		// listing keeps the condition it has on eBay. Part of one over a
+		// condition no read has recorded - a card condition with no Graded
+		// or Ungraded, a ConditionID with no Item Type - has the push read the
+		// listing first (live_unknown_groups()), and is decided with eBay's.
+		$condition_partial = false;
+		if ( ! $send_all && isset( $own['condition'] ) ) {
+			$base    = $live['condition'] ?? array();
+			$mine    = $own['condition'];
+			$same    = isset( $base['item_type'] ) && ( ! isset( $mine['item_type'] ) || $mine['item_type'] === $base['item_type'] );
+			$whole   = self::whole_condition( $same ? array_merge( $base, $mine ) : $mine );
+			if ( $whole ) {
+				$settings = array_merge( $settings, $whole );
+			} else {
+				unset( $own['condition'] );
+				if ( $base ) {
+					$settings      = array_merge( $settings, $base );
+					$ungraded_from = 'live';
+				} else {
+					$condition_partial = (bool) array_diff_key( $mine, array( 'item_type' => true ) );
+				}
+			}
+		}
+
+		// And its business policies: one neither eBay's last answer nor the
+		// product gives is not known, and a revise that sends the group is
+		// refused rather than sent the shop's (validate_export_settings()) -
+		// until the push has read the listing (live_unknown_groups()). A
+		// listing read whole that still has none does not use business
+		// policies: the product's own shipping policy is not applied to it,
+		// the revise leaves the group out, and the push and the eBay tab say
+		// so (the owner's ruling on Q11). Its price and stock still go.
+		$policies_unknown = array();
+		$read_whole       = ! $send_all && ! empty( TCGiant_Sync_Ebay_Live::snapshot( $product->get_id() )['full'] );
+		if ( ! $send_all ) {
+			foreach ( array( 'fulfillment_policy_id', 'return_policy_id', 'payment_policy_id' ) as $key ) {
+				if ( ! isset( $live['policies'][ $key ] ) && ! isset( $own['policies'][ $key ] ) ) {
+					$policies_unknown[] = $key;
+				}
+			}
+			if ( $policies_unknown && $read_whole && isset( $own['policies'] ) ) {
+				unset( $own['policies'] );
+				// What the listing has, for what is said: none, or not all three.
+				$settings['_policies_ignored'] = array_keys( $live['policies'] ?? array() );
+			}
+		}
+
+		// A product setting that only repeats what eBay has is not a change
+		// to send (3.28.8): an imported listing's revise leaves that group out.
+		foreach ( $own as $group => $fields ) {
+			if ( ! isset( $live[ $group ] ) || ! self::repeats_live( $fields, $live[ $group ] ) ) {
+				$source[ $group ] = 'override';
+			}
+		}
+
 		$from_product = $product && ! empty( $product->get_meta( '_ebay_export_category_id' ) );
 		$saved_name   = $from_product ? (string) $product->get_meta( '_ebay_export_category_name' ) : (string) ( $global['export_category_name'] ?? '' );
 		$saved_typed  = $from_product ? (string) $product->get_meta( '_ebay_export_category_typed' ) : (string) ( $global['export_category_typed'] ?? '' );
 		$settings['category_typed'] = $saved_typed;
-		$retired_to   = TCGiant_Sync_Catalog::retired_category( $settings['category_id'], $saved_name, $saved_typed );
+		// Never eBay's own category, which is the one the listing is in.
+		$retired_to   = 'live' !== $source['category'] ? TCGiant_Sync_Catalog::retired_category( $settings['category_id'], $saved_name, $saved_typed ) : '';
 		if ( '' !== $retired_to ) {
 			$settings['category_retired'] = array(
 				'from'   => (string) $settings['category_id'],
@@ -3474,7 +3839,745 @@ class TCGiant_Sync_Exporter {
 			$settings['_category_mismatch'] = 'tcg_in_coins';
 		}
 
+		$settings['_source']        = $source;
+		$settings['_send_all']      = $send_all;
+		$settings['_ungraded_from'] = $ungraded_from;
+		if ( ! $send_all ) {
+			$settings['_policies_unknown'] = $policies_unknown;
+			// Whether a push has read the listing whole with GetItem
+			// (TCGiant_Sync_Ebay_Live::record_read()): what it did not give,
+			// the listing does not have.
+			$settings['_live_read']         = $read_whole;
+			$settings['_condition_partial'] = $condition_partial;
+			// Who made its listing not known yet, and the shop has not said
+			// (TCGiant_Sync_Ebay_Live::UNKNOWN): kept to eBay's values, as an
+			// imported one is, until the push reads when the listing started
+			// (live_unknown_groups()).
+			$settings['_origin_unknown'] = $product && '' === (string) $product->get_meta( TCGiant_Sync_Ebay_Live::FOLLOW_META )
+				&& TCGiant_Sync_Ebay_Live::UNKNOWN === TCGiant_Sync_Ebay_Live::origin( $product->get_id() );
+		}
+
 		return $settings;
+	}
+
+	/**
+	 * eBay's own values for the listing a product follows, by group, as
+	 * get_export_settings() takes them (3.28.8): only the groups the last
+	 * read of the listing knows (TCGiant_Sync_Ebay_Live::snapshot()), each
+	 * whole.
+	 *
+	 * - category: category_id, category_name (eBay's path); for a listing no
+	 *   read has recorded, the category the import's memory holds for it
+	 *   (TCGiant_Sync_Category_Memory), with no path;
+	 * - condition: item_type, condition_type, condition_id, grader_id,
+	 *   grade_value, cert_number, ungraded_condition, from the ConditionID
+	 *   and descriptors (live_condition());
+	 * - policies: whichever of the three business policies eBay gave, or, for
+	 *   a listing no read since 3.28.8 has recorded, those the import kept on
+	 *   the product since 3.27.6 (_ebay_shipping_policy_id) and 3.27.8
+	 *   (_ebay_return_policy_id, _ebay_payment_policy_id);
+	 * - location: location, postal_code, country, dispatch_time, when both
+	 *   the location and the postal code are known;
+	 * - format: listing_type, listing_duration, as the import recorded them.
+	 *
+	 * @param WC_Product $product Product.
+	 * @return array<string,array<string,string>>
+	 */
+	public function live_settings( WC_Product $product ) {
+		$snap   = TCGiant_Sync_Ebay_Live::snapshot( $product->get_id() );
+		$groups = array();
+
+		$category_id   = (string) ( $snap['category_id'] ?? '' );
+		$category_name = (string) ( $snap['category_name'] ?? '' );
+		// The category the import last learnt for the listing (3.28.4), while
+		// that is fresh, where no read has recorded it since 3.28.8. Kept only
+		// while the shop filters its import by category, and forgotten by a
+		// push of the listing.
+		if ( '' === $category_id && class_exists( 'TCGiant_Sync_Category_Memory' ) ) {
+			$item_id     = (string) $product->get_meta( '_ebay_item_id' );
+			$remembered  = TCGiant_Sync_Category_Memory::recall( array( $item_id ) );
+			$category_id = (string) ( $remembered[ $item_id ][0] ?? '' );
+		}
+		if ( '' !== $category_id ) {
+			$groups['category'] = array(
+				'category_id'   => $category_id,
+				'category_name' => $category_name,
+			);
+		}
+
+		$condition = self::live_condition( $snap );
+		if ( $condition ) {
+			$groups['condition'] = $condition;
+		}
+
+		$policies = array();
+		foreach ( array( 'shipping' => 'fulfillment_policy_id', 'return' => 'return_policy_id', 'payment' => 'payment_policy_id' ) as $kind => $key ) {
+			$id = isset( $snap['policies'] ) ? (string) ( $snap['policies'][ $kind ] ?? '' ) : (string) $product->get_meta( '_ebay_' . $kind . '_policy_id' );
+			if ( '' !== $id ) {
+				$policies[ $key ] = $id;
+			}
+		}
+		if ( $policies ) {
+			$groups['policies'] = $policies;
+		}
+
+		if ( '' !== (string) ( $snap['location'] ?? '' ) && '' !== (string) ( $snap['postal_code'] ?? '' ) ) {
+			$groups['location'] = array(
+				'location'      => (string) $snap['location'],
+				'postal_code'   => (string) $snap['postal_code'],
+				'country'       => (string) ( $snap['country'] ?? '' ),
+				'dispatch_time' => (string) ( $snap['dispatch_time'] ?? '' ),
+			);
+		}
+
+		$type = (string) $product->get_meta( '_ebay_listing_type' );
+		if ( isset( TCGiant_Sync_Catalog::DURATIONS_BY_TYPE[ $type ] ) ) {
+			$groups['format'] = array(
+				'listing_type'     => $type,
+				'listing_duration' => (string) $product->get_meta( '_ebay_listing_duration' ),
+			);
+		}
+
+		return $groups;
+	}
+
+	/**
+	 * A listing's condition, from its ConditionID and descriptors as eBay
+	 * gave them, in the settings' own terms: a trading card graded (27501
+	 * grader, 27502 grade, 27503 certification number) or not (40001); a coin
+	 * graded (1 grader, 3 and 4 the grade, 5 certification number) or not
+	 * (2); anything else by its ConditionID alone. A card's grade is kept as
+	 * its label where eBay's ID has one, and a coin's as "MS/PR 65".
+	 *
+	 * None for a card or coin condition (2750, 4000) whose descriptors no
+	 * answer has carried: what the grade is would not be known.
+	 *
+	 * @param array $snap TCGiant_Sync_Ebay_Live::snapshot().
+	 * @return array<string,string> Empty when the condition is not known.
+	 */
+	private static function live_condition( array $snap ) {
+		$condition_id = (string) ( $snap['condition_id'] ?? '' );
+		// By descriptor name, as "n27501": a name is a number, and PHP would
+		// make it an integer key.
+		$by_name = array();
+		foreach ( (array) ( $snap['descriptors'] ?? array() ) as $one ) {
+			if ( is_array( $one ) && '' !== (string) ( $one['name'] ?? '' ) ) {
+				$by_name[ 'n' . $one['name'] ] = $one;
+			}
+		}
+
+		if ( '' === $condition_id && ! $by_name ) {
+			return array();
+		}
+		if ( ! $by_name && ! array_key_exists( 'descriptors', $snap ) && in_array( $condition_id, array( '2750', '4000' ), true ) ) {
+			return array();
+		}
+
+		$value = function ( $name ) use ( $by_name ) {
+			return (string) ( $by_name[ 'n' . $name ]['value'] ?? '' );
+		};
+		$info  = function ( $name ) use ( $by_name ) {
+			return (string) ( $by_name[ 'n' . $name ]['info'] ?? '' );
+		};
+
+		$out = array(
+			'item_type'          => 'other',
+			'condition_type'     => '',
+			'condition_id'       => $condition_id,
+			'grader_id'          => '',
+			'grade_value'        => '',
+			'cert_number'        => '',
+			'ungraded_condition' => '',
+		);
+
+		if ( isset( $by_name['n27501'] ) || isset( $by_name['n27502'] ) ) {
+			$grade                 = $value( '27502' );
+			$label                 = array_search( $grade, TCGiant_Sync_Catalog::GRADE_IDS_TCG, true );
+			$out['item_type']      = 'tcg';
+			$out['condition_type'] = 'graded';
+			$out['grader_id']      = $value( '27501' );
+			$out['grade_value']    = false !== $label ? (string) $label : $grade;
+			$out['cert_number']    = $info( '27503' );
+		} elseif ( isset( $by_name['n40001'] ) ) {
+			$out['item_type']          = 'tcg';
+			$out['condition_type']     = 'ungraded';
+			$out['ungraded_condition'] = $value( '40001' );
+		} elseif ( isset( $by_name['n1'] ) || isset( $by_name['n3'] ) || isset( $by_name['n4'] ) ) {
+			$letter                = array_search( $value( '3' ), self::LETTER_GRADES_COINS, true );
+			$number                = array_search( $value( '4' ), self::NUMERIC_GRADES_COINS, true );
+			$out['item_type']      = 'coins';
+			$out['condition_type'] = 'graded';
+			$out['grader_id']      = $value( '1' );
+			$out['grade_value']    = ( false !== $letter && false !== $number ) ? $letter . ' ' . $number : '';
+			$out['cert_number']    = $info( '5' );
+		} elseif ( isset( $by_name['n2'] ) ) {
+			$out['item_type']          = 'coins';
+			$out['condition_type']     = 'ungraded';
+			$out['ungraded_condition'] = $value( '2' );
+		}
+
+		return $out;
+	}
+
+	/**
+	 * Whether a product's own settings for a group only repeat eBay's values
+	 * for it: a card's grade by its eBay ID, so "10" repeats 275020.
+	 *
+	 * @param array<string,string> $own  The product's settings in the group.
+	 * @param array<string,string> $live live_settings() for the group.
+	 * @return bool
+	 */
+	private static function repeats_live( array $own, array $live ) {
+		foreach ( $own as $field => $value ) {
+			$was = (string) ( $live[ $field ] ?? '' );
+			if ( 'grade_value' === $field && '' !== self::tcg_grade_id( $value ) ) {
+				if ( self::tcg_grade_id( $value ) !== self::tcg_grade_id( $was ) ) {
+					return false;
+				}
+				continue;
+			}
+			if ( (string) $value !== $was ) {
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	/**
+	 * A product's own condition fields as a whole condition, with nothing of
+	 * the shop's defaults in it (3.28.8), or none when they are not one:
+	 *
+	 * - Trading Cards or Coins, Graded, with a grader and a grade, and the
+	 *   certification number when it has one: ConditionID 2750;
+	 * - Trading Cards or Coins, Ungraded, with the card's or coin's
+	 *   condition: ConditionID 4000;
+	 * - All Other with a condition.
+	 *
+	 * An imported listing whose condition no read has recorded is sent the
+	 * product's own only when it is one of these.
+	 *
+	 * @param array<string,string> $own The product's own condition fields.
+	 * @return array<string,string> The whole condition group, or none.
+	 */
+	private static function whole_condition( array $own ) {
+		$item_type = (string) ( $own['item_type'] ?? '' );
+		$whole     = array(
+			'item_type'          => $item_type,
+			'condition_type'     => '',
+			'condition_id'       => '',
+			'grader_id'          => '',
+			'grade_value'        => '',
+			'cert_number'        => '',
+			'ungraded_condition' => '',
+		);
+
+		if ( 'other' === $item_type ) {
+			$whole['condition_id'] = (string) ( $own['condition_id'] ?? '' );
+			return '' !== $whole['condition_id'] ? $whole : array();
+		}
+		if ( ! in_array( $item_type, array( 'tcg', 'coins' ), true ) ) {
+			return array();
+		}
+
+		$condition_type = (string) ( $own['condition_type'] ?? '' );
+		if ( 'graded' === $condition_type && '' !== (string) ( $own['grader_id'] ?? '' ) && '' !== (string) ( $own['grade_value'] ?? '' ) ) {
+			return array_merge( $whole, array(
+				'condition_type' => 'graded',
+				'condition_id'   => '2750',
+				'grader_id'      => (string) $own['grader_id'],
+				'grade_value'    => (string) $own['grade_value'],
+				'cert_number'    => (string) ( $own['cert_number'] ?? '' ),
+			) );
+		}
+		if ( 'ungraded' === $condition_type && '' !== (string) ( $own['ungraded_condition'] ?? '' ) ) {
+			return array_merge( $whole, array(
+				'condition_type'     => 'ungraded',
+				'condition_id'       => '4000',
+				'ungraded_condition' => (string) $own['ungraded_condition'],
+			) );
+		}
+
+		return array();
+	}
+
+	/**
+	 * Whether a push checks its item specifics against the category's
+	 * required aspects before eBay is asked: not for the revise of a listing
+	 * imported before 3.28.8 whose category no read has recorded yet
+	 * (3.28.8). The shop's default category is not that listing's, and eBay
+	 * says what the listing lacks.
+	 *
+	 * @param array $settings get_export_settings().
+	 * @param bool  $revise   Whether the item goes to a Revise call.
+	 * @return bool
+	 */
+	public static function checks_aspects( array $settings, $revise ) {
+		return self::sends_all( $settings, $revise ) || 'default' !== ( $settings['_source']['category'] ?? 'default' );
+	}
+
+	/**
+	 * Whether every group of fields goes to eBay (3.28.8): any new listing,
+	 * Verify, a product the plugin pushed, and settings made without
+	 * get_export_settings(). Only a revise of an imported listing leaves
+	 * groups out.
+	 *
+	 * @param array $settings get_export_settings().
+	 * @param bool  $revise   Whether the item goes to a Revise call.
+	 * @return bool
+	 */
+	public static function sends_all( array $settings, $revise ) {
+		return ! $revise || ! isset( $settings['_source'] ) || ! empty( $settings['_send_all'] );
+	}
+
+	/**
+	 * Whether a revise sends a group of fields (3.28.8).
+	 *
+	 * A revise changes only what it is sent, and a field left out keeps its
+	 * value on eBay (checked live on 2026-11-02: a ReviseFixedPriceItem with
+	 * only the ItemID left all 21 fields compared as they were). So the
+	 * revise of an imported listing sends a group only when the product
+	 * overrides it, and the condition also when the category goes and the
+	 * condition is known - eBay's descriptors belong to a category. Nothing
+	 * else of eBay's own is sent: not the category, condition, business
+	 * policies, location or handling time the listing has, nor its format.
+	 *
+	 * @param array  $settings get_export_settings().
+	 * @param string $group    category, condition, policies, location or format.
+	 * @param bool   $revise   Whether the item goes to a Revise call.
+	 * @return bool
+	 */
+	public static function sends( array $settings, $group, $revise ) {
+		if ( self::sends_all( $settings, $revise ) ) {
+			return true;
+		}
+
+		$source = (string) ( $settings['_source'][ $group ] ?? 'default' );
+		if ( 'override' === $source ) {
+			return true;
+		}
+
+		if ( 'condition' === $group ) {
+			return 'default' !== $source && self::sends( $settings, 'category', $revise );
+		}
+
+		return false;
+	}
+
+	/**
+	 * What is wrong with the category and condition an imported listing
+	 * would have after its revise (3.28.8), when the revise sends either:
+	 * the one sent, and eBay's own for the other, which eBay keeps. The pair
+	 * is judged as a new listing's is - a coin parent sent, card details
+	 * outside the three card categories, and those three with no card
+	 * condition - and a half the plugin has not read is not guessed at with
+	 * the shop's default: the push is refused, saying what to do. None for
+	 * any other push.
+	 *
+	 * @param array $settings get_export_settings().
+	 * @return array<string,string> 'category' or 'condition' => why, or none.
+	 */
+	public static function revise_pair_problems( array $settings ) {
+		$send_category  = self::sends( $settings, 'category', true );
+		$send_condition = self::sends( $settings, 'condition', true );
+		if ( self::sends_all( $settings, true ) || ( ! $send_category && ! $send_condition ) ) {
+			return array();
+		}
+
+		// A half not read yet is read by the push first, with one GetItem
+		// (live_unknown_groups()), and judged then; refused only when that
+		// read failed. A listing read whole that has no condition on eBay
+		// takes the category alone, for eBay to judge.
+		$pending = empty( $settings['_live_read'] ) && empty( $settings['_live_read_failed'] );
+		if ( ! $send_category && 'live' !== ( $settings['_source']['category'] ?? '' ) ) {
+			return $pending ? array() : array( 'category' => __( 'the plugin has not read which category this listing is in on eBay, so the condition set on this product cannot be checked against it: run Fetch Inventory so the listing is read, or choose its category with Browse eBay Categories', 'tcgiant-sync' ) );
+		}
+		if ( ! $send_condition ) {
+			return ( $pending || ! empty( $settings['_live_read'] ) ) ? array() : array( 'condition' => __( 'the plugin has not read this listing\'s condition on eBay, and the category set on this product needs one it takes: set the whole condition on the product\'s eBay tab (Item Type, Graded or Ungraded, and the grade or the condition), or run Fetch Inventory so the listing is read', 'tcgiant-sync' ) );
+		}
+
+		// The category a revise sends keeps a retired ID (keep_listing_category()).
+		$pair     = self::keep_listing_category( $settings );
+		$category = (string) ( $pair['category_id'] ?? '' );
+
+		$parent = $send_category ? TCGiant_Sync_Catalog::coin_parent_problem( $category ) : '';
+		if ( '' !== $parent ) {
+			return array( 'category' => $parent );
+		}
+
+		$card = self::card_category_problem( $pair );
+		if ( '' !== $card ) {
+			return array( 'category' => $card );
+		}
+
+		if ( in_array( $category, self::DESCRIPTOR_CATEGORIES_TCG, true ) && TCGiant_Sync_Catalog::card_leaves_verified() && ! self::takes_card_descriptors( $pair ) ) {
+			return array( 'condition' => sprintf(
+				/* translators: 1: category ID, 2: its name */
+				__( 'eBay takes only a trading card\'s condition, Graded or Ungraded, in %1$s %2$s, and this listing\'s is not one: set Item Type to Trading Cards and the card\'s condition on the product\'s eBay tab, or choose another category', 'tcgiant-sync' ),
+				$category,
+				TCGiant_Sync_Catalog::CARD_CATEGORY_NAMES[ $category ] ?? ''
+			) );
+		}
+
+		return array();
+	}
+
+	/**
+	 * Why an imported listing's revise cannot send its business policies, if
+	 * it cannot (3.28.8): it sends them only for a policy of the product's
+	 * own, eBay takes the three together ("exactly one" of each, its
+	 * reference says of SellerProfiles), and the plugin has not read the
+	 * listing's own for the others. The shop's default is never sent in their
+	 * place. '' for any other push.
+	 *
+	 * @param array $settings get_export_settings().
+	 * @return string
+	 */
+	public static function policies_unknown_problem( array $settings ) {
+		$unknown = (array) ( $settings['_policies_unknown'] ?? array() );
+		if ( ! $unknown || self::sends_all( $settings, true ) || ! self::sends( $settings, 'policies', true ) ) {
+			return '';
+		}
+		// Not read yet: the push reads them first (live_unknown_groups()).
+		// Read whole, a listing with none is revised without them
+		// (get_export_settings(), _policies_ignored), so only a read that
+		// failed is refused.
+		if ( empty( $settings['_live_read_failed'] ) ) {
+			return '';
+		}
+
+		$names = array(
+			'fulfillment_policy_id' => __( 'shipping', 'tcgiant-sync' ),
+			'return_policy_id'      => __( 'return', 'tcgiant-sync' ),
+			'payment_policy_id'     => __( 'payment', 'tcgiant-sync' ),
+		);
+		$which = array();
+		foreach ( $unknown as $key ) {
+			$which[] = $names[ $key ] ?? $key;
+		}
+
+		return sprintf(
+			1 === count( $which )
+				/* translators: %s: "return" */
+				? __( 'the plugin has not read this listing\'s %s policy on eBay, and eBay changes a listing\'s business policies only with all three sent: run Fetch Inventory so the listing is read, or clear this product\'s own shipping policy to leave its policies as they are', 'tcgiant-sync' )
+				/* translators: %s: "return and payment" */
+				: __( 'the plugin has not read this listing\'s %s policies on eBay, and eBay changes a listing\'s business policies only with all three sent: run Fetch Inventory so the listing is read, or clear this product\'s own shipping policy to leave its policies as they are', 'tcgiant-sync' ),
+			implode( ' and ', $which )
+		);
+	}
+
+	/**
+	 * The groups an imported listing's revise sends that need a value of
+	 * eBay's the plugin has not read (3.28.8): the category, when only the
+	 * condition is sent; the condition, when the category is; the business
+	 * policies, when the product sets one of its own and the others are not
+	 * known; and 'origin', when who made the listing is not known
+	 * (_origin_unknown), whatever the Update sends. The push reads the
+	 * listing once with GetItem before it decides (do_push()); once a read
+	 * is recorded none of the first three is asked for again for that
+	 * listing, and once the origin is judged and kept, not that. None for a
+	 * push that sends none of them - a price, quantity, title or description
+	 * change of a listing whose origin is known - and for a product the
+	 * plugin pushed.
+	 *
+	 * @param array $settings get_export_settings().
+	 * @return string[] Of category, condition, policies and origin.
+	 */
+	public static function live_unknown_groups( array $settings ) {
+		if ( self::sends_all( $settings, true ) ) {
+			return array();
+		}
+
+		$groups = array();
+		if ( empty( $settings['_live_read'] ) ) {
+			$send_category  = self::sends( $settings, 'category', true );
+			$send_condition = self::sends( $settings, 'condition', true );
+			if ( $send_condition && ! $send_category && 'live' !== ( $settings['_source']['category'] ?? '' ) ) {
+				$groups[] = 'category';
+			}
+			if ( ( $send_category && ! $send_condition ) || ! empty( $settings['_condition_partial'] ) ) {
+				$groups[] = 'condition';
+			}
+			if ( ! empty( $settings['_policies_unknown'] ) && self::sends( $settings, 'policies', true ) ) {
+				$groups[] = 'policies';
+			}
+		}
+		// Who made the listing, where nothing the product holds tells
+		// (TCGiant_Sync_Ebay_Live::UNKNOWN): read for when it started,
+		// whatever else is known, and judged by it (learn_origin()).
+		if ( ! empty( $settings['_origin_unknown'] ) ) {
+			$groups[] = 'origin';
+		}
+
+		return $groups;
+	}
+
+	/**
+	 * Whether a push of this product is refused before any call for a reason
+	 * no read of eBay's could change (3.28.8): a staging copy, which sends
+	 * nothing; nothing in stock to sell; another product claiming the same
+	 * listing; a format change eBay will not make to a live listing. The
+	 * read of an unread value (live_unknown_groups()) is not made then, and
+	 * do_push()'s own checks refuse it, at no call, as before.
+	 *
+	 * @param WC_Product $product Product being pushed.
+	 * @return bool
+	 */
+	private function refused_without_a_read( WC_Product $product ) {
+		if ( class_exists( 'TCGiant_Sync_Environment' ) && null !== TCGiant_Sync_Environment::write_block() ) {
+			return true;
+		}
+		if ( ! $product->is_type( 'variable' ) && $product->managing_stock() && (int) $product->get_stock_quantity() < 1 ) {
+			return true;
+		}
+		if ( TCGiant_Sync_Listing_Link::find_products_sharing_item_id( $product->get_id(), (string) $product->get_meta( '_ebay_item_id' ) ) ) {
+			return true;
+		}
+
+		$live_format   = (string) $product->get_meta( '_ebay_listing_type' );
+		$wanted_format = (string) $product->get_meta( '_ebay_export_listing_type' );
+
+		return ! $product->is_type( 'variable' ) && 'Active' === (string) $product->get_meta( '_ebay_listing_status' )
+			&& '' !== $live_format && '' !== $wanted_format && $live_format !== $wanted_format;
+	}
+
+	/**
+	 * Whether the push's read of this listing failed within the hour
+	 * (3.28.8): it is not read again until then (read_listing_first()), and
+	 * the eBay tab says what the push does meanwhile.
+	 *
+	 * @param string $item_id eBay item ID.
+	 * @return bool
+	 */
+	public static function read_held( $item_id ) {
+		$item_id = (string) $item_id;
+
+		return '' !== $item_id && (bool) get_transient( self::READ_BACKOFF . $item_id );
+	}
+
+	/**
+	 * Whether an imported listing's revise still goes when the read it waits
+	 * on fails, or is held for the hour (3.28.8): only when nothing it sends
+	 * is refused for want of the read - that is, when the read was for a
+	 * partial condition of the product's own alone, which is then left out
+	 * (get_export_settings(), _condition_partial). The category or condition
+	 * pair, and the business policies, are refused instead
+	 * (revise_pair_problems(), policies_unknown_problem()).
+	 *
+	 * @param array $settings get_export_settings(), before the read.
+	 * @return bool
+	 */
+	public static function goes_without_read( array $settings ) {
+		$settings['_live_read_failed'] = true;
+
+		return ! self::revise_pair_problems( $settings ) && '' === self::policies_unknown_problem( $settings );
+	}
+
+	/**
+	 * Whether a listing eBay gave has ended: its ListingStatus is there and
+	 * is not Active.
+	 *
+	 * @param array $item GetItem's Item.
+	 * @return bool
+	 */
+	private static function read_says_ended( array $item ) {
+		$status = TCGiant_Sync_API::scalar_value( $item['SellingStatus']['ListingStatus'] ?? '' );
+
+		return '' !== $status && 'Active' !== $status;
+	}
+
+	/**
+	 * The push's one read of an imported listing whose values it needs and
+	 * has not read (3.28.8, live_unknown_groups()): GetItem, recorded whole
+	 * (TCGiant_Sync_Ebay_Live::record_read()). A listing still live has its
+	 * site recorded, as the import records it, and is revised on whatever
+	 * site, as 3.28.6 revised it; an ended one's site is left to do_push()'s
+	 * ended path, which brings its sales in first and then holds it to the
+	 * site rule, as when a revise is refused as ended and the listing then
+	 * read. A read that fails is not tried again for that listing within the
+	 * hour (transient tcgiant_sync_live_read_failed_<ItemID>, read_held()).
+	 * Where that refuses the Update the log says so now; where it goes on
+	 * without the product's partial condition (goes_without_read()), it is
+	 * said once eBay has taken the rest (say_condition_unread()).
+	 *
+	 * @param WC_Product $product  Product being pushed.
+	 * @param string[]   $unread   What has not been read, for the log.
+	 * @param array      $settings get_export_settings(), before the read.
+	 * @return array|null The listing as eBay gave it; null when it could not
+	 *                    be read.
+	 */
+	private function read_listing_first( WC_Product $product, array $unread, array $settings ) {
+		$item_id = (string) $product->get_meta( '_ebay_item_id' );
+		$backoff = self::READ_BACKOFF . $item_id;
+		$goes    = self::goes_without_read( $settings );
+		if ( get_transient( $backoff ) ) {
+			if ( $goes ) {
+				$this->read_missed = array( 'why' => '', 'unread' => $unread );
+			} else {
+				TCGiant_Sync_Logger::warning( sprintf(
+					'Push: eBay listing %1$s of WC #%2$d could not be read in the last hour, so its %3$s could not be checked, and the Update was not sent. It is read again after the hour.',
+					$item_id,
+					$product->get_id(),
+					self::unread_words( $unread )
+				) );
+			}
+			return null;
+		}
+
+		$answer = TCGiant_Sync_API::instance()->get_item( $item_id );
+		if ( is_wp_error( $answer ) || empty( $answer['Item'] ) || ! TCGiant_Sync_Ebay_Live::record_read( $product->get_id(), $answer['Item'] ) ) {
+			set_transient( $backoff, 1, 3600 );
+			$why = is_wp_error( $answer ) ? $answer->get_error_message() : 'no answer';
+			if ( $goes ) {
+				$this->read_missed = array( 'why' => $why, 'unread' => $unread );
+			} else {
+				TCGiant_Sync_Logger::warning( sprintf(
+					'Push: could not read eBay listing %1$s of WC #%2$d (%3$s), so its %4$s could not be checked, and the Update was not sent.',
+					$item_id,
+					$product->get_id(),
+					$why,
+					self::unread_words( $unread )
+				) );
+			}
+			return null;
+		}
+
+		TCGiant_Sync_Logger::log( sprintf(
+			'Push: read eBay listing %1$s of WC #%2$d first, as its %3$s had not been read, so its own values decide what the Update sends.',
+			$item_id,
+			$product->get_id(),
+			self::unread_words( $unread )
+		) );
+
+		// Who made it, where nothing the product held could tell (3.28.8):
+		// judged by when the listing started, and kept, before anything is
+		// built - so a listing the shop pushed is sent the shop's defaults
+		// as before, and one imported only what the product sets.
+		if ( in_array( 'origin', $unread, true ) ) {
+			$told   = false;
+			$origin = TCGiant_Sync_Ebay_Live::learn_origin( $product->get_id(), $answer['Item'], $told );
+			$start  = (string) get_post_meta( $product->get_id(), '_ebay_start_time', true );
+			$start  = '' !== $start ? 'started ' . $start : 'no start time given';
+			if ( $told ) {
+				TCGiant_Sync_Logger::log( sprintf(
+					'Push: eBay listing %1$s of WC #%2$d (%3$s) is kept as %4$s.',
+					$item_id,
+					$product->get_id(),
+					$start,
+					'import' === $origin ? 'imported from eBay: its Updates leave the listing\'s own values as they are' : 'pushed from WooCommerce: its Updates send the shop\'s defaults'
+				) );
+			} elseif ( 'import' === $origin ) {
+				// Read, and still nothing to tell by - a relist, a product
+				// with no date of its own: kept as imported, which sends
+				// nothing of the shop's, and not read again for it.
+				TCGiant_Sync_Logger::log( sprintf(
+					'Push: neither WC #%2$d nor eBay listing %1$s (%3$s) shows who made the listing - a relist, say, or a product with no date of its own - so it is kept as imported from eBay: its Updates leave the listing\'s own values as they are. Tick "Send my shop defaults" on its eBay tab if they should be sent the shop\'s defaults.',
+					$item_id,
+					$product->get_id(),
+					$start
+				) );
+			}
+		}
+
+		if ( ! self::read_says_ended( $answer['Item'] ) ) {
+			TCGiant_Sync_Sites::record_site( $product->get_id(), TCGiant_Sync_Sites::site_of( $answer['Item'] ) );
+		}
+
+		return $answer['Item'];
+	}
+
+	/**
+	 * Say, once eBay has accepted a revise, what went without the read of
+	 * the listing that failed, or was held for the hour (3.28.8,
+	 * read_listing_first()): the product's partial condition, not sent; and
+	 * where who made the listing was not known, that the Update went as an
+	 * imported listing's.
+	 *
+	 * @param int    $product_id Product.
+	 * @param string $item_id    The listing revised.
+	 * @return void
+	 */
+	private function say_read_missed( $product_id, $item_id ) {
+		if ( null === $this->read_missed ) {
+			return;
+		}
+
+		$why    = (string) $this->read_missed['why'];
+		$unread = (array) $this->read_missed['unread'];
+		if ( in_array( 'condition', $unread, true ) ) {
+			TCGiant_Sync_Logger::warning( '' === $why
+				? sprintf(
+					'Push: could not read eBay\'s condition for listing %1$s of WC #%2$d in the last hour, so the product\'s partial condition was not sent; the rest of the Update went. The listing is read again after the hour.',
+					$item_id,
+					(int) $product_id
+				)
+				: sprintf(
+					'Push: could not read eBay\'s condition for listing %1$s of WC #%2$d (%3$s), so the product\'s partial condition was not sent; the rest of the Update went. The listing is read again after the hour.',
+					$item_id,
+					(int) $product_id,
+					$why
+				) );
+		}
+		if ( in_array( 'origin', $unread, true ) ) {
+			TCGiant_Sync_Logger::warning( '' === $why
+				? sprintf(
+					'Push: could not read when eBay listing %1$s of WC #%2$d started, in the last hour, so who made it is not known yet: the Update went as for an imported listing, with only what this product sets of its own. The listing is read again at an Update after the hour.',
+					$item_id,
+					(int) $product_id
+				)
+				: sprintf(
+					'Push: could not read when eBay listing %1$s of WC #%2$d started (%3$s), so who made it is not known yet: the Update went as for an imported listing, with only what this product sets of its own. The listing is read again at an Update after the hour.',
+					$item_id,
+					(int) $product_id,
+					$why
+				) );
+		}
+	}
+
+	/**
+	 * What has not been read, for the log: the groups, the origin said as
+	 * the listing's start time.
+	 *
+	 * @param string[] $unread live_unknown_groups().
+	 * @return string
+	 */
+	private static function unread_words( array $unread ) {
+		return implode( ', ', str_replace( 'origin', 'start time', $unread ) );
+	}
+
+	/**
+	 * Say, once eBay has accepted a revise, that the product's own shipping
+	 * policy was not applied to a listing that does not use business
+	 * policies, or has only some of them (the ruling on Q11).
+	 *
+	 * @param int    $product_id Product.
+	 * @param array  $settings   get_export_settings().
+	 * @param string $item_id    The listing revised.
+	 * @return void
+	 */
+	private static function say_policies_ignored( $product_id, array $settings, $item_id ) {
+		if ( ! isset( $settings['_policies_ignored'] ) || ! is_array( $settings['_policies_ignored'] ) ) {
+			return;
+		}
+
+		$names = array( 'fulfillment_policy_id' => 'shipping', 'return_policy_id' => 'return', 'payment_policy_id' => 'payment' );
+		$has   = array();
+		foreach ( $settings['_policies_ignored'] as $key ) {
+			$has[] = $names[ $key ] ?? $key;
+		}
+
+		TCGiant_Sync_Logger::warning( $has
+			? sprintf(
+				'Push: eBay listing %1$s of WC #%2$d has only a %3$s business policy, and eBay changes business policies only all three together, so the product\'s shipping policy was not applied. The Update went without it; the listing\'s policies are as they were on eBay.',
+				$item_id,
+				(int) $product_id,
+				implode( ' and a ', $has )
+			)
+			: sprintf(
+				'Push: eBay listing %1$s of WC #%2$d doesn\'t use business policies, so the product\'s shipping policy was not applied. The Update went without it; the listing\'s shipping and returns are as they were on eBay.',
+				$item_id,
+				(int) $product_id
+			) );
 	}
 
 	/**
@@ -3486,14 +4589,29 @@ class TCGiant_Sync_Exporter {
 	 *                           Verify, Check with eBay, Bulk Verify. Only then
 	 *                           are a coin parent and card details outside
 	 *                           their categories refused; a revise of a live
-	 *                           listing sends them as until 3.28.5.
+	 *                           listing sends them as until 3.28.5. A revise
+	 *                           of an imported listing is held only to the
+	 *                           groups it sends (3.28.8, sends()): one in a
+	 *                           shop with no defaults saved goes through.
 	 * @return true|WP_Error True on success, WP_Error describing what's missing.
 	 */
 	public function validate_export_settings( array $settings, $new_listing = true ) {
 		$missing = array();
 
+		$send_category  = self::sends( $settings, 'category', ! $new_listing );
+		$send_condition = self::sends( $settings, 'condition', ! $new_listing );
+		$send_location  = self::sends( $settings, 'location', ! $new_listing );
+		$send_policies  = self::sends( $settings, 'policies', ! $new_listing );
+
+		// An imported listing's revise is held to the category and condition
+		// the listing will have (revise_pair_problems()). One whose category
+		// the plugin has not read is not held to the shop's default, which is
+		// not the listing's.
+		$pair_problems    = $new_listing ? array() : self::revise_pair_problems( $settings );
+		$category_unknown = ! $new_listing && ! $send_category && ! self::sends_all( $settings, true ) && 'live' !== ( $settings['_source']['category'] ?? '' );
+
 		// Check for category-item_type mismatch (set in get_export_settings).
-		if ( ! empty( $settings['_category_mismatch'] ) ) {
+		if ( ( $send_category || $send_condition ) && ! $category_unknown && ! empty( $settings['_category_mismatch'] ) ) {
 			if ( 'coins_in_tcg' === $settings['_category_mismatch'] ) {
 				$missing[] = __( 'eBay Category — this is a Coins item but the eBay category is set to Trading Cards. Set a Coins leaf category (e.g. "Coins: US > Dollars > Silver Eagles") on this product using Browse eBay Categories in the TCGiant Sync tab', 'tcgiant-sync' );
 			} elseif ( 'tcg_in_coins' === $settings['_category_mismatch'] ) {
@@ -3515,28 +4633,43 @@ class TCGiant_Sync_Exporter {
 			$missing[] = sprintf( __( 'eBay Category — %s', 'tcgiant-sync' ), $card_category );
 		}
 
-		if ( empty( $settings['category_id'] ) ) {
+		if ( $send_category && empty( $settings['category_id'] ) ) {
 			$missing[] = __( 'eBay Category ID (set a default in TCGiant Sync settings)', 'tcgiant-sync' );
 		}
-		if ( empty( $settings['location'] ) ) {
+		if ( $send_location && empty( $settings['location'] ) ) {
 			$missing[] = __( 'Item Location (set city/state in TCGiant Sync settings)', 'tcgiant-sync' );
 		}
-		if ( empty( $settings['postal_code'] ) ) {
+		if ( $send_location && empty( $settings['postal_code'] ) ) {
 			$missing[] = __( 'Postal Code (set ZIP code in TCGiant Sync settings)', 'tcgiant-sync' );
 		}
-		if ( empty( $settings['fulfillment_policy_id'] ) ) {
+		// An imported listing's own policy beside ones the plugin has not
+		// read (3.28.8): refused, never sent with the shop's.
+		$policies_problem = $new_listing ? '' : self::policies_unknown_problem( $settings );
+		if ( '' !== $policies_problem ) {
+			/* translators: %s: why */
+			$missing[] = sprintf( __( 'Business Policies — %s', 'tcgiant-sync' ), $policies_problem );
+		}
+		if ( $send_policies && empty( $settings['fulfillment_policy_id'] ) ) {
 			$missing[] = __( 'Fulfillment (Shipping) Policy (fetch policies in TCGiant Sync settings)', 'tcgiant-sync' );
 		}
-		if ( empty( $settings['return_policy_id'] ) ) {
+		if ( $send_policies && empty( $settings['return_policy_id'] ) ) {
 			$missing[] = __( 'Return Policy (fetch policies in TCGiant Sync settings)', 'tcgiant-sync' );
 		}
-		if ( empty( $settings['payment_policy_id'] ) ) {
+		if ( $send_policies && empty( $settings['payment_policy_id'] ) ) {
 			$missing[] = __( 'Payment Policy (fetch policies in TCGiant Sync settings)', 'tcgiant-sync' );
+		}
+
+		foreach ( $pair_problems as $group => $problem ) {
+			$missing[] = 'category' === $group
+				/* translators: %s: why */
+				? sprintf( __( 'eBay Category — %s', 'tcgiant-sync' ), $problem )
+				/* translators: %s: why */
+				: sprintf( __( 'Condition — %s', 'tcgiant-sync' ), $problem );
 		}
 
 		// Validate ConditionDescriptor fields for eligible categories.
 		$item_type = $settings['item_type'] ?? '';
-		if ( self::is_descriptor_category( $settings['category_id'], $item_type ) ) {
+		if ( $send_condition && self::is_descriptor_category( $settings['category_id'] ?? '', $item_type ) ) {
 			if ( empty( $settings['condition_type'] ) ) {
 				$missing[] = __( 'Condition Type (select Graded or Ungraded in TCGiant Sync settings — required for this eBay category)', 'tcgiant-sync' );
 			} elseif ( 'graded' === $settings['condition_type'] ) {
@@ -3560,6 +4693,11 @@ class TCGiant_Sync_Exporter {
 				sprintf( __( 'Cannot push to eBay — missing required settings: %s', 'tcgiant-sync' ), implode( ', ', $missing ) ),
 				array( 'missing' => $missing )
 			);
+		}
+
+		// An imported listing's revise sends no format (3.28.8).
+		if ( ! self::sends_all( $settings, ! $new_listing ) ) {
+			return true;
 		}
 
 		// Validate listing duration compatibility with listing type.
@@ -3677,6 +4815,10 @@ class TCGiant_Sync_Exporter {
 
 	/**
 	 * Check a product against the aspects eBay requires for its category.
+	 *
+	 * Item specifics go whole with every revise, so an imported listing's are
+	 * checked against the category it is in on eBay (3.28.8): its settings
+	 * carry it. See checks_aspects() for the one that is not checked.
 	 *
 	 * @param WC_Product $product  Product being listed.
 	 * @param array      $settings Merged export settings.
@@ -4061,7 +5203,15 @@ class TCGiant_Sync_Exporter {
 
 		$specifics = array();
 
-		if ( 'graded' === ( $settings['condition_type'] ?? '' ) ) {
+		// An imported listing's condition is eBay's (3.28.8), and so are the
+		// specifics that say it: the import brought them as attributes, and
+		// made again from the settings they would put "MS/PR 65" over eBay's
+		// "MS 65". Only a condition the product sets is said here.
+		$condition_ours = ! isset( $settings['_source'] ) || ! empty( $settings['_send_all'] ) || 'override' === ( $settings['_source']['condition'] ?? '' );
+
+		if ( ! $condition_ours ) {
+			$specifics = array();
+		} elseif ( 'graded' === ( $settings['condition_type'] ?? '' ) ) {
 			// Certification — the grader name (e.g. "NGC", "PCGS").
 			if ( ! empty( $settings['grader_id'] ) ) {
 				$grader_name = self::get_grader_name_by_id( $settings['grader_id'], 'coins' );
@@ -4387,6 +5537,17 @@ class TCGiant_Sync_Exporter {
 	private $card_said = array();
 
 	/**
+	 * This push's read of the listing that did not happen, where the Update
+	 * goes on without it (3.28.8): why ('' when it was held for the hour, or
+	 * eBay's error) and what it was for (live_unknown_groups()); null when
+	 * nothing was missed. Said once eBay takes the revise
+	 * (say_read_missed()).
+	 *
+	 * @var array{why: string, unread: string[]}|null
+	 */
+	private $read_missed = null;
+
+	/**
 	 * Whose build this is, for its warnings: 'Push' (do_push()) or 'Verify'
 	 * (build_item_xml_public(): Verify, Check with eBay, the template
 	 * preview), which lists nothing.
@@ -4481,7 +5642,7 @@ class TCGiant_Sync_Exporter {
 	 * @param string $item_id    The listing revised.
 	 */
 	private function say_category_kept( $product_id, array $kept, $item_id ) {
-		if ( ! empty( $kept['category_kept'] ) ) {
+		if ( ! empty( $kept['category_kept'] ) && self::sends( $kept, 'category', true ) ) {
 			TCGiant_Sync_Logger::warning( self::kept_category_warning( (int) $product_id, $kept['category_kept'], $item_id, 'revise' ) );
 		}
 	}
@@ -4532,6 +5693,51 @@ class TCGiant_Sync_Exporter {
 			TCGiant_Sync_Catalog::CARD_CATEGORY_NAMES[ $category_id ] ?? $category_id,
 			implode( ', ', $takes ),
 			'Verify' === $for ? 'Verify' : 'Push'
+		);
+	}
+
+	/**
+	 * The ungraded card condition sent in place of the shop's default, when
+	 * that default is not one eBay's table lists for the category and its
+	 * pair there is (decision 17, 3.28.8): TCGiant_Sync_Catalog::
+	 * UNGRADED_TCG_PAIRS. '' otherwise - for a condition the product or eBay
+	 * set, which goes as it is (3.28.1), and in any other category.
+	 *
+	 * @param array $settings get_export_settings(), with the category sent.
+	 * @return string The pair's value ID, or ''.
+	 */
+	public static function ungraded_pair( array $settings ) {
+		$value    = (string) ( $settings['ungraded_condition'] ?? '' );
+		$category = (string) ( $settings['category_id'] ?? '' );
+		if ( 'default' !== ( $settings['_ungraded_from'] ?? '' ) || '' === $value || self::ungraded_valid_in( $value, $category ) ) {
+			return '';
+		}
+
+		$pair = (string) ( TCGiant_Sync_Catalog::UNGRADED_TCG_PAIRS[ $value ] ?? '' );
+
+		return ( '' !== $pair && self::ungraded_valid_in( $pair, $category ) ) ? $pair : '';
+	}
+
+	/**
+	 * The warning for the shop's default card condition sent as its pair.
+	 *
+	 * @param int    $product_id  Product.
+	 * @param string $value       The default's value ID.
+	 * @param string $pair        The pair's.
+	 * @param string $category_id eBay category ID.
+	 * @param string $for         'Push' or 'Verify'.
+	 * @return string
+	 */
+	public static function ungraded_pair_warning( $product_id, $value, $pair, $category_id, $for = 'Push' ) {
+		return sprintf(
+			'Verify' === $for
+				? 'Verify: the default card condition "%2$s" in Settings is not one eBay\'s table of trading-card conditions lists for category %4$s, %5$s, so WC #%1$d was checked with its pair there, "%3$s".'
+				: 'Push: the default card condition "%2$s" in Settings is not one eBay\'s table of trading-card conditions lists for category %4$s, %5$s, so WC #%1$d was sent its pair there, "%3$s". Choose a condition on the product\'s eBay tab to send another.',
+			(int) $product_id,
+			TCGiant_Sync_Catalog::UNGRADED_TCG[ $value ] ?? $value,
+			TCGiant_Sync_Catalog::UNGRADED_TCG[ $pair ] ?? $pair,
+			$category_id,
+			TCGiant_Sync_Catalog::CARD_CATEGORY_NAMES[ $category_id ] ?? $category_id
 		);
 	}
 
@@ -4790,14 +5996,27 @@ class TCGiant_Sync_Exporter {
 				} else {
 					// TCG: Descriptor Name 40001 ("Card Condition"). One eBay's table
 					// does not list for the category goes all the same, and is said
-					// once a push: the table is behind eBay's own data.
+					// once a push: the table is behind eBay's own data. But the
+					// shop's default, when it is not one eBay lists for the
+					// category, goes as its pair there - Excellent as Lightly
+					// Played (Excellent) in CCG Individual Cards, and back - said
+					// once a push (decision 17, 3.28.8).
+					$ungraded = (string) $settings['ungraded_condition'];
+					$pair     = self::ungraded_pair( $settings );
+					if ( '' !== $pair ) {
+						if ( empty( $this->card_said[ 'pair:' . (int) $product_id ] ) ) {
+							$this->card_said[ 'pair:' . (int) $product_id ] = true;
+							TCGiant_Sync_Logger::warning( self::ungraded_pair_warning( (int) $product_id, $ungraded, $pair, (string) $settings['category_id'], $this->build_for ) );
+						}
+						$ungraded = $pair;
+					}
 					$xml .= "\t<ConditionDescriptor>\n";
 					$xml .= "\t\t<Name>40001</Name>\n";
-					$xml .= "\t\t<Value>" . esc_attr( $settings['ungraded_condition'] ) . "</Value>\n";
+					$xml .= "\t\t<Value>" . esc_attr( $ungraded ) . "</Value>\n";
 					$xml .= "\t</ConditionDescriptor>\n";
-					if ( ! self::ungraded_valid_in( $settings['ungraded_condition'], $settings['category_id'] ) && empty( $this->card_said[ 'ungraded:' . (int) $product_id ] ) ) {
+					if ( ! self::ungraded_valid_in( $ungraded, $settings['category_id'] ) && empty( $this->card_said[ 'ungraded:' . (int) $product_id ] ) ) {
 						$this->card_said[ 'ungraded:' . (int) $product_id ] = true;
-						TCGiant_Sync_Logger::warning( self::ungraded_invalid_warning( (int) $product_id, (string) $settings['ungraded_condition'], (string) $settings['category_id'], $this->build_for ) );
+						TCGiant_Sync_Logger::warning( self::ungraded_invalid_warning( (int) $product_id, $ungraded, (string) $settings['category_id'], $this->build_for ) );
 					}
 				}
 			}
