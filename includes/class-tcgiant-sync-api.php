@@ -2194,6 +2194,13 @@ class TCGiant_Sync_API {
 	 * Returns the full condition descriptor schema including valid
 	 * conditionDescriptorIds and conditionDescriptorValueIds.
 	 *
+	 * Nothing in the plugin calls this: eBay Motors' conditions are read with
+	 * get_condition_policies_for(), and the condition lists are the plugin's
+	 * own (TCGiant_Sync_Catalog::CONDITIONS). Its filter is eBay's own since
+	 * 3.29.2 - "filter=categoryIds:{100|101|102}", URL-encoded, as the
+	 * Metadata reference has it for getItemConditionPolicies - where it sent
+	 * categoryId:{...}, not encoded.
+	 *
 	 * @param string $category_id eBay category ID.
 	 * @return array|WP_Error Parsed JSON response or error.
 	 */
@@ -2205,7 +2212,7 @@ class TCGiant_Sync_API {
 			'sell/metadata/v1/marketplace/' . $marketplace_id . '/get_item_condition_policies',
 			'GET',
 			array(),
-			array( 'filter' => 'categoryId:{' . $category_id . '}' )
+			array( 'filter' => rawurlencode( 'categoryIds:{' . (string) $category_id . '}' ) )
 		);
 	}
 
@@ -2373,6 +2380,11 @@ class TCGiant_Sync_API {
 	 * Uses the getCategorySuggestions endpoint to return leaf-level categories
 	 * that eBay thinks are the best match for the given title.
 	 *
+	 * The title is URL-encoded (3.29.2), as get_category_suggestions_in_tree()
+	 * encodes its query: add_query_arg() puts a value into the URL as it is
+	 * given, so a title with "&", "#", "+" or "%" in it was cut there or read
+	 * as other words, and eBay suggested categories for those.
+	 *
 	 * @param string $title The product title to find categories for.
 	 * @return array|WP_Error Array of suggestions [{ id, name }] or error.
 	 */
@@ -2384,7 +2396,7 @@ class TCGiant_Sync_API {
 			'commerce/taxonomy/v1/category_tree/' . $tree_id . '/get_category_suggestions',
 			'GET',
 			array(),
-			array( 'q' => $title ),
+			array( 'q' => rawurlencode( (string) $title ) ),
 			false
 		);
 

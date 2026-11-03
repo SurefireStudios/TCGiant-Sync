@@ -186,6 +186,31 @@ $out['tab_js']   = array(
 	substr_count( $tc_tab, "override_category_name:\$('#_ebay_export_category_name').val()||''" ),
 );
 
+// The Suggest Category button's title (3.29.2): the name as
+// TCGiant_Sync_Admin::suggest_title_js() writes it, never esc_js() inside
+// quotes, and nothing of a script in the name raw on the page.
+$tc_name = 'Pokemon & Yu-Gi-Oh! <script>alert(1)</script> 6" Lot';
+new WC_Product( 607, array( 'name' => $tc_name, 'description' => 'An item.', 'stock' => 2, 'regular_price' => '5.00', 'image_id' => 9607 ) );
+$GLOBALS['W']['images'][9607] = 'https://shop.example/wp-content/uploads/p607.jpg';
+$tc_tab            = tab( 607 );
+$out['suggest_js'] = array(
+	false !== strpos( $tc_tab, 'title=' . TCGiant_Sync_Admin::suggest_title_js( $tc_name ) . ';if(!title)return;' ),
+	false !== strpos( $tc_tab, "title='" ),
+	false !== stripos( $tc_tab, '<script>alert(1)' ),
+);
+
+// An ordinary product whose shipping policy is for motor vehicles only
+// (3.29.2): the tab says so in the push's words, and Verify sends nothing.
+update_option( 'tcgiant_export_policies_fulfillment', array( array( 'id' => '1', 'name' => 'Truck freight', 'category_types' => array( 'MOTORS_VEHICLES' ) ) ) );
+product( 606, array( '_ebay_export_category_id' => '183454', '_ebay_export_item_type' => 'other' ) );
+$out['vehicle_policy'] = readiness( 606 );
+$API->clear();
+$tc_verify                    = ajax( 'ajax_verify_product', array( 'product_id' => '606' ) );
+$out['vehicle_policy_verify'] = array( $tc_verify[0], (string) ( $tc_verify[1]['message'] ?? '' ), $API->sites );
+update_option( 'tcgiant_export_policies_fulfillment', array( array( 'id' => '1', 'name' => 'Parcel', 'category_types' => array( 'ALL_EXCLUDING_MOTORS_VEHICLES' ) ) ) );
+$out['vehicle_policy_not'] = readiness( 606 );
+delete_option( 'tcgiant_export_policies_fulfillment' );
+
 // Check with eBay, from a listing template's preview: as Verify.
 require dirname( __DIR__, 2 ) . '/includes/class-tcgiant-sync-template-admin.php';
 $API->clear();

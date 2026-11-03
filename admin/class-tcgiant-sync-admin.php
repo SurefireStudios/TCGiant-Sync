@@ -2357,6 +2357,58 @@ class TCGiant_Sync_Admin {
 		return $result;
 	}
 
+	/** The longest title Suggest Category asks eBay about, in characters (3.29.2). */
+	const SUGGEST_TITLE_MAX = 300;
+
+	/**
+	 * The product's name as the eBay tab's Suggest Category button posts it
+	 * (3.29.2): a JavaScript string literal, from wp_json_encode() with
+	 * < > & ' and " written as \u escapes, so the name arrives exactly as
+	 * it is and nothing in it can close the string or the script. It was
+	 * esc_js() inside quotes, which wrote & and " as &amp; and &quot;: eBay
+	 * was asked about "Pokemon &amp; Yu-Gi-Oh!".
+	 *
+	 * @param string $name The product's name.
+	 * @return string A JavaScript string literal.
+	 */
+	public static function suggest_title_js( $name ) {
+		$json = wp_json_encode( (string) $name, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT );
+
+		return is_string( $json ) ? $json : '""';
+	}
+
+	/**
+	 * The title Suggest Category asks eBay about, from what the page posted
+	 * (unslashed) (3.29.2): the product's own words. Entities - an older
+	 * page's esc_js(), or a name stored with &amp; - are read as the
+	 * characters they stand for; tags, and a script's or style's contents,
+	 * go, while a "<" that opens no tag ("<10 left") is kept, as
+	 * sanitize_text_field() keeps it; control characters and runs of spaces
+	 * become one space; invalid UTF-8 is nothing. Unlike
+	 * sanitize_text_field(), "%" and what follows it are kept ("100%20pack",
+	 * "100% Authentic"): get_suggested_categories() encodes them. At most
+	 * SUGGEST_TITLE_MAX characters. Never shown back to the page.
+	 *
+	 * @param mixed $posted The posted title, unslashed.
+	 * @return string
+	 */
+	public static function suggest_title( $posted ) {
+		if ( ! is_scalar( $posted ) ) {
+			return '';
+		}
+
+		$title = wp_specialchars_decode( wp_check_invalid_utf8( (string) $posted ), ENT_QUOTES );
+		if ( false !== strpos( $title, '<' ) ) {
+			$title = wp_specialchars_decode( wp_strip_all_tags( wp_pre_kses_less_than( $title ) ), ENT_QUOTES );
+		}
+		$title = trim( (string) preg_replace( '/[\x00-\x20\x7F]+/', ' ', $title ) );
+		if ( mb_strlen( $title, 'UTF-8' ) > self::SUGGEST_TITLE_MAX ) {
+			$title = rtrim( mb_substr( $title, 0, self::SUGGEST_TITLE_MAX, 'UTF-8' ) );
+		}
+
+		return $title;
+	}
+
 	/**
 	 * AJAX: Suggest eBay categories based on a product title.
 	 */
@@ -2368,7 +2420,9 @@ class TCGiant_Sync_Admin {
 		if ( ! TCGiant_Sync_OAuth::instance()->is_authenticated() ) {
 			wp_send_json_error( array( 'message' => 'Not connected to eBay.' ) );
 		}
-		$title = isset( $_POST['title'] ) ? sanitize_text_field( wp_unslash( $_POST['title'] ) ) : '';
+		// The product's own title (3.29.2), never sanitize_text_field()'s:
+		// that kept an older page's &amp; and deleted "%" with two hex digits.
+		$title = isset( $_POST['title'] ) ? self::suggest_title( wp_unslash( $_POST['title'] ) ) : '';
 		if ( empty( $title ) ) {
 			wp_send_json_error( array( 'message' => 'No title provided.' ) );
 		}
@@ -5026,7 +5080,7 @@ class TCGiant_Sync_Admin {
 			function selectCat(id,name){tcAspectsReset();$('#_ebay_export_category_id_select').val('custom');$('#_ebay_export_category_id_custom').val(id).show();$('#_ebay_export_category_name').val(name);$('#tc-selected-category-label-product').html('&#10004; '+name+' ('+id+')').show();$('#tc-step2-summary').text(name+' ('+id+')');}
 			function renderBread(){var $bc=$('#tc-category-breadcrumb-product');$bc.empty();var $root=$('<a href="#" style="color:#2271b1;text-decoration:none;font-size:11px;">All</a>');$root.on('click',function(e){e.preventDefault();trail=[];renderBread();loadCats('');});$bc.append($root);$.each(trail,function(i,c){$bc.append('<span style="margin:0 3px;color:#aaa;"> &rsaquo; </span>');if(i<trail.length-1){var $l=$('<a href="#" style="color:#2271b1;text-decoration:none;font-size:11px;"></a>').text(c.name);(function(idx){$l.on('click',function(e){e.preventDefault();trail=trail.slice(0,idx+1);renderBread();loadCats(c.id,c.tree||'');});})(i);$bc.append($l);}else{$bc.append($('<b style="font-size:11px;"></b>').text(c.name));}});}
 			// Category suggestion
-			$('#tc-suggest-category-btn').on('click',function(){var btn=$(this),$p=$('#tc-suggest-pills'),title='<?php echo esc_js( $product ? $product->get_name() : '' ); ?>';if(!title)return;btn.prop('disabled',true).text('Searching...');$.post(ajaxUrl,{action:'tcgiant_suggest_category',_ajax_nonce:nonce,title:title},function(r){btn.prop('disabled',false).html('<span class="dashicons dashicons-lightbulb" style="font-size:13px;vertical-align:middle;margin-right:2px;"></span> Suggest Category from Title');if(r.success&&r.data.suggestions&&r.data.suggestions.length){$p.empty().show();$.each(r.data.suggestions,function(i,s){var $pill=$('<span class="tc-suggest-pill"></span>').text(s.name+' ('+s.id+')');$pill.on('click',function(){selectCat(s.id,s.name);$p.slideUp(200);});$p.append($pill);});}else{$p.html('<span style="font-size:11px;color:#888;">No suggestions found.</span>').show();}}).fail(function(){btn.prop('disabled',false).html('<span class="dashicons dashicons-lightbulb" style="font-size:13px;vertical-align:middle;margin-right:2px;"></span> Suggest Category from Title');});});
+			$('#tc-suggest-category-btn').on('click',function(){var btn=$(this),$p=$('#tc-suggest-pills'),title=<?php echo self::suggest_title_js( $product ? $product->get_name() : '' ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- a JSON string literal, < > & ' " as \u escapes. ?>;if(!title)return;btn.prop('disabled',true).text('Searching...');$.post(ajaxUrl,{action:'tcgiant_suggest_category',_ajax_nonce:nonce,title:title},function(r){btn.prop('disabled',false).html('<span class="dashicons dashicons-lightbulb" style="font-size:13px;vertical-align:middle;margin-right:2px;"></span> Suggest Category from Title');if(r.success&&r.data.suggestions&&r.data.suggestions.length){$p.empty().show();$.each(r.data.suggestions,function(i,s){var $pill=$('<span class="tc-suggest-pill"></span>').text(s.name+' ('+s.id+')');$pill.on('click',function(){selectCat(s.id,s.name);$p.slideUp(200);});$p.append($pill);});}else{$p.html('<span style="font-size:11px;color:#888;">No suggestions found.</span>').show();}}).fail(function(){btn.prop('disabled',false).html('<span class="dashicons dashicons-lightbulb" style="font-size:13px;vertical-align:middle;margin-right:2px;"></span> Suggest Category from Title');});});
 			// Dismiss error
 			$('#tcgiant-dismiss-export-error').on('click',function(e){e.preventDefault();$.post(ajaxUrl,{action:'tcgiant_clear_export_error',product_id:$(this).data('product-id'),_ajax_nonce:nonce});$('#tcgiant-export-error-notice').slideUp(200);});
 			// Push

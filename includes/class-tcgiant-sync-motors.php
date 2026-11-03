@@ -40,7 +40,8 @@
  *   vehicle listings, or to any other items except motor vehicle listings");
  *   return policies are always the second. Parts & Accessories are not motor
  *   vehicles, so the shop's ordinary US policies apply; one known to be for
- *   vehicles only is refused (problems()).
+ *   vehicles only is refused (problems()). So is one on an ordinary push
+ *   (3.29.2): eBay US lists no motor vehicle on its own site.
  *
  * Only Parts & Accessories (6028, under eBay Motors). A new listing (Add,
  * Verify) in a whole vehicle's category - cars and trucks, motorcycles,
@@ -164,6 +165,13 @@ class TCGiant_Sync_Motors {
 
 	/** eBay United States' X-EBAY-API-SITEID, the other one a revise or relist is tried with. */
 	const HOME_SITE_ID = '0';
+
+	/**
+	 * eBay United States' site code (Item.Site, _ebay_site; the site of
+	 * TCGiant_Sync_API::MARKETPLACES' EBAY_US): a listing there is never a
+	 * motor vehicle's, which eBay US lists on eBay Motors (3.29.2).
+	 */
+	const HOME_SITE = 'US';
 
 	/**
 	 * eBay's errors that refuse a call for the site it went to, from the
@@ -1034,8 +1042,9 @@ class TCGiant_Sync_Motors {
 
 	/**
 	 * Why a push of these settings cannot go, by group, each in words for the
-	 * shop (TCGiant_Sync_Exporter::validate_export_settings()). Nothing for
-	 * an ordinary push. Asks eBay nothing: what the push read first
+	 * shop (TCGiant_Sync_Exporter::validate_export_settings()). For an
+	 * ordinary push, only a business policy for motor vehicles only (3.29.2,
+	 * policies_problem()). Asks eBay nothing: what the push read first
 	 * (TCGiant_Sync_Exporter::settle_motors()) is in the settings.
 	 *
 	 * @param array $settings    The settings, as the push settled them.
@@ -1071,10 +1080,25 @@ class TCGiant_Sync_Motors {
 			}
 		}
 
-		// A listing on eBay Motors revised as before 3.28.9 - a whole vehicle,
-		// or one whose part of eBay Motors is not known - is held to nothing
-		// new here (revised_as_before()).
-		if ( self::SITE !== $site || isset( $problems['category'] ) ) {
+		if ( isset( $problems['category'] ) ) {
+			return $problems;
+		}
+
+		// Not on eBay Motors: an ordinary push is held to its business
+		// policies alone (3.29.2), where its listing cannot be a motor
+		// vehicle's - a new listing, made on the shop's own site, or a revise
+		// of a listing on eBay US (HOME_SITE): eBay US lists every motor
+		// vehicle on eBay Motors, so a policy for motor vehicles only is one
+		// eBay refuses there. A listing on eBay Motors revised as before
+		// 3.28.9 - a whole vehicle, or one whose part of eBay Motors is not
+		// known (revised_as_before()) - and one on another site, or whose
+		// site is not known, are held to nothing new here: a vehicle
+		// listing's own policy may well be for vehicles only.
+		if ( self::SITE !== $site ) {
+			$policies = $new_listing || self::HOME_SITE === $listing ? self::policies_problem( $settings, $revise, false ) : '';
+			if ( '' !== $policies ) {
+				$problems['policies'] = $policies;
+			}
 			return $problems;
 		}
 
@@ -1117,18 +1141,55 @@ class TCGiant_Sync_Motors {
 		}
 
 		// A business policy known to be for motor vehicles only.
-		if ( $sends && TCGiant_Sync_Exporter::sends( $settings, 'policies', $revise ) ) {
-			foreach ( array( 'fulfillment' => 'fulfillment_policy_id', 'payment' => 'payment_policy_id' ) as $type => $key ) {
-				$name = self::vehicles_only_policy( $type, (string) ( $settings[ $key ] ?? '' ) );
-				if ( '' !== $name ) {
-					/* translators: %s: business policy name */
-					$problems['policies'] = sprintf( __( '%s is a business policy for motor vehicles only, and eBay Motors Parts & Accessories take one for everything except motor vehicles: choose another', 'tcgiant-sync' ), $name );
-					break;
-				}
-			}
+		$policies = self::policies_problem( $settings, $revise, true );
+		if ( '' !== $policies ) {
+			$problems['policies'] = $policies;
 		}
 
 		return $problems;
+	}
+
+	/**
+	 * A business policy a push of these settings sends that is known to be
+	 * for motor vehicles only, in words for the shop (3.28.9 for eBay Motors
+	 * Parts & Accessories, 3.29.2 for any push problems() holds to it); ''
+	 * for none. Nothing for a push that sends no business policies - an
+	 * imported listing's revise that leaves eBay's own
+	 * (TCGiant_Sync_Exporter::sends()) - nor for a policy whose category
+	 * types are not known (vehicles_only_policy()): those go, for eBay to
+	 * judge, as before.
+	 *
+	 * An eBay Motors push is told in 3.28.9's words; an ordinary push in its
+	 * own (3.29.2), which name the policy as shipping or payment and say
+	 * nothing of eBay Motors, where it is not listed.
+	 *
+	 * @param array $settings The settings, as the push settled them.
+	 * @param bool  $revise   A revise, not a new listing.
+	 * @param bool  $motors   A push to eBay Motors.
+	 * @return string
+	 */
+	private static function policies_problem( array $settings, $revise, $motors ) {
+		if ( ! class_exists( 'TCGiant_Sync_Exporter' ) || ! TCGiant_Sync_Exporter::sends( $settings, 'policies', $revise ) ) {
+			return '';
+		}
+
+		foreach ( array( 'fulfillment' => 'fulfillment_policy_id', 'payment' => 'payment_policy_id' ) as $type => $key ) {
+			$name = self::vehicles_only_policy( $type, (string) ( $settings[ $key ] ?? '' ) );
+			if ( '' === $name ) {
+				continue;
+			}
+			if ( $motors ) {
+				/* translators: %s: business policy name */
+				return sprintf( __( '%s is a business policy for motor vehicles only, and eBay Motors Parts & Accessories take one for everything except motor vehicles: choose another', 'tcgiant-sync' ), $name );
+			}
+			return 'fulfillment' === $type
+				/* translators: %s: business policy name */
+				? sprintf( __( 'This product\'s shipping policy "%s" is for motor vehicles only on eBay, so eBay would refuse this listing. Choose another business policy for it, or press Fetch / Refresh Policies from eBay in Settings if you\'ve changed it on eBay', 'tcgiant-sync' ), $name )
+				/* translators: %s: business policy name */
+				: sprintf( __( 'This product\'s payment policy "%s" is for motor vehicles only on eBay, so eBay would refuse this listing. Choose another business policy for it, or press Fetch / Refresh Policies from eBay in Settings if you\'ve changed it on eBay', 'tcgiant-sync' ), $name );
+		}
+
+		return '';
 	}
 
 	/**

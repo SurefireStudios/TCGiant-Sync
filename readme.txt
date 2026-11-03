@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.29.1
+Stable tag: 3.29.2
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -143,6 +143,11 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.29.2 - 2026-11-03 =
+* FIX: Suggest Category from Title now asks eBay about the product's title exactly as it is. A title with "&", "#", "+" or "%" in it was cut there, or changed on its way to eBay, so the suggestions were for other words: "Pokemon & Yu-Gi-Oh! Lot" was asked as "Pokemon", "&" and quotes reached eBay as "&amp;" and "&quot;", and a "%" followed by two letters or digits was deleted. HTML tags in a title are still left out.
+* A push from a shop on eBay United States now stops before it reaches eBay when its shipping or payment business policy is one eBay keeps for motor vehicles only. The message names the policy and says to choose another business policy, or to press "Fetch / Refresh Policies from eBay" in Settings if you have changed it on eBay, and the product's eBay tab says the same. Until now only an eBay Motors push stopped for it, and any other push went to eBay, which refused it. An eBay Motors push keeps its own message. This covers new listings, Verify, and Updates that send your business policies: listings you pushed, and an imported listing with a shipping policy of its own. An Update of an imported listing that leaves its policies as they are on eBay, and an Update of a vehicle listing already on eBay Motors, go as before.
+* TCGiant Sync knows a policy is for motor vehicles only once you have pressed "Fetch / Refresh Policies from eBay" in Settings since 3.28.9. Until then pushes go as before, for eBay to judge. Shops on other eBay sites are not affected.
 
 = 3.29.1 - 2026-11-03 =
 * NEW: Choose in bulk whether listings get your shop defaults when you Update them. Tick products on TCGiant Sync's Listings screen, or on WooCommerce's Products list, and choose "Send my shop defaults to eBay on Update", "Keep each listing's own eBay values on Update" or "Decide by who made the listing". The first two make it the product's own choice, whoever made its listing, as if you had ticked or unticked "Send my shop defaults" on its eBay tab and saved it as your decision. So "Keep each listing's own eBay values" holds even for a listing TCGiant Sync does not know the origin of yet, when its next Update finds it was pushed from here. A choice stays until you change it: saving the product, or pressing Push on its eBay tab, with the box left as it shows keeps it. The third takes the product's own choice away, so it goes by whether its listing was imported from eBay or pushed from here. Nothing is sent to eBay: each listing gets it at its next Update. A product with no eBay listing is left as it is.

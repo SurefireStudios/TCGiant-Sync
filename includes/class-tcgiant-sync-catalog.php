@@ -62,7 +62,9 @@ class TCGiant_Sync_Catalog {
 	 *
 	 * This list is the fallback. get_condition_policies() in the API class
 	 * returns what eBay actually permits for a chosen category, and that is
-	 * what should populate the field.
+	 * what should populate the field. Nothing calls it yet (3.29.2): the
+	 * field is filled from this list, and only eBay Motors' conditions are
+	 * read from eBay (TCGiant_Sync_Motors::conditions()).
 	 */
 	const CONDITIONS = array(
 		'1000' => 'New',

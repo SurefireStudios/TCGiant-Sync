@@ -309,6 +309,11 @@ function sanitize_key( $key ) { return preg_replace( '/[^a-z0-9_\-]/', '', strto
 function sanitize_title( $title ) { return trim( preg_replace( '/[^a-z0-9_\-]+/', '-', strtolower( (string) $title ) ), '-' ); }
 function absint( $n ) { return abs( (int) $n ); }
 function wp_strip_all_tags( $text ) { return trim( strip_tags( (string) preg_replace( '@<(script|style)[^>]*?>.*?</\1>@si', '', (string) $text ) ) ); }
+// What Suggest Category's title goes through (3.29.2), played; test-suggest-title.php
+// runs it through WordPress's own (tests/wordpress/escaping.php).
+function wp_check_invalid_utf8( $text, $strip = false ) { $text = (string) $text; return ( '' === $text || mb_check_encoding( $text, 'UTF-8' ) ) ? $text : ''; }
+function wp_specialchars_decode( $text, $quote_style = ENT_NOQUOTES ) { return htmlspecialchars_decode( (string) $text, $quote_style ); }
+function wp_pre_kses_less_than( $content ) { return preg_replace_callback( '%<[^>]*?((?=<)|>|$)%', function ( $m ) { return false === strpos( $m[0], '>' ) ? esc_html( $m[0] ) : $m[0]; }, (string) $content ); }
 function sanitize_file_name( $name ) { return preg_replace( '/[^A-Za-z0-9_.\-]/', '', (string) $name ); }
 function get_user_meta( $id, $key = '', $single = false ) { return $GLOBALS['W']['user_meta'][ (int) $id ][ $key ] ?? ''; }
 function update_user_meta( $id, $key, $value ) { $GLOBALS['W']['user_meta'][ (int) $id ][ $key ] = $value; return true; }

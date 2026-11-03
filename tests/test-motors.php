@@ -17,7 +17,8 @@
  * The header itself, the reads' URLs and what each is kept under are
  * test-motors-wire.php's; the Best Offer and GPSR defaults are
  * test-offer-gpsr.php's; the eBay tab, Verify and the category browser are
- * support/motors-admin.php's, below.
+ * support/motors-admin.php's, below. Since 3.29.2 a business policy for
+ * motor vehicles only refuses an ordinary push from eBay US as well.
  *
  * @package TCGiant_Sync
  */
@@ -640,6 +641,158 @@ delete_option( TCGiant_Sync_Motors::OPTION );
 check( 'paths: Parts & Accessories, a vehicle branch, another, and not eBay Motors\'', array( TCGiant_Sync_Motors::branch_of_path( 'eBay Motors:Parts & Accessories:Brakes' ), TCGiant_Sync_Motors::branch_of_path( 'eBay Motors > Motorcycles > Triumph' ), TCGiant_Sync_Motors::branch_of_path( 'eBay Motors: Parts & Accessories > Seats' ), TCGiant_Sync_Motors::branch_of_path( 'eBay Motors:Other Motors' ), TCGiant_Sync_Motors::branch_of_path( 'Toys & Hobbies:Collectible Card Games' ), TCGiant_Sync_Motors::branch_of_path( 'eBay Motors' ), TCGiant_Sync_Motors::branch_of_path( 'eBay Motors:Auto Parts and Accessories:Brakes' ) ), array( 'parts', 'vehicles', 'parts', 'other', '', '', 'parts' ) );
 
 // ─────────────────────────────────────────────────────────────────────────────
+echo "\nA POLICY FOR MOTOR VEHICLES ONLY, ON AN ORDINARY PUSH (3.29.2)\n" . str_repeat( '=', 124 ) . "\n";
+
+// eBay US lists every motor vehicle on eBay Motors, so a shipping or payment
+// policy eBay keeps for motor vehicles only is one it refuses on eBay US too.
+// An ordinary push is refused here for one, in words of its own that name the
+// policy and say nothing of eBay Motors (a Motors push keeps 3.28.9's), and
+// nothing is sent - only where the policy's category types are known
+// ("Fetch / Refresh Policies" since 3.28.9), and only for a push that sends
+// business policies.
+
+/** The shop's cached policies: shipping 250000021 and payment 250000023 with these types (null: fetched before 3.28.9), and an ordinary 240000071. */
+function policy_types( $shipping, $payment = array( 'ALL_EXCLUDING_MOTORS_VEHICLES' ) ) {
+	$row = function ( $id, $name, $types ) {
+		return array( 'id' => $id, 'name' => $name ) + ( null === $types ? array() : array( 'category_types' => $types ) );
+	};
+	update_option( 'tcgiant_export_policies_fulfillment', array( $row( '250000021', 'Truck freight', $shipping ), $row( '240000071', 'Parcel', array( 'ALL_EXCLUDING_MOTORS_VEHICLES' ) ) ) );
+	update_option( 'tcgiant_export_policies_payment', array( $row( '250000023', 'Vehicle deposit', $payment ), $row( '240000073', 'Pay', array( 'ALL_EXCLUDING_MOTORS_VEHICLES' ) ) ) );
+}
+function no_policy_types() {
+	delete_option( 'tcgiant_export_policies_fulfillment' );
+	delete_option( 'tcgiant_export_policies_payment' );
+}
+function without_uuid( $body ) {
+	return preg_replace( '#<UUID>[^<]*</UUID>#', '', (string) $body );
+}
+function profile_ids( $body ) {
+	return array( value_of( $body, 'e:SellerProfiles/e:SellerShippingProfile/e:ShippingProfileID' ), value_of( $body, 'e:SellerProfiles/e:SellerReturnProfile/e:ReturnProfileID' ), value_of( $body, 'e:SellerProfiles/e:SellerPaymentProfile/e:PaymentProfileID' ) );
+}
+$vehicles     = array( 'MOTORS_VEHICLES' );
+$everything   = array( 'ALL_EXCLUDING_MOTORS_VEHICLES' );
+$motors_words = 'Truck freight is a business policy for motor vehicles only, and eBay Motors Parts & Accessories take one for everything except motor vehicles: choose another';
+$own_words    = 'This product\'s shipping policy "Truck freight" is for motor vehicles only on eBay, so eBay would refuse this listing. Choose another business policy for it, or press Fetch / Refresh Policies from eBay in Settings if you\'ve changed it on eBay';
+$own_payment  = 'This product\'s payment policy "Vehicle deposit" is for motor vehicles only on eBay, so eBay would refuse this listing. Choose another business policy for it, or press Fetch / Refresh Policies from eBay in Settings if you\'ve changed it on eBay';
+
+motors_ebay();
+parts_shop( array( 'export_category_id' => '33564', 'export_category_typed' => '33564' ) );
+
+// A new listing in an ordinary category.
+no_policy_types();
+list( $res, $sites, , $calls ) = push( part( 561 ) );
+$plain_add = without_uuid( $calls[0][1] ?? '' );
+check( 'an ordinary new listing (33564), no policy types known: listed with the shop\'s policies, as before', array( code_of( $res ), $sites, profile_ids( $calls[0][1] ?? '' ) ), array( 'created', array( 'AddFixedPriceItem@0' ), array( '250000021', '250000022', '250000023' ) ) );
+policy_types( $vehicles );
+list( $res, $sites ) = push( part( 561 ) );
+check( '  its shipping policy for motor vehicles only: refused in its own words, naming the shipping policy - nothing sent', array( code_of( $res ), says( $res, 'Business Policies — ' . $own_words ), $sites ), array( 'missing_export_settings', true, array() ) );
+policy_types( $everything, $vehicles );
+list( $res, $sites ) = push( part( 561 ) );
+check( '  its payment policy for motor vehicles only: refused, naming the payment policy', array( code_of( $res ), says( $res, 'Business Policies — ' . $own_payment ), $sites ), array( 'missing_export_settings', true, array() ) );
+policy_types( array( 'MOTORS_VEHICLES', 'ALL_EXCLUDING_MOTORS_VEHICLES' ) );
+list( $res, $sites, , $calls ) = push( part( 561 ) );
+check( '  for everything but motor vehicles (one for vehicles too): listed, the body byte for byte as with no types known', array( code_of( $res ), $sites, without_uuid( $calls[0][1] ?? '' ) === $plain_add ), array( 'created', array( 'AddFixedPriceItem@0' ), true ) );
+policy_types( null, null );
+list( $res, $sites, , $calls ) = push( part( 561 ) );
+check( '  fetched before 3.28.9, no types kept: listed, for eBay to judge - byte for byte as before', array( code_of( $res ), $sites, without_uuid( $calls[0][1] ?? '' ) === $plain_add ), array( 'created', array( 'AddFixedPriceItem@0' ), true ) );
+update_option( 'tcgiant_export_policies_fulfillment', array( array( 'id' => '240000071', 'name' => 'Parcel', 'category_types' => $vehicles ) ) );
+list( $res, $sites, , $calls ) = push( part( 561 ) );
+check( '  the shop\'s policy not among those fetched (another for vehicles is): listed, byte for byte as before', array( code_of( $res ), $sites, without_uuid( $calls[0][1] ?? '' ) === $plain_add ), array( 'created', array( 'AddFixedPriceItem@0' ), true ) );
+
+// Verify, the eBay tab and bulk Verify judge it as the push does.
+policy_types( $vehicles );
+$tcg_set   = exporter()->get_export_settings( part( 562 )->get_id() );
+$tcg_valid = exporter()->validate_export_settings( exporter()->settle_motors( $tcg_set, true ), true );
+check( 'Verify of an ordinary new listing (settled as one): refused the same way', array( code_of( $tcg_valid ), says( $tcg_valid, 'Business Policies — ' . $own_words ) ), array( 'missing_export_settings', true ) );
+$tcg_valid = exporter()->validate_export_settings( $tcg_set, true );
+check( '  and unsettled, as the eBay tab and bulk Verify check it: the same', array( code_of( $tcg_valid ), says( $tcg_valid, 'Business Policies — ' . $own_words ) ), array( 'missing_export_settings', true ) );
+parts_shop();
+$tcg_motors = exporter()->settle_motors( exporter()->get_export_settings( part( 563 )->get_id() ), true );
+parts_shop( array( 'export_category_id' => '33564', 'export_category_typed' => '33564' ) );
+$tcg_ordinary = exporter()->settle_motors( exporter()->get_export_settings( part( 562 )->get_id() ), true );
+check( '  a Motors push in 35560 with the same policy: 3.28.9\'s words; the ordinary push its own, which say nothing of eBay Motors', array( $tcg_motors['_request_site'], TCGiant_Sync_Motors::problems( $tcg_motors, true )['policies'] ?? null, $tcg_ordinary['_request_site'], TCGiant_Sync_Motors::problems( $tcg_ordinary, true )['policies'] ?? null, false !== strpos( $own_words . $own_payment, 'eBay Motors' ) ), array( 'eBayMotors', $motors_words, '', $own_words, false ) );
+policy_types( $everything, $vehicles );
+check( '  its payment policy for vehicles only: the Motors push 3.28.9\'s words naming it, the ordinary push its own', array( TCGiant_Sync_Motors::problems( $tcg_motors, true )['policies'] ?? null, TCGiant_Sync_Motors::problems( $tcg_ordinary, true )['policies'] ?? null ), array( 'Vehicle deposit is a business policy for motor vehicles only, and eBay Motors Parts & Accessories take one for everything except motor vehicles: choose another', $own_payment ) );
+
+// A revise of a pushed listing on eBay US: it sends the shop's policies.
+$us_pushed = array( '_ebay_item_id' => '110000000564', '_ebay_site' => 'US', '_ebay_origin' => 'push', '_ebay_export_status' => 'pushed', '_ebay_export_last_pushed' => '2026-10-31 10:00:00', '_ebay_listing_type' => 'FixedPriceItem', '_ebay_listing_status' => 'Active' );
+no_policy_types();
+list( $res, $sites, , $calls ) = push( part( 564, $us_pushed ) );
+$plain_revise = without_uuid( $calls[0][1] ?? '' );
+check( 'a pushed listing on eBay US, no policy types known: its Update sends the shop\'s policies, as before', array( code_of( $res ), $sites, profile_ids( $calls[0][1] ?? '' ) ), array( 'updated', array( 'ReviseFixedPriceItem@0' ), array( '250000021', '250000022', '250000023' ) ) );
+policy_types( $vehicles );
+list( $res, $sites ) = push( part( 564, $us_pushed ) );
+check( '  its shipping policy for motor vehicles only: refused the same way, no ReviseFixedPriceItem', array( code_of( $res ), says( $res, 'Business Policies — ' . $own_words ), $sites ), array( 'missing_export_settings', true, array() ) );
+policy_types( $everything );
+list( $res, $sites, , $calls ) = push( part( 564, $us_pushed ) );
+check( '  for everything but motor vehicles: updated, byte for byte as with no types known', array( code_of( $res ), $sites, without_uuid( $calls[0][1] ?? '' ) === $plain_revise ), array( 'updated', array( 'ReviseFixedPriceItem@0' ), true ) );
+
+// An imported listing on eBay US: its price Update sends no business
+// policies, so nothing about them is held against it.
+$us_import = array( '_ebay_item_id' => '110000000565', '_ebay_site' => 'US', '_ebay_origin' => 'import', '_ebay_listing_type' => 'FixedPriceItem', '_ebay_listing_status' => 'Active', '_ebay_live' => array( 'item_id' => '110000000565', 'policies' => array( 'shipping' => '240000071', 'return' => '240000072', 'payment' => '240000073' ) ) );
+no_policy_types();
+list( $res, $sites, , $calls ) = push( part( 565, $us_import ) );
+$plain_import = without_uuid( $calls[0][1] ?? '' );
+check( 'an imported listing on eBay US, its price Update: no SellerProfiles, as 3.28.8 sends it', array( code_of( $res ), $sites, in_array( 'SellerProfiles', fields_of( $calls[0][1] ?? '' ), true ) ), array( 'updated', array( 'ReviseFixedPriceItem@0' ), false ) );
+policy_types( $vehicles, $vehicles );
+update_option( 'tcgiant_export_policies_fulfillment', array_merge( get_option( 'tcgiant_export_policies_fulfillment' ), array( array( 'id' => '240000071', 'name' => 'Its own', 'category_types' => $vehicles ) ) ) );
+list( $res, $sites, , $calls ) = push( part( 565, $us_import ) );
+check( '  every policy fetched, its own and the shop\'s, for motor vehicles only: updated all the same, byte for byte', array( code_of( $res ), $sites, without_uuid( $calls[0][1] ?? '' ) === $plain_import ), array( 'updated', array( 'ReviseFixedPriceItem@0' ), true ) );
+policy_types( $vehicles );
+list( $res, $sites ) = push( part( 565, array( '_ebay_export_fulfillment_policy' => '250000021' ) + $us_import ) );
+check( '  with a shipping policy of its own for motor vehicles only, which its Update sends: refused', array( code_of( $res ), says( $res, 'Business Policies — ' . $own_words ), $sites ), array( 'missing_export_settings', true, array() ) );
+policy_types( null, null );
+list( $res, $sites, , $calls ) = push( part( 565, array( '_ebay_export_fulfillment_policy' => '250000021' ) + $us_import ) );
+check( '  the same, its types not known: sent with eBay\'s own two, as before', array( code_of( $res ), $sites, profile_ids( $calls[0][1] ?? '' ) ), array( 'updated', array( 'ReviseFixedPriceItem@0' ), array( '250000021', '240000072', '240000073' ) ) );
+
+// A whole vehicle already on eBay Motors is revised as before 3.28.9: its own
+// policy may well be for vehicles only.
+no_policy_types();
+list( $res, $sites, , $calls ) = push( from_motors( 'motorcycle', 566, array(), array( '_ebay_export_fulfillment_policy' => '250000021' ) ) );
+$plain_bike = without_uuid( $calls[0][1] ?? '' );
+check( 'the imported whole motorcycle with a shipping policy of its own: sent with its own two, with 0, as before', array( code_of( $res ), $sites, profile_ids( $calls[0][1] ?? '' ) ), array( 'updated', array( 'ReviseFixedPriceItem@0' ), array( '250000021', '240000092', '240000093' ) ) );
+policy_types( $vehicles );
+update_option( 'tcgiant_export_policies_payment', array( array( 'id' => '240000093', 'name' => 'Bike deposit', 'category_types' => $vehicles ) ) );
+list( $res, $sites, , $calls ) = push( from_motors( 'motorcycle', 566, array(), array( '_ebay_export_fulfillment_policy' => '250000021' ) ) );
+check( '  both for motor vehicles only: not refused - updated byte for byte as before', array( code_of( $res ), $sites, without_uuid( $calls[0][1] ?? '' ) === $plain_bike ), array( 'updated', array( 'ReviseFixedPriceItem@0' ), true ) );
+
+// The rest, by the settings problems() is given.
+policy_types( $vehicles );
+$tcg_base  = array( '_motors_applies' => true, 'category_id' => '33564', 'category_tree' => '', 'fulfillment_policy_id' => '250000021', 'return_policy_id' => '250000022', 'payment_policy_id' => '250000023' );
+$tcg_parts = array( 'category_id' => '35560', 'category_tree' => '100', '_motors_branch' => 'parts' );
+$tcg_cases = array(
+	'a new listing on eBay US'                                              => array( $tcg_base, true, $own_words ),
+	'a revise of a listing on eBay US'                                      => array( array( '_listing_site' => 'US' ) + $tcg_base, false, $own_words ),
+	'  an imported one\'s price Update, which sends no policies'            => array( array( '_listing_site' => 'US', '_source' => array( 'policies' => 'default' ) ) + $tcg_base, false, false ),
+	'  one with a shipping policy of its own'                               => array( array( '_listing_site' => 'US', '_source' => array( 'policies' => 'override' ) ) + $tcg_base, false, $own_words ),
+	'a new listing on eBay Motors (Parts & Accessories)'                    => array( $tcg_parts + $tcg_base, true, $motors_words ),
+	'a revise of a Parts & Accessories listing on eBay Motors'              => array( array( '_listing_site' => 'eBayMotors', '_listing_branch' => 'parts' ) + $tcg_parts + $tcg_base, false, $motors_words ),
+	'a revise of a whole vehicle on eBay Motors (as before 3.28.9)'         => array( array( '_listing_site' => 'eBayMotors', '_listing_branch' => 'vehicles' ) + $tcg_base, false, false ),
+	'a revise of one on eBay Motors whose part is not known (as before)'    => array( array( '_listing_site' => 'eBayMotors', '_listing_branch' => '' ) + $tcg_base, false, false ),
+	'a revise of a listing whose site is not known'                         => array( array( '_listing_site' => '' ) + $tcg_base, false, false ),
+	'a revise of a listing on another site (eBay UK)'                       => array( array( '_listing_site' => 'UK' ) + $tcg_base, false, false ),
+	'a shop on eBay UK: a new listing'                                      => array( array( '_motors_applies' => false ) + $tcg_base, true, false ),
+	'  and a revise'                                                        => array( array( '_motors_applies' => false, '_listing_site' => 'UK' ) + $tcg_base, false, false ),
+);
+foreach ( $tcg_cases as $tcg_label => $tcg_case ) {
+	$tcg_found = TCGiant_Sync_Motors::problems( $tcg_case[0], $tcg_case[1] );
+	check( sprintf( '%s: %s', $tcg_label, false === $tcg_case[2] ? 'not refused for it, as before' : ( $motors_words === $tcg_case[2] ? 'refused for it, in 3.28.9\'s eBay Motors words' : 'refused for it, in the ordinary push\'s own words' ) ), false !== $tcg_case[2] ? ( $tcg_found['policies'] ?? null ) : isset( $tcg_found['policies'] ), $tcg_case[2] );
+}
+policy_types( null, null );
+$tcg_none = array();
+foreach ( $tcg_cases as $tcg_label => $tcg_case ) {
+	$tcg_none[] = isset( TCGiant_Sync_Motors::problems( $tcg_case[0], $tcg_case[1] )['policies'] );
+}
+check( 'none of them refused for policies whose types are not known', array_unique( $tcg_none ), array( false ) );
+policy_types( $vehicles );
+check( 'a listing on eBay US whose Update moves it to 35560: refused for the move alone, as before', TCGiant_Sync_Motors::problems( array( '_listing_site' => 'US' ) + $tcg_parts + $tcg_base, false ), array( 'category' => 'this listing is not on eBay Motors and 35560 is an eBay Motors category: eBay does not move a listing to another site. End the listing and push again to list it on eBay Motors' ) );
+parts_shop( array( 'marketplace' => 'EBAY_GB', 'export_category_id' => '33564', 'export_category_typed' => '33564' ) );
+list( $res, $sites ) = push( part( 567 ) );
+check( 'a shop on eBay UK with a policy for motor vehicles only: listed as before, with its own site', array( code_of( $res ), $sites ), array( 'created', array( 'AddFixedPriceItem@3' ) ) );
+no_policy_types();
+parts_shop();
+
+// ─────────────────────────────────────────────────────────────────────────────
 echo "\nTHE EBAY TAB, VERIFY AND THE CATEGORY BROWSER (support/motors-admin.php)\n" . str_repeat( '=', 124 ) . "\n";
 
 $tcg_out = array();
@@ -652,6 +805,7 @@ check( '  opened: its children in tree 100, each marked so, and learnt as Parts 
 check( '  a parent not known to be under Parts & Accessories: nothing listed, nothing asked', array( $ADMIN['outside'] ?? null, $ADMIN['outside_rest'] ?? null ), array( array( false, 'Only eBay Motors Parts & Accessories can be browsed here: open it from the top of the list.' ), array() ) );
 check( 'Suggest Category: eBay US\'s, then eBay Motors\' Parts & Accessories by their ancestors, never a vehicle category', $ADMIN['suggest'] ?? null, array( array( 'id' => '183454', 'name' => 'Toys & Hobbies > CCG Individual Cards' ), array( 'id' => '35560', 'name' => 'eBay Motors > Parts & Accessories > Motorcycle & Scooter Parts > Vintage Motorcycle Parts', 'tree' => '100' ) ) );
 check( '  learnt as it is shown', $ADMIN['suggest_learnt'] ?? null, array( '100:35560' ) );
+check( '  the button\'s title on the tab (3.29.2): suggest_title_js()\'s literal, not esc_js() in quotes, and a script in the name never raw on the page', $ADMIN['suggest_js'] ?? null, array( true, false, false ) );
 check( 'Verify on the eBay tab: VerifyAddFixedPriceItem with 100', array( $ADMIN['verify']['ok'] ?? null, $ADMIN['verify']['sites'] ?? null ), array( true, array( 'VerifyAddFixedPriceItem@100' ) ) );
 check( 'the eBay tab: the category line says eBay Motors, and it is ready', array( $ADMIN['ready'][0] ?? null, in_array( '✔ Category: Vintage Motorcycle Parts (35560) - on eBay Motors', (array) ( $ADMIN['ready'] ?? array() ), true ) ), array( '✔ Ready to push', true ) );
 check( '  the label under the category says so', $ADMIN['label'] ?? null, true );
@@ -664,5 +818,8 @@ check( '  its Item Specifics box asks tree 100 for 35560', array( $ADMIN['aspect
 check( '  a category on the screen, not saved yet, judged afresh: 35560 over a saved 183454 from tree 100, 183454 over a saved 35560 from tree 0', array( $ADMIN['screen_motors'] ?? null, $ADMIN['screen_us'] ?? null ), array( array( 'aspects:100:35560' ), array( 'aspects:0:183454' ) ) );
 check( '  a shop on eBay UK with that category learnt as eBay Motors\': its own tree, and no Motors conditions', $ADMIN['uk_aspects'] ?? null, array( 'aspects:0:35560' ) );
 check( 'Check with eBay, from a template\'s preview: VerifyAddFixedPriceItem with 100', $ADMIN['template_check'] ?? null, array( true, array( 'VerifyAddFixedPriceItem@100' ) ) );
+check( 'an ordinary product (183454) whose shipping policy is for motor vehicles only: the tab says so in the push\'s own words (3.29.2)', array( $ADMIN['vehicle_policy'][0] ?? null, in_array( '✘ Business Policies: ' . $own_words, (array) ( $ADMIN['vehicle_policy'] ?? array() ), true ) ), array( '⚠ Not ready - fix issues above', true ) );
+check( '  Verify on the tab: refused, nothing sent', array( $ADMIN['vehicle_policy_verify'][0] ?? null, false !== strpos( (string) ( $ADMIN['vehicle_policy_verify'][1] ?? '' ), 'Business Policies — ' . $own_words ), $ADMIN['vehicle_policy_verify'][2] ?? null ), array( false, true, array() ) );
+check( '  one for everything but motor vehicles: ready', $ADMIN['vehicle_policy_not'][0] ?? null, '✔ Ready to push' );
 
 done();

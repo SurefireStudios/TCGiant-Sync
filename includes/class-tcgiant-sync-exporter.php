@@ -7695,7 +7695,8 @@ class TCGiant_Sync_Exporter {
 				// categoryTypes' names, MOTORS_VEHICLES and/or
 				// ALL_EXCLUDING_MOTORS_VEHICLES. An eBay Motors Parts &
 				// Accessories push refuses one for motor vehicles only
-				// (TCGiant_Sync_Motors::problems()).
+				// (TCGiant_Sync_Motors::problems()), and since 3.29.2 an
+				// ordinary push from a shop on eBay US does too.
 				$types = array();
 				foreach ( is_array( $policy['categoryTypes'] ?? null ) ? $policy['categoryTypes'] : array() as $category_type ) {
 					if ( is_array( $category_type ) && is_string( $category_type['name'] ?? null ) ) {

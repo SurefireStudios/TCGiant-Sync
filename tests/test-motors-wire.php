@@ -20,6 +20,9 @@
  *   reads anyway and the API keeps for 7 days. Only eBay's 62005 there asks
  *   tree 100, once a category: its node, and its suggestions when the node's
  *   parent does not say its branch.
+ * - The shop's own Suggest Category read sends the title URL-encoded, as the
+ *   tree-100 one does, and get_condition_policies() eBay's categoryIds
+ *   filter (3.29.2).
  *
  * @package TCGiant_Sync
  */
@@ -377,6 +380,81 @@ $GLOBALS['REPLIES'] = array( 'get_category_suggestions' => array( 200, array( 'c
 $GLOBALS['WIRE']    = array();
 check( 'a suggestion: the path root first, the ancestors nearest first; "&" asked whole', array( $api->get_category_suggestions_in_tree( 'Brakes & Calipers', '100' ), urls() ), array( array( array( 'id' => '33564', 'name' => 'Parts & Accessories > Brakes > Calipers', 'ancestors' => array( '33559', '6028' ) ) ), array( 'commerce/taxonomy/v1/category_tree/100/get_category_suggestions?q=Brakes%20%26%20Calipers' ) ) );
 check( '  its path under eBay Motors', TCGiant_Sync_Motors::motors_path( 'Parts & Accessories > Brakes > Calipers' ), 'eBay Motors > Parts & Accessories > Brakes > Calipers' );
+
+echo "\nTHE SHOP'S OWN SUGGESTIONS AND CONDITIONS, AS EBAY IS ASKED (3.29.2)\n" . str_repeat( '=', 124 ) . "\n";
+
+/**
+ * What eBay is asked, as its server reads the URL: nothing after "#" goes on
+ * the wire, and the query is decoded as a form ("+" is a space).
+ */
+function asked( $url, $key ) {
+	$url   = explode( '#', (string) $url, 2 )[0];
+	$query = (string) ( explode( '?', $url, 2 )[1] ?? '' );
+	parse_str( $query, $args );
+	return $args[ $key ] ?? null;
+}
+$titles = array(
+	'Pokemon & Yu-Gi-Oh! Booster Lot',
+	'Charizard #4/102 Base Set Holo',
+	'Magic + Tokens Bundle',
+	'100% Authentic PSA 10 Pikachu',
+	'Pokémon Évoli – Édition 1, ポケモンカード',
+	'  two  spaces  ',
+);
+foreach ( $titles as $title ) {
+	fresh();
+	$GLOBALS['REPLIES'] = array( 'category_tree/0/get_category_suggestions' => array( 200, array( 'categorySuggestions' => array( array( 'category' => array( 'categoryId' => '183454', 'categoryName' => 'CCG Individual Cards' ), 'categoryTreeNodeAncestors' => array( array( 'categoryId' => '2536', 'categoryName' => 'Collectible Card Games' ), array( 'categoryId' => '220', 'categoryName' => 'Toys & Hobbies' ) ) ) ) ) ) );
+	$got  = $api->get_suggested_categories( $title );
+	$url  = urls()[0] ?? '';
+	$want = 'commerce/taxonomy/v1/category_tree/0/get_category_suggestions?q=' . rawurlencode( $title );
+	check( sprintf( 'Suggest Category for "%s": the title URL-encoded', $title ), $url, $want );
+	check( '  eBay reads the whole title, nothing cut or changed', asked( $url, 'q' ), $title );
+	$GLOBALS['WIRE'] = array();
+	$api->get_category_suggestions_in_tree( $title, '100' );
+	check( '  encoded exactly as the tree-100 suggestions (3.28.9) encode it', explode( '?', $url, 2 )[1] ?? null, explode( '?', urls()[0] ?? '', 2 )[1] ?? 'none' );
+	check( '  eBay\'s answer read as before: the path root first', $got, array( array( 'id' => '183454', 'name' => 'Toys & Hobbies > Collectible Card Games > CCG Individual Cards' ) ) );
+}
+fresh( 'EBAY_GB' );
+$api->get_suggested_categories( 'Pokemon & Yu-Gi-Oh!' );
+check( 'a shop on eBay UK: its own tree, 3, and the title encoded the same way', urls(), array( 'commerce/taxonomy/v1/category_tree/3/get_category_suggestions?q=Pokemon%20%26%20Yu-Gi-Oh%21' ) );
+
+fresh();
+$GLOBALS['REPLIES'] = array( 'get_item_condition_policies' => array( 200, array( 'itemConditionPolicies' => array( array( 'categoryId' => '183454', 'itemConditions' => array( array( 'conditionId' => '4000' ) ) ) ) ) ) );
+$answer = $api->get_condition_policies( '183454' );
+check( 'get_condition_policies(): eBay\'s categoryIds filter, URL-encoded, for the shop\'s marketplace', urls(), array( 'sell/metadata/v1/marketplace/EBAY_US/get_item_condition_policies?filter=categoryIds%3A%7B183454%7D' ) );
+check( '  eBay reads categoryIds:{183454}', asked( urls()[0] ?? '', 'filter' ), 'categoryIds:{183454}' );
+check( '  the same filter as get_condition_policies_for() (3.28.9) sends', ( function () use ( $api ) {
+	$GLOBALS['WIRE'] = array();
+	$api->get_condition_policies_for( '183454', 'EBAY_US' );
+	return urls();
+} )(), array( 'sell/metadata/v1/marketplace/EBAY_US/get_item_condition_policies?filter=categoryIds%3A%7B183454%7D' ) );
+check( '  eBay\'s answer handed back as it came', $answer['itemConditionPolicies'][0]['categoryId'] ?? null, '183454' );
+fresh();
+$GLOBALS['REPLIES'] = array( 'get_item_condition_policies' => array( 400, array( 'errors' => array( array( 'errorId' => 46001 ) ) ) ) );
+$answer = $api->get_condition_policies( '183454' );
+check( '  an error eBay gives: handed back, and logged as before', array( is_wp_error( $answer ), $GLOBALS['LOG'][0][0] ?? null ), array( true, 'error' ) );
+
+// Nothing calls it: the plugin reads eBay Motors' conditions through
+// get_condition_policies_for(), and no shipped file sends eBay's filter
+// under any other name.
+$tcg_callers = array();
+$tcg_wrong   = array();
+foreach ( new RecursiveIteratorIterator( new RecursiveDirectoryIterator( $ROOT, FilesystemIterator::SKIP_DOTS ) ) as $tcg_file ) {
+	$tcg_rel = str_replace( '\\', '/', substr( (string) $tcg_file, strlen( $ROOT ) + 1 ) );
+	if ( ! preg_match( '/\.(php|js)$/', $tcg_rel ) || preg_match( '#^(tests|tools|vendor|zips|\.git)/#', $tcg_rel ) ) {
+		continue;
+	}
+	$tcg_src = (string) file_get_contents( (string) $tcg_file );
+	if ( preg_match( '/(->|::)get_condition_policies\s*\(/', $tcg_src ) ) {
+		$tcg_callers[] = $tcg_rel;
+	}
+	if ( preg_match( '/[\'"]categoryId(:\{|%3A)/', $tcg_src ) ) {
+		$tcg_wrong[] = $tcg_rel;
+	}
+}
+check( '  called by no shipped file', $tcg_callers, array() );
+check( '  no shipped file sends a categoryId:{...} filter', $tcg_wrong, array() );
+check( 'TCGiant_Sync_Motors::HOME_SITE is eBay US\'s site code, as the API class has it', TCGiant_Sync_Motors::HOME_SITE, TCGiant_Sync_API::MARKETPLACES[ TCGiant_Sync_Motors::HOME_MARKETPLACE ]['site'] );
 
 echo "\n  $pass passed, $fail failed\n\n";
 exit( $fail > 0 ? 1 : 0 );
