@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.29.0
+Stable tag: 3.29.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -143,6 +143,13 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.29.1 - 2026-11-03 =
+* NEW: Choose in bulk whether listings get your shop defaults when you Update them. Tick products on TCGiant Sync's Listings screen, or on WooCommerce's Products list, and choose "Send my shop defaults to eBay on Update", "Keep each listing's own eBay values on Update" or "Decide by who made the listing". The first two make it the product's own choice, whoever made its listing, as if you had ticked or unticked "Send my shop defaults" on its eBay tab and saved it as your decision. So "Keep each listing's own eBay values" holds even for a listing TCGiant Sync does not know the origin of yet, when its next Update finds it was pushed from here. A choice stays until you change it: saving the product, or pressing Push on its eBay tab, with the box left as it shows keeps it. The third takes the product's own choice away, so it goes by whether its listing was imported from eBay or pushed from here. Nothing is sent to eBay: each listing gets it at its next Update. A product with no eBay listing is left as it is.
+* On the Listings screen these work through any number of products, also with "Apply to all matching listings", a hundred at a time, and say how many changed and how many already did. On the Products list, up to 500 products are changed at a time, and the notice says how many changed, how many already did and how many were left. Choose the same products again and it carries on past the ones already done.
+* NEW: The Listings screen has an Origin column. It says whether each listing was imported from eBay, pushed from here, or is not known yet, and whether its Updates send your shop defaults or keep eBay's own values, by its own choice or by who made it. A new filter beside the type filter lists products by the same. For example, "Judged imported, with a push from here on record" lists the products that count as imported since 3.28.8 although they were pushed from here at some time: listings you may have pushed and Updated since.
+* NEW: If the update to 3.28.8 judged products imported that were pushed from here at some time, TCGiant Sync's pages say how many of them have no choice of their own yet, with a link to exactly those on the Listings screen ("Judged imported, with a push from here on record, nothing chosen yet"). Each product you choose for leaves the count, and the notice goes when none is left, or when you dismiss it.
+* The "Send my shop defaults" box on a product's eBay tab now changes the product's choice only when you tick or untick it. Saving the product, or pressing Push, with the box left as it shows keeps the choice as it is, including one made in bulk. Ticked or unticked on a listing whose origin is not known yet, the box is kept as your choice, whatever its next Update finds. Otherwise it works as before: a box that agrees with who made the listing stores nothing of its own.
 
 = 3.29.0 - 2026-11-03 =
 * NEW: A separate eBay price. Each product, and each variation of a variable product, now has an "eBay price" field: on the product's eBay tab under eBay Price, and in each variation's own prices under Variations. Whatever you type there is what eBay gets, and your website keeps its own price. Leave it empty and the product goes to eBay at its regular price, as before.

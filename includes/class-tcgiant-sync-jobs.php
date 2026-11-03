@@ -102,7 +102,18 @@ class TCGiant_Sync_Jobs {
 	 * Job types the Listings screen starts, and which may therefore be asked
 	 * for as "everything matching the current filters".
 	 */
-	const LISTING_JOB_TYPES = array( 'bulk_push', 'bulk_end', 'bulk_relist', 'bulk_verify', 'bulk_set_format' );
+	const LISTING_JOB_TYPES = array( 'bulk_push', 'bulk_end', 'bulk_relist', 'bulk_verify', 'bulk_follow_send', 'bulk_follow_keep', 'bulk_follow_origin', 'bulk_set_format' );
+
+	/**
+	 * The Listings screen's jobs that say whose values each listing's
+	 * Updates send (3.29.1), and the choice each asks of
+	 * TCGiant_Sync_Admin::set_follow_choice().
+	 */
+	const FOLLOW_JOB_TYPES = array(
+		'bulk_follow_send'   => 'send',
+		'bulk_follow_keep'   => 'keep',
+		'bulk_follow_origin' => 'origin',
+	);
 
 	public static function create_job( $type, array $items, array $args = array() ) {
 		$job_id = wp_generate_uuid4();
@@ -295,6 +306,9 @@ class TCGiant_Sync_Jobs {
 				'status'     => $listing_view,
 				'type'       => sanitize_text_field( wp_unslash( $_POST['listing_type'] ?? '' ) ),
 				'search'     => sanitize_text_field( wp_unslash( $_POST['s'] ?? '' ) ),
+				// Who made the listing, and whose values its Updates send
+				// (3.29.1): the screen's filter, as it drew the rows.
+				'origin'     => sanitize_key( wp_unslash( $_POST['listing_origin'] ?? '' ) ),
 				// A Relist of everything matching, on any view, takes in only
 				// the Ended view's rows: a sold one would be refused for having
 				// no stock, and a live one after a GetItem each - every live
@@ -308,7 +322,7 @@ class TCGiant_Sync_Jobs {
 			wp_send_json_error( array( 'message' => 'Missing type or product_ids.' ) );
 		}
 
-		$valid_types = array( 'bulk_push', 'bulk_end', 'bulk_verify', 'bulk_relist', 'bulk_settle', 'bulk_restore_images', 'bulk_set_format', 'bulk_remove_sold', 'bulk_zero_stock', 'bulk_use_ebay_figure', 'bulk_keep_stock', 'bulk_trash_other_sites' );
+		$valid_types = array( 'bulk_push', 'bulk_end', 'bulk_verify', 'bulk_relist', 'bulk_settle', 'bulk_restore_images', 'bulk_set_format', 'bulk_remove_sold', 'bulk_zero_stock', 'bulk_use_ebay_figure', 'bulk_keep_stock', 'bulk_trash_other_sites', 'bulk_follow_send', 'bulk_follow_keep', 'bulk_follow_origin' );
 		if ( ! in_array( $type, $valid_types, true ) ) {
 			wp_send_json_error( array( 'message' => 'Invalid job type.' ) );
 		}
@@ -388,8 +402,13 @@ class TCGiant_Sync_Jobs {
 
 		// Process up to 5 items per batch. The cleanup of other sites' products
 		// asks eBay nothing, so it takes more: at five a request, 35,000 copies
-		// were 7,000 requests with the tab left open.
+		// were 7,000 requests with the tab left open. So do the choices of
+		// whose values an Update sends (3.29.1), which only write a product's
+		// own meta.
 		$batch_size  = 'bulk_trash_other_sites' === $job['type'] ? TCGiant_Sync_Sites::CLEANUP_BATCH : 5;
+		if ( isset( self::FOLLOW_JOB_TYPES[ $job['type'] ] ) ) {
+			$batch_size = TCGiant_Sync_Admin::FOLLOW_JOB_BATCH;
+		}
 		$start_index = $job['processed'];
 		$batch       = array_slice( self::get_job_items( $job_id ), $start_index, $batch_size );
 		$succeeded   = $job['succeeded'];
@@ -472,6 +491,27 @@ class TCGiant_Sync_Jobs {
 						// Listings screen to say.
 						TCGiant_Sync_Inventory::record_shop_end( $product_id, (string) $ebay_id, $result );
 						$succeeded++;
+					}
+					break;
+
+				case 'bulk_follow_send':
+				case 'bulk_follow_keep':
+				case 'bulk_follow_origin':
+					// Whose values the listing's Updates send (3.29.1), saved as
+					// the product's eBay tab saves its box. Nothing goes to eBay
+					// now; the next Update reads it.
+					$said = TCGiant_Sync_Admin::set_follow_choice( $product_id, self::FOLLOW_JOB_TYPES[ $job['type'] ] );
+					if ( 'changed' === $said ) {
+						$succeeded++;
+					} elseif ( 'same' === $said ) {
+						// Already so: acted on by nothing, and no failure.
+						$kept++;
+					} elseif ( 'unlinked' === $said ) {
+						$failed++;
+						$errors[] = sprintf( '#%d: no eBay listing, so there is nothing to choose for it.', $product_id );
+					} else {
+						$failed++;
+						$errors[] = sprintf( '#%d: not changed - you cannot edit this product.', $product_id );
 					}
 					break;
 
@@ -692,6 +732,11 @@ class TCGiant_Sync_Jobs {
 		$new_processed = $start_index + count( $batch );
 		$is_done       = $new_processed >= $job['total'];
 
+		// A choice changed (3.29.1): the upgrade notice counts again.
+		if ( isset( self::FOLLOW_JOB_TYPES[ $job['type'] ] ) && $succeeded > (int) $job['succeeded'] ) {
+			TCGiant_Sync_Ebay_Live::forget_notice_count();
+		}
+
 		self::update_job( $job_id, array(
 			'processed' => $new_processed,
 			'succeeded' => $succeeded,
@@ -716,6 +761,8 @@ class TCGiant_Sync_Jobs {
 			// background pusher, not confirmed as listed on eBay. Watch the
 			// per-product eBay status column for the real outcome.
 			'is_async'  => ( 'bulk_push' === $job['type'] ),
+			// Which job, for the progress window's words (3.29.1).
+			'type'      => $job['type'],
 			'errors'    => array_slice( $errors, -5 ), // Return last 5 to client.
 		) );
 	}

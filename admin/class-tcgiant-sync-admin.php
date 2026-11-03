@@ -177,6 +177,13 @@ class TCGiant_Sync_Admin {
 		add_filter( 'bulk_actions-edit-product', array( $this, 'register_bulk_push_action' ) );
 		add_filter( 'handle_bulk_actions-edit-product', array( $this, 'handle_bulk_push_action' ), 10, 3 );
 		add_action( 'admin_notices', array( $this, 'bulk_push_admin_notice' ) );
+		// Whose values each listing's Updates send, in bulk (3.29.1).
+		add_filter( 'bulk_actions-edit-product', array( $this, 'register_follow_bulk_actions' ) );
+		add_filter( 'handle_bulk_actions-edit-product', array( $this, 'handle_follow_bulk_action' ), 10, 3 );
+		add_action( 'admin_notices', array( $this, 'follow_bulk_notice' ) );
+		// Products judged imported at 3.28.8's upgrade with a push on record (3.29.1).
+		add_action( 'admin_notices', array( $this, 'origin_upgrade_notice' ) );
+		add_action( 'admin_post_tcgiant_dismiss_origin_notice', array( $this, 'handle_dismiss_origin_notice' ) );
 		add_action( 'admin_notices', array( $this, 'staging_admin_notice' ) );
 		add_action( 'admin_notices', array( $this, 'environment_change_notice' ) );
 		add_action( 'admin_post_tcgiant_confirm_live', array( $this, 'handle_confirm_live' ) );
@@ -1829,16 +1836,172 @@ class TCGiant_Sync_Admin {
 	/**
 	 * Keep the shop's choice of whose values a product's listing is sent
 	 * (TCGiant_Sync_Ebay_Live::FOLLOW_META, 3.28.8): '1' the shop's defaults,
-	 * '0' eBay's own. Kept only where it differs from what the product's
-	 * origin gives - the shop's defaults for a listing the plugin pushed,
-	 * eBay's for one imported - so a box left as it was stores nothing.
+	 * '0' eBay's own, none to go by the origin.
 	 *
-	 * @param int  $product_id Product.
-	 * @param bool $follow     Whether the box is ticked.
+	 * The eBay tab's box, which every save of the product posts: only a box
+	 * the shop ticked or unticked changes anything (3.29.1) - one posted as
+	 * it was shown ($shown, the tab's own record of it) leaves the choice as
+	 * it is, a bulk action's included. A box changed is kept only where it
+	 * differs from what the origin gives - the shop's defaults for a listing
+	 * the plugin pushed, eBay's for one imported - and always, '1' or '0',
+	 * for one not known yet (TCGiant_Sync_Ebay_Live::UNKNOWN), so the read
+	 * its next Update makes cannot undo it.
+	 *
+	 * The bulk actions (set_follow_choice(), 3.29.1) are the shop's own
+	 * choice whatever the origin ($explicit): '1' or '0' is kept; and null,
+	 * "Decide by who made the listing", takes the choice away.
+	 *
+	 * Written only when it changes, and none kept is no row at all.
+	 *
+	 * @param int         $product_id Product.
+	 * @param bool|null   $follow     Whether the box is ticked; null for no choice.
+	 * @param bool        $explicit   Keep '1' or '0' whatever the origin gives.
+	 * @param string|null $shown      The box as the tab showed it: '1' ticked,
+	 *                                '0' not; null where the page did not say,
+	 *                                read as it would show now.
+	 * @return bool Whether anything was written.
 	 */
-	private static function save_follow_defaults( $product_id, $follow ) {
-		$by_origin = TCGiant_Sync_Ebay_Live::origin_follows( TCGiant_Sync_Ebay_Live::origin( $product_id ) );
-		update_post_meta( $product_id, TCGiant_Sync_Ebay_Live::FOLLOW_META, $follow === $by_origin ? '' : ( $follow ? '1' : '0' ) );
+	private static function save_follow_defaults( $product_id, $follow, $explicit, $shown ) {
+		$value = '';
+		if ( null !== $follow && $explicit ) {
+			$value = $follow ? '1' : '0';
+		} elseif ( null !== $follow ) {
+			if ( null === $shown ) {
+				$shown = TCGiant_Sync_Ebay_Live::follows_defaults( $product_id ) ? '1' : '0';
+			}
+			if ( ( $follow ? '1' : '0' ) === $shown ) {
+				return false;
+			}
+			$origin = TCGiant_Sync_Ebay_Live::origin( $product_id );
+			$value  = TCGiant_Sync_Ebay_Live::UNKNOWN !== $origin && $follow === TCGiant_Sync_Ebay_Live::origin_follows( $origin ) ? '' : ( $follow ? '1' : '0' );
+		}
+		if ( $value === (string) get_post_meta( $product_id, TCGiant_Sync_Ebay_Live::FOLLOW_META, true ) ) {
+			return false;
+		}
+		if ( '' === $value ) {
+			delete_post_meta( $product_id, TCGiant_Sync_Ebay_Live::FOLLOW_META );
+		} else {
+			update_post_meta( $product_id, TCGiant_Sync_Ebay_Live::FOLLOW_META, $value );
+		}
+
+		return true;
+	}
+
+	/**
+	 * The box as the eBay tab showed it, posted beside it in $key (3.29.1):
+	 * '1' ticked, '0' not, or null when the post does not say.
+	 *
+	 * @param string $key The posted field.
+	 * @return string|null
+	 */
+	private static function posted_follow_shown( $key ) {
+		// phpcs:ignore WordPress.Security.NonceVerification.Missing
+		$shown = isset( $_POST[ $key ] ) ? sanitize_text_field( wp_unslash( $_POST[ $key ] ) ) : '';
+
+		return in_array( $shown, array( '0', '1' ), true ) ? $shown : null;
+	}
+
+	/**
+	 * The bulk actions' choices (3.29.1), by the action's name on the
+	 * products list: what each asks of save_follow_defaults().
+	 */
+	const FOLLOW_ACTIONS = array(
+		'tcgiant_follow_send'   => 'send',
+		'tcgiant_follow_keep'   => 'keep',
+		'tcgiant_follow_origin' => 'origin',
+	);
+
+	/**
+	 * Products the products list's bulk action changes in one request
+	 * (3.29.1): the ones already so are passed over and not counted, so the
+	 * same selection applied again goes on from where the last stopped. The
+	 * rest are left as they are, and the notice says how many. The Listings
+	 * screen's works through any number, FOLLOW_JOB_BATCH a request.
+	 */
+	const FOLLOW_REQUEST_CAP = 500;
+
+	/**
+	 * Transient, per user, that keeps what the products list's bulk action
+	 * did for the notice after it (3.29.1), for five minutes, and is shown
+	 * once: the counts never travel in the address.
+	 */
+	const FOLLOW_SAID = 'tcgiant_sync_follow_said_';
+
+	/**
+	 * Products a Listings screen job (TCGiant_Sync_Jobs) changes in one
+	 * request (3.29.1): nothing is asked of eBay.
+	 */
+	const FOLLOW_JOB_BATCH = 100;
+
+	/**
+	 * One product's choice, from a bulk action (3.29.1): 'send' the shop's
+	 * defaults to eBay on Update ('1'), 'keep' its listing's own values
+	 * ('0'), whoever made the listing - a product not known yet included,
+	 * so its next Update keeps eBay's values whatever its read finds - and
+	 * 'origin' no choice of its own. Saved through the eBay tab box's own
+	 * save (save_follow_defaults()), as an explicit choice. Only a product
+	 * the user may edit, and only one with a listing, as the box is shown
+	 * only for one. Nothing is sent to eBay.
+	 *
+	 * @param int    $product_id Product.
+	 * @param string $choice     'send', 'keep' or 'origin'.
+	 * @return string 'changed', 'same' (already so), 'unlinked', 'denied',
+	 *                or 'invalid' for any other choice.
+	 */
+	public static function set_follow_choice( $product_id, $choice ) {
+		$product_id = (int) $product_id;
+		if ( ! in_array( $choice, self::FOLLOW_ACTIONS, true ) ) {
+			return 'invalid';
+		}
+		if ( $product_id < 1 || ! current_user_can( 'edit_post', $product_id ) ) {
+			return 'denied';
+		}
+		if ( '' === (string) get_post_meta( $product_id, '_ebay_item_id', true ) ) {
+			return 'unlinked';
+		}
+
+		$before = (string) get_post_meta( $product_id, TCGiant_Sync_Ebay_Live::FOLLOW_META, true );
+		self::save_follow_defaults( $product_id, 'origin' === $choice ? null : 'send' === $choice, true, null );
+
+		return (string) get_post_meta( $product_id, TCGiant_Sync_Ebay_Live::FOLLOW_META, true ) === $before ? 'same' : 'changed';
+	}
+
+	/**
+	 * A bulk action's choice for many products (3.29.1): in the order given,
+	 * each through set_follow_choice(), until $cap of them have changed - one
+	 * already so, with no listing or not the user's to edit costs a read and
+	 * is not counted, so the same list applied again goes on past the ones
+	 * done. Each one's meta is let go of once it is done, so a long list
+	 * holds no more than one product's at a time. The notice's count is
+	 * forgotten when any changed.
+	 *
+	 * @param int[]  $ids    Products.
+	 * @param string $choice 'send', 'keep' or 'origin'; set_follow_choice()
+	 *                       does nothing for any other.
+	 * @param int    $cap    The most to change.
+	 * @return array<string,int> changed, same, unlinked, denied, and left -
+	 *                           the ones after the cap was reached, not looked at.
+	 */
+	public static function apply_follow_choice( array $ids, $choice, $cap ) {
+		$counts = array( 'changed' => 0, 'same' => 0, 'unlinked' => 0, 'denied' => 0, 'left' => 0 );
+		$ids    = array_values( array_unique( array_filter( array_map( 'absint', $ids ) ) ) );
+		$cap    = max( 0, (int) $cap );
+		foreach ( $ids as $i => $id ) {
+			if ( $counts['changed'] >= $cap ) {
+				$counts['left'] = count( $ids ) - $i;
+				break;
+			}
+			$said = self::set_follow_choice( $id, $choice );
+			if ( isset( $counts[ $said ] ) ) {
+				$counts[ $said ]++;
+			}
+			wp_cache_delete( $id, 'post_meta' );
+		}
+		if ( $counts['changed'] > 0 ) {
+			TCGiant_Sync_Ebay_Live::forget_notice_count();
+		}
+
+		return $counts;
 	}
 
 	/**
@@ -1890,7 +2053,9 @@ class TCGiant_Sync_Admin {
 		// Whose values the listing's pushes send, from its tab (3.28.8).
 		$follow_posted = isset( $_POST['override_follow_defaults'] ) ? sanitize_text_field( wp_unslash( $_POST['override_follow_defaults'] ) ) : '';
 		if ( in_array( $follow_posted, array( '0', '1' ), true ) ) {
-			self::save_follow_defaults( $product_id, '1' === $follow_posted );
+			if ( self::save_follow_defaults( $product_id, '1' === $follow_posted, false, self::posted_follow_shown( 'override_follow_defaults_was' ) ) ) {
+				TCGiant_Sync_Ebay_Live::forget_notice_count();
+			}
 		}
 
 		// Item specifics travel with the button, because the product itself may
@@ -2346,6 +2511,205 @@ class TCGiant_Sync_Admin {
 			$args['tcgiant_replaced'] = $exporter->last_bulk_replaced();
 		}
 		return $args;
+	}
+
+	/**
+	 * The bulk actions that say whose values a listing's Updates send
+	 * (3.29.1), by their name on the products list, in their words. The
+	 * Listings screen offers the same three.
+	 *
+	 * @return array<string,string>
+	 */
+	public static function follow_action_labels() {
+		return array(
+			'tcgiant_follow_send'   => __( 'Send my shop defaults to eBay on Update', 'tcgiant-sync' ),
+			'tcgiant_follow_keep'   => __( 'Keep each listing\'s own eBay values on Update', 'tcgiant-sync' ),
+			'tcgiant_follow_origin' => __( 'Decide by who made the listing', 'tcgiant-sync' ),
+		);
+	}
+
+	/**
+	 * Those three on the products list (3.29.1), in a group of their own:
+	 * WordPress draws an array of actions as an optgroup.
+	 *
+	 * @param array $actions Bulk actions.
+	 * @return array
+	 */
+	public function register_follow_bulk_actions( $actions ) {
+		$actions[ __( 'TCGiant Sync: what an Update sends eBay', 'tcgiant-sync' ) ] = self::follow_action_labels();
+		return $actions;
+	}
+
+	/**
+	 * Set the choice of the products chosen on the products list (3.29.1):
+	 * at most FOLLOW_REQUEST_CAP changed a request. WordPress has checked the
+	 * list's nonce before it runs a bulk action; it is checked again here,
+	 * with the capability, so nothing else that applies this filter can set
+	 * a choice. What it did is kept for the user's next page
+	 * (FOLLOW_SAID), never put in the address. Nothing is sent to eBay.
+	 *
+	 * @param string $redirect_to Redirect URL.
+	 * @param string $action      Action name.
+	 * @param int[]  $post_ids    Products chosen.
+	 * @return string
+	 */
+	public function handle_follow_bulk_action( $redirect_to, $action, $post_ids ) {
+		if ( ! isset( self::FOLLOW_ACTIONS[ (string) $action ] ) ) {
+			return $redirect_to;
+		}
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		$nonce = isset( $_REQUEST['_wpnonce'] ) ? sanitize_text_field( wp_unslash( $_REQUEST['_wpnonce'] ) ) : '';
+		if ( ! wp_verify_nonce( $nonce, 'bulk-posts' ) || ! current_user_can( 'edit_products' ) ) {
+			return $redirect_to;
+		}
+
+		$choice = self::FOLLOW_ACTIONS[ (string) $action ];
+		$counts = self::apply_follow_choice( (array) $post_ids, $choice, self::FOLLOW_REQUEST_CAP );
+		set_transient( self::FOLLOW_SAID . get_current_user_id(), array( 'choice' => $choice ) + $counts, 5 * MINUTE_IN_SECONDS );
+
+		return $redirect_to;
+	}
+
+	/**
+	 * What the products list's bulk action did (3.29.1), with its counts, on
+	 * the products list: from the user's own record of it (FOLLOW_SAID), once.
+	 */
+	public function follow_bulk_notice() {
+		if ( ! current_user_can( 'edit_products' ) ) {
+			return;
+		}
+		$screen = get_current_screen();
+		if ( ! $screen || 'edit-product' !== $screen->id ) {
+			return;
+		}
+		// None kept, or not a record of the action's: no choice, so no notice.
+		$said   = get_transient( self::FOLLOW_SAID . get_current_user_id() );
+		$said   = is_array( $said ) ? $said : array();
+		$choice = (string) ( $said['choice'] ?? '' );
+		$counts = array();
+		foreach ( array( 'changed', 'same', 'unlinked', 'denied', 'left' ) as $key ) {
+			$counts[ $key ] = absint( $said[ $key ] ?? 0 );
+		}
+		$n = $counts['changed'];
+		if ( 'send' === $choice ) {
+			/* translators: %d: number of products */
+			$lines = array( sprintf( _n( '%d product now sends your shop defaults to eBay at its next Update.', '%d products now send your shop defaults to eBay at their next Update.', $n, 'tcgiant-sync' ), $n ) );
+		} elseif ( 'keep' === $choice ) {
+			/* translators: %d: number of products */
+			$lines = array( sprintf( _n( '%d product now keeps its listing\'s own values on eBay at its next Update.', '%d products now keep their listing\'s own values on eBay at their next Update.', $n, 'tcgiant-sync' ), $n ) );
+		} elseif ( 'origin' === $choice ) {
+			/* translators: %d: number of products */
+			$lines = array( sprintf( _n( '%d product now goes by who made its listing.', '%d products now go by who made their listing.', $n, 'tcgiant-sync' ), $n ) );
+		} else {
+			return;
+		}
+		// Shown once.
+		delete_transient( self::FOLLOW_SAID . get_current_user_id() );
+		if ( $counts['same'] > 0 ) {
+			/* translators: %d: number of products */
+			$lines[] = sprintf( _n( '%d already did.', '%d already did.', $counts['same'], 'tcgiant-sync' ), $counts['same'] );
+		}
+		if ( $counts['unlinked'] > 0 ) {
+			/* translators: %d: number of products */
+			$lines[] = sprintf( _n( '%d has no eBay listing, so there is nothing to choose for it.', '%d have no eBay listing, so there is nothing to choose for them.', $counts['unlinked'], 'tcgiant-sync' ), $counts['unlinked'] );
+		}
+		if ( $counts['denied'] > 0 ) {
+			/* translators: %d: number of products */
+			$lines[] = sprintf( _n( '%d was not changed: you cannot edit it.', '%d were not changed: you cannot edit them.', $counts['denied'], 'tcgiant-sync' ), $counts['denied'] );
+		}
+		if ( $counts['left'] > 0 ) {
+			$lines[] = sprintf(
+				/* translators: 1: number of products, 2: how many are changed at a time */
+				_n( '%1$d was not looked at: at most %2$s products are changed at a time here. Select it again, or use TCGiant Sync, Listings, which works through any number.', '%1$d were not looked at: at most %2$s products are changed at a time here. Select them again, or use TCGiant Sync, Listings, which works through any number.', $counts['left'], 'tcgiant-sync' ),
+				$counts['left'],
+				number_format_i18n( self::FOLLOW_REQUEST_CAP )
+			);
+		}
+		$lines[] = __( 'Nothing has been sent to eBay: each listing gets it at its next Update.', 'tcgiant-sync' );
+
+		echo '<div class="notice ' . ( $counts['left'] > 0 || $counts['denied'] > 0 ? 'notice-warning' : 'notice-success' ) . ' is-dismissible"><p>' . esc_html( implode( ' ', $lines ) ) . '</p></div>';
+	}
+
+	/**
+	 * Once 3.28.8's pass has judged who made each listing linked before it,
+	 * and its counts are known, say on TCGiant Sync's pages how many products
+	 * judged imported have a push of the shop's on record and no choice of
+	 * their own (3.29.1): their Updates keep eBay's values, and some may be
+	 * listings the shop pushed and Updated since. Points to the Listings
+	 * screen's filter for exactly those and to the two bulk actions; goes
+	 * when none is left, or when dismissed, for good.
+	 */
+	public function origin_upgrade_notice() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			return;
+		}
+		$screen = get_current_screen();
+		if ( ! $screen || false === strpos( (string) $screen->id, 'tcgiant' ) ) {
+			return;
+		}
+		$count = TCGiant_Sync_Ebay_Live::pushed_imported_count();
+		if ( $count < 1 ) {
+			return;
+		}
+
+		$state   = get_option( TCGiant_Sync_Ebay_Live::SWEEP_OPTION, array() );
+		$state   = is_array( $state ) ? $state : array();
+		$review  = add_query_arg( 'listing_origin', 'import_pushed_open', admin_url( 'admin.php?page=tcgiant-listings' ) );
+		$dismiss = wp_nonce_url( admin_url( 'admin-post.php?action=tcgiant_dismiss_origin_notice' ), 'tcgiant_dismiss_origin_notice' );
+		$filter  = TCGiant_Sync_Ebay_Live::filter_options()['import_pushed_open'];
+		$labels  = self::follow_action_labels();
+		?>
+		<div class="notice notice-warning" id="tc-origin-notice">
+			<p>
+				<strong>
+					<?php
+					/* translators: %d: number of products */
+					echo esc_html( sprintf( _n( 'TCGiant Sync - %d product judged imported from eBay was pushed from here before, and nothing is chosen for it', 'TCGiant Sync - %d products judged imported from eBay were pushed from here before, and nothing is chosen for them', $count, 'tcgiant-sync' ), $count ) );
+					?>
+				</strong><br>
+				<?php
+				echo esc_html( sprintf(
+					/* translators: 1: products judged imported, 2: judged pushed, 3: not known yet */
+					__( 'Since 3.28.8, an Update of a listing imported from eBay leaves its category, condition, business policies, location and format as they are on eBay. At that update, TCGiant Sync judged who made each listing linked before it from what this site holds: %1$d imported from eBay, %2$d pushed from here, %3$d not known yet. These products count as imported, but a push from here is on record for each, and no choice has been made for them: their Updates keep eBay\'s values and send none of your shop defaults. Some may be listings you pushed from here and Updated since.', 'tcgiant-sync' ),
+					(int) ( $state['import'] ?? 0 ),
+					(int) ( $state['push'] ?? 0 ),
+					(int) ( $state['unknown'] ?? 0 )
+				) );
+				?>
+			</p>
+			<p>
+				<?php
+				echo esc_html( sprintf(
+					/* translators: 1: the Listings filter's choice, 2 and 3: the bulk actions' names */
+					__( 'To see them, open Listings and filter by "%1$s". Tick the ones you pushed and choose the bulk action "%2$s", and the rest "%3$s". Each one you choose for leaves this count, and this notice goes when none is left. Nothing is sent to eBay until each one\'s next Update.', 'tcgiant-sync' ),
+					$filter,
+					$labels['tcgiant_follow_send'],
+					$labels['tcgiant_follow_keep']
+				) );
+				?>
+			</p>
+			<p>
+				<a class="button button-primary" href="<?php echo esc_url( $review ); ?>"><?php esc_html_e( 'See them in Listings', 'tcgiant-sync' ); ?></a>
+				<a href="<?php echo esc_url( $dismiss ); ?>" style="margin-left:8px;"><?php esc_html_e( 'Do not show this again', 'tcgiant-sync' ); ?></a>
+			</p>
+		</div>
+		<?php
+	}
+
+	/**
+	 * Put the notice after 3.28.8's pass away for good (3.29.1).
+	 */
+	public function handle_dismiss_origin_notice() {
+		check_admin_referer( 'tcgiant_dismiss_origin_notice' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'Unauthorized.', 'tcgiant-sync' ) );
+		}
+
+		TCGiant_Sync_Ebay_Live::dismiss_notice();
+
+		$back = wp_get_referer();
+		wp_safe_redirect( $back ? $back : admin_url( 'admin.php?page=tcgiant-sync' ) );
+		exit;
 	}
 
 	/**
@@ -3243,7 +3607,9 @@ class TCGiant_Sync_Admin {
 		// Whose values the listing's pushes send (3.28.8): the box is on the
 		// tab only for a product with a listing.
 		if ( ! empty( $_POST['_ebay_export_follow_defaults_shown'] ) ) {
-			self::save_follow_defaults( $post_id, ! empty( $_POST['_ebay_export_follow_defaults'] ) );
+			if ( self::save_follow_defaults( $post_id, ! empty( $_POST['_ebay_export_follow_defaults'] ), false, self::posted_follow_shown( '_ebay_export_follow_defaults_was' ) ) ) {
+				TCGiant_Sync_Ebay_Live::forget_notice_count();
+			}
 		}
 		if ( isset( $_POST['_ebay_export_category_id_select'] ) ) {
 			$cat_select = sanitize_text_field( wp_unslash( $_POST['_ebay_export_category_id_select'] ) );
@@ -4296,9 +4662,12 @@ class TCGiant_Sync_Admin {
 				<?php if ( ! empty( $ebay_item_id ) ) : ?>
 					<?php // Whose values this listing's pushes send (3.28.8). ?>
 					<p class="form-field" style="margin:8px 0 0;padding-left:12px;">
+						<?php // As it is shown - a choice of the shop's included - and posted back, so a save tells a box left as it was from one changed (3.29.1). ?>
+						<?php $follow_shown = TCGiant_Sync_Ebay_Live::follows_defaults( $product_id ); ?>
 						<input type="hidden" name="_ebay_export_follow_defaults_shown" value="1">
+						<input type="hidden" id="_ebay_export_follow_defaults_was" name="_ebay_export_follow_defaults_was" value="<?php echo $follow_shown ? '1' : '0'; ?>">
 						<label for="_ebay_export_follow_defaults" style="float:none;width:auto;margin:0;">
-							<input type="checkbox" id="_ebay_export_follow_defaults" name="_ebay_export_follow_defaults" value="1" <?php checked( TCGiant_Sync_Ebay_Live::follows_defaults( $product_id ) ); ?>>
+							<input type="checkbox" id="_ebay_export_follow_defaults" name="_ebay_export_follow_defaults" value="1" <?php checked( $follow_shown ); ?>>
 							<?php esc_html_e( 'Send my shop defaults (category, condition, business policies, location, handling time) to eBay with this listing', 'tcgiant-sync' ); ?>
 						</label>
 						<span style="display:block;margin-top:2px;font-size:11px;color:#888;"><?php esc_html_e( 'Unticked, an Update leaves the listing\'s own values on eBay as they are, and sends only what you set here for this product. A listing imported from eBay starts unticked; one pushed from here starts ticked.', 'tcgiant-sync' ); ?></span>
@@ -4661,7 +5030,7 @@ class TCGiant_Sync_Admin {
 			// Dismiss error
 			$('#tcgiant-dismiss-export-error').on('click',function(e){e.preventDefault();$.post(ajaxUrl,{action:'tcgiant_clear_export_error',product_id:$(this).data('product-id'),_ajax_nonce:nonce});$('#tcgiant-export-error-notice').slideUp(200);});
 			// Push
-			$('#tcgiant-push-btn').on('click',function(){var btn=$(this),st=$('#tcgiant-push-status');btn.prop('disabled',true);st.css('color','#555').text('Saving & validating...');var cs=$('#_ebay_export_category_id_select').val()||'',cc=$('#_ebay_export_category_id_custom').val()||'',catId=(cs==='custom')?cc:cs,it=$('#_ebay_export_item_type').val()||'',sf=(it&&it!=='other')?'_'+it:'',gid=$('#_ebay_export_grader_id'+sf).val()||'',gv=$('#_ebay_export_grade_value'+sf).val()||'',uc=$('#_ebay_export_ungraded_condition'+sf).val()||'';$.post(ajaxUrl,{action:'tcgiant_push_product',product_id:btn.data('product-id'),override_category_id:catId,override_category_typed:(cs==='custom')?cc:'',override_category_name:$('#_ebay_export_category_name').val()||'',override_condition_id:$('#_ebay_export_condition_id').val()||'',override_item_type:it,override_condition_type:$('#_ebay_export_condition_type').val()||'',override_grader_id:gid,override_grade_value:gv,override_cert_number:$('[name="_ebay_export_cert_number"]').val()||'',override_coin_year:$('[name="_ebay_export_coin_year"]').val()||'',override_ungraded_condition:uc,override_listing_type:$('#_ebay_export_listing_type').val()||'',override_listing_duration:$('#_ebay_export_listing_duration').val()||'',override_fulfillment_policy:$('#_ebay_export_fulfillment_policy').val()||'',override_follow_defaults:$('#_ebay_export_follow_defaults').length?($('#_ebay_export_follow_defaults').is(':checked')?'1':'0'):'',specifics_present:tcAspectsPresent(),specifics:tcAspectValues(),_tcgiant_tpl_fields:$('#_tcgiant_tpl_override').length?1:'',_tcgiant_tpl_override:$('#_tcgiant_tpl_override').val()||'',_tcgiant_ebay_description:$('#_tcgiant_ebay_description').val()||'',_ajax_nonce:nonce},function(r){if(r.success){st.css('color','#2a8a2a').text('OK - '+r.data.message);}else{st.css('color','#cc1818').text('Error: '+(r.data?r.data.message:'Unknown error'));btn.prop('disabled',false);}});});
+			$('#tcgiant-push-btn').on('click',function(){var btn=$(this),st=$('#tcgiant-push-status');btn.prop('disabled',true);st.css('color','#555').text('Saving & validating...');var cs=$('#_ebay_export_category_id_select').val()||'',cc=$('#_ebay_export_category_id_custom').val()||'',catId=(cs==='custom')?cc:cs,it=$('#_ebay_export_item_type').val()||'',sf=(it&&it!=='other')?'_'+it:'',gid=$('#_ebay_export_grader_id'+sf).val()||'',gv=$('#_ebay_export_grade_value'+sf).val()||'',uc=$('#_ebay_export_ungraded_condition'+sf).val()||'';$.post(ajaxUrl,{action:'tcgiant_push_product',product_id:btn.data('product-id'),override_category_id:catId,override_category_typed:(cs==='custom')?cc:'',override_category_name:$('#_ebay_export_category_name').val()||'',override_condition_id:$('#_ebay_export_condition_id').val()||'',override_item_type:it,override_condition_type:$('#_ebay_export_condition_type').val()||'',override_grader_id:gid,override_grade_value:gv,override_cert_number:$('[name="_ebay_export_cert_number"]').val()||'',override_coin_year:$('[name="_ebay_export_coin_year"]').val()||'',override_ungraded_condition:uc,override_listing_type:$('#_ebay_export_listing_type').val()||'',override_listing_duration:$('#_ebay_export_listing_duration').val()||'',override_fulfillment_policy:$('#_ebay_export_fulfillment_policy').val()||'',override_follow_defaults:$('#_ebay_export_follow_defaults').length?($('#_ebay_export_follow_defaults').is(':checked')?'1':'0'):'',override_follow_defaults_was:$('#_ebay_export_follow_defaults_was').val()||'',specifics_present:tcAspectsPresent(),specifics:tcAspectValues(),_tcgiant_tpl_fields:$('#_tcgiant_tpl_override').length?1:'',_tcgiant_tpl_override:$('#_tcgiant_tpl_override').val()||'',_tcgiant_ebay_description:$('#_tcgiant_ebay_description').val()||'',_ajax_nonce:nonce},function(r){if($('#_ebay_export_follow_defaults').length){$('#_ebay_export_follow_defaults_was').val($('#_ebay_export_follow_defaults').is(':checked')?'1':'0');}if(r.success){st.css('color','#2a8a2a').text('OK - '+r.data.message);}else{st.css('color','#cc1818').text('Error: '+(r.data?r.data.message:'Unknown error'));btn.prop('disabled',false);}});});
 			// Item specifics: ask eBay what this category requires, and show it.
 			function tcAspectValues(){var o={};$('#tc-aspect-rows [data-aspect]').each(function(){var n=$(this).data('aspect');if(n){o[n]=$.trim($(this).val()||'');}});return o;}
 			function tcAspectsPresent(){return $('#tc-aspect-rows [data-aspect]').length?1:'';}

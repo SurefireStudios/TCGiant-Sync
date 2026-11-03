@@ -274,6 +274,36 @@ $out['untold_saved_unticked'] = save( 817, true, false );
 $out['untold_saved_ticked']   = save( 817, true, true );
 $out['known_note']            = $untold( 801 );
 
+// 3.29.1: the box's state as the tab shows it, posted back beside it, so a
+// save or a Push with the box left as it was changes nothing - a bulk choice
+// included - and a box changed on a listing not known yet keeps 1 or 0.
+$was = function ( $id ) {
+	return preg_match( '#<input type="hidden" id="_ebay_export_follow_defaults_was" name="_ebay_export_follow_defaults_was" value="([01])">#', tab( $id ), $m ) ? $m[1] : null;
+};
+$out['was_card']   = $was( 801 );
+$out['was_pushed'] = $was( 802 );
+$out['was_new']    = $was( 804 );
+product( 819, array( '_ebay_item_id' => '256100000819', '_ebay_listing_type' => 'FixedPriceItem', '_ebay_listing_status' => 'Active', '_ebay_export_status' => 'pushed', '_ebay_export_last_pushed' => '2026-06-01 10:00:00' ) );
+TCGiant_Sync_Admin::set_follow_choice( 819, 'keep' );
+$out['bulk_keep_was'] = $was( 819 );
+$out['bulk_keep_box'] = box( 819 );
+press( 819, array( 'override_follow_defaults' => '0', 'override_follow_defaults_was' => '0' ) );
+$out['bulk_keep_pressed'] = (string) get_post_meta( 819, '_ebay_export_follow_defaults', true );
+press( 819, array( 'override_follow_defaults' => '1', 'override_follow_defaults_was' => '0' ) );
+$out['bulk_keep_ticked'] = (string) get_post_meta( 819, '_ebay_export_follow_defaults', true );
+press( 819, array( 'override_follow_defaults' => '0', 'override_follow_defaults_was' => '1' ) );
+$out['bulk_keep_unticked'] = (string) get_post_meta( 819, '_ebay_export_follow_defaults', true );
+// Drawn ticked, then a bulk Keep from another tab, then Push with the box as drawn: the Keep stays.
+product( 820, array( '_ebay_item_id' => '256100000820', '_ebay_listing_type' => 'FixedPriceItem', '_ebay_listing_status' => 'Active', '_ebay_export_status' => 'pushed', '_ebay_export_last_pushed' => '2026-06-01 10:00:00', '_ebay_export_follow_defaults' => '1' ) );
+$drawn = $was( 820 );
+TCGiant_Sync_Admin::set_follow_choice( 820, 'keep' );
+set_transient( TCGiant_Sync_Ebay_Live::NOTICE_COUNT, 5, 3600 );
+press( 820, array( 'override_follow_defaults' => '1', 'override_follow_defaults_was' => $drawn ) );
+$out['stale_press']      = array( $drawn, (string) get_post_meta( 820, '_ebay_export_follow_defaults', true ) );
+$out['count_kept']       = get_transient( TCGiant_Sync_Ebay_Live::NOTICE_COUNT );
+press( 820, array( 'override_follow_defaults' => '1', 'override_follow_defaults_was' => '0' ) );
+$out['count_forgotten']  = array( (string) get_post_meta( 820, '_ebay_export_follow_defaults', true ), get_transient( TCGiant_Sync_Ebay_Live::NOTICE_COUNT ) );
+
 /** Link to this listing, by hand: answered OK or not, the origin kept, eBay's category and condition recorded. */
 function link_to( $id, $item_id ) {
 	$_POST  = array( 'product_id' => (string) $id, 'ebay_item_id' => $item_id );

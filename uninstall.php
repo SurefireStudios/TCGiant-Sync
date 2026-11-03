@@ -212,6 +212,7 @@ $tcgiant_options = array(
 	'tcgiant_auction_listed_marked',   // Auctions listed from WooCommerce marked at upgrade, 3.28.0.
 	'tcgiant_sync_origin_sweep',       // Who made each listing, judged once at upgrade, 3.28.8's preview.
 	'tcgiant_sync_origin_sweep_2',     // Who made each listing, judged once at upgrade, 3.28.8.
+	'tcgiant_sync_origin_notice',      // Its notice, dismissed, 3.29.1.
 	'tcgiant_sync_motors_sites',       // The site eBay took an eBay Motors revise and relist with, 3.28.9.
 	'tcgiant_sync_last_crash_push',            // A push PHP killed, 3.27.4.
 	'tcgiant_sync_last_crash_photo_cleanup',   // Photos of deleted products, 3.27.4.

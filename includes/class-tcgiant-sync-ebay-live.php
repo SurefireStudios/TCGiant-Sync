@@ -148,6 +148,26 @@ class TCGiant_Sync_Ebay_Live {
 	const SWEEP_LOG_CHUNK = 50;
 
 	/**
+	 * The Listings screen's filter by who made a listing and whose values its
+	 * Updates send (3.29.1): filter_sql()'s values, in filter_options()'s
+	 * order.
+	 */
+	const FILTERS = array( 'import', 'import_pushed', 'import_pushed_open', 'push', 'unknown', 'send_own', 'send_origin', 'keep_own', 'keep_origin' );
+
+	/**
+	 * The notice that products judged imported have a push of the shop's on
+	 * record and no choice of their own (3.29.1, pushed_imported_count()):
+	 * 'dismissed' once the shop has put it away, for good.
+	 */
+	const NOTICE_OPTION = 'tcgiant_sync_origin_notice';
+
+	/**
+	 * Transient that keeps the notice's count for an hour: the notice is on
+	 * every TCGiant Sync page, and its count is a query over every listing.
+	 */
+	const NOTICE_COUNT = 'tcgiant_sync_origin_notice_count';
+
+	/**
 	 * What eBay's answer about a listing says of the fields a push would
 	 * otherwise fill from the shop's defaults. Only the fields the answer
 	 * carries, each as a plain string: a field it leaves out is not in the
@@ -1101,6 +1121,169 @@ class TCGiant_Sync_Ebay_Live {
 	 */
 	public static function origin_follows( $origin ) {
 		return 'push' === $origin || '' === $origin;
+	}
+
+	/**
+	 * What the Listings screen says of a product's listing (3.29.1): who made
+	 * it (origin(): 'import', 'push', UNKNOWN, or '' with no listing),
+	 * whether its Updates send the shop's defaults, as follows_defaults()
+	 * decides, and whether that is the shop's own choice for it (FOLLOW_META
+	 * '1' or '0') or goes by who made it. origin() is asked once.
+	 *
+	 * @param int $product_id Product.
+	 * @return array origin, follows, own.
+	 */
+	public static function follow_state( $product_id ) {
+		$choice = (string) get_post_meta( (int) $product_id, self::FOLLOW_META, true );
+		$own    = '1' === $choice || '0' === $choice;
+		$origin = self::origin( $product_id );
+
+		return array(
+			'origin'  => $origin,
+			'follows' => $own ? '1' === $choice : self::origin_follows( $origin ),
+			'own'     => $own,
+		);
+	}
+
+	/**
+	 * The Listings screen's filter (3.29.1): each of FILTERS with its words.
+	 *
+	 * @return array<string,string>
+	 */
+	public static function filter_options() {
+		return array(
+			'import'             => __( 'Imported from eBay', 'tcgiant-sync' ),
+			'import_pushed'      => __( 'Judged imported, with a push from here on record', 'tcgiant-sync' ),
+			'import_pushed_open' => __( 'Judged imported, with a push from here on record, nothing chosen yet', 'tcgiant-sync' ),
+			'push'               => __( 'Pushed from here', 'tcgiant-sync' ),
+			'unknown'            => __( 'Not known yet', 'tcgiant-sync' ),
+			'send_own'           => __( 'Sends my shop defaults: its own choice', 'tcgiant-sync' ),
+			'send_origin'        => __( 'Sends my shop defaults: by who made it', 'tcgiant-sync' ),
+			'keep_own'           => __( 'Keeps eBay\'s values: its own choice', 'tcgiant-sync' ),
+			'keep_origin'        => __( 'Keeps eBay\'s values: by who made it', 'tcgiant-sync' ),
+		);
+	}
+
+	/**
+	 * The Listings screen's filter (3.29.1) as an SQL condition on the
+	 * product in $column, for TCGiant_Sync_DB's listings queries - the page,
+	 * its count and "everything matching" alike - so no product is loaded.
+	 *
+	 * Who made the listing as origin() reads what is kept: the first
+	 * ORIGIN_META row, 'import' or 'push'; with neither, and a listing, not
+	 * known yet. Whose values its Updates send as follows_defaults() reads
+	 * the shop's choice (FOLLOW_META '1' or '0', its first row), and
+	 * otherwise the origin: only 'push' sends the shop's defaults; 'import'
+	 * and not known yet keep eBay's.
+	 *
+	 * Only what is kept: a product from before 3.28.8 that the upgrade's
+	 * pass has not reached yet is not known yet here, whatever origin()
+	 * would judge of it now.
+	 *
+	 * 'import_pushed' is a product judged imported - by the pass, at a push
+	 * (ORIGIN_BY_META BY_SWEEP, BY_JUDGED) or by the 3.28.8 preview's pass
+	 * (none) - never one the import made or a link, with a push of the
+	 * shop's on record (_ebay_export_last_pushed): one the shop may have
+	 * pushed, and Updated since. 'import_pushed_open' is one of those with
+	 * no choice of its own yet: the notice's.
+	 *
+	 * Each meta value is read by one subquery a row: whoever made the
+	 * listing is asked once, through a CASE on it, where two tests need it.
+	 *
+	 * @param string $filter One of FILTERS; anything else filters nothing.
+	 * @param string $column The column holding the product ID.
+	 * @return string '' for no condition.
+	 */
+	public static function filter_sql( $filter, $column = 'l.product_id' ) {
+		global $wpdb;
+		if ( ! in_array( $filter, self::FILTERS, true ) ) {
+			return '';
+		}
+
+		// A meta value of the product's, its first row as get_post_meta()
+		// reads it, '' for none.
+		$first = function ( $key, $alias ) use ( $wpdb, $column ) {
+			return "COALESCE((SELECT {$alias}.meta_value FROM {$wpdb->postmeta} {$alias} WHERE {$alias}.post_id = {$column} AND {$alias}.meta_key = '{$key}' ORDER BY {$alias}.meta_id ASC LIMIT 1), '')";
+		};
+		$origin  = $first( self::ORIGIN_META, 'fo' );
+		$choice  = $first( self::FOLLOW_META, 'fc' );
+		$listed  = $first( '_ebay_item_id', 'fi' ) . " <> ''";
+		$unknown = "( {$origin} NOT IN ('import', 'push') AND {$listed} )";
+		$no_own  = "{$choice} NOT IN ('1', '0')";
+		$pushed  = "( {$origin} = 'import' AND " . $first( self::ORIGIN_BY_META, 'fb' ) . " IN ('', '" . self::BY_SWEEP . "', '" . self::BY_JUDGED . "') AND " . $first( '_ebay_export_last_pushed', 'fp' ) . " <> '' )";
+
+		switch ( $filter ) {
+			case 'import':
+				return "{$origin} = 'import'";
+			case 'import_pushed':
+				return $pushed;
+			case 'import_pushed_open':
+				return "( {$no_own} AND {$pushed} )";
+			case 'push':
+				return "{$origin} = 'push'";
+			case 'unknown':
+				return $unknown;
+			case 'send_own':
+				return "{$choice} = '1'";
+			case 'keep_own':
+				return "{$choice} = '0'";
+			case 'send_origin':
+				return "( {$no_own} AND {$origin} = 'push' )";
+			default:
+				// keep_origin: imported, or not known yet - who made it asked once.
+				return "( {$no_own} AND ( CASE {$origin} WHEN 'import' THEN 1 WHEN 'push' THEN 0 ELSE {$listed} END ) = 1 )";
+		}
+	}
+
+	/**
+	 * How many products the notice after 3.28.8's pass speaks of (3.29.1):
+	 * those judged imported with a push of the shop's on record and no
+	 * choice of their own, as the Listings screen's filter
+	 * 'import_pushed_open' lists them, in one query, kept an hour
+	 * (NOTICE_COUNT) or until a choice changes (forget_notice_count()). 0 -
+	 * and no query - until the pass is done and its counts are known
+	 * (SWEEP_OPTION, the log line it wrote), and once the shop has dismissed
+	 * the notice (NOTICE_OPTION).
+	 *
+	 * @return int
+	 */
+	public static function pushed_imported_count() {
+		if ( 'dismissed' === get_option( self::NOTICE_OPTION, '' ) ) {
+			return 0;
+		}
+		$state = get_option( self::SWEEP_OPTION, array() );
+		if ( ! is_array( $state ) || empty( $state['done'] ) || (int) ( $state['import'] ?? 0 ) + (int) ( $state['push'] ?? 0 ) + (int) ( $state['unknown'] ?? 0 ) < 1 ) {
+			return 0;
+		}
+
+		$kept = get_transient( self::NOTICE_COUNT );
+		if ( false !== $kept ) {
+			return (int) $kept;
+		}
+		$count = class_exists( 'TCGiant_Sync_DB' ) ? TCGiant_Sync_DB::count( array( 'origin' => 'import_pushed_open' ) ) : 0;
+		set_transient( self::NOTICE_COUNT, $count, HOUR_IN_SECONDS );
+
+		return $count;
+	}
+
+	/**
+	 * Put the notice after 3.28.8's pass away for good (3.29.1).
+	 *
+	 * @return void
+	 */
+	public static function dismiss_notice() {
+		update_option( self::NOTICE_OPTION, 'dismissed', false );
+		self::forget_notice_count();
+	}
+
+	/**
+	 * The notice's count is counted again at its next showing (3.29.1): a
+	 * product's choice changed, so it may have left the count.
+	 *
+	 * @return void
+	 */
+	public static function forget_notice_count() {
+		delete_transient( self::NOTICE_COUNT );
 	}
 
 	/**

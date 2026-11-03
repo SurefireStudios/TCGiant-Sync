@@ -753,8 +753,9 @@ class TCGiant_Sync_DB {
 	 * from_sql(), which supplies the joins the views need.
 	 *
 	 * @param array $args status (a view, or a stored status from an older
-	 *                    link), type, search, and ended_only (the Ended
-	 *                    view's rows only, whatever the status).
+	 *                    link), type, search, ended_only (the Ended view's
+	 *                    rows only, whatever the status), and origin
+	 *                    (TCGiant_Sync_Ebay_Live::filter_sql(), 3.29.1).
 	 * @return array [ where clause, parameters ]
 	 */
 	private static function build_where( array $args ) {
@@ -796,6 +797,16 @@ class TCGiant_Sync_DB {
 			$params[] = (int) $args['search'];
 		}
 
+		// Who made the listing, and whose values its Updates send (3.29.1):
+		// one of TCGiant_Sync_Ebay_Live::FILTERS, read from the products'
+		// meta in the query itself.
+		if ( ! empty( $args['origin'] ) && class_exists( 'TCGiant_Sync_Ebay_Live' ) ) {
+			$origin = TCGiant_Sync_Ebay_Live::filter_sql( (string) $args['origin'], 'l.product_id' );
+			if ( '' !== $origin ) {
+				$where[] = $origin;
+			}
+		}
+
 		return array( implode( ' AND ', $where ), $params );
 	}
 
@@ -808,8 +819,8 @@ class TCGiant_Sync_DB {
 	 * what was asked. So the screen names the filters and the server runs the
 	 * same query again without a LIMIT.
 	 *
-	 * @param array $args status, type and search - as passed to query() - and
-	 *                    ended_only.
+	 * @param array $args status, type, search and origin - as passed to
+	 *                    query() - and ended_only.
 	 * @return int[] Product ids.
 	 */
 	public static function find_product_ids( array $args ) {
@@ -823,6 +834,7 @@ class TCGiant_Sync_DB {
 			'status'     => '',
 			'type'       => '',
 			'search'     => '',
+			'origin'     => '',
 			'ended_only' => false,
 		) ) );
 
@@ -837,6 +849,32 @@ class TCGiant_Sync_DB {
 			: $wpdb->get_col( $sql );
 
 		return array_values( array_filter( array_map( 'absint', (array) $ids ) ) );
+	}
+
+	/**
+	 * How many listings match a set of filters, in one query over the rows
+	 * the Listings screen shows (3.29.1): the count its page would give.
+	 *
+	 * @param array $args status, type, search and origin, as query() takes them.
+	 * @return int
+	 */
+	public static function count( array $args ) {
+		global $wpdb;
+
+		if ( ! self::table_exists() ) {
+			return 0;
+		}
+
+		list( $where_clause, $params ) = self::build_where( wp_parse_args( $args, array(
+			'status' => '',
+			'type'   => '',
+			'search' => '',
+			'origin' => '',
+		) ) );
+
+		$sql = 'SELECT COUNT(*) FROM ' . self::from_sql() . " WHERE {$where_clause}";
+
+		return (int) ( $params ? $wpdb->get_var( $wpdb->prepare( $sql, $params ) ) : $wpdb->get_var( $sql ) );
 	}
 
 	/**
@@ -859,6 +897,7 @@ class TCGiant_Sync_DB {
 			'status'   => '',      // Active, Ended or Sold (view_conditions()); another stored status matches exactly
 			'type'     => '',      // FixedPriceItem, Chinese
 			'search'   => '',      // Search by title, eBay ID, or product ID
+			'origin'   => '',      // TCGiant_Sync_Ebay_Live::FILTERS (3.29.1)
 			'orderby'  => 'updated_at',
 			'order'    => 'DESC',
 			'per_page' => 20,

@@ -17,6 +17,9 @@ if ( ! defined( 'ABSPATH' ) ) {
 $current_status = isset( $_GET['listing_status'] ) ? sanitize_text_field( $_GET['listing_status'] ) : '';
 $current_type   = isset( $_GET['listing_type'] ) ? sanitize_text_field( $_GET['listing_type'] ) : '';
 $search         = isset( $_GET['s'] ) ? sanitize_text_field( $_GET['s'] ) : '';
+// Who made the listing, and whose values its Updates send (3.29.1).
+$current_origin = isset( $_GET['listing_origin'] ) ? sanitize_key( $_GET['listing_origin'] ) : '';
+$current_origin = in_array( $current_origin, TCGiant_Sync_Ebay_Live::FILTERS, true ) ? $current_origin : '';
 $orderby        = isset( $_GET['orderby'] ) ? sanitize_key( $_GET['orderby'] ) : 'updated_at';
 $order          = isset( $_GET['order'] ) ? sanitize_key( $_GET['order'] ) : 'DESC';
 $paged          = isset( $_GET['paged'] ) ? max( 1, (int) $_GET['paged'] ) : 1;
@@ -27,6 +30,7 @@ $result = TCGiant_Sync_DB::query( array(
 	'status'   => $current_status,
 	'type'     => $current_type,
 	'search'   => $search,
+	'origin'   => $current_origin,
 	'orderby'  => $orderby,
 	'order'    => $order,
 	'per_page' => $per_page,
@@ -80,11 +84,16 @@ $sort_class = function ( $column, $default = 'DESC' ) use ( $orderby, $order ) {
 $carry = array(
 	'listing_status' => $current_status,
 	'listing_type'   => $current_type,
+	'listing_origin' => $current_origin,
 	's'              => $search,
 	'orderby'        => $orderby,
 	'order'          => $order,
 );
 $base_url = admin_url( 'admin.php?page=tcgiant-listings' );
+
+// The bulk actions that say whose values each listing's Updates send
+// (3.29.1), in the products list's words.
+$follow_labels = TCGiant_Sync_Admin::follow_action_labels();
 ?>
 
 <div class="wrap tc-dashboard-wrap">
@@ -145,7 +154,7 @@ $base_url = admin_url( 'admin.php?page=tcgiant-listings' );
 			<form method="get" action="<?php echo esc_url( admin_url( 'admin.php' ) ); ?>" style="display: inline;">
 				<input type="hidden" name="page" value="tcgiant-listings" />
 				<?php foreach ( $carry as $carry_key => $carry_value ) : ?>
-					<?php if ( 'listing_type' !== $carry_key && '' !== $carry_value ) : ?>
+					<?php if ( 'listing_type' !== $carry_key && 'listing_origin' !== $carry_key && '' !== $carry_value ) : ?>
 						<input type="hidden" name="<?php echo esc_attr( $carry_key ); ?>" value="<?php echo esc_attr( $carry_value ); ?>" />
 					<?php endif; ?>
 				<?php endforeach; ?>
@@ -155,8 +164,33 @@ $base_url = admin_url( 'admin.php?page=tcgiant-listings' );
 					<option value="FixedPriceItem" <?php selected( $current_type, 'FixedPriceItem' ); ?>><?php esc_html_e( 'Fixed Price', 'tcgiant-sync' ); ?></option>
 					<option value="Chinese" <?php selected( $current_type, 'Chinese' ); ?>><?php esc_html_e( 'Auction', 'tcgiant-sync' ); ?></option>
 				</select>
+				<?php // Who made each listing, and whose values its Updates send (3.29.1). ?>
+				<label for="filter-by-origin" class="screen-reader-text"><?php esc_html_e( 'Filter by who made the listing', 'tcgiant-sync' ); ?></label>
+				<select name="listing_origin" id="filter-by-origin">
+					<option value=""><?php esc_html_e( 'Any origin', 'tcgiant-sync' ); ?></option>
+					<?php $origin_options = TCGiant_Sync_Ebay_Live::filter_options(); ?>
+					<optgroup label="<?php esc_attr_e( 'Who made the listing', 'tcgiant-sync' ); ?>">
+						<?php foreach ( array( 'import', 'import_pushed', 'import_pushed_open', 'push', 'unknown' ) as $origin_value ) : ?>
+							<option value="<?php echo esc_attr( $origin_value ); ?>" <?php selected( $current_origin, $origin_value ); ?>><?php echo esc_html( $origin_options[ $origin_value ] ); ?></option>
+						<?php endforeach; ?>
+					</optgroup>
+					<optgroup label="<?php esc_attr_e( 'What an Update sends eBay', 'tcgiant-sync' ); ?>">
+						<?php foreach ( array( 'send_own', 'send_origin', 'keep_own', 'keep_origin' ) as $origin_value ) : ?>
+							<option value="<?php echo esc_attr( $origin_value ); ?>" <?php selected( $current_origin, $origin_value ); ?>><?php echo esc_html( $origin_options[ $origin_value ] ); ?></option>
+						<?php endforeach; ?>
+					</optgroup>
+				</select>
 				<input type="submit" class="button" value="<?php esc_attr_e( 'Filter', 'tcgiant-sync' ); ?>" />
 			</form>
+			<?php
+			// The filter reads who made each listing as it is kept: while 3.28.8's
+			// pass is still judging the products linked before it, the ones it
+			// has not reached are not known yet here.
+			$origin_sweep = get_option( TCGiant_Sync_Ebay_Live::SWEEP_OPTION, array() );
+			?>
+			<?php if ( '' !== $current_origin && ! ( is_array( $origin_sweep ) && ! empty( $origin_sweep['done'] ) ) ) : ?>
+				<p class="tc-origin-sweeping" style="margin:4px 0 0;color:#996800;font-size:12px;"><?php esc_html_e( 'Who made each listing linked before 3.28.8 is still being worked out, a few hundred at a time. Until it is, the ones not reached yet are under Not known yet here, whatever the Origin column says.', 'tcgiant-sync' ); ?></p>
+			<?php endif; ?>
 		</div>
 
 		<!-- Bulk Actions -->
@@ -172,6 +206,12 @@ $base_url = admin_url( 'admin.php?page=tcgiant-listings' );
 					<option value="bulk_relist"><?php esc_html_e( 'Relist', 'tcgiant-sync' ); ?></option>
 				<?php endif; ?>
 				<option value="bulk_set_format"><?php esc_html_e( 'Change listing format', 'tcgiant-sync' ); ?></option>
+				<?php // Whose values each listing's Updates send (3.29.1): saved on the products, nothing sent to eBay. ?>
+				<optgroup label="<?php esc_attr_e( 'What an Update sends eBay', 'tcgiant-sync' ); ?>">
+					<option value="bulk_follow_send"><?php echo esc_html( $follow_labels['tcgiant_follow_send'] ); ?></option>
+					<option value="bulk_follow_keep"><?php echo esc_html( $follow_labels['tcgiant_follow_keep'] ); ?></option>
+					<option value="bulk_follow_origin"><?php echo esc_html( $follow_labels['tcgiant_follow_origin'] ); ?></option>
+				</optgroup>
 			</select>
 
 			<?php // Only meaningful for the format change, so it stays out of the way until then. ?>
@@ -244,6 +284,7 @@ $base_url = admin_url( 'admin.php?page=tcgiant-listings' );
 						<span class="sorting-indicators"><span class="sorting-indicator asc" aria-hidden="true"></span><span class="sorting-indicator desc" aria-hidden="true"></span></span>
 					</a>
 				</th>
+				<th scope="col" class="manage-column column-origin" style="width: 150px;"><?php esc_html_e( 'Origin', 'tcgiant-sync' ); ?></th>
 				<th scope="col" class="<?php echo esc_attr( $sort_class( 'listing_status', 'ASC' ) ); ?>" style="width: 130px;">
 					<a href="<?php echo $sort_url( 'listing_status', 'ASC' ); ?>">
 						<span><?php esc_html_e( 'Status', 'tcgiant-sync' ); ?></span>
@@ -285,7 +326,7 @@ $base_url = admin_url( 'admin.php?page=tcgiant-listings' );
 		<tbody>
 			<?php if ( empty( $items ) ) : ?>
 				<tr>
-					<td colspan="10"><?php esc_html_e( 'No listings found.', 'tcgiant-sync' ); ?></td>
+					<td colspan="11"><?php esc_html_e( 'No listings found.', 'tcgiant-sync' ); ?></td>
 				</tr>
 			<?php else : ?>
 				<?php foreach ( $items as $listing ) :
@@ -340,6 +381,21 @@ $base_url = admin_url( 'admin.php?page=tcgiant-listings' );
 					// Status badge colors.
 					$status_colors = array( 'Active' => 'color: #46B450;', 'Ended' => 'color: #dc3232;', 'Sold' => 'color: #2271b1;' );
 					$status_class  = $status_colors[ $view ] ?? 'color: #dc3232;';
+
+					// Who made the listing, and whose values its Updates send
+					// (3.29.1): what its next Update goes by.
+					$follow_state = TCGiant_Sync_Ebay_Live::follow_state( $product_id );
+					$origin_words = array(
+						'import'                        => array( __( 'Imported', 'tcgiant-sync' ), __( 'Imported from eBay, or linked to a listing made on eBay: an Update leaves the listing\'s own category, condition, business policies, location and format as they are on eBay.', 'tcgiant-sync' ) ),
+						'push'                          => array( __( 'Pushed', 'tcgiant-sync' ), __( 'Pushed from here: an Update sends your shop defaults where the product sets nothing of its own.', 'tcgiant-sync' ) ),
+						TCGiant_Sync_Ebay_Live::UNKNOWN => array( __( 'Not known yet', 'tcgiant-sync' ), __( 'Whether this listing was imported from eBay or pushed from here is not known yet: its next Update asks eBay first, with one call, when the listing started, and goes by that. Until then it is treated as imported.', 'tcgiant-sync' ) ),
+					);
+					$origin_cell  = $origin_words[ $follow_state['origin'] ] ?? null;
+					if ( $follow_state['follows'] ) {
+						$follow_words = $follow_state['own'] ? __( 'Sends my shop defaults (its own choice)', 'tcgiant-sync' ) : __( 'Sends my shop defaults (by who made it)', 'tcgiant-sync' );
+					} else {
+						$follow_words = $follow_state['own'] ? __( 'Keeps eBay\'s values (its own choice)', 'tcgiant-sync' ) : __( 'Keeps eBay\'s values (by who made it)', 'tcgiant-sync' );
+					}
 				?>
 				<tr>
 					<th scope="row" class="check-column" style="padding: 8px 4px;"><input type="checkbox" class="tc-listing-cb" value="<?php echo esc_attr( $product_id ); ?>" /></th>
@@ -358,6 +414,14 @@ $base_url = admin_url( 'admin.php?page=tcgiant-listings' );
 						</a>
 					</td>
 					<td><?php echo $type; ?></td>
+					<td class="column-origin">
+						<?php if ( $origin_cell ) : ?>
+							<strong class="tc-origin" title="<?php echo esc_attr( $origin_cell[1] ); ?>"><?php echo esc_html( $origin_cell[0] ); ?></strong>
+							<br><span class="tc-follows" style="color:#666;font-size:11px;"><?php echo esc_html( $follow_words ); ?></span>
+						<?php else : ?>
+							—
+						<?php endif; ?>
+					</td>
 					<td>
 						<strong style="<?php echo $status_class; ?>"><?php echo $status; ?></strong>
 						<?php if ( '' !== $end_note ) : ?>
@@ -452,7 +516,7 @@ $base_url = admin_url( 'admin.php?page=tcgiant-listings' );
 		$('.tc-listing-cb:checked').each(function(){ ids.push(parseInt($(this).val())); });
 		if (!all && !ids.length) { alert('Select at least one listing, or tick the box to apply to everything matching.'); return; }
 
-		var labels = { bulk_push:'Push to eBay', bulk_verify:'Check push settings only (eBay is not asked)', bulk_end:'End Listing', bulk_relist:'Relist', bulk_set_format:'Change listing format' };
+		var labels = { bulk_push:'Push to eBay', bulk_verify:'Check push settings only (eBay is not asked)', bulk_end:'End Listing', bulk_relist:'Relist', bulk_set_format:'Change listing format', bulk_follow_send:<?php echo wp_json_encode( $follow_labels['tcgiant_follow_send'] ); ?>, bulk_follow_keep:<?php echo wp_json_encode( $follow_labels['tcgiant_follow_keep'] ); ?>, bulk_follow_origin:<?php echo wp_json_encode( $follow_labels['tcgiant_follow_origin'] ); ?> };
 		var payload = { action:'tcgiant_job_start', type:action, product_ids:ids, _ajax_nonce:nonce };
 
 		if (action === 'bulk_set_format') {
@@ -469,6 +533,7 @@ $base_url = admin_url( 'admin.php?page=tcgiant-listings' );
 			payload.listing_status = <?php echo wp_json_encode( $current_status ); ?>;
 			payload.listing_type = <?php echo wp_json_encode( $current_type ); ?>;
 			payload.s = <?php echo wp_json_encode( $search ); ?>;
+			payload.listing_origin = <?php echo wp_json_encode( $current_origin ); ?>;
 		}
 
 		var howMany = all ? <?php echo (int) $total; ?> : ids.length;
@@ -514,14 +579,28 @@ $base_url = admin_url( 'admin.php?page=tcgiant-listings' );
 			} else {
 				$('#tc-job-cancel').hide();
 				$('#tc-job-done').show();
-				$('#tc-job-status').text('Complete! ' + jobCounts(d) + '.');
+				$('#tc-job-status').text('Complete! ' + jobCounts(d) + '.' + (followJob(d) ? ' ' + <?php echo wp_json_encode( __( 'Nothing has been sent to eBay: each listing gets it at its next Update.', 'tcgiant-sync' ) ); ?> : ''));
 			}
 		});
 	}
 
 	// A bulk Push only queues: it says how many were queued, and how many the
 	// day's bulk-push limit, or a push still under way, left out.
+	// The choices of whose values an Update sends (3.29.1) only write the
+	// products' own setting: how many changed, how many already did, and how
+	// many have no listing to choose for.
+	function followJob(d) {
+		return d.type === 'bulk_follow_send' || d.type === 'bulk_follow_keep' || d.type === 'bulk_follow_origin';
+	}
+
 	function jobCounts(d) {
+		if (followJob(d)) {
+			var said = <?php echo wp_json_encode( __( '%1$d changed, %2$d already did', 'tcgiant-sync' ) ); ?>.replace('%1$d', d.succeeded || 0).replace('%2$d', d.kept || 0);
+			if (d.failed > 0) {
+				said += ', ' + <?php echo wp_json_encode( __( '%d left as they are (no eBay listing, or not yours to edit)', 'tcgiant-sync' ) ); ?>.replace('%d', d.failed);
+			}
+			return said;
+		}
 		if (!d.is_async) {
 			return d.succeeded + ' succeeded, ' + d.failed + ' failed';
 		}
