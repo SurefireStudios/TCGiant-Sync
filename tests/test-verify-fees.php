@@ -78,6 +78,10 @@ class TCGiant_Sync_Exporter {
 	public function build_item_xml_public( $product, $settings ) { return '<Title>1921 Morgan Dollar</Title>'; }
 	public function description_too_long() { return null; }
 	public function uses_fixed_price_calls( $product, $settings = array(), $ebay_item_id = '' ) { return false; }
+	// eBay Motors (3.28.9): an ordinary category here, settled as it is and
+	// verified on the shop's own site.
+	public function settle_motors( array $settings, $new_listing ) { return $settings; }
+	public static function on_listing_site( array $settings, callable $call ) { return $call(); }
 }
 
 require $ROOT . '/includes/class-tcgiant-sync-api.php';

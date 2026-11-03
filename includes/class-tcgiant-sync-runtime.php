@@ -157,7 +157,7 @@ class TCGiant_Sync_Runtime {
 	 * save, and its own save inside it. Two such plugins, or one answering
 	 * another, make three. Nothing that finishes needs five. Each round is a
 	 * whole WooCommerce save, so five of them cost a few hundred queries and
-	 * cache reads; Jon's shop went round thousands of times in one listing -
+	 * cache reads; one shop went round thousands of times in one listing -
 	 * 1.9 million object-cache reads and 480 MB - before PHP stopped it.
 	 */
 	const LOOP_DEPTH = 5;
@@ -613,7 +613,7 @@ class TCGiant_Sync_Runtime {
 	 * Stop another plugin's product save going round for ever while this
 	 * plugin saves products.
 	 *
-	 * Jon's WordPress.com shop, after 3.27.3: every delta run still died in
+	 * A WordPress.com shop, after 3.27.3: every delta run still died in
 	 * the first listing it saved, and the record of the death showed why.
 	 * WordPress was running woocommerce_update_product inside
 	 * woocommerce_update_product inside woocommerce_update_product: something

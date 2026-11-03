@@ -2594,6 +2594,8 @@ class TCGiant_Sync_Mapper {
 			'start_time'       => TCGiant_Sync_API::scalar_value( $meta['_ebay_start_time'] ?? '' ),
 			'end_time'         => TCGiant_Sync_API::scalar_value( $meta['_ebay_end_time'] ?? '' ),
 			'desc'             => TCGiant_Sync_Exporter::description_record_from( $product, (string) ( $product_data['ebay_description'] ?? '' ) ),
+			// A listing the push made on eBay Motors stays recorded there (3.28.9).
+			'site'             => 'eBayMotors' === TCGiant_Sync_API::scalar_value( $meta['_ebay_site'] ?? '' ) ? 'eBayMotors' : '',
 		) );
 
 		// eBay shows another figure than the stock now holds: it is told, as

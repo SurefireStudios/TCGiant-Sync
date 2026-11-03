@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.28.8
+Stable tag: 3.28.9
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -139,6 +139,23 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.28.9 - 2026-11-03 =
+**eBay Motors Parts & Accessories**
+* NEW: You can now push products into eBay Motors Parts & Accessories categories, if your Primary eBay Marketplace is eBay United States. eBay keeps these categories apart from its ordinary ones, and lists them through eBay Motors, so every push into one was refused ("The category is not valid, select another category"). TCGiant Sync now recognises a Parts & Accessories category and lists, checks (Verify), updates and relists it on eBay Motors, as eBay requires. Your marketplace setting does not change, prices stay in US dollars, and stock updates, End Listing and the sync work as before.
+* To choose one, use Browse eBay Categories: "eBay Motors: Parts & Accessories" is at the end of the top list. Suggest Category from Title also offers Parts & Accessories categories, named "eBay Motors > ...". A category number typed in is checked with eBay at its first push (three short reads at most, once), and not again for 90 days. If eBay doesn't answer, the push stops and says to try again in an hour, and eBay isn't asked again until then. A category is told by its number alone: a category name left on a product from one chosen earlier decides nothing, and choosing another from the list, or typing one in, clears it.
+* The item specifics a Parts & Accessories category requires are read from eBay Motors, and a push without one stops and names it, as for any category. The item condition is checked against the conditions eBay takes in that category: one it doesn't take stops the push, which lists the ones it does, instead of eBay dropping it from the listing.
+* Not supported, and stopped with a message saying why: new listings of whole vehicles (cars and trucks, motorcycles, powersports, boats, other vehicles and trailers); a trading card or coin Item Type in an eBay Motors category (set Item Type to All Other); a shipping or payment business policy that is for motor vehicles only (press "Fetch / Refresh Policies from eBay" in Settings for TCGiant Sync to tell which are); and an Update that would move a listing between eBay Motors and another eBay site, which eBay doesn't do (end the listing and push again).
+* A vehicle listing already on eBay Motors, imported from eBay say, is updated, relisted and ended exactly as before, whatever category its Update sends, and the log notes that TCGiant Sync doesn't otherwise support vehicles.
+* Parts & Accessories listings imported from eBay Motors are updated on eBay Motors, and keep their own details as other imported listings do. An Update goes to the site its listing is on, as the sync recorded it, never to the one its category would choose. In a shop with listings on eBay Motors, a listing whose site was never recorded is read from eBay first, once.
+* eBay's own guides differ on which site an Update of an eBay Motors listing goes to. TCGiant Sync sends it to eBay Motors first; if eBay refuses it for the site, it sends it once more to eBay United States. Each listing remembers the way eBay took it, and its later Updates go that way first, so a listing costs one extra call at most, once; a listing eBay hasn't taken an Update for yet tries the way eBay last took one. The log says when a listing switches. Relists the same.
+* Parts compatibility (which vehicles a part fits) is not sent. Add it on eBay, where an Update from TCGiant Sync leaves it alone.
+* The product's eBay tab says when a product will be listed on eBay Motors, and shows why one can't be.
+
+**Best Offer and GPSR from Settings**
+* FIX: "Enable Best Offer on new listings" and the GPSR fields in Settings now reach eBay. Settings said they were not sent yet, and they weren't: only a product's own Best Offer was. They go to the products that use your defaults (ones with no listing yet, and ones you pushed), never to listings imported from eBay, which keep their own.
+* Best Offer goes on new fixed-price listings only, as its label says: an Update of a listing already on eBay leaves its Best Offer as it is. It never goes on a listing with variations, which eBay doesn't allow Best Offer on, whether it is set in Settings or on the product; the log says so. The auto-accept and auto-decline prices now go in the fields eBay reads them from. Before, a product's own auto-accept price was sent as eBay's auto-decline price, and its auto-decline in a field eBay doesn't have. A threshold that isn't below the price, or an auto-decline that isn't below the auto-accept, is left out and the log says so, as eBay would refuse the listing for it.
+* GPSR goes on new listings and on Updates of listings you pushed, in eBay's own product safety fields: the manufacturer's name and address, and the EU Responsible Person. eBay takes up to 100 characters for a name and 180 for the address.
 
 = 3.28.8 - 2026-11-02 =
 * FIX: Updating a listing that was first created on eBay no longer overwrites eBay's own details with your shop's push defaults. An Update sent every listing the default category, condition, business policies, item location, handling time and listing format from Settings, so a part listed as Used became New, a PSA 10 card became an ungraded card in the default category, and the listing's own policies and location were replaced. TCGiant Sync now records each imported listing's own condition and grading, category, business policies, location and handling time whenever it reads the listing, and an Update of an imported listing sends only what the product changes: its title, description, price, quantity, SKU and item specifics, as always, and a category, condition or shipping policy only if you chose one for that product on its eBay tab. The rest stays as it is on eBay.
@@ -1547,6 +1564,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.28.9 =
+If you set Best Offer or the GPSR fields in Settings, they now reach eBay: Best Offer on new listings, and GPSR on new listings and on Updates of listings you pushed. Check them before your next push. Listings imported from eBay are not changed.
 
 = 3.28.5 =
 Auto-Relist checks each ended listing with eBay before relisting it, and now leaves alone one you ended in Seller Hub while your website still had stock. A new listing for a trading card outside eBay's three single-card categories, or in one of the coin categories TCGiant Sync offered, which are parent categories on eBay, is now refused before it reaches eBay, with a message saying which category to choose instead. Updates to live listings go as before.

@@ -1093,5 +1093,13 @@ $listing = made_listing( '960068033490', 'tcgprobe-11755' );
 full_sync_page( array( $listing, made_listing( '960068033491', TCGiant_Sync_API::push_mark( 4799 ) ) ) );
 check( 'the debug count: 1 of 2 (the probe\'s value is not a mark)', logged( 'Full sync page 1: 1 of 2 listings read carry this site\'s push mark (ApplicationData).', 'debug' ), true );
 
+echo "\nA LISTING A PUSH MADE ON EBAY MOTORS STAYS RECORDED THERE (3.28.9)\n" . str_repeat( '=', 132 ) . "\n";
+
+fresh_shop( SETTINGS );
+pushed_product( 4810 );
+$listing = made_listing( '960068033810', TCGiant_Sync_API::push_mark( 4810 ), array( 'Site' => 'eBayMotors' ) );
+full_sync_page( array( $listing ) );
+check( 'linked, its site recorded as eBayMotors, where its Updates go - not the shop\'s US', array( meta( 4810, '_ebay_item_id' ), meta( 4810, '_ebay_site' ) ), array( '960068033810', 'eBayMotors' ) );
+
 printf( "\n  %d passed, %d failed\n\n", $pass, $fail );
 exit( $fail > 0 ? 1 : 0 );

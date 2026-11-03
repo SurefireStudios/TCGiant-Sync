@@ -70,6 +70,16 @@ class TCGiant_Sync_API {
 	private $stock_priority = 0;
 
 	/**
+	 * The X-EBAY-API-SITEID the Trading calls made inside with_site() go
+	 * with, '' outside one (3.28.9): eBay Motors' 100 for a listing a push
+	 * makes, verifies, revises or relists there. The shop's marketplace
+	 * setting is never changed.
+	 *
+	 * @var string
+	 */
+	private $site_id_override = '';
+
+	/**
 	 * eBay's own Timestamp on the latest Trading answer this request read,
 	 * as a Unix time; 0 before any. Stamps a record of eBay's sales, so
 	 * order sync can tell whether a read has seen a sale yet by eBay's clock
@@ -307,12 +317,10 @@ class TCGiant_Sync_API {
 ' . $xml_body . '
 </' . $call_name . 'Request>';
 
-		$config = $this->get_marketplace_config();
-
 		$args = array(
 			'method'  => 'POST',
 			'headers' => array(
-				'X-EBAY-API-SITEID'              => $config['site_id'],
+				'X-EBAY-API-SITEID'              => $this->request_site_id(),
 				'X-EBAY-API-COMPATIBILITY-LEVEL' => '1323',
 				'X-EBAY-API-CALL-NAME'           => $call_name,
 				'X-EBAY-API-IAF-TOKEN'           => $token,
@@ -477,6 +485,49 @@ class TCGiant_Sync_API {
 		}
 
 		return $array;
+	}
+
+	/**
+	 * The X-EBAY-API-SITEID a Trading call made now goes with: the one
+	 * with_site() set, else the shop's marketplace's (3.28.9).
+	 *
+	 * @return string
+	 */
+	public function request_site_id() {
+		if ( '' !== $this->site_id_override ) {
+			return $this->site_id_override;
+		}
+
+		return (string) $this->get_marketplace_config()['site_id'];
+	}
+
+	/**
+	 * Make the Trading calls inside $fn on another eBay site (3.28.9).
+	 *
+	 * eBay's guide to eBay Motors listings: "To list any item in US eBay
+	 * Motors categories, the Site ID must be set to '100', instead of '0'";
+	 * and AddFixedPriceItem's reference: Item.Site "must be consistent with
+	 * the numeric site ID that you specify in ... the X-EBAY-API-SITEID
+	 * header". A push decides it per listing (TCGiant_Sync_Motors); the shop's
+	 * marketplace setting, and every call outside $fn, are left as they are.
+	 * What was set before is put back however $fn ends, an exception
+	 * included, so a call made after it never goes to the wrong site.
+	 *
+	 * The staging guard, the day's budget and the call counter are the same
+	 * for these calls as for any (trading_api_request()).
+	 *
+	 * @param string   $site_id X-EBAY-API-SITEID, e.g. '100'.
+	 * @param callable $fn      The calls.
+	 * @return mixed What $fn returns.
+	 */
+	public function with_site( $site_id, callable $fn ) {
+		$before                 = $this->site_id_override;
+		$this->site_id_override = (string) $site_id;
+		try {
+			return $fn();
+		} finally {
+			$this->site_id_override = $before;
+		}
 	}
 
 	/**
@@ -2069,13 +2120,26 @@ class TCGiant_Sync_API {
 	 * @return array|WP_Error List of aspects, each with name/required/cardinality/values.
 	 */
 	public function get_category_aspects( $category_id ) {
+		$config = $this->get_marketplace_config();
+
+		return $this->get_category_aspects_in_tree( $category_id, self::CATEGORY_TREE_IDS[ $config['marketplace_id'] ] ?? '0' );
+	}
+
+	/**
+	 * The same, in a category tree named here (3.28.9): eBay Motors' is 100
+	 * (TCGiant_Sync_Motors::TREE). Cached by tree and category, so the same
+	 * ID in two trees is two entries and can never be read for the other.
+	 *
+	 * @param string $category_id eBay leaf category ID.
+	 * @param string $tree_id     Taxonomy API category_tree_id.
+	 * @return array|WP_Error
+	 */
+	public function get_category_aspects_in_tree( $category_id, $tree_id ) {
 		$category_id = trim( (string) $category_id );
+		$tree_id     = (string) $tree_id;
 		if ( '' === $category_id ) {
 			return new WP_Error( 'no_category', __( 'No eBay category set.', 'tcgiant-sync' ) );
 		}
-
-		$config  = $this->get_marketplace_config();
-		$tree_id = self::CATEGORY_TREE_IDS[ $config['marketplace_id'] ] ?? '0';
 
 		$transient_key = 'tcgiant_aspects_' . $tree_id . '_' . $category_id;
 		$cached = get_transient( $transient_key );
@@ -2143,6 +2207,164 @@ class TCGiant_Sync_API {
 			array(),
 			array( 'filter' => 'categoryId:{' . $category_id . '}' )
 		);
+	}
+
+	/**
+	 * The item conditions eBay takes in one category of a marketplace named
+	 * here (3.28.9): Metadata getItemConditionPolicies, as eBay documents it -
+	 * "filter=categoryIds:{100|101|102}", URL-encoded. For eBay Motors the
+	 * marketplace is EBAY_MOTORS_US, as eBay's Metadata reference says for
+	 * its Motors calls ("To return policy information for eBay US Motors
+	 * categories, specify marketplace_id as EBAY_MOTORS_US"). Not logged as
+	 * an error here: the caller says what it means for the push.
+	 *
+	 * @param string $category_id    eBay category ID.
+	 * @param string $marketplace_id e.g. EBAY_MOTORS_US.
+	 * @return array|WP_Error eBay's answer.
+	 */
+	public function get_condition_policies_for( $category_id, $marketplace_id ) {
+		return $this->request(
+			'sell/metadata/v1/marketplace/' . rawurlencode( (string) $marketplace_id ) . '/get_item_condition_policies',
+			'GET',
+			array(),
+			array( 'filter' => rawurlencode( 'categoryIds:{' . (string) $category_id . '}' ) ),
+			false
+		);
+	}
+
+	/**
+	 * One category's own node in a category tree (3.28.9): Taxonomy
+	 * getCategorySubtree, which eBay answers with 62005 ("The specified
+	 * category ID does not belong to the specified category tree") for a
+	 * category of another tree. For a leaf the answer is the node alone; its
+	 * parent's ID is read from parentCategoryTreeNodeHref, which eBay gives
+	 * for every node but the root. Not cached and not logged as an error
+	 * here: TCGiant_Sync_Motors keeps what it learns.
+	 *
+	 * @param string $category_id eBay category ID.
+	 * @param string $tree_id     Taxonomy category_tree_id.
+	 * @return array|WP_Error id, name, leaf, level, parent ('' at the top).
+	 */
+	public function get_category_node( $category_id, $tree_id ) {
+		$response = $this->request(
+			'commerce/taxonomy/v1/category_tree/' . rawurlencode( (string) $tree_id ) . '/get_category_subtree',
+			'GET',
+			array(),
+			array( 'category_id' => rawurlencode( (string) $category_id ) ),
+			false
+		);
+
+		if ( is_wp_error( $response ) ) {
+			return $response;
+		}
+
+		$node   = is_array( $response['categorySubtreeNode'] ?? null ) ? $response['categorySubtreeNode'] : array();
+		$parent = '';
+		if ( is_string( $node['parentCategoryTreeNodeHref'] ?? null ) && preg_match( '/[?&]category_id=(\d+)/', $node['parentCategoryTreeNodeHref'], $m ) ) {
+			$parent = $m[1];
+		}
+
+		return array(
+			'id'     => (string) ( $node['category']['categoryId'] ?? '' ),
+			'name'   => (string) ( $node['category']['categoryName'] ?? '' ),
+			'leaf'   => ! empty( $node['leafCategoryTreeNode'] ),
+			'level'  => (int) ( $node['categoryTreeNodeLevel'] ?? 0 ),
+			'parent' => $parent,
+		);
+	}
+
+	/**
+	 * The children of a category in a category tree named here (3.28.9), for
+	 * the category browser's eBay Motors entry: as get_category_subtree(),
+	 * cached by tree as it is.
+	 *
+	 * @param string $category_id The parent category ID.
+	 * @param string $tree_id     Taxonomy category_tree_id.
+	 * @return array|WP_Error Array of categories [{ id, name, leaf }] or error.
+	 */
+	public function get_category_children_in_tree( $category_id, $tree_id ) {
+		$tree_id       = (string) $tree_id;
+		$transient_key = 'tcgiant_cat_sub_' . $tree_id . '_' . $category_id;
+		$cached        = get_transient( $transient_key );
+		if ( false !== $cached ) {
+			return $cached;
+		}
+
+		$response = $this->request(
+			'commerce/taxonomy/v1/category_tree/' . rawurlencode( $tree_id ) . '/get_category_subtree',
+			'GET',
+			array(),
+			array( 'category_id' => rawurlencode( (string) $category_id ) ),
+			false
+		);
+
+		if ( is_wp_error( $response ) ) {
+			return $response;
+		}
+
+		$categories = array();
+		foreach ( (array) ( $response['categorySubtreeNode']['childCategoryTreeNodes'] ?? array() ) as $node ) {
+			$categories[] = array(
+				'id'   => $node['category']['categoryId'] ?? '',
+				'name' => $node['category']['categoryName'] ?? '',
+				'leaf' => empty( $node['childCategoryTreeNodes'] ),
+			);
+		}
+
+		set_transient( $transient_key, $categories, 7 * DAY_IN_SECONDS );
+		return $categories;
+	}
+
+	/**
+	 * Category suggestions in a category tree named here, with each one's
+	 * ancestors by ID (3.28.9): Taxonomy getCategorySuggestions, whose
+	 * categoryTreeNodeAncestors eBay documents as "An ordered list of
+	 * category references that describes the location of the suggested
+	 * category in the specified category tree". The query is URL-encoded,
+	 * so a name with "&" in it is asked for whole.
+	 *
+	 * @param string $query   Keywords: a title, or a category's name.
+	 * @param string $tree_id Taxonomy category_tree_id.
+	 * @return array|WP_Error Up to 10 of: id, name (the path, root first, joined by " > "), ancestors (IDs, nearest first).
+	 */
+	public function get_category_suggestions_in_tree( $query, $tree_id ) {
+		$response = $this->request(
+			'commerce/taxonomy/v1/category_tree/' . rawurlencode( (string) $tree_id ) . '/get_category_suggestions',
+			'GET',
+			array(),
+			array( 'q' => rawurlencode( (string) $query ) ),
+			false
+		);
+
+		if ( is_wp_error( $response ) ) {
+			return $response;
+		}
+
+		$out = array();
+		foreach ( (array) ( $response['categorySuggestions'] ?? array() ) as $s ) {
+			$id = (string) ( $s['category']['categoryId'] ?? '' );
+			if ( '' === $id ) {
+				continue;
+			}
+			$path      = array();
+			$ancestors = array();
+			foreach ( (array) ( $s['categoryTreeNodeAncestors'] ?? array() ) as $a ) {
+				$ancestors[] = (string) ( $a['categoryId'] ?? '' );
+				$path[]      = (string) ( $a['categoryName'] ?? '' );
+			}
+			$path   = array_reverse( $path );
+			$path[] = (string) ( $s['category']['categoryName'] ?? '' );
+			$out[]  = array(
+				'id'        => $id,
+				'name'      => implode( ' > ', array_filter( $path, function ( $p ) { return '' !== $p; } ) ),
+				'ancestors' => $ancestors,
+			);
+			if ( count( $out ) >= 10 ) {
+				break;
+			}
+		}
+
+		return $out;
 	}
 
 	/**

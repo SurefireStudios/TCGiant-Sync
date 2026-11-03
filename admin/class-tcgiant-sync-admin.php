@@ -1860,11 +1860,17 @@ class TCGiant_Sync_Admin {
 			'override_listing_duration'   => '_ebay_export_listing_duration',
 			'override_fulfillment_policy' => '_ebay_export_fulfillment_policy',
 		);
+		$cat_before = isset( $_POST['override_category_id'] ) ? array( (string) get_post_meta( $product_id, '_ebay_export_category_id', true ), (string) get_post_meta( $product_id, '_ebay_export_category_name', true ) ) : array( '', '' );
 		foreach ( $override_fields as $post_key => $meta_key ) {
 			if ( isset( $_POST[ $post_key ] ) ) {
 				$value = sanitize_text_field( wp_unslash( $_POST[ $post_key ] ) );
 				update_post_meta( $product_id, $meta_key, $value );
 			}
+		}
+		// The category's name goes with it, never one left from another
+		// category (3.28.9).
+		if ( isset( $_POST['override_category_id'] ) ) {
+			update_post_meta( $product_id, '_ebay_export_category_name', self::category_name_to_keep( $cat_before[0], sanitize_text_field( wp_unslash( $_POST['override_category_id'] ) ), $cat_before[1], isset( $_POST['override_category_name'] ) ? sanitize_text_field( wp_unslash( $_POST['override_category_name'] ) ) : null ) );
 		}
 
 		// Whose values the listing's pushes send, from its tab (3.28.8).
@@ -2102,7 +2108,14 @@ class TCGiant_Sync_Admin {
 		}
 
 		$parent_id = isset( $_POST['parent_id'] ) ? sanitize_text_field( wp_unslash( $_POST['parent_id'] ) ) : '';
+		$tree      = isset( $_POST['tree'] ) ? sanitize_text_field( wp_unslash( $_POST['tree'] ) ) : '';
 		$api = TCGiant_Sync_API::instance();
+
+		// eBay Motors: Parts & Accessories (3.28.9), browsed in eBay Motors'
+		// own tree from its Parts & Accessories down, for a shop on eBay US.
+		if ( TCGiant_Sync_Motors::TREE === $tree ) {
+			wp_send_json_success( array( 'categories' => self::browse_motors( $parent_id ) ) );
+		}
 
 		if ( empty( $parent_id ) ) {
 			$result = $api->get_category_tree_root();
@@ -2114,7 +2127,52 @@ class TCGiant_Sync_Admin {
 			wp_send_json_error( array( 'message' => $result->get_error_message() ) );
 		}
 
+		// At the top, for a shop on eBay US, the way into eBay Motors' Parts &
+		// Accessories, which eBay keeps in a tree of its own.
+		if ( empty( $parent_id ) && is_array( $result ) && TCGiant_Sync_Motors::applies( TCGiant_Sync_OAuth::instance()->get_settings()['marketplace'] ?? '' ) ) {
+			$result[] = array(
+				'id'   => TCGiant_Sync_Motors::PARTS,
+				'name' => __( 'eBay Motors: Parts & Accessories', 'tcgiant-sync' ),
+				'leaf' => false,
+				'tree' => TCGiant_Sync_Motors::TREE,
+			);
+		}
+
 		wp_send_json_success( array( 'categories' => $result ) );
+	}
+
+	/**
+	 * The children of a category under eBay Motors' Parts & Accessories, in
+	 * eBay Motors' tree (3.28.9), each marked with its tree and learnt as
+	 * Parts & Accessories (TCGiant_Sync_Motors::learn()), so a push of one
+	 * asks eBay nothing more to know it. Only from Parts & Accessories down:
+	 * a parent not known to be under it lists nothing, and no vehicle
+	 * category is offered.
+	 *
+	 * @param string $parent_id The category opened.
+	 * @return array
+	 */
+	private static function browse_motors( $parent_id ) {
+		$parent_id = TCGiant_Sync_Motors::clean_id( $parent_id );
+		$known     = '' !== $parent_id ? TCGiant_Sync_Motors::record( $parent_id ) : null;
+		if ( ! TCGiant_Sync_Motors::applies( TCGiant_Sync_OAuth::instance()->get_settings()['marketplace'] ?? '' )
+			|| ( TCGiant_Sync_Motors::PARTS !== $parent_id && ! ( $known && TCGiant_Sync_Motors::BRANCH_PARTS === $known['b'] ) ) ) {
+			wp_send_json_error( array( 'message' => __( 'Only eBay Motors Parts & Accessories can be browsed here: open it from the top of the list.', 'tcgiant-sync' ) ) );
+		}
+
+		$result = TCGiant_Sync_API::instance()->get_category_children_in_tree( $parent_id, TCGiant_Sync_Motors::TREE );
+		if ( is_wp_error( $result ) ) {
+			wp_send_json_error( array( 'message' => $result->get_error_message() ) );
+		}
+
+		$learnt = array();
+		foreach ( $result as $i => $category ) {
+			$result[ $i ]['tree'] = TCGiant_Sync_Motors::TREE;
+			$learnt[ (string) ( $category['id'] ?? '' ) ] = array( TCGiant_Sync_Motors::BRANCH_PARTS, $parent_id );
+		}
+		TCGiant_Sync_Motors::learn( $learnt );
+
+		return $result;
 	}
 
 	/**
@@ -2136,6 +2194,29 @@ class TCGiant_Sync_Admin {
 		if ( is_wp_error( $result ) ) {
 			wp_send_json_error( array( 'message' => $result->get_error_message() ) );
 		}
+
+		// And, for a shop on eBay US, eBay Motors' own suggestions (3.28.9):
+		// its Parts & Accessories, by the ancestors eBay gives with each, named
+		// as eBay Motors' and learnt so; never a vehicle category.
+		if ( TCGiant_Sync_Motors::applies( TCGiant_Sync_OAuth::instance()->get_settings()['marketplace'] ?? '' ) ) {
+			$motors = TCGiant_Sync_API::instance()->get_category_suggestions_in_tree( $title, TCGiant_Sync_Motors::TREE );
+			$learnt = array();
+			foreach ( is_wp_error( $motors ) ? array() : $motors as $s ) {
+				$path   = TCGiant_Sync_Motors::motors_path( (string) $s['name'] );
+				$branch = TCGiant_Sync_Motors::branch_of_ancestors( $s['ancestors'] );
+				$branch = '' !== $branch ? $branch : TCGiant_Sync_Motors::branch_of_path( $path );
+				if ( TCGiant_Sync_Motors::BRANCH_PARTS !== $branch ) {
+					continue;
+				}
+				$learnt[ $s['id'] ] = array( $branch, (string) ( $s['ancestors'][0] ?? '' ) );
+				$result[]           = array( 'id' => $s['id'], 'name' => $path, 'tree' => TCGiant_Sync_Motors::TREE );
+				if ( count( $learnt ) >= 3 ) {
+					break;
+				}
+			}
+			TCGiant_Sync_Motors::learn( $learnt );
+		}
+
 		wp_send_json_success( array( 'suggestions' => $result ) );
 	}
 
@@ -3111,6 +3192,28 @@ class TCGiant_Sync_Admin {
 	}
 
 	/**
+	 * The name to keep with a product's own category (3.28.9): the one sent
+	 * with it, unless the ID changed and the name did not - a name the eBay
+	 * tab's list or custom box left behind from the category before, which
+	 * would otherwise be paired with this one. None without a category.
+	 *
+	 * @param string      $old_id      The category ID kept before.
+	 * @param string      $new_id      The one saved now.
+	 * @param string      $old_name    The name kept before.
+	 * @param string|null $posted_name The name sent with it, null for none.
+	 * @return string
+	 */
+	public static function category_name_to_keep( $old_id, $new_id, $old_name, $posted_name ) {
+		$new_id = (string) $new_id;
+		$name   = null === $posted_name ? (string) $old_name : (string) $posted_name;
+		if ( '' === $new_id || ( $new_id !== (string) $old_id && $name === (string) $old_name ) ) {
+			return '';
+		}
+
+		return $name;
+	}
+
+	/**
 	 * Save per-product eBay export override fields.
 	 *
 	 * @param int $post_id WooCommerce Product ID.
@@ -3132,14 +3235,14 @@ class TCGiant_Sync_Admin {
 			} else {
 				$cat_val = $cat_select;
 			}
+			$cat_before = array( (string) get_post_meta( $post_id, '_ebay_export_category_id', true ), (string) get_post_meta( $post_id, '_ebay_export_category_name', true ) );
 			update_post_meta( $post_id, '_ebay_export_category_id', $cat_val );
 			// Typed into the custom box: the shop's own, never mapped as a
 			// retired ID (3.28.1). Chosen from the list, it is not typed.
 			update_post_meta( $post_id, '_ebay_export_category_typed', 'custom' === $cat_select ? $cat_val : '' );
-			// Save the category name if provided.
-			if ( isset( $_POST['_ebay_export_category_name'] ) ) {
-				update_post_meta( $post_id, '_ebay_export_category_name', sanitize_text_field( wp_unslash( $_POST['_ebay_export_category_name'] ) ) );
-			}
+			// The category's name, never one left from another category
+			// (3.28.9).
+			update_post_meta( $post_id, '_ebay_export_category_name', self::category_name_to_keep( $cat_before[0], $cat_val, $cat_before[1], isset( $_POST['_ebay_export_category_name'] ) ? sanitize_text_field( wp_unslash( $_POST['_ebay_export_category_name'] ) ) : null ) );
 		}
 		if ( isset( $_POST['_ebay_export_condition_id'] ) ) {
 			update_post_meta( $post_id, '_ebay_export_condition_id', sanitize_text_field( wp_unslash( $_POST['_ebay_export_condition_id'] ) ) );
@@ -3578,10 +3681,18 @@ class TCGiant_Sync_Admin {
 			'override_condition_type' => 'condition_type',
 		);
 
+		$saved_category = (string) ( $settings['category_id'] ?? '' );
 		foreach ( $live as $post_key => $setting_key ) {
 			if ( isset( $_POST[ $post_key ] ) && '' !== $_POST[ $post_key ] ) {
 				$settings[ $setting_key ] = sanitize_text_field( wp_unslash( $_POST[ $post_key ] ) );
 			}
+		}
+
+		// A category on the screen that is not the saved one is judged afresh
+		// for its tree (3.28.9): the saved one's name and tree are not its.
+		if ( (string) ( $settings['category_id'] ?? '' ) !== $saved_category ) {
+			$settings['category_name'] = '';
+			$settings                  = array_merge( $settings, TCGiant_Sync_Motors::category_fields( array( '_source' => array( 'category' => 'override' ) ) + $settings, (string) ( $settings['_listing_site'] ?? '' ) ) );
 		}
 
 		if ( ! empty( $_POST['specifics_present'] ) ) {
@@ -3981,7 +4092,7 @@ class TCGiant_Sync_Admin {
 				<input type="text" name="_ebay_export_category_id_custom" id="_ebay_export_category_id_custom" value="<?php echo esc_attr( $is_custom_cat ? $cat_override : '' ); ?>" placeholder="<?php esc_attr_e( 'Enter eBay leaf category ID', 'tcgiant-sync' ); ?>" style="width:100%;font-size:12px;<?php echo 'custom' === $select_val ? '' : 'display:none;'; ?>">
 				<input type="hidden" name="_ebay_export_category_name" id="_ebay_export_category_name" value="<?php echo esc_attr( $cat_name_saved ); ?>">
 				<div id="tc-selected-category-label-product" style="margin-top:4px;font-size:11px;color:#16a34a;font-weight:500;<?php echo ( $cat_override && $cat_name_saved ) ? '' : 'display:none;'; ?>"><?php
-					if ( $cat_override && $cat_name_saved ) { echo '&#10004; ' . esc_html( $cat_name_saved . ' (' . $cat_override . ')' ); }
+					if ( $cat_override && $cat_name_saved ) { echo '&#10004; ' . esc_html( $cat_name_saved . ' (' . $cat_override . ')' . ( TCGiant_Sync_Motors::record( $cat_override ) ? ' - ' . __( 'eBay Motors', 'tcgiant-sync' ) : '' ) ); }
 				?></div>
 				<div id="tc-category-suggestions" style="margin-top:4px;">
 					<button type="button" id="tc-suggest-category-btn" class="button" style="font-size:11px;margin-top:4px;"><span class="dashicons dashicons-lightbulb" style="font-size:13px;vertical-align:middle;margin-right:2px;"></span><?php esc_html_e( 'Suggest Category from Title', 'tcgiant-sync' ); ?></button>
@@ -4350,6 +4461,21 @@ class TCGiant_Sync_Admin {
 				  }
 				  $checks[ 'category' === $tc_group ? $tc_cat_at : $tc_cond_at ] = array( 'ok' => true, 'warn' => true, 'label' => 'category' === $tc_group ? sprintf( __( 'Category: %s', 'tcgiant-sync' ), $tc_unread_says ) : 'Condition: ' . $tc_unread_says );
 			  }
+			  // eBay Motors (3.28.9): which site a push lists on, as far as is
+			  // known here without asking eBay, and what it refuses there, in
+			  // the push's words. What only eBay can say - the tree of a
+			  // category not learnt yet, the conditions it takes - the push
+			  // reads first.
+			  $sent_settings['_request_site'] = TCGiant_Sync_Motors::request_site( $sent_settings, $revises );
+			  $tc_motors = TCGiant_Sync_Motors::problems( $sent_settings, ! $revises );
+			  if ( isset( $tc_motors['category'] ) ) {
+				  $checks[ $tc_cat_at ] = array( 'ok' => false, 'label' => sprintf( __( 'Category: %s', 'tcgiant-sync' ), $tc_motors['category'] ) );
+			  } elseif ( TCGiant_Sync_Motors::SITE === $sent_settings['_request_site'] && isset( $checks[ $tc_cat_at ]['label'] ) ) {
+				  $checks[ $tc_cat_at ]['label'] .= ' - ' . __( 'on eBay Motors', 'tcgiant-sync' );
+			  }
+			  if ( isset( $tc_motors['condition'] ) ) {
+				  $checks[ $tc_cond_at ] = array( 'ok' => false, 'label' => 'Condition: ' . $tc_motors['condition'] );
+			  }
 			  // Policies
 			  $hp = ! empty( $merged_settings['fulfillment_policy_id'] ) && ! empty( $merged_settings['return_policy_id'] ) && ! empty( $merged_settings['payment_policy_id'] );
 			  $tc_policies = $revises ? TCGiant_Sync_Exporter::policies_unknown_problem( $sent_settings ) : '';
@@ -4368,6 +4494,9 @@ class TCGiant_Sync_Admin {
 				  $checks[] = array( 'ok' => true, 'label' => __( 'Business Policies: as they are on eBay', 'tcgiant-sync' ) );
 			  } else {
 				  $checks[] = array( 'ok' => $hp, 'label' => $hp ? __( 'Business Policies: Configured', 'tcgiant-sync' ) : __( 'Business Policies: Missing - configure in Settings', 'tcgiant-sync' ) );
+			  }
+			  if ( isset( $tc_motors['policies'] ) ) {
+				  $checks[] = array( 'ok' => false, 'label' => sprintf( __( 'Business Policies: %s', 'tcgiant-sync' ), $tc_motors['policies'] ) );
 			  }
 			  // Images
 			  $ii = $product ? array_filter( array_merge( array( $product->get_image_id() ), $product->get_gallery_image_ids() ) ) : array();
@@ -4493,20 +4622,22 @@ class TCGiant_Sync_Admin {
 			// Grading toggle
 			function tcGradingToggle(){var it=$('#_ebay_export_item_type').val(),ct=$('#_ebay_export_condition_type').val();if(it==='other'){$('#tcgiant-graded-tcg-fields,#tcgiant-graded-coins-fields,#tcgiant-graded-shared-fields,#tcgiant-ungraded-tcg-fields,#tcgiant-ungraded-coins-fields,#tcgiant-coins-year-field').hide();$('#tc-condition-type-wrapper').hide();$('#tc-legacy-condition-wrapper').show();return;}$('#tc-legacy-condition-wrapper').hide();$('#tcgiant-graded-tcg-fields').toggle(it==='tcg'&&ct==='graded');$('#tcgiant-graded-coins-fields').toggle(it==='coins'&&ct==='graded');$('#tcgiant-graded-shared-fields').toggle(it!==''&&ct==='graded');$('#tcgiant-ungraded-tcg-fields').toggle(it==='tcg'&&ct==='ungraded');$('#tcgiant-ungraded-coins-fields').toggle(it==='coins'&&ct==='ungraded');$('#tcgiant-coins-year-field').toggle(it==='coins');}
 			// Category dropdown
-			$('#_ebay_export_category_id_select').on('change',function(){$('#_ebay_export_category_id_custom').toggle($(this).val()==='custom');});
+			$('#_ebay_export_category_id_select').on('change',function(){$('#_ebay_export_category_id_custom').toggle($(this).val()==='custom');$('#_ebay_export_category_name').val('');$('#tc-selected-category-label-product').hide();});
+			// A category typed in, or chosen from the list, has no name from the browser (3.28.9).
+			$('#_ebay_export_category_id_custom').on('input',function(){$('#_ebay_export_category_name').val('');$('#tc-selected-category-label-product').hide();});
 			// Category browser
 			var ajaxUrl='<?php echo esc_js( admin_url( 'admin-ajax.php' ) ); ?>',nonce='<?php echo esc_js( wp_create_nonce( 'tcgiant_sync_ajax' ) ); ?>',trail=[];
 			$('#tc-browse-categories-btn-product').on('click',function(){var $b=$('#tc-category-browser-product');$b.toggle();if($b.is(':visible')&&$('#tc-category-drilldown-product').children().length===0){var it=$('#_ebay_export_item_type').val(),sid='';if(it==='coins'){sid='11116';trail=[{id:'11116',name:'Coins & Paper Money'}];}else if(it==='tcg'){sid='2536';trail=[{id:'2536',name:'Collectible Card Games'}];}renderBread();loadCats(sid);}});
-			function loadCats(pid){var $d=$('#tc-category-drilldown-product'),$s=$('#tc-category-browser-status-product');$d.html('<div style="text-align:center;padding:12px;color:#888;">Loading...</div>');$s.text('');$.post(ajaxUrl,{action:'tcgiant_browse_categories',_ajax_nonce:nonce,parent_id:pid},function(r){if(!r.success){$d.html('<div style="color:#c00;padding:6px;">'+r.data.message+'</div>');return;}renderCats(r.data.categories);}).fail(function(){$d.html('<div style="color:#c00;padding:6px;">Request failed.</div>');});}
-			function renderCats(cats){var $d=$('#tc-category-drilldown-product');$d.empty();if(!cats||!cats.length){$d.html('<div style="padding:6px;color:#888;">No subcategories.</div>');return;}$.each(cats,function(i,c){var $r=$('<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 6px;border-bottom:1px solid #eee;cursor:pointer;font-size:12px;"></div>');$r.append($('<span style="flex:1;"></span>').text(c.name));$r.append(c.leaf?'<span style="color:#16a34a;font-size:10px;font-weight:600;">leaf</span>':'<span class="dashicons dashicons-arrow-right-alt2" style="color:#888;font-size:13px;width:13px;height:13px;"></span>');$r.on('mouseenter',function(){$(this).css('background','#f0f6fc');}).on('mouseleave',function(){$(this).css('background','');});$r.on('click',function(){if(c.leaf){selectCat(c.id,c.name);$('#tc-category-browser-product').slideUp(200);trail=[];}else{trail.push({id:c.id,name:c.name});renderBread();loadCats(c.id);}});$d.append($r);});}
+			function loadCats(pid,tree){var $d=$('#tc-category-drilldown-product'),$s=$('#tc-category-browser-status-product');$d.html('<div style="text-align:center;padding:12px;color:#888;">Loading...</div>');$s.text('');$.post(ajaxUrl,{action:'tcgiant_browse_categories',_ajax_nonce:nonce,parent_id:pid,tree:tree||''},function(r){if(!r.success){$d.html('<div style="color:#c00;padding:6px;">'+r.data.message+'</div>');return;}renderCats(r.data.categories);}).fail(function(){$d.html('<div style="color:#c00;padding:6px;">Request failed.</div>');});}
+			function renderCats(cats){var $d=$('#tc-category-drilldown-product');$d.empty();if(!cats||!cats.length){$d.html('<div style="padding:6px;color:#888;">No subcategories.</div>');return;}$.each(cats,function(i,c){var $r=$('<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 6px;border-bottom:1px solid #eee;cursor:pointer;font-size:12px;"></div>');$r.append($('<span style="flex:1;"></span>').text(c.name));$r.append(c.leaf?'<span style="color:#16a34a;font-size:10px;font-weight:600;">leaf</span>':'<span class="dashicons dashicons-arrow-right-alt2" style="color:#888;font-size:13px;width:13px;height:13px;"></span>');$r.on('mouseenter',function(){$(this).css('background','#f0f6fc');}).on('mouseleave',function(){$(this).css('background','');});$r.on('click',function(){if(c.leaf){selectCat(c.id,c.tree?$.map(trail,function(t){return t.name;}).concat([c.name]).join(' > '):c.name);$('#tc-category-browser-product').slideUp(200);trail=[];}else{trail.push({id:c.id,name:c.name,tree:c.tree||''});renderBread();loadCats(c.id,c.tree||'');}});$d.append($r);});}
 			function selectCat(id,name){tcAspectsReset();$('#_ebay_export_category_id_select').val('custom');$('#_ebay_export_category_id_custom').val(id).show();$('#_ebay_export_category_name').val(name);$('#tc-selected-category-label-product').html('&#10004; '+name+' ('+id+')').show();$('#tc-step2-summary').text(name+' ('+id+')');}
-			function renderBread(){var $bc=$('#tc-category-breadcrumb-product');$bc.empty();var $root=$('<a href="#" style="color:#2271b1;text-decoration:none;font-size:11px;">All</a>');$root.on('click',function(e){e.preventDefault();trail=[];renderBread();loadCats('');});$bc.append($root);$.each(trail,function(i,c){$bc.append('<span style="margin:0 3px;color:#aaa;"> &rsaquo; </span>');if(i<trail.length-1){var $l=$('<a href="#" style="color:#2271b1;text-decoration:none;font-size:11px;"></a>').text(c.name);(function(idx){$l.on('click',function(e){e.preventDefault();trail=trail.slice(0,idx+1);renderBread();loadCats(c.id);});})(i);$bc.append($l);}else{$bc.append($('<b style="font-size:11px;"></b>').text(c.name));}});}
+			function renderBread(){var $bc=$('#tc-category-breadcrumb-product');$bc.empty();var $root=$('<a href="#" style="color:#2271b1;text-decoration:none;font-size:11px;">All</a>');$root.on('click',function(e){e.preventDefault();trail=[];renderBread();loadCats('');});$bc.append($root);$.each(trail,function(i,c){$bc.append('<span style="margin:0 3px;color:#aaa;"> &rsaquo; </span>');if(i<trail.length-1){var $l=$('<a href="#" style="color:#2271b1;text-decoration:none;font-size:11px;"></a>').text(c.name);(function(idx){$l.on('click',function(e){e.preventDefault();trail=trail.slice(0,idx+1);renderBread();loadCats(c.id,c.tree||'');});})(i);$bc.append($l);}else{$bc.append($('<b style="font-size:11px;"></b>').text(c.name));}});}
 			// Category suggestion
 			$('#tc-suggest-category-btn').on('click',function(){var btn=$(this),$p=$('#tc-suggest-pills'),title='<?php echo esc_js( $product ? $product->get_name() : '' ); ?>';if(!title)return;btn.prop('disabled',true).text('Searching...');$.post(ajaxUrl,{action:'tcgiant_suggest_category',_ajax_nonce:nonce,title:title},function(r){btn.prop('disabled',false).html('<span class="dashicons dashicons-lightbulb" style="font-size:13px;vertical-align:middle;margin-right:2px;"></span> Suggest Category from Title');if(r.success&&r.data.suggestions&&r.data.suggestions.length){$p.empty().show();$.each(r.data.suggestions,function(i,s){var $pill=$('<span class="tc-suggest-pill"></span>').text(s.name+' ('+s.id+')');$pill.on('click',function(){selectCat(s.id,s.name);$p.slideUp(200);});$p.append($pill);});}else{$p.html('<span style="font-size:11px;color:#888;">No suggestions found.</span>').show();}}).fail(function(){btn.prop('disabled',false).html('<span class="dashicons dashicons-lightbulb" style="font-size:13px;vertical-align:middle;margin-right:2px;"></span> Suggest Category from Title');});});
 			// Dismiss error
 			$('#tcgiant-dismiss-export-error').on('click',function(e){e.preventDefault();$.post(ajaxUrl,{action:'tcgiant_clear_export_error',product_id:$(this).data('product-id'),_ajax_nonce:nonce});$('#tcgiant-export-error-notice').slideUp(200);});
 			// Push
-			$('#tcgiant-push-btn').on('click',function(){var btn=$(this),st=$('#tcgiant-push-status');btn.prop('disabled',true);st.css('color','#555').text('Saving & validating...');var cs=$('#_ebay_export_category_id_select').val()||'',cc=$('#_ebay_export_category_id_custom').val()||'',catId=(cs==='custom')?cc:cs,it=$('#_ebay_export_item_type').val()||'',sf=(it&&it!=='other')?'_'+it:'',gid=$('#_ebay_export_grader_id'+sf).val()||'',gv=$('#_ebay_export_grade_value'+sf).val()||'',uc=$('#_ebay_export_ungraded_condition'+sf).val()||'';$.post(ajaxUrl,{action:'tcgiant_push_product',product_id:btn.data('product-id'),override_category_id:catId,override_category_typed:(cs==='custom')?cc:'',override_condition_id:$('#_ebay_export_condition_id').val()||'',override_item_type:it,override_condition_type:$('#_ebay_export_condition_type').val()||'',override_grader_id:gid,override_grade_value:gv,override_cert_number:$('[name="_ebay_export_cert_number"]').val()||'',override_coin_year:$('[name="_ebay_export_coin_year"]').val()||'',override_ungraded_condition:uc,override_listing_type:$('#_ebay_export_listing_type').val()||'',override_listing_duration:$('#_ebay_export_listing_duration').val()||'',override_fulfillment_policy:$('#_ebay_export_fulfillment_policy').val()||'',override_follow_defaults:$('#_ebay_export_follow_defaults').length?($('#_ebay_export_follow_defaults').is(':checked')?'1':'0'):'',specifics_present:tcAspectsPresent(),specifics:tcAspectValues(),_tcgiant_tpl_fields:$('#_tcgiant_tpl_override').length?1:'',_tcgiant_tpl_override:$('#_tcgiant_tpl_override').val()||'',_tcgiant_ebay_description:$('#_tcgiant_ebay_description').val()||'',_ajax_nonce:nonce},function(r){if(r.success){st.css('color','#2a8a2a').text('OK - '+r.data.message);}else{st.css('color','#cc1818').text('Error: '+(r.data?r.data.message:'Unknown error'));btn.prop('disabled',false);}});});
+			$('#tcgiant-push-btn').on('click',function(){var btn=$(this),st=$('#tcgiant-push-status');btn.prop('disabled',true);st.css('color','#555').text('Saving & validating...');var cs=$('#_ebay_export_category_id_select').val()||'',cc=$('#_ebay_export_category_id_custom').val()||'',catId=(cs==='custom')?cc:cs,it=$('#_ebay_export_item_type').val()||'',sf=(it&&it!=='other')?'_'+it:'',gid=$('#_ebay_export_grader_id'+sf).val()||'',gv=$('#_ebay_export_grade_value'+sf).val()||'',uc=$('#_ebay_export_ungraded_condition'+sf).val()||'';$.post(ajaxUrl,{action:'tcgiant_push_product',product_id:btn.data('product-id'),override_category_id:catId,override_category_typed:(cs==='custom')?cc:'',override_category_name:$('#_ebay_export_category_name').val()||'',override_condition_id:$('#_ebay_export_condition_id').val()||'',override_item_type:it,override_condition_type:$('#_ebay_export_condition_type').val()||'',override_grader_id:gid,override_grade_value:gv,override_cert_number:$('[name="_ebay_export_cert_number"]').val()||'',override_coin_year:$('[name="_ebay_export_coin_year"]').val()||'',override_ungraded_condition:uc,override_listing_type:$('#_ebay_export_listing_type').val()||'',override_listing_duration:$('#_ebay_export_listing_duration').val()||'',override_fulfillment_policy:$('#_ebay_export_fulfillment_policy').val()||'',override_follow_defaults:$('#_ebay_export_follow_defaults').length?($('#_ebay_export_follow_defaults').is(':checked')?'1':'0'):'',specifics_present:tcAspectsPresent(),specifics:tcAspectValues(),_tcgiant_tpl_fields:$('#_tcgiant_tpl_override').length?1:'',_tcgiant_tpl_override:$('#_tcgiant_tpl_override').val()||'',_tcgiant_ebay_description:$('#_tcgiant_ebay_description').val()||'',_ajax_nonce:nonce},function(r){if(r.success){st.css('color','#2a8a2a').text('OK - '+r.data.message);}else{st.css('color','#cc1818').text('Error: '+(r.data?r.data.message:'Unknown error'));btn.prop('disabled',false);}});});
 			// Item specifics: ask eBay what this category requires, and show it.
 			function tcAspectValues(){var o={};$('#tc-aspect-rows [data-aspect]').each(function(){var n=$(this).data('aspect');if(n){o[n]=$.trim($(this).val()||'');}});return o;}
 			function tcAspectsPresent(){return $('#tc-aspect-rows [data-aspect]').length?1:'';}
@@ -4624,7 +4755,7 @@ class TCGiant_Sync_Admin {
 			var fpDurations={'FixedPriceItem':['GTC'],'Chinese':['Days_1','Days_3','Days_5','Days_7','Days_10']};
 			$('#_ebay_export_listing_type').on('change',function(){var lt=$(this).val(),$dur=$('#_ebay_export_listing_duration');if(!lt){$dur.find('option').show();return;}var valid=fpDurations[lt]||[];$dur.find('option').each(function(){var v=$(this).val();if(!v){$(this).show();}else{$(this).toggle(valid.indexOf(v)>=0);}});if(valid.indexOf($dur.val())<0){$dur.val('');}}).trigger('change');
 			// Verify (dry run)
-			$('#tcgiant-verify-btn').on('click',function(){var btn=$(this),st=$('#tcgiant-push-status');btn.prop('disabled',true);st.css('color','#555').text('Verifying listing...');var cs=$('#_ebay_export_category_id_select').val()||'',cc=$('#_ebay_export_category_id_custom').val()||'',catId=(cs==='custom')?cc:cs,it=$('#_ebay_export_item_type').val()||'',sf=(it&&it!=='other')?'_'+it:'',gid=$('#_ebay_export_grader_id'+sf).val()||'',gv=$('#_ebay_export_grade_value'+sf).val()||'',uc=$('#_ebay_export_ungraded_condition'+sf).val()||'';$.post(ajaxUrl,{action:'tcgiant_verify_product',product_id:btn.data('product-id'),override_category_id:catId,override_category_typed:(cs==='custom')?cc:'',override_condition_id:$('#_ebay_export_condition_id').val()||'',override_item_type:it,override_condition_type:$('#_ebay_export_condition_type').val()||'',override_grader_id:gid,override_grade_value:gv,override_cert_number:$('[name="_ebay_export_cert_number"]').val()||'',override_coin_year:$('[name="_ebay_export_coin_year"]').val()||'',override_ungraded_condition:uc,override_listing_type:$('#_ebay_export_listing_type').val()||'',override_listing_duration:$('#_ebay_export_listing_duration').val()||'',override_fulfillment_policy:$('#_ebay_export_fulfillment_policy').val()||'',specifics_present:tcAspectsPresent(),specifics:tcAspectValues(),_tcgiant_tpl_fields:$('#_tcgiant_tpl_override').length?1:'',_tcgiant_tpl_override:$('#_tcgiant_tpl_override').val()||'',_tcgiant_ebay_description:$('#_tcgiant_ebay_description').val()||'',_ajax_nonce:nonce},function(r){btn.prop('disabled',false);if(r.success){st.css('color','#2a8a2a').html(r.data.message.replace(/\n/g,'<br>'));}else{st.css('color','#cc1818').text('Verify failed: '+(r.data?r.data.message:'Unknown error'));}}).fail(function(){btn.prop('disabled',false);st.css('color','#cc1818').text('Verify request failed.');});});
+			$('#tcgiant-verify-btn').on('click',function(){var btn=$(this),st=$('#tcgiant-push-status');btn.prop('disabled',true);st.css('color','#555').text('Verifying listing...');var cs=$('#_ebay_export_category_id_select').val()||'',cc=$('#_ebay_export_category_id_custom').val()||'',catId=(cs==='custom')?cc:cs,it=$('#_ebay_export_item_type').val()||'',sf=(it&&it!=='other')?'_'+it:'',gid=$('#_ebay_export_grader_id'+sf).val()||'',gv=$('#_ebay_export_grade_value'+sf).val()||'',uc=$('#_ebay_export_ungraded_condition'+sf).val()||'';$.post(ajaxUrl,{action:'tcgiant_verify_product',product_id:btn.data('product-id'),override_category_id:catId,override_category_typed:(cs==='custom')?cc:'',override_category_name:$('#_ebay_export_category_name').val()||'',override_condition_id:$('#_ebay_export_condition_id').val()||'',override_item_type:it,override_condition_type:$('#_ebay_export_condition_type').val()||'',override_grader_id:gid,override_grade_value:gv,override_cert_number:$('[name="_ebay_export_cert_number"]').val()||'',override_coin_year:$('[name="_ebay_export_coin_year"]').val()||'',override_ungraded_condition:uc,override_listing_type:$('#_ebay_export_listing_type').val()||'',override_listing_duration:$('#_ebay_export_listing_duration').val()||'',override_fulfillment_policy:$('#_ebay_export_fulfillment_policy').val()||'',specifics_present:tcAspectsPresent(),specifics:tcAspectValues(),_tcgiant_tpl_fields:$('#_tcgiant_tpl_override').length?1:'',_tcgiant_tpl_override:$('#_tcgiant_tpl_override').val()||'',_tcgiant_ebay_description:$('#_tcgiant_ebay_description').val()||'',_ajax_nonce:nonce},function(r){btn.prop('disabled',false);if(r.success){st.css('color','#2a8a2a').html(r.data.message.replace(/\n/g,'<br>'));}else{st.css('color','#cc1818').text('Verify failed: '+(r.data?r.data.message:'Unknown error'));}}).fail(function(){btn.prop('disabled',false);st.css('color','#cc1818').text('Verify request failed.');});});
 		})(jQuery);
 		</script>
 		<?php
@@ -5285,11 +5416,17 @@ class TCGiant_Sync_Admin {
 			'override_listing_duration'   => '_ebay_export_listing_duration',
 			'override_fulfillment_policy' => '_ebay_export_fulfillment_policy',
 		);
+		$cat_before = isset( $_POST['override_category_id'] ) ? array( (string) get_post_meta( $product_id, '_ebay_export_category_id', true ), (string) get_post_meta( $product_id, '_ebay_export_category_name', true ) ) : array( '', '' );
 		foreach ( $override_fields as $post_key => $meta_key ) {
 			if ( isset( $_POST[ $post_key ] ) ) {
 				$value = sanitize_text_field( wp_unslash( $_POST[ $post_key ] ) );
 				update_post_meta( $product_id, $meta_key, $value );
 			}
+		}
+		// The category's name goes with it, never one left from another
+		// category (3.28.9).
+		if ( isset( $_POST['override_category_id'] ) ) {
+			update_post_meta( $product_id, '_ebay_export_category_name', self::category_name_to_keep( $cat_before[0], sanitize_text_field( wp_unslash( $_POST['override_category_id'] ) ), $cat_before[1], isset( $_POST['override_category_name'] ) ? sanitize_text_field( wp_unslash( $_POST['override_category_name'] ) ) : null ) );
 		}
 
 		// Item specifics travel with the button, because the product itself may
@@ -5303,7 +5440,9 @@ class TCGiant_Sync_Admin {
 			TCGiant_Sync_Template_Admin::save_product_fields( $product_id, $_POST );
 		}
 
-		$settings = $exporter->get_export_settings( $product_id );
+		// Settled as a new listing's, which Verify checks (3.28.9): an eBay
+		// Motors category is verified on eBay Motors.
+		$settings = $exporter->settle_motors( $exporter->get_export_settings( $product_id ), true );
 		$valid    = $exporter->validate_export_settings( $settings );
 		if ( is_wp_error( $valid ) ) {
 			wp_send_json_error( array( 'message' => $valid->get_error_message() ) );
@@ -5340,9 +5479,10 @@ class TCGiant_Sync_Admin {
 		// from the format this product would be listed in now.
 		$full_xml = '<Item>' . "\n" . $item_xml . "\n" . '</Item>';
 		$api      = TCGiant_Sync_API::instance();
-		$result   = $exporter->uses_fixed_price_calls( $product, $settings, '' )
-			? $api->verify_add_fixed_price_item( $full_xml )
-			: $api->verify_add_item( $full_xml );
+		$fixed    = $exporter->uses_fixed_price_calls( $product, $settings, '' );
+		$result   = TCGiant_Sync_Exporter::on_listing_site( $settings, function () use ( $api, $fixed, $full_xml ) {
+			return $fixed ? $api->verify_add_fixed_price_item( $full_xml ) : $api->verify_add_item( $full_xml );
+		} );
 
 		if ( is_wp_error( $result ) ) {
 			wp_send_json_error( array( 'message' => $result->get_error_message() ) );

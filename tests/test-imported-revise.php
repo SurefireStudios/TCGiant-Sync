@@ -203,7 +203,7 @@ function decided_photos( $id ) {
 	return $memo->getValue( exporter() )[ $id ] ?? null;
 }
 /** eBay's own fields: what a revise of an imported listing leaves out. */
-const EBAYS_OWN = array( 'PrimaryCategory', 'CategoryMappingAllowed', 'ConditionID', 'ConditionDescriptors', 'SellerProfiles', 'Location', 'PostalCode', 'DispatchTimeMax', 'ListingType', 'ListingDuration', 'PictureDetails', 'BestOfferDetails', 'ProductSafety' );
+const EBAYS_OWN = array( 'PrimaryCategory', 'CategoryMappingAllowed', 'ConditionID', 'ConditionDescriptors', 'SellerProfiles', 'Location', 'PostalCode', 'DispatchTimeMax', 'ListingType', 'ListingDuration', 'PictureDetails', 'BestOfferDetails', 'ProductSafety', 'Regulatory' );
 function ebays_own_in( $body ) {
 	return array_values( array_intersect( (array) fields_of( $body ), EBAYS_OWN ) );
 }
@@ -263,7 +263,18 @@ check( 'PHOTOS. its photos are still the listing\'s, each in its place: none dec
 $bo_settings                       = exporter()->get_export_settings( 101 );
 $bo_settings['best_offer_enabled'] = true;
 $build                             = private_method( 'TCGiant_Sync_Exporter', 'build_item_xml' );
-check( 'the shop\'s Best Offer default (should it reach the settings) is not sent to an imported listing\'s revise, as it would be to a pushed one', array( false !== strpos( $build->invoke( exporter(), $card, $bo_settings, true ), '<BestOfferDetails>' ), false !== strpos( $build->invoke( exporter(), $card, array( '_send_all' => true ) + $bo_settings, true ), '<BestOfferDetails>' ) ), array( false, true ) );
+// 3.28.9: the default goes to new listings only, as its label says - not to
+// a pushed listing's revise either (it went there until 3.28.9 only in a
+// build given it by hand: the settings never carried it).
+check( 'the shop\'s Best Offer default (should it reach the settings) is not sent to an imported listing\'s revise, nor (3.28.9) to a pushed one\'s; a new listing gets it', array( false !== strpos( $build->invoke( exporter(), $card, $bo_settings, true ), '<BestOfferDetails>' ), false !== strpos( $build->invoke( exporter(), $card, array( '_send_all' => true ) + $bo_settings, true ), '<BestOfferDetails>' ), false !== strpos( $build->invoke( exporter(), $card, array( '_send_all' => true ) + $bo_settings, false ), '<BestOfferDetails>' ) ), array( false, false, true ) );
+$gpsr_settings = array( 'gpsr_enabled' => '1', 'gpsr_manufacturer_name' => 'ACME Cards' ) + exporter()->get_export_settings( 101 );
+check( '  and the shop\'s GPSR (should it reach the settings) is not sent to an imported listing\'s revise; a pushed one\'s revise gets it (3.28.9)', array( false !== strpos( $build->invoke( exporter(), $card, $gpsr_settings, true ), '<Regulatory>' ), false !== strpos( $build->invoke( exporter(), $card, array( '_send_all' => true ) + $gpsr_settings, true ), '<Regulatory>' ) ), array( false, true ) );
+TCGiant_Sync_OAuth::$settings += array( 'best_offer_enabled' => '1', 'best_offer_auto_accept' => '0.9', 'gpsr_enabled' => '1', 'gpsr_manufacturer_name' => 'ACME Cards' );
+update_post_meta( 101, '_ebay_export_follow_defaults', '1' );
+$following = array_intersect_key( exporter()->get_export_settings( 101 ), array_flip( TCGiant_Sync_Exporter::LISTING_DEFAULT_KEYS ) );
+delete_post_meta( 101, '_ebay_export_follow_defaults' );
+check( '  and with the defaults set in Settings, the imported product\'s settings carry none of them; ticked to follow the shop\'s defaults, all four', array( array_intersect_key( exporter()->get_export_settings( 101 ), array_flip( TCGiant_Sync_Exporter::LISTING_DEFAULT_KEYS ) ), count( $following ) ), array( array(), 4 ) );
+card_shop();
 update_post_meta( 101, '_ebay_export_follow_defaults', '1' );
 list( , $calls ) = push( $card );
 $all  = $calls[0][1] ?? '';
@@ -465,7 +476,7 @@ $then = json_decode( (string) file_get_contents( __DIR__ . '/support/imported-re
 foreach ( array( 'card_revise' => 'a graded card revised', 'part_revise' => 'a used part revised with the shop\'s defaults', 'part_policy' => 'a part with its own shipping policy revised', 'card_add' => 'a new product\'s Add (ADD 16)', 'card_ended' => 'a pushed card whose listing ended: Revise, GetItem, then the Add', 'unrecorded_under_auction' => 'a fixed-price listing with no format recorded, the shop\'s default now an auction (finding 6D): its price and quantity still sent', 'auction_revise' => 'a live auction the shop pushed, its format chosen for it: price, quantity and format revised as 3.28.6 (decision 16 is for imported auctions)', 'auction_default_fixed' => 'a live auction the shop pushed, no format chosen, the default Fixed Price: as 3.28.6', 'stores_fixed_bo' => 'a listing recorded as StoresFixedPrice with the product\'s own Best Offer: as 3.28.6, Best Offer included', 'fixed_own_auction' => 'a fixed-price listing whose product chose an auction format of its own (not 6B): as 3.28.6' ) as $key => $label ) {
 	check( $label . ': the same calls, the same bytes', isset( $now[ $key ], $then[ $key ] ) && $now[ $key ] === $then[ $key ], true );
 }
-check( '  (3.28.6\'s were captured, not written: each holds its full item)', array( count( $then ), false !== strpos( $then['card_revise'][0][1] ?? '', '<SellerProfiles>' ), false !== strpos( $then['card_add'][0][1] ?? '', '<DispatchTimeMax>3</DispatchTimeMax>' ), false !== strpos( $then['stores_fixed_bo'][0][1] ?? '', '<BestOfferDetails>' ) ), array( 13, true, true, true ) );
+check( '  (3.28.6\'s were captured, not written: each holds its full item)', array( count( $then ), false !== strpos( $then['card_revise'][0][1] ?? '', '<SellerProfiles>' ), false !== strpos( $then['card_add'][0][1] ?? '', '<DispatchTimeMax>3</DispatchTimeMax>' ), false !== strpos( $then['stores_fixed_bo'][0][1] ?? '', '<BestOfferDetails>' ) ), array( 16, true, true, true ) );
 /** 3.28.6's calls for $key, with one change made to its item. */
 function then_with( array $then, $key, $from, $to ) {
 	$calls = $then[ $key ] ?? array();
@@ -483,6 +494,26 @@ $bo_block            = "<BestOfferDetails>\n\t<BestOfferEnabled>true</BestOfferE
 $once                = $once && 1 === substr_count( (string) ( $want[0][1] ?? '' ), "</SellerProfiles>\n" );
 $want[0][1]          = str_replace( "</SellerProfiles>\n", "</SellerProfiles>\n" . $bo_block, (string) ( $want[0][1] ?? '' ) );
 check( 'EXCEPTION (finding 6B, re-verify B): the same with the product\'s own Best Offer: its quantity 4, and BestOfferDetails by its own fixed-price format, where 3.28.6 sent 1 and none - those, and no other byte', array( $once, isset( $now['fixed_under_auction_bo'] ) && $now['fixed_under_auction_bo'] === $want ), array( true, true ) );
+
+// 3.28.9: the Best Offer and GPSR defaults in Settings, which 3.28.6 never
+// sent, in eBay's element names. Best Offer only on a new listing; GPSR on a
+// new listing and a pushed listing's revise.
+$gpsr_block = "<Regulatory>\n\t<Manufacturer>\n\t\t<CompanyName>ACME Parts Ltd</CompanyName>\n\t\t<Street1>1 Mill Road, Leeds LS1 1AA, United Kingdom</Street1>\n\t</Manufacturer>\n"
+	. "\t<ResponsiblePersons>\n\t\t<ResponsiblePerson>\n\t\t\t<CompanyName>EU Rep GmbH, Berlin</CompanyName>\n\t\t\t<Types>\n\t\t\t\t<Type>EUResponsiblePerson</Type>\n\t\t\t</Types>\n\t\t</ResponsiblePerson>\n\t</ResponsiblePersons>\n</Regulatory>\n";
+$offer_block = "<BestOfferDetails>\n\t<BestOfferEnabled>true</BestOfferEnabled>\n</BestOfferDetails>\n<ListingDetails>\n\t<BestOfferAutoAcceptPrice>90.00</BestOfferAutoAcceptPrice>\n\t<MinimumBestOfferPrice>70.00</MinimumBestOfferPrice>\n</ListingDetails>\n";
+// Each: where 3.28.6's body is added to, what is added there, how many
+// BestOfferDetails 3.28.6's had, and what is said.
+foreach ( array(
+	'defaults_add'       => array( "</SellerProfiles>\n", $offer_block . $gpsr_block, 0, 'a new product\'s Add gets Best Offer, its auto-accept (90%) as BestOfferAutoAcceptPrice and auto-decline (70%) as MinimumBestOfferPrice, and the manufacturer and EU Responsible Person as Item.Regulatory, where 3.28.6 sent neither' ),
+	'defaults_revise'    => array( "</SellerProfiles>\n", $gpsr_block, 0, 'a pushed listing\'s revise gets the GPSR, and no Best Offer: the default is for new listings, where 3.28.6 sent neither' ),
+	'defaults_revise_bo' => array( $bo_block, $bo_block . $gpsr_block, 1, 'a pushed listing\'s revise whose product has its own Best Offer: its BestOfferDetails as 3.28.6 sent them, with none of the Settings thresholds, and the GPSR, which 3.28.6 did not send' ),
+) as $key => $case ) {
+	$want       = $then[ $key ] ?? array();
+	$before     = (string) ( $want[0][1] ?? '' );
+	$once       = 1 === substr_count( $before, $case[0] ) && $case[2] === substr_count( $before, '<BestOfferDetails>' ) && false === strpos( $before, 'Regulatory' ) && false === strpos( $before, 'ProductSafety' );
+	$want[0][1] = str_replace( $case[0], ( $case[0] === $bo_block ? '' : $case[0] ) . $case[1], $before );
+	check( 'EXCEPTION (3.28.9, the Settings defaults): ' . $case[3] . ' - that, and no other byte', array( $once, isset( $now[ $key ] ) && $now[ $key ] === $want ), array( true, true ) );
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 echo "\nADD: A NEW LISTING IN PLACE OF AN IMPORTED ONE CARRIES EBAY'S VALUES\n" . str_repeat( '=', 124 ) . "\n";

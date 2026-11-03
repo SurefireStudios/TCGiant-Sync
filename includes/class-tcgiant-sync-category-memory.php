@@ -365,6 +365,12 @@ class TCGiant_Sync_Category_Memory {
 			return TCGiant_Sync_Catalog::coin_parent_in_path( $path );
 		}
 
+		// A category of eBay Motors' tree (3.28.9) is never one of eBay US's
+		// coin categories, whatever its ID: what was learnt is not asked.
+		if ( is_string( $path ) && 0 === stripos( $path, 'eBay Motors:' ) ) {
+			return '';
+		}
+
 		if ( isset( self::$pending_leaves[ $category_id ] ) ) {
 			return (string) self::$pending_leaves[ $category_id ];
 		}

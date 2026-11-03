@@ -151,5 +151,22 @@ $own_auction              = $pushed;
 unset( $own_auction['_ebay_listing_status'] );
 $out['fixed_own_auction'] = push( shop_product( 813, array( 'stock' => 3 ), $part + $own_auction + array( '_ebay_item_id' => '110000000813', '_ebay_export_listing_type' => 'Chinese', '_ebay_export_listing_duration' => 'Days_7', '_tcgiant_best_offer_enabled' => '1' ) ) );
 
+// 3.28.9: the shop's Best Offer and GPSR defaults in Settings, which 3.28.6
+// never sent (get_export_settings() did not copy them). A new product's Add,
+// a pushed listing's revise, and one whose product has its own Best Offer.
+TCGiant_Sync_OAuth::$settings += array(
+	'best_offer_enabled'        => '1',
+	'best_offer_auto_accept'    => '0.90',
+	'best_offer_auto_decline'   => '0.70',
+	'gpsr_enabled'              => '1',
+	'gpsr_manufacturer_name'    => 'ACME Parts Ltd',
+	'gpsr_manufacturer_address' => '1 Mill Road, Leeds LS1 1AA, United Kingdom',
+	'gpsr_eu_responsible'       => 'EU Rep GmbH, Berlin',
+);
+TCGiant_Sync_OAuth::$settings['export_category_id'] = '33564';
+$out['defaults_add']        = push( shop_product( 814, array( 'regular_price' => '100.00' ), $part ) );
+$out['defaults_revise']     = push( shop_product( 815, array( 'regular_price' => '100.00' ), $part + $pushed + array( '_ebay_item_id' => '110000000815' ) ) );
+$out['defaults_revise_bo']  = push( shop_product( 816, array( 'regular_price' => '100.00' ), $part + $pushed + array( '_ebay_item_id' => '110000000816', '_tcgiant_best_offer_enabled' => '1' ) ) );
+
 echo json_encode( $out );
 $GLOBALS['harness_done'] = true;

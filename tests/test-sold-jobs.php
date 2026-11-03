@@ -309,7 +309,8 @@ check( '  ended in Seller Hub, eBay saying why at its settle: left ended; one eB
 $readme   = (string) file_get_contents( $ROOT . '/readme.txt' );
 // 3.28.3's notice, wherever later ones put it (3.28.5 has one above it).
 $notice   = substr( $readme, (int) strpos( $readme, "\n= 3.28.3 =\n", (int) strpos( $readme, '== Upgrade Notice ==' ) ), 1600 );
-$notice5  = substr( $readme, (int) strpos( $readme, "== Upgrade Notice ==\n\n= 3.28.5 =" ), 700 );
+// And 3.28.5's, wherever later ones put it (3.28.9 has one above it).
+$notice5  = substr( $readme, (int) strpos( $readme, "\n= 3.28.5 =\n", (int) strpos( $readme, '== Upgrade Notice ==' ) ), 700 );
 check( '  3.28.5\'s upgrade notice says Auto-Relist leaves a Seller Hub end, and that a new listing outside the card categories or in a coin parent is refused', array( false !== strpos( $notice5, 'Auto-Relist checks each ended listing with eBay before relisting it, and now leaves alone one you ended in Seller Hub' ), false !== strpos( $notice5, 'outside eBay\'s three single-card categories' ), false !== strpos( $notice5, 'is now refused before it reaches eBay' ) ), array( true, true, true ) );
 $entry    = substr( $readme, (int) strpos( $readme, '= 3.28.3 - ' ), 9000 );
 $settings = (string) file_get_contents( $ROOT . '/admin/views/settings.php' );

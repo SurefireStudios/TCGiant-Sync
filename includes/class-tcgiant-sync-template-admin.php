@@ -555,7 +555,9 @@ class TCGiant_Sync_Template_Admin {
 
 		$exporter = TCGiant_Sync_Exporter::instance();
 		$product  = $render['product'];
-		$settings = $render['settings'];
+		// As a new listing's, which the check is (3.28.9): an eBay Motors
+		// category is checked on eBay Motors.
+		$settings = $exporter->settle_motors( $render['settings'], true );
 
 		$valid = $exporter->validate_export_settings( $settings );
 		if ( is_wp_error( $valid ) ) {
@@ -577,7 +579,10 @@ class TCGiant_Sync_Template_Admin {
 
 		$api    = TCGiant_Sync_API::instance();
 		$full   = '<Item>' . "\n" . $item_xml . "\n" . '</Item>';
-		$result = $exporter->uses_fixed_price_calls( $product, $settings, '' ) ? $api->verify_add_fixed_price_item( $full ) : $api->verify_add_item( $full );
+		$fixed  = $exporter->uses_fixed_price_calls( $product, $settings, '' );
+		$result = TCGiant_Sync_Exporter::on_listing_site( $settings, function () use ( $api, $fixed, $full ) {
+			return $fixed ? $api->verify_add_fixed_price_item( $full ) : $api->verify_add_item( $full );
+		} );
 
 		// Counted once the call is made: refused here, before any request -
 		// a staging site, the day's call budget, no token - it is not.

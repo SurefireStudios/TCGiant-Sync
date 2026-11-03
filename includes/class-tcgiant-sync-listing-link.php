@@ -111,6 +111,10 @@ class TCGiant_Sync_Listing_Link {
 			'_ebay_live',
 			'_ebay_origin',
 			'_ebay_origin_by',
+			// The site eBay took that listing's revise and relist with, on
+			// eBay Motors (3.28.9, TCGiant_Sync_Motors::listing_call()).
+			'_ebay_motors_revise_site',
+			'_ebay_motors_relist_site',
 			'_ebay_export_follow_defaults',
 			// Push state belonging to the original.
 			'_ebay_export_status',

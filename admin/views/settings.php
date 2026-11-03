@@ -1065,7 +1065,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 
 				<!-- Best Offer -->
 				<div class="tc-field">
-					<label class="tc-label"><?php esc_html_e( 'Best Offer (not sent to eBay yet)', 'tcgiant-sync' ); ?></label>
+					<label class="tc-label"><?php esc_html_e( 'Best Offer', 'tcgiant-sync' ); ?></label>
 					<div class="tc-radio-group">
 						<label><input type="radio" name="tcgiant_sync_ebay_settings[best_offer_enabled]" value="1" <?php checked( $settings['best_offer_enabled'] ?? '0', '1' ); ?>> <?php esc_html_e( 'Enable Best Offer on new listings', 'tcgiant-sync' ); ?></label>
 						<label><input type="radio" name="tcgiant_sync_ebay_settings[best_offer_enabled]" value="0" <?php checked( $settings['best_offer_enabled'] ?? '0', '0' ); ?>> <?php esc_html_e( 'Disabled', 'tcgiant-sync' ); ?></label>
@@ -1080,13 +1080,13 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 							<input type="text" class="tc-input" name="tcgiant_sync_ebay_settings[best_offer_auto_decline]" value="<?php echo esc_attr( $settings['best_offer_auto_decline'] ?? '' ); ?>" placeholder="e.g. 0.70 or 25.00" style="width:100%;" />
 						</div>
 					</div>
-					<p class="tc-hint" style="color:var(--tc-warning);"><?php esc_html_e( 'Not sent to eBay yet: pushing a product does not turn Best Offer on, whatever is chosen here. What you enter is kept.', 'tcgiant-sync' ); ?></p>
-					<p class="tc-hint"><?php esc_html_e( 'Use a decimal (0.95) for percentage of price, or a dollar amount (49.99) for a fixed threshold.', 'tcgiant-sync' ); ?></p>
+					<p class="tc-hint"><?php esc_html_e( 'Turns Best Offer on for new fixed-price listings of the products that use your defaults: not for listings imported from eBay, nor for listings with variations, which eBay does not allow Best Offer on; and an Update of a listing already on eBay leaves its Best Offer as it is.', 'tcgiant-sync' ); ?></p>
+					<p class="tc-hint"><?php esc_html_e( 'Use a decimal (0.95) for percentage of price, or a dollar amount (49.99) for a fixed threshold. Each must be below the price, and auto-decline below auto-accept, or that one is left out and the log says so.', 'tcgiant-sync' ); ?></p>
 				</div>
 
 				<!-- GPSR (EU Product Safety) -->
 				<div class="tc-field">
-					<label class="tc-label"><?php esc_html_e( 'GPSR Compliance, EU Product Safety (not sent to eBay yet)', 'tcgiant-sync' ); ?></label>
+					<label class="tc-label"><?php esc_html_e( 'GPSR Compliance, EU Product Safety', 'tcgiant-sync' ); ?></label>
 					<div class="tc-radio-group">
 						<label><input type="radio" name="tcgiant_sync_ebay_settings[gpsr_enabled]" value="1" <?php checked( $settings['gpsr_enabled'] ?? '0', '1' ); ?>> <?php esc_html_e( 'Include GPSR fields on listings', 'tcgiant-sync' ); ?></label>
 						<label><input type="radio" name="tcgiant_sync_ebay_settings[gpsr_enabled]" value="0" <?php checked( $settings['gpsr_enabled'] ?? '0', '0' ); ?>> <?php esc_html_e( 'Disabled', 'tcgiant-sync' ); ?></label>
@@ -1099,7 +1099,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						<label style="font-size:12px;color:#555;display:block;margin-bottom:3px;"><?php esc_html_e( 'EU Responsible Person (if different)', 'tcgiant-sync' ); ?></label>
 						<input type="text" class="tc-input" name="tcgiant_sync_ebay_settings[gpsr_eu_responsible]" value="<?php echo esc_attr( $settings['gpsr_eu_responsible'] ?? '' ); ?>" style="width:100%;" />
 					</div>
-					<p class="tc-hint" style="color:var(--tc-warning);"><?php esc_html_e( 'Not sent to eBay yet: pushing a product does not add this manufacturer information to its listing. What you enter is kept.', 'tcgiant-sync' ); ?></p>
+					<p class="tc-hint"><?php esc_html_e( 'Sent to eBay as the listing\'s manufacturer (name and address) and EU Responsible Person, on new listings and on Updates of listings you pushed. Listings imported from eBay keep their own. eBay takes up to 100 characters for a name and 180 for the address.', 'tcgiant-sync' ); ?></p>
 					<p class="tc-hint"><?php esc_html_e( 'Required for EU sellers.', 'tcgiant-sync' ); ?></p>
 				</div>
 
@@ -1159,13 +1159,16 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 			}
 		});
 
-		function loadCategories(parentId) {
+		// tree: '100' inside eBay Motors' Parts & Accessories (3.28.9), which
+		// eBay keeps in a category tree of its own.
+		function loadCategories(parentId, tree) {
 			$drilldown.html('<div style="text-align:center;padding:16px;color:#888;">Loading…</div>');
 			$status.text('');
 			$.post(tcgiantSync.ajaxUrl, {
 				action: 'tcgiant_browse_categories',
 				_ajax_nonce: tcgiantSync.nonce,
-				parent_id: parentId
+				parent_id: parentId,
+				tree: tree || ''
 			}, function(res) {
 				if (!res.success) {
 					$drilldown.html('<div style="color:#cc1818;padding:8px;">'+res.data.message+'</div>');
@@ -1199,9 +1202,9 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 					if (cat.leaf) {
 						selectCategory(cat);
 					} else {
-						trail.push({id: cat.id, name: cat.name});
+						trail.push({id: cat.id, name: cat.name, tree: cat.tree || ''});
 						renderBreadcrumb();
-						loadCategories(cat.id);
+						loadCategories(cat.id, cat.tree || '');
 						// No "use this one" here: eBay accepts only bottom-level categories,
 						// and offering the parent someone has just opened is how a merchant
 						// ends up with "Input data for tag <Item.PrimaryCategory.CategoryID>
@@ -1235,7 +1238,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 							e.preventDefault();
 							trail = trail.slice(0, idx + 1);
 							renderBreadcrumb();
-							loadCategories(crumb.id);
+							loadCategories(crumb.id, crumb.tree || '');
 							$status.text('');
 						});
 					})(i);
@@ -1247,8 +1250,10 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 		}
 
 		function selectCategory(cat) {
-			onSelect(cat.id, cat.name);
-			$status.html('✔ Selected: <strong>' + cat.name + '</strong> (' + cat.id + ')');
+			// An eBay Motors category is kept with its path, which says so.
+			var name = cat.tree ? $.map(trail, function(c) { return c.name; }).concat([cat.name]).join(' > ') : cat.name;
+			onSelect(cat.id, name);
+			$status.html('✔ Selected: <strong></strong> (' + cat.id + ')').find('strong').text(name);
 			$browser.slideUp(200);
 			trail = [];
 		}

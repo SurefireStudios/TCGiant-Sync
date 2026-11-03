@@ -24,6 +24,12 @@ if ( ! class_exists( 'TCGiant_Sync_Ebay_Live', false ) ) {
 	require_once __DIR__ . '/class-tcgiant-sync-ebay-live.php';
 }
 
+// Which category tree a category is in, and what an eBay Motors push needs
+// (3.28.9).
+if ( ! class_exists( 'TCGiant_Sync_Motors', false ) ) {
+	require_once __DIR__ . '/class-tcgiant-sync-motors.php';
+}
+
 /**
  * TCGiant_Sync_Exporter class
  */
@@ -336,6 +342,20 @@ class TCGiant_Sync_Exporter {
 	 * listing's PictureDetails like any other's.
 	 */
 	const MAX_IMAGES = 24;
+
+	/**
+	 * The Best Offer and GPSR keys of Settings that get_export_settings()
+	 * copies for a product following the shop's defaults (3.28.9).
+	 */
+	const LISTING_DEFAULT_KEYS = array( 'best_offer_enabled', 'best_offer_auto_accept', 'best_offer_auto_decline', 'gpsr_enabled', 'gpsr_manufacturer_name', 'gpsr_manufacturer_address', 'gpsr_eu_responsible' );
+
+	/**
+	 * eBay's longest values for the GPSR fields a push sends (3.28.9), from
+	 * AddFixedPriceItem's Item.Regulatory reference: Manufacturer and
+	 * ResponsiblePerson CompanyName 100, Street1 180.
+	 */
+	const GPSR_NAME_MAX   = 100;
+	const GPSR_STREET_MAX = 180;
 
 	/**
 	 * Main instance.
@@ -1067,7 +1087,8 @@ class TCGiant_Sync_Exporter {
 			// replaced was on. Left as the old one's, the next push to find
 			// this listing ended would be refused for a site it is not on,
 			// for want of a sync that saves it again.
-			$product->update_meta_data( '_ebay_site', TCGiant_Sync_API::instance()->get_marketplace_config()['site'] );
+			// eBay Motors, for a listing a push made there (3.28.9).
+			$product->update_meta_data( '_ebay_site', ! empty( $result['site'] ) ? (string) $result['site'] : TCGiant_Sync_API::instance()->get_marketplace_config()['site'] );
 
 			// What was settled about the listing this replaces is spent.
 			foreach ( TCGiant_Sync_Inventory::SETTLE_KEYS as $settle_key ) {
@@ -1667,8 +1688,16 @@ class TCGiant_Sync_Exporter {
 		// brought in, and then the site rule holds it, as when a revise is
 		// refused as ended. One still live is revised on whatever site, as
 		// before, and its site recorded.
+		// For a shop on eBay US, a listing that has not said which site it is
+		// on, or which part of eBay Motors (TCGiant_Sync_Motors::site_unknown())
+		// is read first as well, which records both (3.28.9): a revise goes to
+		// the listing's own site, never one its category would pick. A read
+		// that fails sends the Update to the shop's own site, as before.
 		$read_ended = null;
 		$unread     = self::pushes_new_listing( $product->get_id() ) ? array() : self::live_unknown_groups( $settings );
+		if ( ! self::pushes_new_listing( $product->get_id() ) && TCGiant_Sync_Motors::site_unknown( $settings ) ) {
+			$unread[] = 'site';
+		}
 		if ( $unread && ! $this->refused_without_a_read( $product ) ) {
 			$read = $this->read_listing_first( $product, $unread, $settings );
 			if ( null === $read ) {
@@ -1680,6 +1709,11 @@ class TCGiant_Sync_Exporter {
 				}
 			}
 		}
+
+		// What an eBay Motors listing needs, settled before anything is
+		// built or refused (3.28.9): the site the calls go to, and what eBay
+		// takes there.
+		$settings = $this->settle_motors( $settings, self::pushes_new_listing( $product->get_id() ) );
 
 		// Validate required settings before hitting the API: as a new
 		// listing's when there is no live listing to revise (3.28.5).
@@ -1710,6 +1744,12 @@ class TCGiant_Sync_Exporter {
 		$ebay_item_id = $product->get_meta( '_ebay_item_id' );
 
 		$kept_settings = self::keep_listing_category( $settings );
+		// A revise goes to the listing's own site (3.28.9), even of a listing
+		// the product holds ended, whose push was settled as a new listing's:
+		// the revise that finds it ended goes where the listing is.
+		if ( ! empty( $ebay_item_id ) ) {
+			$kept_settings['_request_site'] = TCGiant_Sync_Motors::request_site( $kept_settings, true );
+		}
 		$sent_settings = ! empty( $ebay_item_id ) ? $kept_settings : $settings;
 
 		// Fail locally with the specific missing aspects rather than sending a
@@ -1813,11 +1853,16 @@ class TCGiant_Sync_Exporter {
 				// eBay would refuse, and no second GetItem below.
 				$response = new WP_Error( 'listing_ended', 'The listing has ended, as eBay said when it was read for this push.' );
 			} else {
-				// Existing listing — revise it.
+				// Existing listing — revise it, on its own site (3.28.9).
 				$full_xml = '<Item>' . "\n" . '<ItemID>' . esc_attr( $ebay_item_id ) . '</ItemID>' . "\n" . $item_xml . "\n" . '</Item>';
-				$response = $fixed_price
-					? $api->revise_fixed_price_item( $full_xml )
-					: $api->revise_item( $full_xml );
+				// A whole vehicle on eBay Motors, or a listing there whose part of
+				// eBay Motors is not known, is revised as before 3.28.9, and said.
+				if ( TCGiant_Sync_Motors::revised_as_before( $sent_settings ) ) {
+					TCGiant_Sync_Logger::log( sprintf( 'Push: eBay listing %1$s of WC #%2$d is on eBay Motors and is %3$s, so its Update goes as before 3.28.9, with the shop\'s own site. TCGiant Sync lists only eBay Motors Parts & Accessories and does not otherwise support vehicles.', $ebay_item_id, $product->get_id(), TCGiant_Sync_Motors::BRANCH_VEHICLES === (string) ( $sent_settings['_listing_branch'] ?? '' ) ? 'a vehicle listing' : 'not known to be Parts & Accessories' ) );
+				}
+				$response = self::on_listing_site( $sent_settings, function () use ( $api, $fixed_price, $full_xml ) {
+					return $fixed_price ? $api->revise_fixed_price_item( $full_xml ) : $api->revise_item( $full_xml );
+				}, 'revise', sprintf( 'eBay listing %1$s of WC #%2$d', $ebay_item_id, $product->get_id() ), $product->get_id() );
 			}
 
 			// The photos this revise was not sent, said once eBay has answered -
@@ -1972,9 +2017,9 @@ class TCGiant_Sync_Exporter {
 
 				if ( $relist_live ) {
 					$full_xml = '<Item>' . "\n" . '<ItemID>' . esc_attr( $ebay_item_id ) . '</ItemID>' . "\n" . $item_xml . "\n" . '</Item>';
-					$response = $fixed_price
-						? $api->revise_fixed_price_item( $full_xml )
-						: $api->revise_item( $full_xml );
+					$response = self::on_listing_site( $kept_settings, function () use ( $api, $fixed_price, $full_xml ) {
+						return $fixed_price ? $api->revise_fixed_price_item( $full_xml ) : $api->revise_item( $full_xml );
+					}, 'revise', sprintf( 'eBay listing %1$s of WC #%2$d', $ebay_item_id, $product->get_id() ), $product->get_id() );
 
 					// Said once eBay has answered, as for the first revise.
 					if ( $held && ! self::is_ended_listing_error( $response ) ) {
@@ -2050,7 +2095,7 @@ class TCGiant_Sync_Exporter {
 					TCGiant_Sync_Logger::warning( self::photos_unchanged_warning( $product->get_id(), $relist_held ) );
 				}
 
-				return array(
+				$relisted_as = array(
 					'item_id'          => $relisted['item_id'],
 					'action'           => 'relisted',
 					'previous_item_id' => $relisted['previous_item_id'],
@@ -2058,11 +2103,21 @@ class TCGiant_Sync_Exporter {
 					// The description it carried, recorded as a push's is.
 					'desc'             => $this->last_render,
 				);
+				// A relist stays on the listing's site: eBay Motors' too (3.28.9).
+				if ( TCGiant_Sync_Motors::SITE === $ended_on ) {
+					$relisted_as['site'] = TCGiant_Sync_Motors::SITE;
+				}
+
+				return $relisted_as;
 			}
 
 			// What a new listing in place of an imported one carries is eBay's,
-			// as the answer above recorded it (3.28.8): read again.
-			$settings = $this->get_export_settings( $product->get_id() );
+			// as the answer above recorded it (3.28.8): read again, and settled
+			// as a new listing's (3.28.9) - with the ended listing's site as
+			// eBay's answer gives it, so its category's tree is the listing's
+			// own, never guessed from the category's path. Recorded only by
+			// the save below, as before.
+			$settings = $this->settle_motors( self::on_site_of( $this->get_export_settings( $product->get_id() ), $product->get_id(), $ended_on ), true );
 
 			// The new listing in its place is held to what any new listing is
 			// (3.28.5), before it is built: the revise was not.
@@ -2154,9 +2209,9 @@ class TCGiant_Sync_Exporter {
 			$full_xml = '<Item>' . "\n" . '<UUID>' . $uuid . '</UUID>' . "\n"
 				. ( '' !== $mark ? '<ApplicationData>' . $mark . '</ApplicationData>' . "\n" : '' )
 				. $item_xml . "\n" . '</Item>';
-			$response = $fixed_price
-				? $api->add_fixed_price_item( $full_xml )
-				: $api->add_item( $full_xml );
+			$response = self::on_listing_site( $settings, function () use ( $api, $fixed_price, $full_xml ) {
+				return $fixed_price ? $api->add_fixed_price_item( $full_xml ) : $api->add_item( $full_xml );
+			} );
 
 			// eBay listed nothing, so the product stays on its ended listing,
 			// and keeps that listing's site from the answer read above, as
@@ -2177,7 +2232,7 @@ class TCGiant_Sync_Exporter {
 				return new WP_Error( 'no_item_id', __( 'eBay did not return an Item ID after AddItem. Listing may have been created — check your eBay account.', 'tcgiant-sync' ) );
 			}
 
-			return array(
+			$made = array(
 				'item_id'          => $response['ItemID'],
 				'action'           => $previous_item_id ? 'relisted' : 'created',
 				'previous_item_id' => $previous_item_id,
@@ -2188,6 +2243,13 @@ class TCGiant_Sync_Exporter {
 				// The description it was made with, recorded once saved.
 				'desc'             => $this->last_render,
 			);
+			// The site it was made on, when that is eBay Motors (3.28.9):
+			// record_listing_made() records it, and its revises go there.
+			if ( TCGiant_Sync_Motors::SITE === (string) ( $settings['_request_site'] ?? '' ) ) {
+				$made['site'] = TCGiant_Sync_Motors::SITE;
+			}
+
+			return $made;
 		}
 	}
 
@@ -2847,11 +2909,36 @@ class TCGiant_Sync_Exporter {
 			}
 		}
 
+		// A Parts & Accessories listing on eBay Motors is relisted there
+		// (3.28.9), with the X-EBAY-API-SITEID eBay last took a relist with,
+		// tried once with the other when eBay refuses it for the site
+		// (TCGiant_Sync_Motors::listing_call()). Its part of eBay Motors is
+		// eBay's answer's own category's: by ID, else eBay's path for it. A
+		// whole vehicle, or one whose part is not known, is relisted as before
+		// 3.28.9, and said: TCGiant Sync does not otherwise support vehicles.
+		$motors_site = TCGiant_Sync_Motors::SITE === $listed_on && TCGiant_Sync_Motors::applies( TCGiant_Sync_OAuth::instance()->get_settings()['marketplace'] ?? '' );
+		if ( $motors_site ) {
+			$listed_in = TCGiant_Sync_Motors::listing_branch(
+				array(
+					'category_id'   => TCGiant_Sync_API::scalar_value( $item['PrimaryCategory']['CategoryID'] ?? '' ),
+					'category_name' => TCGiant_Sync_API::scalar_value( $item['PrimaryCategory']['CategoryName'] ?? '' ),
+				),
+				''
+			);
+			if ( TCGiant_Sync_Motors::BRANCH_PARTS !== $listed_in ) {
+				$motors_site = false;
+				TCGiant_Sync_Logger::log( sprintf( '%1$s: eBay listing %2$s of WC #%3$d is on eBay Motors and is %4$s, so it is relisted as before 3.28.9, with the shop\'s own site. TCGiant Sync lists only eBay Motors Parts & Accessories and does not otherwise support vehicles.', $source, $ebay_item_id, $product_id, TCGiant_Sync_Motors::BRANCH_VEHICLES === $listed_in ? 'a vehicle listing' : 'not known to be Parts & Accessories' ) );
+			}
+		}
+
 		// A push's relist of an auction carries the shop's edits (3.28.8).
 		$changes = $from_push && ! $fixed ? (string) $changes : '';
-		$result  = $fixed
-			? $api->relist_fixed_price_item( $ebay_item_id, $quantity, $variations_xml )
-			: $api->relist_item( $ebay_item_id, $quantity, $changes );
+		$relist  = function () use ( $api, $fixed, $ebay_item_id, $quantity, $variations_xml, $changes ) {
+			return $fixed
+				? $api->relist_fixed_price_item( $ebay_item_id, $quantity, $variations_xml )
+				: $api->relist_item( $ebay_item_id, $quantity, $changes );
+		};
+		$result  = $motors_site ? TCGiant_Sync_Motors::listing_call( 'relist', $relist, sprintf( 'eBay listing %1$s of WC #%2$d', $ebay_item_id, $product_id ), $product_id, TCGiant_Sync_API::scalar_value( $item['PrimaryCategory']['CategoryID'] ?? '' ) ) : $relist();
 
 		if ( is_wp_error( $result ) ) {
 			return $result;
@@ -3443,7 +3530,9 @@ class TCGiant_Sync_Exporter {
 			$xml .= '<ListingDuration>' . esc_attr( $listing_duration ) . '</ListingDuration>' . "\n";
 			$xml .= '<ListingType>' . esc_attr( $listing_type ) . '</ListingType>' . "\n";
 		}
-		$xml .= '<Site>' . esc_attr( $marketplace['site'] ) . '</Site>' . "\n";
+		// eBay Motors for a listing there (3.28.9), which the call goes to as
+		// well: eBay requires the two to agree.
+		$xml .= '<Site>' . esc_attr( '' !== (string) ( $settings['_request_site'] ?? '' ) ? (string) $settings['_request_site'] : $marketplace['site'] ) . '</Site>' . "\n";
 
 		if ( $product instanceof WC_Product_Variable ) {
 			$xml .= '<Variations>' . "\n";
@@ -3501,84 +3590,145 @@ class TCGiant_Sync_Exporter {
 		// sent as (3.28.8): an imported listing's own, a pushed one's as
 		// 3.28.6 had it but for a recorded fixed-price listing (6B). An
 		// imported listing keeps its own Best Offer terms unless the product
-		// sets its own.
+		// sets its own. Never with Variations (3.28.9): eBay's reference for
+		// Item.BestOfferDetails says "Best Offer is not available for
+		// multi-variation listings" - neither Settings' nor the product's own.
 		$offer_type = $format;
 		if ( in_array( $offer_type, array( 'FixedPriceItem', 'StoresFixedPrice' ), true ) && ( self::sends_all( $settings, $revise ) || '' !== (string) $product->get_meta( '_tcgiant_best_offer_enabled' ) ) ) {
-			$best_offer_enabled = ! empty( $settings['best_offer_enabled'] );
-			$product_bo         = $product->get_meta( '_tcgiant_best_offer_enabled' );
-			// Per-product override.
-			if ( '' !== $product_bo ) {
-				$best_offer_enabled = (bool) $product_bo;
-			}
-
-			if ( $best_offer_enabled ) {
-				$xml .= '<BestOfferDetails>' . "\n";
-				$xml .= "\t<BestOfferEnabled>true</BestOfferEnabled>\n";
-				$xml .= '</BestOfferDetails>' . "\n";
-
-				// Auto-accept/decline thresholds.
-				$auto_accept  = $settings['best_offer_auto_accept'] ?? '';
-				$auto_decline = $settings['best_offer_auto_decline'] ?? '';
-
-				// Allow per-product override.
-				$product_accept  = $product->get_meta( '_tcgiant_bo_auto_accept' );
-				$product_decline = $product->get_meta( '_tcgiant_bo_auto_decline' );
-				if ( '' !== $product_accept ) {
-					$auto_accept = $product_accept;
-				}
-				if ( '' !== $product_decline ) {
-					$auto_decline = $product_decline;
-				}
-
-				$bo_xml = '<ListingDetails>' . "\n";
-				if ( ! empty( $auto_accept ) && is_numeric( $auto_accept ) ) {
-					$accept_price = (float) $auto_accept > 1 ? $auto_accept : wc_format_decimal( (float) $price * (float) $auto_accept, 2 );
-					$bo_xml .= "\t<MinimumBestOfferPrice>" . esc_attr( $accept_price ) . "</MinimumBestOfferPrice>\n";
-				}
-				if ( ! empty( $auto_decline ) && is_numeric( $auto_decline ) ) {
-					$decline_price = (float) $auto_decline > 1 ? $auto_decline : wc_format_decimal( (float) $price * (float) $auto_decline, 2 );
-					$bo_xml .= "\t<BestOfferAutoDeclinePrice>" . esc_attr( $decline_price ) . "</BestOfferAutoDeclinePrice>\n";
-				}
-				$bo_xml .= '</ListingDetails>' . "\n";
-				$xml .= $bo_xml;
+			if ( ! ( $product instanceof WC_Product_Variable ) ) {
+				$xml .= $this->best_offer_xml( $product, $settings, $revise, $price );
+			} elseif ( ( '' !== (string) $product->get_meta( '_tcgiant_best_offer_enabled' ) ? (bool) $product->get_meta( '_tcgiant_best_offer_enabled' ) : ( ! $revise && ! empty( $settings['best_offer_enabled'] ) ) )
+				&& empty( $this->card_said[ 'offer:' . $product->get_id() ] ) ) {
+				$this->card_said[ 'offer:' . $product->get_id() ] = true;
+				TCGiant_Sync_Logger::warning( sprintf( '%1$s: WC #%2$d goes without Best Offer: it is a listing with variations, and eBay does not allow Best Offer on those.', $this->build_for, $product->get_id() ) );
 			}
 		}
 
-		// GPSR (EU General Product Safety Regulation) compliance fields: the
-		// shop's, so not to an imported listing's revise (3.28.8).
-		$gpsr_enabled = ! empty( $settings['gpsr_enabled'] ) && self::sends_all( $settings, $revise );
-		if ( $gpsr_enabled ) {
-			$gpsr_xml = '';
-			$gpsr_mfg = $settings['gpsr_manufacturer_name'] ?? '';
-			$gpsr_address = $settings['gpsr_manufacturer_address'] ?? '';
-			$gpsr_eu_rep = $settings['gpsr_eu_responsible'] ?? '';
-
-			if ( ! empty( $gpsr_mfg ) || ! empty( $gpsr_address ) ) {
-				$gpsr_xml .= '<ProductSafety>' . "\n";
-				if ( ! empty( $gpsr_mfg ) ) {
-					$gpsr_xml .= '<Component>' . "\n";
-					$gpsr_xml .= "\t<Type>Manufacturer</Type>\n";
-					$gpsr_xml .= "\t<Value>" . esc_xml( $gpsr_mfg ) . "</Value>\n";
-					$gpsr_xml .= '</Component>' . "\n";
-				}
-				if ( ! empty( $gpsr_address ) ) {
-					$gpsr_xml .= '<Component>' . "\n";
-					$gpsr_xml .= "\t<Type>ManufacturerAddress</Type>\n";
-					$gpsr_xml .= "\t<Value>" . esc_xml( $gpsr_address ) . "</Value>\n";
-					$gpsr_xml .= '</Component>' . "\n";
-				}
-				if ( ! empty( $gpsr_eu_rep ) ) {
-					$gpsr_xml .= '<Component>' . "\n";
-					$gpsr_xml .= "\t<Type>ResponsiblePerson</Type>\n";
-					$gpsr_xml .= "\t<Value>" . esc_xml( $gpsr_eu_rep ) . "</Value>\n";
-					$gpsr_xml .= '</Component>' . "\n";
-				}
-				$gpsr_xml .= '</ProductSafety>' . "\n";
-				$xml .= $gpsr_xml;
-			}
+		// GPSR (EU General Product Safety Regulation): the shop's, so on a new
+		// listing and a pushed listing's revise, never an imported listing's
+		// (3.28.8). Item.Regulatory, in eBay's own element names (3.28.9).
+		if ( ! empty( $settings['gpsr_enabled'] ) && self::sends_all( $settings, $revise ) ) {
+			$xml .= self::regulatory_xml( $settings );
 		}
 
 		return $xml;
+	}
+
+	/**
+	 * Best Offer for a fixed-price item (3.28.9): Item.BestOfferDetails and
+	 * the thresholds in Item.ListingDetails, in eBay's names - auto-accept as
+	 * BestOfferAutoAcceptPrice ("If a buyer submits a Best Offer that is at
+	 * or above this value, the offer is automatically accepted"), auto-decline
+	 * as MinimumBestOfferPrice ("below this value, the offer is automatically
+	 * declined"). Until 3.28.9 the auto-accept went as MinimumBestOfferPrice
+	 * and the auto-decline as BestOfferAutoDeclinePrice, which eBay does not
+	 * have.
+	 *
+	 * The product's own _tcgiant_best_offer_enabled and thresholds go on any
+	 * listing, as before. The defaults in Settings ("Enable Best Offer on new
+	 * listings") go on new listings and Verify only, never into a revise. A
+	 * threshold that is not above 0 and below the price, or an auto-decline
+	 * not below the auto-accept, is left out and said once: eBay refuses the
+	 * whole listing for one.
+	 *
+	 * @param WC_Product $product  Product.
+	 * @param array      $settings Merged export settings.
+	 * @param bool       $revise   A revise of a live listing.
+	 * @param string     $price    The StartPrice sent.
+	 * @return string
+	 */
+	private function best_offer_xml( WC_Product $product, array $settings, $revise, $price ) {
+		$enabled    = ! $revise && ! empty( $settings['best_offer_enabled'] );
+		$product_bo = $product->get_meta( '_tcgiant_best_offer_enabled' );
+		if ( '' !== $product_bo ) {
+			$enabled = (bool) $product_bo;
+		}
+		if ( ! $enabled ) {
+			return '';
+		}
+
+		$xml  = '<BestOfferDetails>' . "\n";
+		$xml .= "\t<BestOfferEnabled>true</BestOfferEnabled>\n";
+		$xml .= '</BestOfferDetails>' . "\n";
+
+		// The thresholds: the product's own, else, on a new listing, the
+		// defaults in Settings. A decimal of 1 or less is a share of the price.
+		$figures = array();
+		foreach ( array( 'accept' => array( 'best_offer_auto_accept', '_tcgiant_bo_auto_accept' ), 'decline' => array( 'best_offer_auto_decline', '_tcgiant_bo_auto_decline' ) ) as $kind => $keys ) {
+			$own   = $product->get_meta( $keys[1] );
+			$value = '' !== $own ? $own : ( $revise ? '' : ( $settings[ $keys[0] ] ?? '' ) );
+			if ( ! empty( $value ) && is_numeric( $value ) ) {
+				$figures[ $kind ] = (float) $value > 1 ? (float) $value : round( (float) $price * (float) $value, 2 );
+			}
+		}
+
+		$said = array();
+		if ( isset( $figures['accept'] ) && ( $figures['accept'] <= 0 || $figures['accept'] >= (float) $price ) ) {
+			$said[] = sprintf( 'the auto-accept price %1$s is not below the price %2$s', wc_format_decimal( $figures['accept'], 2 ), $price );
+			unset( $figures['accept'] );
+		}
+		if ( isset( $figures['decline'] ) && ( $figures['decline'] <= 0 || $figures['decline'] >= ( $figures['accept'] ?? (float) $price ) ) ) {
+			$said[] = sprintf( 'the auto-decline price %1$s is not below the %2$s %3$s', wc_format_decimal( $figures['decline'], 2 ), isset( $figures['accept'] ) ? 'auto-accept price' : 'price', wc_format_decimal( $figures['accept'] ?? (float) $price, 2 ) );
+			unset( $figures['decline'] );
+		}
+		if ( $said && empty( $this->card_said[ 'offer:' . $product->get_id() ] ) ) {
+			$this->card_said[ 'offer:' . $product->get_id() ] = true;
+			TCGiant_Sync_Logger::warning( sprintf( '%1$s: WC #%2$d goes with Best Offer but without %3$s, which eBay would refuse: %4$s.', $this->build_for, $product->get_id(), 1 === count( $said ) ? 'one of its thresholds' : 'its thresholds', implode( '; ', $said ) ) );
+		}
+
+		$xml .= '<ListingDetails>' . "\n";
+		if ( isset( $figures['accept'] ) ) {
+			$xml .= "\t<BestOfferAutoAcceptPrice>" . esc_attr( wc_format_decimal( $figures['accept'], 2 ) ) . "</BestOfferAutoAcceptPrice>\n";
+		}
+		if ( isset( $figures['decline'] ) ) {
+			$xml .= "\t<MinimumBestOfferPrice>" . esc_attr( wc_format_decimal( $figures['decline'], 2 ) ) . "</MinimumBestOfferPrice>\n";
+		}
+		$xml .= '</ListingDetails>' . "\n";
+
+		return $xml;
+	}
+
+	/**
+	 * GPSR as eBay's Item.Regulatory (3.28.9), which AddFixedPriceItem and the
+	 * Revise and Relist calls take: Manufacturer (CompanyName and Street1:
+	 * the name and the address from Settings) and ResponsiblePersons (a
+	 * ResponsiblePerson with its CompanyName and Types/Type
+	 * EUResponsiblePerson, "currently the only supported value"). Each field
+	 * is optional in eBay's schema; the values go at eBay's longest
+	 * (GPSR_NAME_MAX, GPSR_STREET_MAX). Until 3.28.9 the build made a
+	 * ProductSafety of "Component" entries with Type and Value, which eBay's
+	 * ProductSafety (pictograms, statements and a component text) is not.
+	 *
+	 * @param array $settings Merged export settings.
+	 * @return string '' when nothing is set.
+	 */
+	public static function regulatory_xml( array $settings ) {
+		$name    = trim( (string) ( $settings['gpsr_manufacturer_name'] ?? '' ) );
+		$address = trim( (string) ( $settings['gpsr_manufacturer_address'] ?? '' ) );
+		$rep     = trim( (string) ( $settings['gpsr_eu_responsible'] ?? '' ) );
+		$cut     = function ( $text, $max ) {
+			return function_exists( 'mb_substr' ) ? mb_substr( $text, 0, $max, 'UTF-8' ) : substr( $text, 0, $max );
+		};
+
+		$inner = '';
+		if ( '' !== $name || '' !== $address ) {
+			$inner .= "\t<Manufacturer>\n";
+			if ( '' !== $name ) {
+				$inner .= "\t\t<CompanyName>" . esc_xml( $cut( $name, self::GPSR_NAME_MAX ) ) . "</CompanyName>\n";
+			}
+			if ( '' !== $address ) {
+				$inner .= "\t\t<Street1>" . esc_xml( $cut( $address, self::GPSR_STREET_MAX ) ) . "</Street1>\n";
+			}
+			$inner .= "\t</Manufacturer>\n";
+		}
+		if ( '' !== $rep ) {
+			$inner .= "\t<ResponsiblePersons>\n\t\t<ResponsiblePerson>\n";
+			$inner .= "\t\t\t<CompanyName>" . esc_xml( $cut( $rep, self::GPSR_NAME_MAX ) ) . "</CompanyName>\n";
+			$inner .= "\t\t\t<Types>\n\t\t\t\t<Type>EUResponsiblePerson</Type>\n\t\t\t</Types>\n";
+			$inner .= "\t\t</ResponsiblePerson>\n\t</ResponsiblePersons>\n";
+		}
+
+		return '' === $inner ? '' : '<Regulatory>' . "\n" . $inner . '</Regulatory>' . "\n";
 	}
 
 	// -------------------------------------------------------------------------
@@ -3640,6 +3790,20 @@ class TCGiant_Sync_Exporter {
 		}
 		$ungraded_from = isset( $live['condition'] ) ? 'live' : 'default';
 
+		// The Best Offer and GPSR defaults in Settings (3.28.9), which until
+		// now never left Settings: for a product that follows the shop's
+		// defaults - one with no listing, or one the plugin pushed - and never
+		// for an imported one, which keeps eBay's (decision 15). Where each
+		// goes is build_item_xml()'s: Best Offer to new listings, as its label
+		// says, GPSR to new listings and to a pushed listing's revise.
+		if ( $send_all ) {
+			foreach ( self::LISTING_DEFAULT_KEYS as $key ) {
+				if ( isset( $global[ $key ] ) && is_scalar( $global[ $key ] ) && '' !== trim( (string) $global[ $key ] ) ) {
+					$settings[ $key ] = trim( (string) $global[ $key ] );
+				}
+			}
+		}
+
 		// The product's own settings, by group.
 		$own = array();
 
@@ -3670,9 +3834,11 @@ class TCGiant_Sync_Exporter {
 				$own['condition']['item_type'] = (string) $override_item_type;
 			}
 
-			$override_cat_name = $product->get_meta( '_ebay_export_category_name' );
-			if ( ! empty( $override_cat_name ) ) {
-				$settings['category_name'] = $override_cat_name;
+			// The product's own category goes with its own name, or none: never
+			// the shop default's, nor eBay's for the listing's category
+			// (3.28.9). A name alone is never paired with another ID.
+			if ( ! empty( $override_category ) ) {
+				$settings['category_name'] = (string) $product->get_meta( '_ebay_export_category_name' );
 			}
 
 			$override_grader = $product->get_meta( '_ebay_export_grader_id' );
@@ -3818,8 +3984,33 @@ class TCGiant_Sync_Exporter {
 		$saved_name   = $from_product ? (string) $product->get_meta( '_ebay_export_category_name' ) : (string) ( $global['export_category_name'] ?? '' );
 		$saved_typed  = $from_product ? (string) $product->get_meta( '_ebay_export_category_typed' ) : (string) ( $global['export_category_typed'] ?? '' );
 		$settings['category_typed'] = $saved_typed;
-		// Never eBay's own category, which is the one the listing is in.
-		$retired_to   = 'live' !== $source['category'] ? TCGiant_Sync_Catalog::retired_category( $settings['category_id'], $saved_name, $saved_typed ) : '';
+
+		// Which category tree the category is in, as far as its ID tells
+		// without asking eBay, and the site and part of eBay Motors of the
+		// listing a revise is of, from the listing itself (3.28.9):
+		// TCGiant_Sync_Motors::category_fields(), listing_site(),
+		// listing_branch(). A push settles what is not known
+		// (settle_motors()), and reads a listing whose site is not known
+		// first (do_push()).
+		$settings['_motors_applies'] = TCGiant_Sync_Motors::applies( $global['marketplace'] ?? '' );
+		$settings['_listing_site']   = '';
+		$settings['_listing_branch'] = '';
+		if ( $product && '' !== (string) $product->get_meta( '_ebay_item_id' ) ) {
+			// Who made the listing only where its site or part of eBay
+			// Motors turns on it, and only 'push' - with the evidence
+			// origin() asks for - counts: 'import' and UNKNOWN never do.
+			$listing_recorded            = (string) $product->get_meta( '_ebay_site' );
+			$listing_snap                = $settings['_motors_applies'] ? TCGiant_Sync_Ebay_Live::snapshot( $product->get_id() ) : array();
+			$listing_origin              = $settings['_motors_applies'] && TCGiant_Sync_Motors::needs_origin( $listing_recorded, $listing_snap ) ? TCGiant_Sync_Ebay_Live::origin( $product->get_id(), false ) : '';
+			$listing_home                = $settings['_motors_applies'] ? (string) ( TCGiant_Sync_API::instance()->get_marketplace_config()['site'] ?? '' ) : '';
+			$settings['_listing_site']   = TCGiant_Sync_Motors::listing_site( $listing_recorded, $listing_snap, $listing_origin, $listing_home, $settings['_motors_applies'] && TCGiant_Sync_Motors::motors_seen() );
+			$settings['_listing_branch'] = TCGiant_Sync_Motors::SITE === $settings['_listing_site'] ? TCGiant_Sync_Motors::listing_branch( $listing_snap, $listing_origin ) : '';
+		}
+		$settings = array_merge( $settings, TCGiant_Sync_Motors::category_fields( $settings + array( '_source' => $source ), $settings['_listing_site'] ) );
+
+		// Never eBay's own category, which is the one the listing is in, nor
+		// one of eBay Motors (3.28.9): the IDs 3.28.1 retired are eBay US's.
+		$retired_to   = 'live' !== $source['category'] && TCGiant_Sync_Motors::TREE !== $settings['category_tree'] ? TCGiant_Sync_Catalog::retired_category( $settings['category_id'], $saved_name, $saved_typed ) : '';
 		if ( '' !== $retired_to ) {
 			$settings['category_retired'] = array(
 				'from'   => (string) $settings['category_id'],
@@ -3827,6 +4018,7 @@ class TCGiant_Sync_Exporter {
 				'source' => $from_product ? 'product' : 'default',
 			);
 			$settings['category_id']      = $retired_to;
+			$settings                     = array_merge( $settings, TCGiant_Sync_Motors::category_fields( $settings + array( '_source' => $source ), $settings['_listing_site'] ) );
 		}
 
 		// Flag category-item_type mismatch so validation can catch it.
@@ -4162,6 +4354,137 @@ class TCGiant_Sync_Exporter {
 		}
 
 		return false;
+	}
+
+	/**
+	 * Settle, before a push, Verify or Check with eBay builds anything, what
+	 * an eBay Motors listing needs (3.28.9): the category's tree where it was
+	 * not known (TCGiant_Sync_Motors::resolve() - nothing asked of eBay for
+	 * a category known either way, and for an ordinary one at most the item
+	 * specifics the push reads anyway), the branch of a Motors category that
+	 * will be sent, the site the call goes to (_request_site), and, when it
+	 * is eBay Motors and a condition is sent, the conditions eBay takes in the
+	 * category (_motors_conditions, or _motors_conditions_failed). What is
+	 * wrong is refused by validate_export_settings(), from these. A revise's
+	 * site is the listing's (TCGiant_Sync_Motors::request_site()), so a
+	 * category is asked about only when it is sent.
+	 *
+	 * Nothing for a shop not on eBay US: the settings come back as they went.
+	 *
+	 * @param array $settings    get_export_settings().
+	 * @param bool  $new_listing A new listing or Verify, not a revise.
+	 * @return array
+	 */
+	public function settle_motors( array $settings, $new_listing ) {
+		if ( empty( $settings['_motors_applies'] ) ) {
+			return $settings;
+		}
+
+		$revise        = ! $new_listing;
+		$send_category = self::sends( $settings, 'category', $revise );
+		$category_id   = (string) ( $settings['category_id'] ?? '' );
+		$tree          = (string) ( $settings['category_tree'] ?? '' );
+
+		// The tree, where the category is sent: a new listing's, or one a
+		// revise sends.
+		$asks = $new_listing || $send_category;
+		if ( '' !== $category_id && $asks && ( 'unknown' === $tree || ( TCGiant_Sync_Motors::TREE === $tree && '' === (string) ( $settings['_motors_branch'] ?? '' ) ) ) ) {
+			$found                      = TCGiant_Sync_Motors::resolve( $category_id );
+			$settings['category_tree']  = $found['tree'];
+			$settings['_motors_branch'] = $found['branch'];
+			if ( '' !== $found['wait'] ) {
+				$settings['_motors_wait'] = $found['wait'];
+			}
+			if ( '' !== $found['said'] ) {
+				TCGiant_Sync_Logger::log( $found['said'], TCGiant_Sync_Motors::TREE === $found['tree'] && '' === $found['wait'] ? 'info' : 'warning' );
+			}
+		} elseif ( 'unknown' === $tree ) {
+			// Not asked about, and it decides nothing here: as before.
+			$settings['category_tree'] = '';
+		}
+
+		$settings['_request_site'] = TCGiant_Sync_Motors::request_site( $settings, $revise );
+
+		if ( TCGiant_Sync_Motors::SITE === $settings['_request_site'] && self::sends( $settings, 'condition', $revise ) && TCGiant_Sync_Motors::TREE === $settings['category_tree'] && '' !== $category_id
+			&& TCGiant_Sync_Motors::BRANCH_PARTS === $settings['_motors_branch'] ) {
+			$conditions = TCGiant_Sync_Motors::conditions( $category_id );
+			if ( is_wp_error( $conditions ) ) {
+				$settings['_motors_conditions_failed'] = $conditions->get_error_message();
+			} else {
+				$settings['_motors_conditions'] = $conditions['conditions'];
+			}
+		}
+
+		return $settings;
+	}
+
+	/**
+	 * Settings judged again with the listing's site as eBay has just given
+	 * it (3.28.9): its site and part of eBay Motors, and the tree of its own
+	 * category ('live'), as get_export_settings() judges them from a site
+	 * recorded (TCGiant_Sync_Motors::listing_site()). Unchanged for no site,
+	 * or the one the settings already have.
+	 *
+	 * @param array  $settings   get_export_settings().
+	 * @param int    $product_id Product.
+	 * @param string $site       Item.Site from eBay's answer.
+	 * @return array
+	 */
+	private static function on_site_of( array $settings, $product_id, $site ) {
+		$site = (string) $site;
+		if ( empty( $settings['_motors_applies'] ) || '' === $site || $site === (string) ( $settings['_listing_site'] ?? '' ) ) {
+			return $settings;
+		}
+
+		$snap                        = TCGiant_Sync_Ebay_Live::snapshot( $product_id );
+		$settings['_listing_site']   = $site;
+		$settings['_listing_branch'] = TCGiant_Sync_Motors::SITE === $site
+			? TCGiant_Sync_Motors::listing_branch( $snap, TCGiant_Sync_Motors::needs_origin( $site, $snap ) ? TCGiant_Sync_Ebay_Live::origin( $product_id, false ) : '' )
+			: '';
+
+		return array_merge( $settings, TCGiant_Sync_Motors::category_fields( $settings, $site ) );
+	}
+
+	/**
+	 * Make a listing call on the site the settings were settled for
+	 * (settle_motors()): for a listing on eBay Motors, eBay Motors' site -
+	 * a revise with the X-EBAY-API-SITEID eBay last took one with, tried once
+	 * with the other when eBay refuses it for the site
+	 * (TCGiant_Sync_Motors::listing_call()); the shop's own otherwise, as
+	 * before (3.28.9).
+	 *
+	 * @param array    $settings Settings settle_motors() returned.
+	 * @param callable $call     The call.
+	 * @param string   $kind       'revise' for a revise; '' for a new
+	 *                             listing or Verify.
+	 * @param string   $label      Which listing, for the log.
+	 * @param int      $product_id The product whose listing a revise is of,
+	 *                             which keeps the site eBay takes it with.
+	 * @return mixed What the call returns.
+	 */
+	public static function on_listing_site( array $settings, callable $call, $kind = '', $label = '', $product_id = 0 ) {
+		if ( TCGiant_Sync_Motors::SITE !== (string) ( $settings['_request_site'] ?? '' ) ) {
+			return $call();
+		}
+
+		return TCGiant_Sync_Motors::listing_call( $kind, $call, $label, $product_id, (string) ( $settings['category_id'] ?? '' ) );
+	}
+
+	/**
+	 * The item specifics eBay defines for the settings' category, from the
+	 * tree of the site the listing goes to (3.28.9): eBay Motors' 100 for one
+	 * there, the marketplace's otherwise, as before.
+	 *
+	 * @param array $settings Merged export settings.
+	 * @return array|WP_Error
+	 */
+	private static function category_aspects( array $settings ) {
+		$category_id = (string) ( $settings['category_id'] ?? '' );
+		if ( TCGiant_Sync_Motors::SITE === (string) ( $settings['_request_site'] ?? '' ) || ( ! isset( $settings['_request_site'] ) && TCGiant_Sync_Motors::TREE === (string) ( $settings['category_tree'] ?? '' ) ) ) {
+			return TCGiant_Sync_API::instance()->get_category_aspects_in_tree( $category_id, TCGiant_Sync_Motors::TREE );
+		}
+
+		return TCGiant_Sync_API::instance()->get_category_aspects( $category_id );
 	}
 
 	/**
@@ -4518,6 +4841,16 @@ class TCGiant_Sync_Exporter {
 					$why
 				) );
 		}
+		// The site of a listing that had not said it (3.28.9): the Update
+		// went with the shop's own, as before.
+		if ( in_array( 'site', $unread, true ) ) {
+			TCGiant_Sync_Logger::warning( sprintf(
+				'Push: could not read eBay listing %1$s of WC #%2$d %3$s, so which eBay site it is on is not known: the Update went with the shop\'s own site, as before 3.28.9. The listing is read again after the hour.',
+				$item_id,
+				(int) $product_id,
+				'' === $why ? 'in the last hour' : '(' . $why . ')'
+			) );
+		}
 		if ( in_array( 'origin', $unread, true ) ) {
 			TCGiant_Sync_Logger::warning( '' === $why
 				? sprintf(
@@ -4622,8 +4955,21 @@ class TCGiant_Sync_Exporter {
 		// A coin parent, which eBay refuses as a listing's category, and card
 		// details where eBay does not take them (3.28.5): refused here for a
 		// new listing, as the product's eBay tab says it is not ready.
-		$coin_parent   = $new_listing ? TCGiant_Sync_Catalog::coin_parent_problem( $settings['category_id'] ?? '' ) : '';
-		$card_category = $new_listing ? self::card_category_problem( $settings ) : '';
+		// Not for an eBay Motors category (3.28.9): those are eBay US's IDs,
+		// and Motors has its own problems below.
+		$us_tree       = TCGiant_Sync_Motors::TREE !== (string) ( $settings['category_tree'] ?? '' );
+		$coin_parent   = $new_listing && $us_tree ? TCGiant_Sync_Catalog::coin_parent_problem( $settings['category_id'] ?? '' ) : '';
+		$card_category = $new_listing && $us_tree ? self::card_category_problem( $settings ) : '';
+		foreach ( TCGiant_Sync_Motors::problems( $settings, $new_listing ) as $group => $problem ) {
+			$missing[] = 'category' === $group
+				/* translators: %s: why */
+				? sprintf( __( 'eBay Category — %s', 'tcgiant-sync' ), $problem )
+				: ( 'condition' === $group
+					/* translators: %s: why */
+					? sprintf( __( 'Condition — %s', 'tcgiant-sync' ), $problem )
+					/* translators: %s: why */
+					: sprintf( __( 'Business Policies — %s', 'tcgiant-sync' ), $problem ) );
+		}
 		if ( '' !== $coin_parent ) {
 			/* translators: %s: why */
 			$missing[] = sprintf( __( 'eBay Category — %s', 'tcgiant-sync' ), $coin_parent );
@@ -4830,7 +5176,7 @@ class TCGiant_Sync_Exporter {
 			return array();
 		}
 
-		$aspects = TCGiant_Sync_API::instance()->get_category_aspects( $category_id );
+		$aspects = self::category_aspects( $settings );
 		if ( is_wp_error( $aspects ) || empty( $aspects ) ) {
 			// Never block a push because eBay's metadata call failed — that
 			// would turn an eBay outage into an inability to list anything.
@@ -4950,7 +5296,12 @@ class TCGiant_Sync_Exporter {
 			);
 		}
 
-		$aspects = TCGiant_Sync_API::instance()->get_category_aspects( $category_id );
+		// From the tree of the site a push would list it on (3.28.9): the
+		// eBay tab asks about an eBay Motors category in tree 100, settling
+		// first what a push would. A category on the screen and not saved
+		// was judged afresh by the eBay tab's request (TCGiant_Sync_Admin::
+		// ajax_category_aspects()); a retired ID is eBay US's.
+		$aspects = self::category_aspects( $this->settle_motors( array( 'category_id' => $category_id ) + $settings, self::pushes_new_listing( $product->get_id() ) ) );
 
 		if ( is_wp_error( $aspects ) ) {
 			return array(
@@ -5165,7 +5516,7 @@ class TCGiant_Sync_Exporter {
 			return $specifics;
 		}
 
-		$aspects = TCGiant_Sync_API::instance()->get_category_aspects( $category_id );
+		$aspects = self::category_aspects( $settings );
 		if ( is_wp_error( $aspects ) || empty( $aspects ) ) {
 			return $specifics;
 		}
@@ -5860,7 +6211,10 @@ class TCGiant_Sync_Exporter {
 	 */
 	private function build_condition_descriptors_xml( array $settings, $product_id = 0 ) {
 		$item_type = $settings['item_type'] ?? '';
-		if ( ! self::is_descriptor_category( $settings['category_id'], $item_type ) ) {
+		// None on eBay Motors (3.28.9), whose categories are not the trading
+		// card and coin categories of eBay US's tree that the descriptor IDs
+		// are for: a push refuses a card or coin Item Type there before this.
+		if ( ! self::is_descriptor_category( $settings['category_id'], $item_type ) || TCGiant_Sync_Motors::SITE === (string) ( $settings['_request_site'] ?? '' ) ) {
 			return '';
 		}
 
@@ -7279,6 +7633,21 @@ class TCGiant_Sync_Exporter {
 					$row['return_cost_payer'] = is_string( $policy['returnShippingCostPayer'] ?? null ) ? $policy['returnShippingCostPayer'] : '';
 				} elseif ( 'fulfillment' === $type ) {
 					$row['handling_time'] = self::time_duration( $policy['handlingTime'] ?? null );
+				}
+
+				// Which listings the policy is for, where eBay says (3.28.9):
+				// categoryTypes' names, MOTORS_VEHICLES and/or
+				// ALL_EXCLUDING_MOTORS_VEHICLES. An eBay Motors Parts &
+				// Accessories push refuses one for motor vehicles only
+				// (TCGiant_Sync_Motors::problems()).
+				$types = array();
+				foreach ( is_array( $policy['categoryTypes'] ?? null ) ? $policy['categoryTypes'] : array() as $category_type ) {
+					if ( is_array( $category_type ) && is_string( $category_type['name'] ?? null ) ) {
+						$types[] = $category_type['name'];
+					}
+				}
+				if ( $types ) {
+					$row['category_types'] = $types;
 				}
 
 				$policies[] = $row;
