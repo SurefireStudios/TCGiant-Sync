@@ -40,6 +40,11 @@ class Motors_API extends Template_World_API {
 	public $site_answers = array();
 
 	public function trading_api_request( $call_name, $xml_body, $allow_retry = true, $max_body_bytes = 0 ) {
+		// The identifiers' metadata reads (3.30.3) are template-world's
+		// $lookups, never a listing call here.
+		if ( in_array( $call_name, array( 'GetCategoryFeatures', 'GeteBayDetails' ), true ) ) {
+			return parent::trading_api_request( $call_name, $xml_body, $allow_retry, $max_body_bytes );
+		}
 		$at            = $call_name . '@' . $this->request_site_id();
 		$this->sites[] = $at;
 		// "Call@site#ItemID" for one listing's answer, over "Call@site".

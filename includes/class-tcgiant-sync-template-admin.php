@@ -578,11 +578,24 @@ class TCGiant_Sync_Template_Admin {
 		}
 
 		$api    = TCGiant_Sync_API::instance();
-		$full   = '<Item>' . "\n" . $item_xml . "\n" . '</Item>';
 		$fixed  = $exporter->uses_fixed_price_calls( $product, $settings, '' );
-		$result = TCGiant_Sync_Exporter::on_listing_site( $settings, function () use ( $api, $fixed, $full ) {
-			return $fixed ? $api->verify_add_fixed_price_item( $full ) : $api->verify_add_item( $full );
-		} );
+		$check  = function ( $item ) use ( $api, $fixed, $settings ) {
+			$full = '<Item>' . "\n" . $item . "\n" . '</Item>';
+			return TCGiant_Sync_Exporter::on_listing_site( $settings, function () use ( $api, $fixed, $full ) {
+				return $fixed ? $api->verify_add_fixed_price_item( $full ) : $api->verify_add_item( $full );
+			} );
+		};
+		$result = $check( $item_xml );
+
+		// eBay's refusal for a missing UPC, EAN or ISBN alone (3.30.3 fix
+		// round 1): learnt, and checked once more with "Does not apply",
+		// counted as the one check.
+		$resend = $exporter->identifier_resend( $product, $settings, $result );
+		if ( is_wp_error( $resend ) ) {
+			$result = $resend;
+		} elseif ( null !== $resend ) {
+			$result = $check( $resend );
+		}
 
 		// Counted once the call is made: refused here, before any request -
 		// a staging site, the day's call budget, no token - it is not.
@@ -599,6 +612,11 @@ class TCGiant_Sync_Template_Admin {
 			} elseif ( 'no_token' === $result->get_error_code() ) {
 				/* translators: %s: why */
 				$message = sprintf( __( 'eBay did not accept this site\'s connection (%s). Reconnect it on the Settings screen, then try again.', 'tcgiant-sync' ), $result->get_error_message() );
+			} elseif ( 'missing_export_settings' === $result->get_error_code() ) {
+				// The push's own words, once eBay's refusal for a missing
+				// identifier is not sent again (3.30.3 fix round 2): eBay did
+				// answer.
+				$message = $result->get_error_message();
 			} else {
 				/* translators: %s: why */
 				$message = sprintf( __( 'The check did not get an answer from eBay: %s', 'tcgiant-sync' ), $result->get_error_message() );

@@ -82,6 +82,8 @@ class TCGiant_Sync_Exporter {
 	// verified on the shop's own site.
 	public function settle_motors( array $settings, $new_listing ) { return $settings; }
 	public static function on_listing_site( array $settings, callable $call ) { return $call(); }
+	// eBay refused nothing for a product identifier here (3.30.3 fix round 1).
+	public function identifier_resend( $product, $settings, $response ) { return null; }
 }
 
 require $ROOT . '/includes/class-tcgiant-sync-api.php';

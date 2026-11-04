@@ -1056,6 +1056,16 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 				<?php // The eBay price rule and tax (3.29.0). ?>
 				<?php TCGiant_Sync_Ebay_Price::render_settings_fields( is_array( $settings ) ? $settings : array() ); ?>
 
+				<!-- A product with no UPC, EAN or ISBN (3.30.3) -->
+				<div class="tc-field">
+					<label class="tc-label"><?php esc_html_e( 'Products With No UPC, EAN or ISBN', 'tcgiant-sync' ); ?></label>
+					<div class="tc-radio-group">
+						<label><input type="radio" name="tcgiant_sync_ebay_settings[export_identifier_unavailable]" value="1" <?php checked( $settings['export_identifier_unavailable'] ?? '1', '1' ); ?>> <?php esc_html_e( 'When a product has no UPC, EAN or ISBN and its eBay category requires one, send eBay\'s "Does not apply"', 'tcgiant-sync' ); ?></label>
+						<label><input type="radio" name="tcgiant_sync_ebay_settings[export_identifier_unavailable]" value="0" <?php checked( $settings['export_identifier_unavailable'] ?? '1', '0' ); ?>> <?php esc_html_e( 'Do not push it: say what is missing', 'tcgiant-sync' ); ?></label>
+					</div>
+					<p class="tc-hint"><?php esc_html_e( 'eBay refuses a new listing with no product identifier in a category that requires one. "Does not apply" is eBay\'s own wording for your eBay site (for example "Nicht zutreffend" on eBay Germany), as eBay gives it. Use it only for products that really have no barcode: a product\'s UPC, EAN or ISBN goes on its eBay tab (or in WooCommerce\'s GTIN field) and is always sent instead. A product can also be marked as having none on its eBay tab, whatever this says. If eBay refuses a new listing for a missing identifier all the same, this decides whether it is sent once more with "Does not apply". Updates and relists of listings already on eBay send no identifier.', 'tcgiant-sync' ); ?></p>
+				</div>
+
 				<!-- Package weight and size -->
 				<div class="tc-field">
 					<label class="tc-label"><?php esc_html_e( 'Send Package Weight and Size to eBay?', 'tcgiant-sync' ); ?></label>

@@ -644,7 +644,15 @@ class Recording_eBay extends TCGiant_Sync_API {
 			return ( $c[1] ?? null ) === (string) $item_id;
 		} ) );
 	}
+	// The two metadata reads a new listing's product identifiers make
+	// (3.30.3): kept apart from the calls, and answered as eBay does for a
+	// category it says nothing of, as template-world.php plays them.
+	public $lookups = array();
 	public function trading_api_request( $call_name, $xml_body, $allow_retry = true, $max_body_bytes = 0 ) {
+		if ( in_array( $call_name, array( 'GetCategoryFeatures', 'GeteBayDetails' ), true ) ) {
+			$this->lookups[] = $call_name;
+			return array( 'Ack' => 'Success' );
+		}
 		$this->calls[] = array( $call_name );
 		return new WP_Error( 'harness', 'unexpected eBay call ' . $call_name );
 	}

@@ -227,6 +227,8 @@ function get_transient( $name ) {
 }
 function set_transient( $name, $value, $expiry = 0 ) {
 	$GLOBALS['W']['transients'][ $name ] = $value;
+	// How long it was kept for, for a harness to read (3.30.3 fix round 2).
+	$GLOBALS['W']['expiry'][ $name ] = $expiry;
 	return true;
 }
 function delete_transient( $name ) {
@@ -490,13 +492,27 @@ require $ROOT . '/includes/class-tcgiant-sync-template-starters.php';
  * eBay, played: no category aspects, so names go out as they are, and every
  * Trading call recorded and answered from $answers (by call name) or with a
  * new item number.
+ *
+ * The two metadata reads a push makes for its product identifiers (3.30.3),
+ * GetCategoryFeatures and GeteBayDetails, are kept apart in $lookups, each
+ * as array( "Call@site", body ), and answered from $lookup_answers by
+ * "Call@site", then by call, else with no node and no text - a category
+ * eBay says nothing of - so $calls stays the listing calls a push made
+ * before 3.30.3; test-product-identifiers.php asserts the reads.
  */
 class Template_World_API extends TCGiant_Sync_API {
-	public $aspects = array();
-	public $calls   = array();
-	public $answers = array();
+	public $aspects        = array();
+	public $calls          = array();
+	public $answers        = array();
+	public $lookups        = array();
+	public $lookup_answers = array();
 	public function get_category_aspects( $category_id ) { return $this->aspects; }
 	public function trading_api_request( $call_name, $xml_body, $allow_retry = true, $max_body_bytes = 0 ) {
+		if ( in_array( $call_name, array( 'GetCategoryFeatures', 'GeteBayDetails' ), true ) ) {
+			$at              = $call_name . '@' . $this->request_site_id();
+			$this->lookups[] = array( $at, $xml_body );
+			return $this->lookup_answers[ $at ] ?? ( $this->lookup_answers[ $call_name ] ?? array( 'Ack' => 'Success' ) );
+		}
 		$this->calls[] = array( $call_name, $xml_body );
 		return $this->answers[ $call_name ] ?? array( 'Ack' => 'Success', 'ItemID' => '110000000001' );
 	}

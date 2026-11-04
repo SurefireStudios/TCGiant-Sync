@@ -16,6 +16,12 @@ if ( ! class_exists( 'TCGiant_Sync_Ebay_Price', false ) ) {
 	require_once dirname( __DIR__ ) . '/includes/class-tcgiant-sync-ebay-price.php';
 }
 
+// The product identifier fields on a product's eBay tab and its variations
+// (3.30.3).
+if ( ! class_exists( 'TCGiant_Sync_Identifiers', false ) ) {
+	require_once dirname( __DIR__ ) . '/includes/class-tcgiant-sync-identifiers.php';
+}
+
 /**
  * TCGiant_Sync_Admin class
  */
@@ -72,6 +78,9 @@ class TCGiant_Sync_Admin {
 			'gpsr_manufacturer_address', 'gpsr_eu_responsible',
 			// The eBay price rule and tax (3.29.0, TCGiant_Sync_Ebay_Price).
 			'ebay_price_rule', 'ebay_price_percent', 'ebay_price_fixed', 'ebay_price_rounding', 'ebay_price_tax',
+			// eBay's "Does not apply" for a product with no identifier (3.30.3,
+			// TCGiant_Sync_Identifiers::SETTING).
+			'export_identifier_unavailable',
 		),
 	);
 
@@ -2050,6 +2059,9 @@ class TCGiant_Sync_Admin {
 
 		// And its eBay price (3.29.0).
 		TCGiant_Sync_Ebay_Price::save_posted( $product_id, $_POST, 'override_ebay_price' );
+
+		// And its product identifier (3.30.3).
+		TCGiant_Sync_Identifiers::save_posted( $product_id, $_POST );
 
 		// Pre-push validation: check all requirements BEFORE queuing.
 		// This gives the user instant feedback instead of async error discovery.
@@ -4720,6 +4732,11 @@ class TCGiant_Sync_Admin {
 		if ( $product ) {
 			TCGiant_Sync_Ebay_Price::render_product_section( $product );
 		}
+
+		// == PRODUCT IDENTIFIER: its UPC, EAN or ISBN, or none (3.30.3) ==
+		if ( $product ) {
+			TCGiant_Sync_Identifiers::render_product_section( $product );
+		}
 		?>
 
 		<?php // == STEP 5: ITEM SPECIFICS ==
@@ -5869,6 +5886,9 @@ class TCGiant_Sync_Admin {
 		// And its eBay price (3.29.0).
 		TCGiant_Sync_Ebay_Price::save_posted( $product_id, $_POST, 'override_ebay_price' );
 
+		// And its product identifier (3.30.3).
+		TCGiant_Sync_Identifiers::save_posted( $product_id, $_POST );
+
 		// Settled as a new listing's, which Verify checks (3.28.9): an eBay
 		// Motors category is verified on eBay Motors.
 		$settings = $exporter->settle_motors( $exporter->get_export_settings( $product_id ), true );
@@ -5906,12 +5926,24 @@ class TCGiant_Sync_Admin {
 		// for anything fixed-price, variations above all, which VerifyAddItem
 		// ignores. Verify checks a new listing, so the choice is made as for one,
 		// from the format this product would be listed in now.
-		$full_xml = '<Item>' . "\n" . $item_xml . "\n" . '</Item>';
-		$api      = TCGiant_Sync_API::instance();
-		$fixed    = $exporter->uses_fixed_price_calls( $product, $settings, '' );
-		$result   = TCGiant_Sync_Exporter::on_listing_site( $settings, function () use ( $api, $fixed, $full_xml ) {
-			return $fixed ? $api->verify_add_fixed_price_item( $full_xml ) : $api->verify_add_item( $full_xml );
-		} );
+		$api    = TCGiant_Sync_API::instance();
+		$fixed  = $exporter->uses_fixed_price_calls( $product, $settings, '' );
+		$verify = function ( $item ) use ( $api, $fixed, $settings ) {
+			$full_xml = '<Item>' . "\n" . $item . "\n" . '</Item>';
+			return TCGiant_Sync_Exporter::on_listing_site( $settings, function () use ( $api, $fixed, $full_xml ) {
+				return $fixed ? $api->verify_add_fixed_price_item( $full_xml ) : $api->verify_add_item( $full_xml );
+			} );
+		};
+		$result = $verify( $item_xml );
+
+		// eBay's refusal for a missing UPC, EAN or ISBN alone (3.30.3 fix
+		// round 1): learnt, and checked once more with "Does not apply".
+		$resend = $exporter->identifier_resend( $product, $settings, $result );
+		if ( is_wp_error( $resend ) ) {
+			$result = $resend;
+		} elseif ( null !== $resend ) {
+			$result = $verify( $resend );
+		}
 
 		if ( is_wp_error( $result ) ) {
 			wp_send_json_error( array( 'message' => $result->get_error_message() ) );

@@ -1145,6 +1145,80 @@ class TCGiant_Sync_API {
 	}
 
 	/**
+	 * Which product identifiers a category takes on an eBay site (3.30.3):
+	 * GetCategoryFeatures' UPCEnabled, EANEnabled and ISBNEnabled - Disabled,
+	 * Enabled or Required - for the category itself (AllFeaturesForCategory,
+	 * so eBay gives each even where it is the site's), and the site's
+	 * defaults (SiteDefaults) for one its node leaves out. None known for a
+	 * category eBay's answer has no node for. eBay has deprecated the call
+	 * and maps these to getItemAspectsForCategory, which
+	 * TCGiant_Sync_Identifiers reads too. A read, cached by the caller.
+	 *
+	 * @param string $category_id eBay category.
+	 * @param string $site_id     X-EBAY-API-SITEID: the listing's site.
+	 * @return array<string,string>|WP_Error EAN, ISBN, UPC => Disabled, Enabled, Required or ''.
+	 */
+	public function get_identifier_features( $category_id, $site_id ) {
+		$category_id = (string) $category_id;
+		$xml         = '<CategoryID>' . esc_xml( $category_id ) . '</CategoryID>' . "\n"
+			. '<AllFeaturesForCategory>true</AllFeaturesForCategory>' . "\n"
+			. '<ViewAllNodes>true</ViewAllNodes>' . "\n"
+			. '<DetailLevel>ReturnAll</DetailLevel>' . "\n"
+			. '<FeatureID>UPCEnabled</FeatureID>' . "\n"
+			. '<FeatureID>EANEnabled</FeatureID>' . "\n"
+			. '<FeatureID>ISBNEnabled</FeatureID>';
+
+		$answer = $this->with_site( (string) $site_id, function () use ( $xml ) {
+			return $this->trading_api_request( 'GetCategoryFeatures', $xml );
+		} );
+		if ( is_wp_error( $answer ) ) {
+			return $answer;
+		}
+
+		$nodes = $answer['Category'] ?? array();
+		if ( is_array( $nodes ) && isset( $nodes['CategoryID'] ) ) {
+			$nodes = array( $nodes );
+		}
+		$mine = null;
+		foreach ( (array) $nodes as $node ) {
+			if ( is_array( $node ) && self::scalar_value( $node['CategoryID'] ?? '' ) === $category_id ) {
+				$mine = $node;
+				break;
+			}
+		}
+
+		$defaults = is_array( $answer['SiteDefaults'] ?? null ) ? $answer['SiteDefaults'] : array();
+		$out      = array();
+		foreach ( array( 'EAN', 'ISBN', 'UPC' ) as $type ) {
+			$says         = null === $mine ? '' : self::scalar_value( $mine[ $type . 'Enabled' ] ?? ( $defaults[ $type . 'Enabled' ] ?? '' ) );
+			$out[ $type ] = in_array( $says, array( 'Disabled', 'Enabled', 'Required' ), true ) ? $says : '';
+		}
+
+		return $out;
+	}
+
+	/**
+	 * eBay's own text for "this product has no identifier" on an eBay site
+	 * (3.30.3): GeteBayDetails' ProductDetails.ProductIdentifierUnavailableText,
+	 * "the actual text that should be passed into the relevant product
+	 * identifier fields", which "will vary based on the listing site". ''
+	 * when eBay gives none. A read, cached by the caller.
+	 *
+	 * @param string $site_id X-EBAY-API-SITEID: the listing's site.
+	 * @return string|WP_Error
+	 */
+	public function get_identifier_unavailable_text( $site_id ) {
+		$answer = $this->with_site( (string) $site_id, function () {
+			return $this->trading_api_request( 'GeteBayDetails', '<DetailName>ProductDetails</DetailName>' );
+		} );
+		if ( is_wp_error( $answer ) ) {
+			return $answer;
+		}
+
+		return trim( self::scalar_value( $answer['ProductDetails']['ProductIdentifierUnavailableText'] ?? '' ) );
+	}
+
+	/**
 	 * The eBay account these credentials belong to.
 	 *
 	 * Cached for a day. Used to prove that a listing somebody is linking a

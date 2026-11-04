@@ -3781,6 +3781,14 @@ class TCGiant_Sync_Mapper {
 			'unbranded',
 			'-',
 			'0',
+			// eBay's own "Does not apply" on its other sites, which a push
+			// sends since 3.30.3 (TCGiant_Sync_Identifiers::UNAVAILABLE_TEXT).
+			'nicht zutreffend',
+			'non applicable',
+			'non applicabile',
+			'no aplicable',
+			'niet van toepassing',
+			'nie dotyczy',
 		);
 
 		return in_array( $normalised, $placeholders, true );

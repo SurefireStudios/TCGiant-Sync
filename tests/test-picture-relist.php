@@ -89,6 +89,10 @@ class Relist_API extends Template_World_API {
 		return $this->refuse[ basename( $file_path ) ] ?? eps( (int) preg_replace( '/\D/', '', basename( $file_path ) ) );
 	}
 	public function trading_api_request( $call_name, $xml_body, $allow_retry = true, $max_body_bytes = 0 ) {
+		// The identifiers' metadata reads (3.30.3) are template-world's.
+		if ( in_array( $call_name, array( 'GetCategoryFeatures', 'GeteBayDetails' ), true ) ) {
+			return parent::trading_api_request( $call_name, $xml_body, $allow_retry, $max_body_bytes );
+		}
 		$this->calls[] = array( $call_name, $xml_body );
 		preg_match( '#<ItemID>(\d+)</ItemID>#', (string) $xml_body, $m );
 		$id = $m[1] ?? '';

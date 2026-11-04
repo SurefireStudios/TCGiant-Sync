@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.30.2
+Stable tag: 3.30.3
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -143,6 +143,14 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.30.3 - 2026-11-04 =
+* NEW: Product identifiers. A new listing, and Verify, now send eBay each product's UPC, EAN or ISBN. Enter it on the product's eBay tab under Product Identifier (UPC, EAN, ISBN), or in each variation's "eBay UPC, EAN or ISBN" field under Variations. Where that is empty, WooCommerce's own GTIN, UPC, EAN or ISBN field is sent (WooCommerce 9.2 and later). Which one it is is told by its digits - 12 a UPC, 13 an EAN, 13 starting 978 or 979 an ISBN - or chosen on the eBay tab. A 14-digit GTIN is none of the three eBay takes: it is not sent, the product counts as having none, and the log says so once.
+* NEW: "Products With No UPC, EAN or ISBN" (Settings, Push to eBay Settings). eBay refuses a new listing with no product identifier in a category that requires one ("The UPC field is missing"). TCGiant Sync now asks eBay which identifiers a category requires and, unless you choose otherwise, sends eBay's own "Does not apply" for a product that has none, in the words of your eBay site - "Nicht zutreffend" on eBay Germany, for example - so the listing goes up. Choose "Do not push it" and such a push is refused before it reaches eBay, saying what is missing. A product ticked "This product has no UPC, EAN or ISBN" on its eBay tab is sent "Does not apply" whatever the setting says.
+* If eBay still refuses a new listing, or Verify, because a UPC, EAN or ISBN is missing ("The UPC field is missing"), TCGiant Sync now sends it once more with eBay's "Does not apply" for the identifier eBay named, as the setting allows, and remembers for a week that the category needs one, so the next product there goes up first time. This works even where eBay will not say in advance what a category requires. The log line gives each of eBay's errors with its severity.
+* Updates and relists of listings already on eBay send no UPC, EAN or ISBN, as before. An identifier you add to a product that is already listed reaches eBay when you type it into the listing on eBay, or with a new listing.
+* The identifier is sent as yours: eBay is told not to replace your title, description, item specifics or photos with those of a product in its catalogue. A UPC, EAN or ISBN you already send as an item specific (a product attribute, or one typed under Item Specifics) is sent as before, and counts as the product's.
+* Where eBay cannot say in advance what a category requires, nothing is sent the first time, and eBay's own refusal decides, as above. Asking costs one eBay call a week for each category you list a product with no identifier in - one a day while eBay does not answer it, and none once eBay has refused a listing there for a missing identifier - and one a week for your eBay site's "Does not apply".
 
 = 3.30.2 - 2026-11-04 =
 * FIX: A shop that keeps listing new items in the categories it imports no longer pays one extra eBay call in every sync to look up those new listings' categories. For a day, the ordinary sync remembers what it found out about new listings - from that look-up, or from asking eBay about each - and skips the look-up while it keeps finding nothing to leave out. As soon as new listings it asks about one at a time turn out to be ones it leaves out, it looks the rest up together again. Renewals are looked up as before, so the savings of 3.30.1 stay.
@@ -1614,6 +1622,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.30.3 =
+New listings now send eBay each product's UPC, EAN or ISBN, from its eBay tab or WooCommerce's GTIN field: if you keep anything else in that field, check it before your next push. Where an eBay category requires an identifier and a product has none, a new listing sends eBay's own "Does not apply" unless you choose otherwise in Settings, Push to eBay Settings. Updates and relists of listings already on eBay are sent as before: an identifier added to a product already listed reaches eBay when you type it into the listing on eBay, or with a new listing.
 
 = 3.30.0 =
 Inventory pruning now runs after every full sync that finishes on its own and reads all your eBay listings cleanly - on most shops, after the weekly full sync - including on shops where it never has. It asks eBay about each product whose listing the full sync did not see, about 300 eBay calls an hour and no more than about 7,500 per full sync, and changes a product only to match eBay: stock is only ever lowered, never raised, to what the listing has left, live or ended; a listing eBay no longer has, or won't describe, is marked ended with its stock unchanged; a sold-out product goes to the trash only if "Remove products when their eBay listing sells out?" is Yes (the default), never one pushed from here or in a preserved category. Nothing at all changes if more than 20% of your eBay-linked products would need checking. Its first run may settle many products whose listings ended while nothing was watching: see TCGiant Sync > Logs.

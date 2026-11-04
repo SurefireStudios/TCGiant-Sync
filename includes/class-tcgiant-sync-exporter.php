@@ -35,6 +35,11 @@ if ( ! class_exists( 'TCGiant_Sync_Motors', false ) ) {
 	require_once __DIR__ . '/class-tcgiant-sync-motors.php';
 }
 
+// The product identifiers a push sends, and eBay's "Does not apply" (3.30.3).
+if ( ! class_exists( 'TCGiant_Sync_Identifiers', false ) ) {
+	require_once __DIR__ . '/class-tcgiant-sync-identifiers.php';
+}
+
 /**
  * TCGiant_Sync_Exporter class
  */
@@ -147,6 +152,37 @@ class TCGiant_Sync_Exporter {
 	 * @var WP_Error|null
 	 */
 	private $price_refused = null;
+
+	/**
+	 * Why the item the last build_item_xml() made may not be sent for its
+	 * product identifiers (3.30.3): its category requires one, the product
+	 * has none, and neither the shop's setting nor the product sends eBay's
+	 * "Does not apply" (TCGiant_Sync_Identifiers::plan()). Given by every
+	 * check after a build, as the price's is (description_too_long()).
+	 *
+	 * @var WP_Error|null
+	 */
+	private $identifier_refused = null;
+
+	/**
+	 * The product identifiers the last build_item_xml() put in its item
+	 * (TCGiant_Sync_Identifiers::plan()), for identifier_resend() (3.30.3 fix
+	 * round 1).
+	 *
+	 * @var array
+	 */
+	private $last_identifiers = array();
+
+	/**
+	 * The item specifics eBay defines for each category this push has read,
+	 * by site, tree and category (3.30.3): what
+	 * find_missing_required_aspects() read, so the identifiers' requirement
+	 * (TCGiant_Sync_Identifiers::required_types()) asks no second time.
+	 * Begun afresh by each push.
+	 *
+	 * @var array
+	 */
+	private $aspects_read = array();
 
 	/*
 	 * Kept for anyone outside the plugin who reached for these here.
@@ -1702,6 +1738,7 @@ class TCGiant_Sync_Exporter {
 		$this->card_said    = array();
 		$this->build_for    = 'Push';
 		$this->read_missed  = null;
+		$this->aspects_read = array();
 
 		$settings = $this->get_export_settings( $product->get_id() );
 
@@ -2245,6 +2282,23 @@ class TCGiant_Sync_Exporter {
 			$response = self::on_listing_site( $settings, function () use ( $api, $fixed_price, $full_xml ) {
 				return $fixed_price ? $api->add_fixed_price_item( $full_xml ) : $api->add_item( $full_xml );
 			} );
+
+			// eBay refused it only for a missing UPC, EAN or ISBN (3.30.3 fix
+			// round 1): learnt for the category, and the item sent once more
+			// with eBay's "Does not apply" for what it named - with a UUID of
+			// its own, the first having made nothing. The setting off: the
+			// push's own words instead (identifier_resend()).
+			$resend = $this->identifier_resend( $product, $settings, $response );
+			if ( is_wp_error( $resend ) ) {
+				$response = $resend;
+			} elseif ( null !== $resend ) {
+				$full_xml = '<Item>' . "\n" . '<UUID>' . TCGiant_Sync_API::generate_ebay_uuid() . '</UUID>' . "\n"
+					. ( '' !== $mark ? '<ApplicationData>' . $mark . '</ApplicationData>' . "\n" : '' )
+					. $resend . "\n" . '</Item>';
+				$response = self::on_listing_site( $settings, function () use ( $api, $fixed_price, $full_xml ) {
+					return $fixed_price ? $api->add_fixed_price_item( $full_xml ) : $api->add_item( $full_xml );
+				} );
+			}
 
 			// eBay listed nothing, so the product stays on its ended listing,
 			// and keeps that listing's site from the answer read above, as
@@ -3335,6 +3389,8 @@ class TCGiant_Sync_Exporter {
 		$this->prices_sent   = array();
 		$this->price_refused = null;
 		$price               = TCGiant_Sync_Ebay_Price::for_product( $product );
+		// And why its identifiers may not go (3.30.3), decided below.
+		$this->identifier_refused = null;
 		// How many to offer.
 		//
 		// When the shop tracks stock, that figure decides it, floored at 1 so
@@ -3519,10 +3575,26 @@ class TCGiant_Sync_Exporter {
 
 		// ItemSpecifics: the product's WooCommerce attributes, plus the
 		// configured grading/coin fields.
-		$item_specifics_xml = $this->build_item_specifics_xml( $product, $settings );
+		$specifics_map      = $this->build_specifics_map( $product, $settings );
+		$item_specifics_xml = $this->build_item_specifics_xml( $product, $settings, $specifics_map );
 		if ( ! empty( $item_specifics_xml ) ) {
 			$xml .= $item_specifics_xml . "\n";
 		}
+
+		// The product's UPC, EAN or ISBN, and eBay's own "Does not apply"
+		// where its category requires one and it has none (3.30.3): on a new
+		// listing and Verify only; an Update sends none, as before
+		// (TCGiant_Sync_Identifiers::plan(), fix round 1). A variation
+		// listing's go with each variation, below.
+		$identifiers = TCGiant_Sync_Identifiers::plan( $product, $settings, $revise ? 'revise' : 'new', $specifics_map, function () use ( $settings ) {
+			return $this->aspects_for_identifiers( $settings );
+		} );
+		$this->last_identifiers = $identifiers;
+		$this->say_identifiers( $product, $settings, $identifiers );
+		if ( '' !== $identifiers['refused'] ) {
+			$this->identifier_refused = new WP_Error( 'missing_export_settings', $identifiers['refused'] );
+		}
+		$xml .= TCGiant_Sync_Identifiers::item_xml( $identifiers );
 
 		// Derive Country, Currency, and Site from the configured marketplace.
 		$marketplace = TCGiant_Sync_API::instance()->get_marketplace_config();
@@ -3622,6 +3694,7 @@ class TCGiant_Sync_Exporter {
 					$xml .= "\t\t\t</NameValueList>\n";
 				}
 				$xml .= "\t\t</VariationSpecifics>\n";
+				$xml .= TCGiant_Sync_Identifiers::variation_xml( $identifiers, $child_id );
 				$xml .= "\t</Variation>\n";
 			}
 			$xml .= "</Variations>\n";
@@ -4537,6 +4610,147 @@ class TCGiant_Sync_Exporter {
 	}
 
 	/**
+	 * When eBay refused a new listing, or its Verify, only for a missing UPC,
+	 * EAN or ISBN (TCGiant_Sync_Identifiers::refused_for(), 3.30.3 fix round
+	 * 1): eBay's word is kept for the category on the listing's site a week
+	 * (TCGiant_Sync_Identifiers::learn()), and the item built again, which
+	 * now sends eBay's "Does not apply" for what eBay named where the product
+	 * has none - when the shop's setting or the product's own choice says so.
+	 *
+	 * Asked once, right after the build that was refused, so a push sends
+	 * the item once more at most. Nothing again for any other refusal, nor
+	 * where the build adds nothing (the product has an identifier of its
+	 * own, or "Does not apply" went already): eBay's answer stands. With the
+	 * setting off and the product not ticked, the push's own refusal before
+	 * eBay (TCGiant_Sync_Identifiers::plan()) is given instead of eBay's, as
+	 * the next push in the category will give it.
+	 *
+	 * @param WC_Product $product  The product.
+	 * @param array      $settings The settings the refused item was built with.
+	 * @param mixed      $response eBay's answer to it.
+	 * @return string|WP_Error|null The item to send again (inside <Item>), the
+	 *                              refusal to give instead, or null.
+	 */
+	public function identifier_resend( WC_Product $product, array $settings, $response ) {
+		$types = TCGiant_Sync_Identifiers::refused_for( $response );
+		if ( ! $types ) {
+			// eBay named a missing identifier beside another error: not sent
+			// again, and said with each error's severity and code (fix round
+			// 2), so a live test shows what eBay's answer held.
+			if ( TCGiant_Sync_Identifiers::mentions_missing( $response ) ) {
+				TCGiant_Sync_Logger::log( sprintf(
+					'%1$s: eBay refused WC #%2$d (%3$s), and not only for a missing UPC, EAN or ISBN, so it was not sent again.',
+					$this->build_for,
+					$product->get_id(),
+					TCGiant_Sync_Identifiers::errors_said( $response )
+				) );
+			}
+			return null;
+		}
+		$before = (array) ( $this->last_identifiers['unavailable']['types'] ?? array() );
+		TCGiant_Sync_Identifiers::learn( TCGiant_Sync_Identifiers::lookup_site( $settings ), (string) ( $settings['category_id'] ?? '' ), $types );
+
+		$item_xml = $this->build_item_xml( $product, $settings );
+		$refused  = $this->description_too_long();
+		if ( $refused ) {
+			return $refused;
+		}
+		$now   = (array) ( $this->last_identifiers['unavailable'] ?? array() );
+		$added = array_values( array_diff( array_intersect( $types, (array) ( $now['types'] ?? array() ) ), $before ) );
+		if ( ! $added ) {
+			return null;
+		}
+
+		TCGiant_Sync_Logger::log( sprintf(
+			'%1$s: eBay refused WC #%2$d for a missing %3$s (%5$s), so it was sent once more with eBay\'s own "%4$s" for it.',
+			$this->build_for,
+			$product->get_id(),
+			implode( ' and ', $added ),
+			(string) ( $now['text'] ?? '' ),
+			TCGiant_Sync_Identifiers::errors_said( $response )
+		) );
+
+		return $item_xml;
+	}
+
+	/**
+	 * Which of category_aspects()' answers a settings array asks for: the
+	 * site the listing goes to, the category's tree, and the category.
+	 *
+	 * @param array $settings Merged export settings.
+	 * @return string
+	 */
+	private static function aspects_key( array $settings ) {
+		return (string) ( $settings['_request_site'] ?? '' ) . '|' . (string) ( $settings['category_tree'] ?? '' ) . '|' . (string) ( $settings['category_id'] ?? '' );
+	}
+
+	/**
+	 * The category's item specifics for its product identifiers' requirement
+	 * (3.30.3): as this push read them already, or read now.
+	 *
+	 * @param array $settings Merged export settings.
+	 * @return array|WP_Error
+	 */
+	private function aspects_for_identifiers( array $settings ) {
+		$key = self::aspects_key( $settings );
+		if ( ! array_key_exists( $key, $this->aspects_read ) ) {
+			$this->aspects_read[ $key ] = self::category_aspects( $settings );
+		}
+		return $this->aspects_read[ $key ];
+	}
+
+	/**
+	 * Say, once a build, what a product's identifiers came to (3.30.3): eBay's
+	 * "Does not apply" sent for one its category requires, and a value that
+	 * is no UPC, EAN or ISBN by its digits, which is not sent; and, once a
+	 * product, a 14-digit GTIN, which is not sent either (fix round 2).
+	 *
+	 * @param WC_Product $product     The product.
+	 * @param array      $settings    Merged export settings.
+	 * @param array      $identifiers TCGiant_Sync_Identifiers::plan()'s.
+	 */
+	private function say_identifiers( WC_Product $product, array $settings, array $identifiers ) {
+		$id = $product->get_id();
+		if ( $identifiers['unavailable'] && empty( $this->card_said[ 'gtin:' . $id ] ) ) {
+			$this->card_said[ 'gtin:' . $id ] = true;
+			$slots = (array) ( $identifiers['unavailable']['slots'] ?? array() );
+			TCGiant_Sync_Logger::log( sprintf(
+				'%1$s: %2$s no UPC, EAN or ISBN, and eBay requires %3$s in category %4$s, so eBay\'s own "%5$s" was sent for it.',
+				$this->build_for,
+				$slots ? sprintf( 'variation%1$s #%2$s of WC #%3$d %4$s', count( $slots ) > 1 ? 's' : '', implode( ', #', $slots ), $id, count( $slots ) > 1 ? 'have' : 'has' ) : sprintf( 'WC #%d has', $id ),
+				implode( ' and ', (array) $identifiers['unavailable']['types'] ),
+				(string) ( $settings['category_id'] ?? '' ),
+				(string) $identifiers['unavailable']['text']
+			) );
+		}
+		// A 14-digit GTIN, none of eBay's types: not sent, and the product
+		// taken as having none (fix round 2). Said once a product, a month.
+		foreach ( (array) ( $identifiers['gtin14'] ?? array() ) as $slot => $value ) {
+			if ( ! TCGiant_Sync_Identifiers::gtin14_unsaid( $slot ? (int) $slot : $id, (string) $value ) ) {
+				continue;
+			}
+			TCGiant_Sync_Logger::warning( sprintf(
+				'%1$s: the GTIN "%2$s" of %3$s has 14 digits, which is none of eBay\'s UPC, EAN or ISBN, so it is not sent and the product is taken as having none: enter its 12-digit UPC or 13-digit EAN under Product Identifier on the product\'s eBay tab.',
+				$this->build_for,
+				$value,
+				$slot ? sprintf( 'variation #%1$d of WC #%2$d', $slot, $id ) : sprintf( 'WC #%d', $id )
+			) );
+		}
+		foreach ( (array) $identifiers['unread'] as $slot => $value ) {
+			if ( ! empty( $this->card_said[ 'gtin-unread:' . $id . ':' . $slot ] ) ) {
+				continue;
+			}
+			$this->card_said[ 'gtin-unread:' . $id . ':' . $slot ] = true;
+			TCGiant_Sync_Logger::warning( sprintf(
+				'%1$s: the product identifier "%2$s" of %3$s is not a UPC, EAN or ISBN by its digits, so it was not sent to eBay: choose which it is under Product Identifier on the product\'s eBay tab.',
+				$this->build_for,
+				$value,
+				$slot ? sprintf( 'variation #%1$d of WC #%2$d', $slot, $id ) : sprintf( 'WC #%d', $id )
+			) );
+		}
+	}
+
+	/**
 	 * What is wrong with the category and condition an imported listing
 	 * would have after its revise (3.28.8), when the revise sends either:
 	 * the one sent, and eBay's own for the other, which eBay keeps. The pair
@@ -5215,6 +5429,10 @@ class TCGiant_Sync_Exporter {
 	 * checked against the category it is in on eBay (3.28.8): its settings
 	 * carry it. See checks_aspects() for the one that is not checked.
 	 *
+	 * Not a required UPC, EAN or ISBN (3.30.3): the product identifier sends
+	 * it, or eBay's "Does not apply", or the build refuses the push for it
+	 * (TCGiant_Sync_Identifiers::plan()); an Update leaves eBay's as it is.
+	 *
 	 * @param WC_Product $product  Product being listed.
 	 * @param array      $settings Merged export settings.
 	 * @return string[] Names of required aspects with no value. Empty when fine.
@@ -5226,6 +5444,8 @@ class TCGiant_Sync_Exporter {
 		}
 
 		$aspects = self::category_aspects( $settings );
+		// Kept for the build's identifiers (3.30.3), which ask no second time.
+		$this->aspects_read[ self::aspects_key( $settings ) ] = $aspects;
 		if ( is_wp_error( $aspects ) || empty( $aspects ) ) {
 			// Never block a push because eBay's metadata call failed — that
 			// would turn an eBay outage into an inability to list anything.
@@ -5243,6 +5463,12 @@ class TCGiant_Sync_Exporter {
 				continue;
 			}
 			$key = self::normalize_aspect_name( $aspect['name'] );
+			// A UPC, EAN or ISBN is the product identifier's to send, or
+			// eBay's "Does not apply", or to refuse for (3.30.3): not an item
+			// specific to add as an attribute.
+			if ( in_array( $key, array( 'upc', 'ean', 'isbn' ), true ) ) {
+				continue;
+			}
 			if ( ! isset( $provided[ $key ] ) || '' === trim( (string) $provided[ $key ] ) ) {
 				$missing[] = $aspect['name'];
 			}
@@ -5645,12 +5871,16 @@ class TCGiant_Sync_Exporter {
 	/**
 	 * Build <ItemSpecifics> XML for the listing.
 	 *
-	 * @param WC_Product $product  Product being listed.
-	 * @param array      $settings Merged export settings.
+	 * @param WC_Product $product   Product being listed.
+	 * @param array      $settings  Merged export settings.
+	 * @param array|null $specifics build_specifics_map()'s, when the caller
+	 *                              has it (3.30.3).
 	 * @return string XML, or '' when there is nothing to send.
 	 */
-	private function build_item_specifics_xml( WC_Product $product, array $settings ) {
-		$specifics = $this->build_specifics_map( $product, $settings );
+	private function build_item_specifics_xml( WC_Product $product, array $settings, $specifics = null ) {
+		if ( ! is_array( $specifics ) ) {
+			$specifics = $this->build_specifics_map( $product, $settings );
+		}
 
 		if ( empty( $specifics ) ) {
 			return '';
@@ -6810,13 +7040,19 @@ class TCGiant_Sync_Exporter {
 	 *
 	 * Every build is checked here before it can be sent, so its price is
 	 * too (3.29.0): one the eBay price rule, tax or an eBay price of its own
-	 * made below TCGiant_Sync_Ebay_Price::MIN_PRICE stops it first.
+	 * made below TCGiant_Sync_Ebay_Price::MIN_PRICE stops it first. And a
+	 * new listing with no product identifier where its category requires
+	 * one, which the shop does not send "Does not apply" for (3.30.3).
 	 *
 	 * @return WP_Error|null
 	 */
 	public function description_too_long() {
 		if ( $this->price_refused ) {
 			return $this->price_refused;
+		}
+		// And its product identifiers (3.30.3).
+		if ( $this->identifier_refused ) {
+			return $this->identifier_refused;
 		}
 		$chars = (int) ( $this->last_render['chars'] ?? 0 );
 		if ( $chars <= 500000 || ! empty( $this->last_render['plain'] ) ) {
