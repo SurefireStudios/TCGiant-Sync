@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.30.1
+Stable tag: 3.30.2
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -143,6 +143,11 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.30.2 - 2026-11-04 =
+* FIX: A shop that keeps listing new items in the categories it imports no longer pays one extra eBay call in every sync to look up those new listings' categories. For a day, the ordinary sync remembers what it found out about new listings - from that look-up, or from asking eBay about each - and skips the look-up while it keeps finding nothing to leave out. As soon as new listings it asks about one at a time turn out to be ones it leaves out, it looks the rest up together again. Renewals are looked up as before, so the savings of 3.30.1 stay.
+* When the weekly full sync cannot start because an earlier full sync stopped part way, with no progress for 30 minutes and nothing of it waiting to run, it is now tried again every hour, as when the ordinary sync turns it away, until the scheduled sync has carried the stopped one on - on a shop syncing twice daily or daily, after its next run. A full sync that is still running counts as that week's, as before, and so does one that finishes while the weekly one waits. If the stopped one is the shop's first full sync, which nothing can carry on, or the scheduled sync has still not carried it on an hour after its next run, it is not tried again: Fetch Inventory starts a new one.
+* If eBay keeps refusing the list of listings while its other calls work, the ordinary sync now stops asking for that list after two refusals in a row. When the other calls fail too in the same sync, the list is kept for when eBay is back, as before.
 
 = 3.30.1 - 2026-11-04 =
 * FIX: A shop that imports only some categories no longer spends an eBay call on each changed listing it then leaves out, when eBay renews many of its listings at once. eBay's list of changes does not say a listing's category, so the ordinary sync asked eBay about every changed listing it did not remember, only to skip most of them. It remembered a listing's categories for 8 days after a full sync read them, but eBay renews a Good 'Til Cancelled listing once a month, so a shop's monthly renewals cost a call a listing whenever the weekly full sync had not read them in the last 8 days - as on every shop until its first full sync since 3.28.4. On one shop that was over 4,600 calls in a day, for 8 imports, out of the daily allowance every TCGiant Sync shop shares. The ordinary sync now reads eBay's own list of the listings that end at the same times as those changed listings, up to 200 listings a call, for their categories. It reads on through a run of end times only while the changed listings found there save more calls than its pages cost, so each run of end times costs at most one call more than asking about each listing, and a monthly renewal costs a call per 200 listings rather than one each. It asks eBay about a listing on its own, as before, when the listing is already imported here, when it is in a category you import, or when the list did not say everything your import settings judge it by.

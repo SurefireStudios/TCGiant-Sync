@@ -202,7 +202,16 @@ class TCGiant_Sync_Cron {
 
 		TCGiant_Sync_Logger::log( 'Weekly full sync: trying again, as it was turned away.' );
 
+		// When it was first turned away: a completion below deletes it.
+		$since = (int) get_option( TCGiant_Sync_Importer::WEEKLY_RETRY_OPTION, 0 );
+
 		TCGiant_Sync_Importer::complete_sync( 'poll' );
+
+		// A full sync that has completed since then - the one that seemed
+		// dead, say, or the one just completed - was the week's (3.30.2).
+		if ( TCGiant_Sync_Importer::weekly_full_done( $since ) ) {
+			return;
+		}
 
 		$result = TCGiant_Sync_Importer::instance()->start_full_sync();
 

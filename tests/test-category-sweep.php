@@ -1226,7 +1226,7 @@ run_again();
 run_again();
 $tcg_kept = array( lists(), plan_of( 'page' ), logs_with( 'for their categories could not be read' ), logs_with( 'Delta sync: paused at eBay item' ) );
 unset( $EBAY['list_answer'], $EBAY['item_answer'] );
-check( 'eBay out of reach for the list and GetItem alike, three runs: each pauses the window, which starts the count again - the plan kept', $tcg_kept, array( 3, array( 1 ), 0, 3 ) );
+check( 'eBay out of reach for the list and GetItem alike, three runs: each run\'s listings met the same failure, so it is not counted - the plan kept, as in 3.30.1 (3.30.2 fix round 1)', $tcg_kept, array( 3, array( 1 ), 0, 3 ) );
 
 echo "\n   A run that waits for a page, or goes on past the memory stop, ends Action Scheduler's run in its request\n";
 shop( $STORE_111 );
@@ -1289,6 +1289,335 @@ $early = '799000000001';                                                        
 TCGiant_Sync_Category_Memory::note( ebay_has( $early, 111, $T + 2 * 119 + 1 ) );   // ...remembered, the filter takes it, on the last page
 delta( ids_of( array_merge( array( $early ), $b ) ) );
 check( 'a remembered row the filter takes, its end on a page still to read: it does not wait - its GetItem, and its import, this run', array( get_items(), saved_ids(), logs_with( 'the rest wait for eBay' ) ), array( array( $early ), array( $early ), 1 ) );
+
+// ---------------------------------------------------------------------------
+echo "\nS12. 3.30.2: ranges of new listings judged by the last day's; the failure count; another site's rows\n";
+
+/** $n new listings (started ten minutes ago) in store category $cat, ending $step seconds apart from $start. */
+function new_burst( $base, $n, $cat, $start, $step = 2 ) {
+	$ids = array();
+	for ( $i = 0; $i < $n; $i++ ) {
+		$ids[] = (string) ( $base + $i );
+		ebay_has( end( $ids ), $cat, $start + $i * $step, array( 'ListingDetails' => array( 'StartTime' => gmdate( 'Y-m-d\TH:i:s.000\Z', time() - 600 ) ) ) );
+	}
+	return $ids;
+}
+function tally() { return get_option( TCGiant_Sync_Importer::SWEEP_TALLY_OPTION, 'none' ); }
+
+echo "\n   A shop that keeps listing in the categories it imports: one page a day, not one a window\n";
+shop( $STORE_111 );
+$tcg_auto  = array();
+$ON_UPDATE = function ( $n, $v, $a ) use ( &$tcg_auto ) { if ( TCGiant_Sync_Importer::SWEEP_TALLY_OPTION === $n ) { $tcg_auto[] = $a; } };
+$tcg_w     = array();
+for ( $w = 0; $w < 3; $w++ ) {
+	$b = new_burst( 800000000000 + $w * 1000, 3, 111, $T + $w * 3600 );
+	delta( ids_of( $b ) );
+	$tcg_w[] = array( lists(), count( get_items() ), count( saved_ids() ) );
+}
+check( 'three windows of 3 new listings the filter takes: the first reads its page, the next two none - a GetItem each, all imported', $tcg_w, array( array( 1, 3, 3 ), array( 0, 3, 3 ), array( 0, 3, 3 ) ) );
+$ON_UPDATE = null;
+$tcg_t     = tally();
+check( '  the tally: 9 answered (3 by the page, 6 by GetItem), none left out, since now; never autoloaded', array( array_slice( (array) $tcg_t, 0, 2 ), abs( (int) ( $tcg_t[2] ?? 0 ) - time() ) <= 2, array_values( array_unique( $tcg_auto ) ) ), array( array( 9, 0 ), true, array( false ) ) );
+check( '  under the memory\'s prefix, which uninstall sweeps', 0 === strpos( TCGiant_Sync_Importer::SWEEP_TALLY_OPTION, TCGiant_Sync_Category_Memory::OPTION_PREFIX ), true );
+$b = burst( 801000000000, 5, 222, $T + 5 * 3600 );
+delta( ids_of( $b ) );
+check( '  then a renewal of 5 the filter leaves out: not judged by the tally - read, no GetItem', array( lists(), count( get_items() ) ), array( 1, 0 ) );
+$b = new_burst( 802000000000, 5, 222, $T + 7 * 3600 );
+delta( ids_of( $b ) );
+$tcg_one = array( lists(), get_items(), logs_with( 'Delta: of 1 new listings asked about with GetItem, the filter left out 1, so the other 4 that end with them wait for eBay\'s list of listings, read next.' ), logs_with( 'listing(s) done this run; the rest wait' ) );
+to_the_end();
+check( '  5 new listings it leaves out: held by it (5 x 1 < 2 x 11); the first one\'s GetItem says left out, so the other 4 wait for the page (3.30.2 fix round 1)', $tcg_one, array( 0, array( $b[0] ), 1, 1 ) );
+check( '    which the next run reads: one page and one GetItem in all, the tally learning from both', array( lists(), count( get_items() ), array_slice( (array) tally(), 0, 2 ) ), array( 1, 1, array( 14, 5 ) ) );
+$b = new_burst( 803000000000, 10, 222, $T + 9 * 3600 );
+delta( ids_of( $b ) );
+check( '  10 more: read at once, on what the tally has learnt (10 x 6 >= 2 x 16)', array( lists(), count( get_items() ), array_slice( (array) tally(), 0, 2 ) ), array( 1, 0, array( 24, 15 ) ) );
+$b = array_merge( new_burst( 804000000000, 2, 111, $T + 11 * 3600 ), burst( 804100000000, 1, 111, $T + 11 * 3600 + 10 ) );
+update_option( TCGiant_Sync_Importer::SWEEP_TALLY_OPTION, array( 30, 0, time() - 60 ) );
+delta( ids_of( $b ) );
+check( '  a range that is not all new listings is not judged by the tally: read', lists(), 1 );
+$b = array_merge( burst( 804200000000, 1, 111, $T + 12 * 3600 ), new_burst( 804300000000, 2, 111, $T + 12 * 3600 + 10 ) );
+update_option( TCGiant_Sync_Importer::SWEEP_TALLY_OPTION, array( 30, 0, time() - 60 ) );
+delta( ids_of( $b ) );
+check( '  nor one whose renewal ends first: read', lists(), 1 );
+foreach ( array( 4 => 1, 2 => 0 ) as $days => $want ) {
+	$b = array();
+	for ( $i = 0; $i < 3; $i++ ) {
+		$b[] = (string) ( 804400000000 + $days * 100 + $i );
+		ebay_has( end( $b ), 111, $T + 13 * 3600 + $days * 600 + 2 * $i, array( 'ListingDetails' => array( 'StartTime' => gmdate( 'Y-m-d\TH:i:s.000\Z', time() - $days * DAY_IN_SECONDS ) ) ) );
+	}
+	update_option( TCGiant_Sync_Importer::SWEEP_TALLY_OPTION, array( 30, 0, time() - 60 ) );
+	delta( ids_of( $b ) );
+	check( '  listings started ' . $days . ' days ago: ' . ( $want ? 'not new listings - read' : 'new listings - held by the tally, no page' ), lists(), $want );
+}
+
+shop( $STORE_111 );
+update_option( TCGiant_Sync_Importer::SWEEP_TALLY_OPTION, array( 300, 0, time() - 60 ) );
+$b = new_burst( 805000000000, 43, 111, $T );
+delta( ids_of( $b ) );
+to_the_end();
+check( 'the tally counts as at most 20 answered rows: 43 new listings it takes, left to GetItem (43 < 2 x 22)', array( lists(), count( get_items() ) ), array( 0, 43 ) );
+shop( $STORE_111 );
+update_option( TCGiant_Sync_Importer::SWEEP_TALLY_OPTION, array( 300, 0, time() - 60 ) );
+$b = new_burst( 806000000000, 44, 111, $T );
+delta( ids_of( $b ) );
+check( '  44: its first page tried, whatever the day said', lists(), 1 );
+shop( $STORE_111 );
+update_option( TCGiant_Sync_Importer::SWEEP_TALLY_OPTION, array( 300, 150, time() - 60 ) );
+$b = new_burst( 807000000000, 4, 111, $T );
+delta( ids_of( $b ) );
+check( '  its share kept: 300 answered, 150 left out, counts as 20 and 10 - 4 rows tried (4 x 11 = 2 x 22)', lists(), 1 );
+foreach ( array( 'a day old' => time() - TCGiant_Sync_Importer::SWEEP_TALLY_SECONDS, 'dated ahead' => time() + 600 ) as $label => $since ) {
+	shop( $STORE_111 );
+	update_option( TCGiant_Sync_Importer::SWEEP_TALLY_OPTION, array( 30, 0, $since ) );
+	$b = new_burst( 808000000000, 3, 111, $T );
+	delta( ids_of( $b ) );
+	$tcg_t = tally();
+	check( 'a tally ' . $label . ': not heeded - the page read; the tally begun again from now', array( lists(), array_slice( (array) $tcg_t, 0, 2 ), abs( (int) ( $tcg_t[2] ?? 0 ) - time() ) <= 2 ), array( 1, array( 3, 0 ), true ) );
+}
+shop( $STORE_111 );
+update_option( TCGiant_Sync_Importer::SWEEP_TALLY_OPTION, array( 30, 0, time() - TCGiant_Sync_Importer::SWEEP_TALLY_SECONDS + 60 ) );
+$b = new_burst( 809000000000, 3, 111, $T );
+delta( ids_of( $b ) );
+check( '  a minute short of a day: heeded', lists(), 0 );
+foreach ( array( 'not a list' => 'junk', 'two values' => array( 1, 2 ) ) as $label => $junk ) {
+	shop( $STORE_111 );
+	update_option( TCGiant_Sync_Importer::SWEEP_TALLY_OPTION, $junk );
+	$b = new_burst( 809100000000, 3, 111, $T );
+	delta( ids_of( $b ) );
+	check( '  a tally that is ' . $label . ': passed over, the page read', lists(), 1 );
+}
+shop( $STORE_111 );
+$tcg_w = array();
+for ( $w = 0; $w < 3; $w++ ) {
+	$b = new_burst( 810000000000 + $w * 1000, 3, 222, $T + $w * 3600 );
+	delta( ids_of( $b ) );
+	$tcg_w[] = array( lists(), count( get_items() ) );
+}
+check( 'a shop whose new listings the filter leaves out: every window reads its page, as before', $tcg_w, array( array( 1, 0 ), array( 1, 0 ), array( 1, 0 ) ) );
+shop( $STORE_111 );
+$EBAY['per_page'] = 2;
+update_option( TCGiant_Sync_Importer::SWEEP_TALLY_OPTION, array( 1, 0, time() - 60 ) );
+$b = new_burst( 811000000000, 8, 222, $T );
+$LATE = 100;   // a page a run
+delta( ids_of( $b ) );
+run_again();
+$LATE = 0;
+$tcg_t = tally();
+check( 'a page a run: each run adds what its page answered to the tally', array( lists(), array_slice( (array) $tcg_t, 0, 2 ) ), array( 2, array( 5, 4 ) ) );
+
+shop( $STORE_111 );
+$EBAY['per_page'] = 4;
+update_option( TCGiant_Sync_Importer::SWEEP_TALLY_OPTION, array( 1, 0, time() - 60 ) );
+$tcg_a = new_burst( 815000000000, 20, 111, $T );          // range A, read first: the filter takes them
+$tcg_b = new_burst( 815100000000, 16, 222, $T + 7200 );   // range B: it leaves them out
+$LATE  = 100;   // a page a run
+delta( ids_of( array_merge( $tcg_a, $tcg_b ) ) );
+$tcg_one = lists();
+run_again();
+$LATE = 0;
+check( 'the tally taken once a window: range B judged by it as the window began (16 x 1 >= 2 x 7), not again with A\'s answers in it - begun', array( $tcg_one, lists(), $EBAY['ranges'][1][0] ?? null ), array( 1, 2, $T + 7200 - 60 ) );
+shop( $STORE_111 );
+$tcg_r = new_burst( 816000000000, 20, 222, $T );
+$EBAY['list_answer'] = array( 'Ack' => 'Success', 'ItemArray' => array( 'Item' => array_map( function ( $id ) { $i = $GLOBALS['EBAY']['items'][ $id ]['Item']; return array( 'ItemID' => $id, 'PrimaryCategory' => $i['PrimaryCategory'], 'Storefront' => $i['Storefront'] ); }, array_slice( $tcg_r, 0, 4 ) ) ), 'PaginationResult' => array( 'TotalNumberOfPages' => '3' ) );
+delta( ids_of( $tcg_r ) );
+unset( $EBAY['list_answer'] );
+check( 'the same listings on every page (eBay\'s pages shifting): each counted once - the tally says 4, not 12', array( lists(), array_slice( (array) tally(), 0, 2 ) ), array( 3, array( 4, 4 ) ) );
+
+shop( $STORE_111 );
+update_option( TCGiant_Sync_Importer::SWEEP_TALLY_OPTION, array( 30, 0, time() - 60 ) );
+$tcg_b = new_burst( 817000000000, 20, 222, $T );          // new listings the filter leaves out: held by the tally
+$tcg_a = burst( 817100000000, 5, 222, $T + 7200 );        // a renewal after it, read - and refused
+$EBAY['list_answer'] = new WP_Error( 'api_error', 'Input data for tag <GranularityLevel> is invalid or missing.' );
+delta( ids_of( array_merge( $tcg_b, $tcg_a ) ) );
+unset( $EBAY['list_answer'] );
+to_the_end();
+check( 'a held range when eBay then refuses the list: let go with the plan - its rows\' GetItem answers bring no page back', array( lists(), count( get_items() ) ), array( 1, 25 ) );
+shop( $STORE_111 );
+update_option( TCGiant_Sync_Importer::SWEEP_TALLY_OPTION, array( 30, 0, time() - 60 ) );
+$tcg_r = array();
+for ( $i = 0; $i < 10; $i++ ) {   // 8 the filter takes, then 2 it leaves out, by ItemID
+	$tcg_r[] = (string) ( 818000000000 + $i );
+	ebay_has( end( $tcg_r ), $i < 8 ? 111 : 222, $T + 2 * $i, array( 'ListingDetails' => array( 'StartTime' => gmdate( 'Y-m-d\TH:i:s.000\Z', time() - 600 ) ) ) );
+}
+delta( ids_of( $tcg_r ) );
+to_the_end();
+check( 'a held range whose rows the filter mostly takes, its 2 left out last: never let go - a GetItem each, no page', array( lists(), count( get_items() ), array_slice( (array) tally(), 0, 2 ) ), array( 0, 10, array( 40, 2 ) ) );
+
+shop( $STORE_111 );
+update_option( TCGiant_Sync_Importer::SWEEP_TALLY_OPTION, array( 30, 0, time() - 60 ) );
+$tcg_r = array();
+foreach ( array( 'own', 'own', 'known', 'new', 'new', 'new' ) as $i => $kind ) {   // by ItemID
+	$tcg_r[] = (string) ( 819000000000 + $i );
+	ebay_has( end( $tcg_r ), 'new' === $kind ? 222 : 111, $T + 2 * $i, 'new' === $kind ? array( 'ListingDetails' => array( 'StartTime' => gmdate( 'Y-m-d\TH:i:s.000\Z', time() - 600 ) ) ) : array() );
+	if ( 'own' === $kind ) {
+		product( 960 + $i, end( $tcg_r ), 1 );
+	} elseif ( 'known' === $kind ) {
+		TCGiant_Sync_Category_Memory::note( $GLOBALS['EBAY']['items'][ end( $tcg_r ) ]['Item'] );
+	}
+}
+delta( ids_of( $tcg_r ) );
+to_the_end();
+check( 'a held range of 3 new listings it leaves out, behind 2 with a product here and 1 remembered, all taken: those 3 not counted - the first new one lets the other 2 wait for the page', array( lists(), count( get_items() ) ), array( 1, 4 ) );
+
+shop( $STORE_111 );
+$EBAY['per_page'] = 4;
+update_option( TCGiant_Sync_Importer::SWEEP_TALLY_OPTION, array( 30, 0, time() - 60 ) );
+$tcg_r = new_burst( 820000000000, 9, 222, $T );   // 3 pages: 4, 4 and 1
+delta( ids_of( $tcg_r ) );
+to_the_end();
+check( 'a held range of 9 let go after its first row: read for the other 8 only - after 2 pages, 1 row left is not worth the third', array( lists(), get_items() ), array( 2, array( $tcg_r[0], $tcg_r[8] ) ) );
+
+echo "\n   A plan dropped drops its held ranges, whichever way (3.30.2 fix round 2)\n";
+/**
+ * A window of $ren renewals the filter leaves out (lower ItemIDs, read: the
+ * plan), then 20 new listings it leaves out two hours on (held by a tally
+ * of 30 taken). The ItemIDs of the renewals come first, so the held rows
+ * are asked about only after the plan is dropped.
+ */
+function held_window( $base, $ren = 5, $per = 200 ) {
+	shop( $GLOBALS['STORE_111'] );
+	$GLOBALS['EBAY']['per_page'] = $per;
+	update_option( TCGiant_Sync_Importer::SWEEP_TALLY_OPTION, array( 30, 0, time() - 60 ) );
+	$r = burst( $base, $ren, 222, $GLOBALS['T'] );
+	$n = new_burst( $base + 1000, 20, 222, $GLOBALS['T'] + 7200 );
+	return array_merge( $r, $n );
+}
+function held_now() { $p = get_option( TCGiant_Sync_Importer::DELTA_PROGRESS_OPTION ); return is_array( $p ) ? count( (array) ( $p['sweep_held'] ?? array() ) ) : -1; }
+
+$b = held_window( 821000000000, 5, 4 );   // the renewals' range: 2 pages
+$LATE = 100;   // a page a run
+delta( ids_of( $b ) );
+$tcg_was = held_now();
+$p = get_option( TCGiant_Sync_Importer::DELTA_PROGRESS_OPTION );
+$p['sweep_reading'] = 1;   // the next run killed reading a page
+update_option( TCGiant_Sync_Importer::DELTA_PROGRESS_OPTION, $p );
+run_again();
+$tcg_now = held_now();
+$LATE = 0;
+to_the_end();
+check( 'killed reading a page: the plan dropped, its held range with it - no page for the new listings after', array( $tcg_was, $tcg_now, lists() ), array( 1, 0, 1 ) );
+
+$b = held_window( 822000000000 );
+$EBAY['list_answer'] = new WP_Error( 'http_request_failed', 'cURL error 28: Operation timed out' );
+$LATE = 100;
+delta( ids_of( $b ) );
+$tcg_was = held_now();
+run_again();
+$tcg_now = held_now();
+unset( $EBAY['list_answer'] );
+$LATE = 0;
+to_the_end();
+check( 'two failures of the list alone: the plan dropped, its held range with it - no page after', array( $tcg_was, $tcg_now, lists() ), array( 1, 0, 2 ) );
+
+$b = held_window( 823000000000, 9, 4 );   // the renewals' range: 3 pages
+$LATE = 100;
+delta( ids_of( $b ) );
+$tcg_was = held_now();
+$CAN_IMPORT = false;
+run_again();
+$tcg_now = held_now();
+$LATE = 0;
+check( 'the free limit reached: the plan dropped, its held range with it', array( $tcg_was, $tcg_now ), array( 1, 0 ) );
+$CAN_IMPORT = true;
+
+$b = held_window( 824000000000 );
+$EBAY['list_answer'] = array( 'Ack' => 'Success', 'ItemArray' => array( 'Item' => array_map( function ( $id ) { return array( 'ItemID' => $id, 'Storefront' => array( 'StoreCategoryID' => '222' ) ); }, array_slice( $b, 0, 5 ) ) ) );
+$LATE = 100;
+delta( ids_of( $b ) );
+$tcg_now = held_now();
+$LATE = 0;
+to_the_end();
+unset( $EBAY['list_answer'] );
+check( 'a page that keeps nothing: the plan dropped, its held range with it - no page after', array( $tcg_now, lists() ), array( 0, 1 ) );
+
+shop( $STORE_111 );
+$tcg_a = burst( 825000000000, 20, 111, $T );          // renewals the filter takes, read first
+$tcg_b = burst( 825100000000, 3, 222, $T + 7200 );    // renewals it leaves out, skipped by the window rule
+delta( ids_of( array_merge( $tcg_a, $tcg_b ) ) );
+to_the_end();
+check( 'a range of renewals the window rule skips is not held: its rows go to GetItem, and their answers bring no page', array( lists(), count( get_items() ) ), array( 1, 23 ) );
+
+echo "\n   The failure count after a pause\n";
+shop( $STORE_111 );
+$b = burst( 812000000000, 6, 222, $T );
+$EBAY['list_answer'] = new WP_Error( 'rate_limited', 'Internal error to the application.', array( 'Errors' => array( 'ErrorCode' => '10007' ) ) );
+$EBAY['item_answer'] = new WP_Error( 'http_request_failed', 'cURL error 28: Operation timed out' );
+delta( ids_of( $b ) );
+run_again();
+run_again();
+$tcg_kept = array( lists(), plan_of( 'page' ), logs_with( 'could not be read 2 times in a row (Internal error to the application.)' ) );
+unset( $EBAY['list_answer'], $EBAY['item_answer'] );
+check( 'the list failing (10007) while GetItem times out and pauses the window, every run: the run\'s listings failed too - not counted, the plan kept (the coordinator\'s ruling)', $tcg_kept, array( 3, array( 1 ), 0 ) );
+foreach ( array(
+	'calls'     => new WP_Error( 'rate_limited', 'Daily API call budget exhausted. Will resume tomorrow.', array( 'daily_budget' => true ) ),
+	'the token' => new WP_Error( 'no_token', 'No valid eBay token.' ),
+) as $label => $tcg_err ) {
+	shop( $STORE_111 );
+	$b = burst( 813000000000, 6, 222, $T );
+	$EBAY['list_answer'] = new WP_Error( 'http_request_failed', 'cURL error 28: Operation timed out' );
+	$LATE = 100;
+	delta( ids_of( $b ) );   // the list times out: one; GetItem answers
+	$EBAY['list_answer'] = $EBAY['item_answer'] = $tcg_err;
+	run_again();   // not counted, and the window pauses for it
+	$tcg_mid = ( get_option( TCGiant_Sync_Importer::DELTA_PROGRESS_OPTION )['sweep_fails'] ?? 0 );
+	$EBAY['list_answer'] = new WP_Error( 'http_request_failed', 'cURL error 28: Operation timed out' );
+	unset( $EBAY['item_answer'] );
+	run_again();   // a timeout again: one, not two
+	$LATE = 0;
+	unset( $EBAY['list_answer'] );
+	check( 'a timeout, then a pause for ' . $label . ', then a timeout: the pause started the count again - the plan kept', array( $tcg_mid, plan_of( 'page' ), get_option( TCGiant_Sync_Importer::DELTA_PROGRESS_OPTION )['sweep_fails'] ?? 0 ), array( 0, array( 1 ), 1 ) );
+}
+foreach ( array(
+	'invalid XML' => new WP_Error( 'invalid_xml', 'eBay sent an answer that could not be read.' ),
+	'eBay\'s 10007' => new WP_Error( 'rate_limited', 'Internal error to the application.', array( 'Errors' => array( 'ErrorCode' => '10007' ) ) ),
+) as $label => $tcg_err ) {
+	shop( $STORE_111 );
+	$b = burst( 813100000000, 6, 222, $T );
+	$EBAY['list_answer'] = new WP_Error( 'http_request_failed', 'cURL error 28: Operation timed out' );
+	$LATE = 100;
+	delta( ids_of( $b ) );   // the list times out: one; GetItem answers
+	$EBAY['item_answer'] = $tcg_err;
+	run_again();   // the list times out again, and GetItem fails otherwise: the list's own, so two
+	$LATE = 0;
+	unset( $EBAY['list_answer'], $EBAY['item_answer'] );
+	check( 'a list timeout, then a list timeout with GetItem pausing the window for ' . $label . ': an outage of any passing kind for both - the second not counted, the plan kept (the coordinator\'s ruling)', array( lists(), plan_of( 'page' ), get_option( TCGiant_Sync_Importer::DELTA_PROGRESS_OPTION )['sweep_fails'] ?? 0, logs_with( 'could not be read 2 times in a row' ) ), array( 2, array( 1 ), 1, 0 ) );
+}
+foreach ( array(
+	'invalid XML' => new WP_Error( 'invalid_xml', 'eBay sent an answer that could not be read.' ),
+	'eBay\'s 10007' => new WP_Error( 'rate_limited', 'Internal error to the application.', array( 'Errors' => array( 'ErrorCode' => '10007' ) ) ),
+) as $label => $tcg_err ) {
+	shop( $STORE_111 );
+	$b = burst( 813200000000, 6, 222, $T );
+	$EBAY['list_answer'] = new WP_Error( 'http_request_failed', 'cURL error 28: Operation timed out' );
+	$LATE = 100;
+	delta( ids_of( $b ) );   // the list times out: one; GetItem answers
+	$EBAY['list_answer'] = new WP_Error( 'rate_limited', 'Daily API call budget exhausted. Will resume tomorrow.', array( 'daily_budget' => true ) );
+	$EBAY['item_answer'] = $tcg_err;
+	run_again();   // the list out of calls: not counted; GetItem pauses the window for something else
+	$tcg_mid = ( get_option( TCGiant_Sync_Importer::DELTA_PROGRESS_OPTION )['sweep_fails'] ?? 0 );
+	$EBAY['list_answer'] = new WP_Error( 'http_request_failed', 'cURL error 28: Operation timed out' );
+	unset( $EBAY['item_answer'] );
+	run_again();   // a timeout again: two
+	$LATE = 0;
+	unset( $EBAY['list_answer'] );
+	check( 'a timeout, a pause for ' . $label . ', a timeout: that pause does not start the count again - two, and the plan goes', array( $tcg_mid, plan_of( 'page' ) ), array( 1, array() ) );
+}
+
+echo "\n   Another site's rows on a range's pages are not counted as the plan's\n";
+shop( $STORE_111 + array( 'import_sites' => 'primary', 'marketplace' => 'EBAY_US' ) );
+$EBAY['per_page'] = 4;
+$tcg_r = array();
+$tcg_n = 0;
+foreach ( array( 'UK', 'UK', 'UK', 'US', 'UK', 'UK', 'UK', 'US' ) as $site ) {
+	$tcg_r[] = (string) ( 814000000000 + $tcg_n );
+	ebay_has( end( $tcg_r ), 'UK' === $site ? 222 : 111, $T + 2 * $tcg_n++, array( 'Site' => $site ) );
+}
+for ( $i = 0; $i < 18; $i++ ) {
+	$tcg_r[] = (string) ( 814000000000 + $tcg_n );
+	ebay_has( end( $tcg_r ), 111, $T + 2 * $tcg_n++ );
+}
+delta( ids_of( $tcg_r ) );
+check( 'a range of 20 rows the filter takes, its first pages 3 in 4 another site\'s, left out: page 1 only - those not counted as saved', array( lists(), false !== strpos( summary(), '6 left out (on other eBay sites)' ) ), array( 1, true ) );
 
 // ---------------------------------------------------------------------------
 echo "\nTHE CODE\n";

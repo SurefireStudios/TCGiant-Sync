@@ -378,8 +378,12 @@ class TCGiant_Sync_Importer {
 	 * plan goes and its rows are asked about with GetItem, as before
 	 * (3.30.1). The list alone can fail that way - eBay's 10007 on it, a
 	 * proxy's timeouts - while GetItem answers. Out of calls, or no token,
-	 * is not counted: GetItem meets the same, and the window waits for it.
-	 * Nor is a failure in a run whose window then pauses for one.
+	 * is not counted: GetItem meets the same, and the window waits for it;
+	 * a window that pauses for either starts the count again (3.30.2: not
+	 * a pause for anything else). Nor is a failure in a run whose listings
+	 * then paused the window for a passing failure of any kind - eBay, or
+	 * the way to it, out for both (3.30.2, as 3.30.1): it is counted once
+	 * the run's listings are done (run_delta_events()).
 	 */
 	const SWEEP_FAILS_MAX = 2;
 
@@ -399,6 +403,41 @@ class TCGiant_Sync_Importer {
 
 	/** Most bands kept (3.30.1), the latest. See SWEEP_BANDS_OPTION. */
 	const SWEEP_BANDS_MAX = 20;
+
+	/**
+	 * What the pages of ranges of new listings (SWEEP_NEW_SECONDS) answered,
+	 * carried from window to window for SWEEP_TALLY_SECONDS (3.30.2): the
+	 * window's rows they answered, how many of those the filter left out, and
+	 * since when. A shop that keeps listing in the categories it imports had
+	 * each window read the first page of its new listings, which saved
+	 * nothing, every window: a page an hour, or four. A window takes it once,
+	 * at most SWEEP_TALLY_ROWS of it, for the ranges of new listings it has
+	 * not begun. The GetItem answers of a range it held back teach it too
+	 * (3.30.2 fix round 1): it learnt only from pages, so a day begun with
+	 * new listings the filter takes held back every later range of new
+	 * listings it leaves out. A tally of new listings left out reads, at
+	 * most, the first page of a range of new listings the window's own
+	 * answers would have skipped: one page a range. Under the category
+	 * memory's prefix, which uninstall sweeps. Never autoloaded.
+	 */
+	const SWEEP_TALLY_OPTION = 'tcgiant_sync_category_memory_sweep_tally';
+
+	/** A day (3.30.2). See SWEEP_TALLY_OPTION. */
+	const SWEEP_TALLY_SECONDS = 86400;
+
+	/**
+	 * The most answered rows the carried tally counts as, its share kept
+	 * (3.30.2): a range of new listings of more than twice this many still
+	 * has its first page read, whatever the last day said.
+	 */
+	const SWEEP_TALLY_ROWS = 20;
+
+	/**
+	 * A range is of new listings when eBay says each of its rows started
+	 * within this many seconds (3.30.2): three days. A renewal keeps the
+	 * listing's first start, so renewals are never judged by the tally.
+	 */
+	const SWEEP_NEW_SECONDS = 259200;
 
 	/**
 	 * Most rows a delta run settles past the host-memory stop (3.30.1, the
@@ -2318,6 +2357,12 @@ class TCGiant_Sync_Importer {
 		// stopped the run to wait for the plan's pages.
 		$past_guard   = 0;
 		$waiting      = false;
+		// What held ranges' GetItem answers said, for the tally, and whether
+		// one of them was let go back to its page this run (3.30.2 fix
+		// round 1).
+		$held_asked   = 0;
+		$held_saved   = 0;
+		$unheld       = false;
 
 		// The categories the batch's GetItem answers carry, written once, after
 		// it, rather than once for each: by fetch_delta_events(), however this
@@ -2530,7 +2575,7 @@ class TCGiant_Sync_Importer {
 						// every run moves the plan on. Not a listing with a
 						// product here: its change - a sale, say - is read
 						// now, as before.
-						if ( null === $known && $swept['pages'] > 0 && self::sweep_covers( $progress['sweep'] ?? array(), $ebay_item )
+						if ( null === $known && ( $swept['pages'] > 0 || $unheld ) && self::sweep_covers( $progress['sweep'] ?? array(), $ebay_item )
 							&& ! ( $row_product ? $row_product : self::find_live_product_for_item( $item_id ) ) ) {
 							$waiting = true;
 							$current = null;
@@ -2547,6 +2592,13 @@ class TCGiant_Sync_Importer {
 						}
 						$ebay_rows++;
 
+						// A new listing in a range held back by the tally,
+						// with no product here (3.30.2 fix round 1).
+						$held_at = null === $known ? self::sweep_held_at( $progress['sweep_held'] ?? array(), $ebay_item ) : -1;
+						if ( $held_at >= 0 && ( $row_product ? $row_product : self::find_live_product_for_item( $item_id ) ) ) {
+							$held_at = -1;
+						}
+
 						TCGiant_Sync_Runtime::stage( 'asking eBay for its category (GetItem)' );
 						$full_for_filter = TCGiant_Sync_API::instance()->get_item( $item_id );
 						if ( ! is_wp_error( $full_for_filter ) && isset( $full_for_filter['Item'] ) ) {
@@ -2560,6 +2612,17 @@ class TCGiant_Sync_Importer {
 							$primary_cat = $ebay_item['PrimaryCategory']['CategoryID'] ?? '';
 							$store_cat1  = $ebay_item['Storefront']['StoreCategoryID'] ?? '';
 							$store_cat2  = $ebay_item['Storefront']['StoreCategory2ID'] ?? '';
+
+							// What it says goes into the tally; and once its
+							// range's answers so far show the filter leaving
+							// out enough of the rest for a page to save two
+							// calls, the rest wait for that page.
+							if ( $held_at >= 0 ) {
+								$left_out = ! self::category_filter_takes( $primary_cat, $store_cat1, $store_cat2, $standard_cats, $valid_custom_ids, $ebay_item['PrimaryCategory']['CategoryName'] ?? '' );
+								$held_asked++;
+								$held_saved += $left_out ? 1 : 0;
+								$unheld = self::weigh_held( $progress, $held_at, $left_out ) || $unheld;
+							}
 						} else {
 							// Could not find out. Letting it through is the safer
 							// error: a product that should have been filtered is
@@ -2855,6 +2918,33 @@ class TCGiant_Sync_Importer {
 		self::$slice_in_flight = false;
 		TCGiant_Sync_Runtime::context( '' );
 
+		// Held ranges' GetItem answers teach the tally (3.30.2 fix round 1).
+		if ( $held_asked > 0 ) {
+			self::note_sweep_tally( $held_asked, $held_saved );
+		}
+
+		// A failure of the list counts towards SWEEP_FAILS_MAX only when it
+		// was the list's own (3.30.2, the coordinator's ruling): not when the
+		// run's listings then paused the window for a passing failure of any
+		// kind - a timeout, invalid XML, eBay out of reach or out of calls -
+		// an outage shared by both, which 3.30.1 never counted either. eBay's
+		// 10007 on the list while the run's GetItem calls answer still counts.
+		$list_failed = (string) ( $swept['failed'] ?? '' );
+		$run_paused  = null !== $read_stop
+			&& in_array( (string) $read_stop['code'], array( 'out_of_calls', 'rate_limited', 'no_token', 'http_request_failed', 'invalid_xml' ), true );
+		if ( '' !== $list_failed && ! $run_paused ) {
+			$progress['sweep_fails'] = (int) ( $progress['sweep_fails'] ?? 0 ) + 1;
+			if ( (int) $progress['sweep_fails'] >= self::SWEEP_FAILS_MAX ) {
+				$progress['sweep'] = array();
+				unset( $progress['sweep_fails'], $progress['sweep_held'] );
+				TCGiant_Sync_Logger::warning( sprintf(
+					'Delta: eBay\'s list of listings for their categories could not be read %d times in a row (%s), so the rest of this window\'s changed listings are asked about one at a time with GetItem, as before.',
+					self::SWEEP_FAILS_MAX,
+					(string) ( $swept['failed_message'] ?? '' )
+				) );
+			}
+		}
+
 		$more     = $more || $handled < count( $items );
 		$progress = array_merge( $progress, array(
 			'cursor'    => $last_handled,
@@ -2888,9 +2978,14 @@ class TCGiant_Sync_Importer {
 		// hours. Not the "rate_limited" status, whose Resume button starts a
 		// full sync instead.
 		if ( null !== $read_stop ) {
-			// The run's listings met eBay's failure too: the list did not
-			// fail alone, so its count starts again (fix round 2).
-			unset( $progress['sweep_fails'] );
+			// Out of calls, or no token: the list did not fail alone, so its
+			// count starts again (3.30.1). Not for any other pause (3.30.2):
+			// a list that fails on its own, run after run, while GetItem
+			// pauses now and then for reasons of its own, still drops the
+			// plan after SWEEP_FAILS_MAX.
+			if ( in_array( (string) $read_stop['code'], array( 'out_of_calls', 'no_token' ), true ) ) {
+				unset( $progress['sweep_fails'] );
+			}
 			self::save_delta_progress( $progress );
 
 			if ( self::stop_pressed() ) {
@@ -3289,12 +3384,21 @@ class TCGiant_Sync_Importer {
 	 * @return int Seconds.
 	 */
 	public static function delta_behind_threshold() {
+		return max( DAY_IN_SECONDS, 2 * self::sync_interval_seconds() );
+	}
+
+	/**
+	 * The scheduled sync's interval, in seconds, from WP-Cron's schedules:
+	 * an hour when it is not one WP-Cron knows.
+	 *
+	 * @return int
+	 */
+	private static function sync_interval_seconds() {
 		$settings  = get_option( 'tcgiant_sync_ebay_settings', array() );
 		$interval  = is_array( $settings ) && ! empty( $settings['sync_interval'] ) ? $settings['sync_interval'] : 'tcgiant_hourly';
 		$schedules = function_exists( 'wp_get_schedules' ) ? wp_get_schedules() : array();
-		$seconds   = isset( $schedules[ $interval ]['interval'] ) ? (int) $schedules[ $interval ]['interval'] : HOUR_IN_SECONDS;
 
-		return max( DAY_IN_SECONDS, 2 * $seconds );
+		return isset( $schedules[ $interval ]['interval'] ) ? (int) $schedules[ $interval ]['interval'] : HOUR_IN_SECONDS;
 	}
 
 	/**
@@ -3500,11 +3604,19 @@ class TCGiant_Sync_Importer {
 
 		$sites_on = TCGiant_Sync_Sites::primary_only();
 		$ends     = array();
+		// The rows that are new listings (SWEEP_NEW_SECONDS, 3.30.2).
+		$new      = array();
+		$listed   = time() - self::SWEEP_NEW_SECONDS;
 
 		foreach ( $rows as $row ) {
 			$end = is_array( $row ) ? self::sweep_row_end( $row, $sites_on ) : 0;
 			if ( $end > 0 ) {
-				$ends[ TCGiant_Sync_API::scalar_value( $row['ItemID'] ?? '' ) ] = $end;
+				$item_id          = TCGiant_Sync_API::scalar_value( $row['ItemID'] ?? '' );
+				$ends[ $item_id ] = $end;
+				$start            = strtotime( TCGiant_Sync_API::scalar_value( $row['ListingDetails']['StartTime'] ?? '' ) );
+				if ( false !== $start && $start >= $listed ) {
+					$new[ $item_id ] = true;
+				}
 			}
 		}
 
@@ -3530,15 +3642,16 @@ class TCGiant_Sync_Importer {
 		$ranges = array();
 		$range  = null;
 
-		foreach ( $ends as $end ) {
+		foreach ( $ends as $item_id => $end ) {
 			if ( null === $range || $end - $range['to'] > self::SWEEP_GAP_SECONDS || $end - $range['from'] > self::SWEEP_SPAN_SECONDS ) {
 				if ( null !== $range ) {
 					$ranges[] = $range;
 				}
-				$range = array( 'from' => $end, 'to' => $end, 'rows' => 0 );
+				$range = array( 'from' => $end, 'to' => $end, 'rows' => 0, 'new' => true );
 			}
 			$range['to'] = $end;
 			$range['rows']++;
+			$range['new'] = $range['new'] && isset( $new[ $item_id ] );
 		}
 		if ( null !== $range ) {
 			$ranges[] = $range;
@@ -3565,12 +3678,16 @@ class TCGiant_Sync_Importer {
 				}
 			}
 
-			$plan[] = array(
+			$entry = array(
 				'from' => $from,
 				'to'   => $to,
 				'rows' => $range['rows'],
 				'page' => 1,
 			);
+			if ( $range['new'] ) {
+				$entry['new'] = 1;
+			}
+			$plan[] = $entry;
 		}
 
 		// The most rows first; the earliest first among equals.
@@ -3691,6 +3808,52 @@ class TCGiant_Sync_Importer {
 	}
 
 	/**
+	 * What the last day's ranges of new listings answered (SWEEP_TALLY_OPTION),
+	 * as the window rule counts it: answered rows and how many the filter left
+	 * out, at most SWEEP_TALLY_ROWS of them, the share kept (3.30.2). None when
+	 * the tally is older than SWEEP_TALLY_SECONDS, dated ahead, or not one.
+	 *
+	 * @return array asked, saved.
+	 */
+	private static function sweep_tally() {
+		$raw = get_option( self::SWEEP_TALLY_OPTION, array() );
+		if ( ! is_array( $raw ) || 3 !== count( $raw ) ) {
+			return array( 0, 0 );
+		}
+
+		list( $asked, $saved, $since ) = array_map( 'intval', array_values( $raw ) );
+		if ( $asked <= 0 || $since <= 0 || $since > time() || time() - $since >= self::SWEEP_TALLY_SECONDS ) {
+			return array( 0, 0 );
+		}
+
+		$saved = max( 0, min( $saved, $asked ) );
+		if ( $asked > self::SWEEP_TALLY_ROWS ) {
+			$saved = (int) round( $saved * self::SWEEP_TALLY_ROWS / $asked );
+			$asked = self::SWEEP_TALLY_ROWS;
+		}
+
+		return array( $asked, $saved );
+	}
+
+	/**
+	 * Add a run's answers from ranges of new listings to the tally
+	 * (SWEEP_TALLY_OPTION, 3.30.2), begun afresh once it is a day old.
+	 *
+	 * @param int $asked The window's rows the pages answered.
+	 * @param int $saved Of those, how many the filter left out.
+	 * @return void
+	 */
+	private static function note_sweep_tally( $asked, $saved ) {
+		$raw   = get_option( self::SWEEP_TALLY_OPTION, array() );
+		$tally = is_array( $raw ) && 3 === count( $raw ) ? array_map( 'intval', array_values( $raw ) ) : array();
+		if ( ! $tally || $tally[2] <= 0 || $tally[2] > time() || time() - $tally[2] >= self::SWEEP_TALLY_SECONDS ) {
+			$tally = array( 0, 0, time() );
+		}
+
+		update_option( self::SWEEP_TALLY_OPTION, array( $tally[0] + (int) $asked, $tally[1] + (int) $saved, $tally[2] ), false );
+	}
+
+	/**
 	 * Whether a row's end falls in a range of the window's plan still to be
 	 * read (3.30.1).
 	 *
@@ -3711,6 +3874,83 @@ class TCGiant_Sync_Importer {
 		}
 
 		return false;
+	}
+
+	/**
+	 * Which held range of new listings (3.30.2 fix round 1) a row's end
+	 * falls in: its index in DELTA_PROGRESS_OPTION['sweep_held'], or -1.
+	 *
+	 * @param mixed $held The held ranges.
+	 * @param array $row  The row.
+	 * @return int
+	 */
+	private static function sweep_held_at( $held, array $row ) {
+		if ( ! is_array( $held ) || ! $held ) {
+			return -1;
+		}
+
+		$end = strtotime( TCGiant_Sync_API::scalar_value( $row['ListingDetails']['EndTime'] ?? '' ) );
+		if ( false === $end ) {
+			return -1;
+		}
+
+		foreach ( $held as $at => $range ) {
+			if ( is_array( $range ) && $end >= (int) ( $range['from'] ?? 0 ) && $end <= (int) ( $range['to'] ?? 0 ) ) {
+				return (int) $at;
+			}
+		}
+
+		return -1;
+	}
+
+	/**
+	 * Count a held range's row as asked about with GetItem, and left out by
+	 * the filter or not (3.30.2 fix round 1). Once its rows answered so far
+	 * show it leaving out enough of the rest for a page to save
+	 * SWEEP_ROWS_PER_PAGE calls - rows still to come x left out >= 2 x
+	 * answered - the range goes back on the plan, first, for its rest:
+	 * read next run whatever the tally says.
+	 *
+	 * @param array $progress The delta's place.
+	 * @param int   $at       The range's index in 'sweep_held'.
+	 * @param bool  $left_out Whether the filter leaves the row out.
+	 * @return bool Whether the range went back on the plan.
+	 */
+	private static function weigh_held( array &$progress, $at, $left_out ) {
+		$range = $progress['sweep_held'][ $at ] ?? null;
+		if ( ! is_array( $range ) ) {
+			return false;
+		}
+
+		$range['asked'] = (int) ( $range['asked'] ?? 0 ) + 1;
+		$range['saved'] = (int) ( $range['saved'] ?? 0 ) + ( $left_out ? 1 : 0 );
+		$rest           = max( 0, (int) ( $range['rows'] ?? 0 ) - $range['asked'] );
+
+		if ( $range['saved'] < 1 || $rest * $range['saved'] < self::SWEEP_ROWS_PER_PAGE * $range['asked'] ) {
+			$progress['sweep_held'][ $at ] = $range;
+			return false;
+		}
+
+		array_splice( $progress['sweep_held'], $at, 1 );
+		$plan = isset( $progress['sweep'] ) && is_array( $progress['sweep'] ) ? array_values( $progress['sweep'] ) : array();
+		array_unshift( $plan, array(
+			'from'  => (int) $range['from'],
+			'to'    => (int) $range['to'],
+			'rows'  => $rest,
+			'page'  => 1,
+			'new'   => 1,
+			'tried' => 1,
+		) );
+		$progress['sweep'] = $plan;
+
+		TCGiant_Sync_Logger::log( sprintf(
+			'Delta: of %1$d new listings asked about with GetItem, the filter left out %2$d, so the other %3$d that end with them wait for eBay\'s list of listings, read next.',
+			$range['asked'],
+			$range['saved'],
+			$rest
+		) );
+
+		return true;
 	}
 
 	/**
@@ -3753,7 +3993,9 @@ class TCGiant_Sync_Importer {
 	 * page only while
 	 * - its pages so far have saved at least a GetItem each - so a range
 	 *   never costs more than one page over the GetItem calls it stands in
-	 *   for - and
+	 *   for, but where the free limit is reached after its pages were read
+	 *   (its rows with nothing here are then held back with no call), or
+	 *   PHP kills the run before its pages are written - and
 	 * - its rows not yet answered, at the share of its answered rows the
 	 *   filter left out, come to SWEEP_ROWS_PER_PAGE for each page still to
 	 *   read.
@@ -3763,15 +4005,23 @@ class TCGiant_Sync_Importer {
 	 * its rows, at the share of the window's answered rows the filter left
 	 * out - counted with one more left out and one more taken, so that a
 	 * share of none still lets a range of many rows try a page - would not
-	 * save SWEEP_ROWS_PER_PAGE GetItem calls even in one page. A row whose
-	 * end is in a range still to be read waits for it (the loop's
-	 * sweep_covers()).
+	 * save SWEEP_ROWS_PER_PAGE GetItem calls even in one page. For a range
+	 * of new listings, the last day's ranges of new listings count too
+	 * (SWEEP_TALLY_OPTION, 3.30.2). A row whose end is in a range still to
+	 * be read waits for it (the loop's sweep_covers()).
 	 *
 	 * eBay out of reach (is_passing_read_failure()): the page is read again
-	 * next run, and SWEEP_FAILS_MAX such failures in a row drop the plan; a
-	 * window that pauses for one starts the count again. Out of calls
-	 * (is_out_of_calls()), or no token, is not counted: the run's listings
-	 * meet the same and pause the window, as before. Anything else is eBay
+	 * next run, and SWEEP_FAILS_MAX such failures in a row of the list's
+	 * own drop the plan: counted by run_delta_events() once the run's
+	 * listings are done, and not when they paused the window for a passing
+	 * failure of any kind (3.30.2). Out of calls (is_out_of_calls()), or no
+	 * token, is not counted: the run's listings meet the same and pause the
+	 * window, as before, and that pause starts the count again. A range of
+	 * new listings the window rule skips is held (DELTA_PROGRESS_OPTION
+	 * 'sweep_held'): its rows' GetItem answers teach the tally, and bring it
+	 * back for its page once they show enough left out (weigh_held()). Its
+	 * cost over a page read at once is the GetItem calls before that: one,
+	 * for a range the filter leaves out whole. Anything else is eBay
 	 * refusing the question itself: the plan goes, and no window plans one
 	 * for SWEEP_RETRY_SECONDS. A run PHP kills while it reads a page hands
 	 * on at once, as one killed on a listing does, and the next run drops
@@ -3803,7 +4053,7 @@ class TCGiant_Sync_Importer {
 		// memory or time. Read again, the page could stop every run the
 		// same way, so this window asks GetItem, as before.
 		if ( ! empty( $progress['sweep_reading'] ) ) {
-			unset( $progress['sweep_reading'] );
+			unset( $progress['sweep_reading'], $progress['sweep_held'] );
 			if ( $plan ) {
 				$plan = array();
 				TCGiant_Sync_Logger::warning( 'Delta: the last run was stopped while it read eBay\'s list of listings for their categories, so the rest of this window\'s changed listings are asked about one at a time with GetItem, as before.' );
@@ -3813,6 +4063,7 @@ class TCGiant_Sync_Importer {
 		// The free limit reached since the window was planned.
 		if ( $plan && ( self::$limit_reported || ! TCGiant_Sync_Entitlements::instance()->can_import() ) ) {
 			$plan = array();
+			unset( $progress['sweep_held'] );
 		}
 
 		// What the filter may judge a listing by: see keeps_listing().
@@ -3825,10 +4076,24 @@ class TCGiant_Sync_Importer {
 		// holds: looked at once, and only for a page that does not say.
 		$has_store = null;
 
+		// A failure of the list this run that may count (3.30.2 fix round 1).
+		$failed         = '';
+		$failed_message = '';
+
 		// The window's rows its pages have answered, and how many of those
 		// the filter leaves out: what a range not yet begun is judged by.
 		$asked_all = (int) ( $progress['sweep_asked'] ?? 0 );
 		$saved_all = (int) ( $progress['sweep_saved'] ?? 0 );
+
+		// And, for a range of new listings, what the last day's ranges of
+		// new listings answered (SWEEP_TALLY_OPTION, 3.30.2): taken once a
+		// window, so the window's own answers are not counted twice.
+		if ( $plan && ! isset( $progress['sweep_seed'] ) ) {
+			$progress['sweep_seed'] = self::sweep_tally();
+		}
+		$seed      = isset( $progress['sweep_seed'] ) && is_array( $progress['sweep_seed'] ) ? array_values( $progress['sweep_seed'] ) : array( 0, 0 );
+		$new_asked = 0;
+		$new_saved = 0;
 
 		while ( ! empty( $plan ) ) {
 			if ( $pages > 0 && ( $pages >= self::SWEEP_PAGES_PER_RUN || '' !== TCGiant_Sync_Runtime::over_budget() ) ) {
@@ -3845,8 +4110,26 @@ class TCGiant_Sync_Importer {
 			// answered rows the filter left out (one more each way), would not
 			// save SWEEP_ROWS_PER_PAGE GetItem calls even in one page: left
 			// to GetItem.
-			if ( 1 === max( 1, (int) ( $range['page'] ?? 1 ) ) && $asked_all > 0
-				&& (int) ( $range['rows'] ?? 0 ) * ( $saved_all + 1 ) < self::SWEEP_ROWS_PER_PAGE * ( $asked_all + 2 ) ) {
+			$asked_by = $asked_all;
+			$saved_by = $saved_all;
+			if ( ! empty( $range['new'] ) ) {
+				$asked_by += (int) ( $seed[0] ?? 0 );
+				$saved_by += (int) ( $seed[1] ?? 0 );
+			}
+			if ( 1 === max( 1, (int) ( $range['page'] ?? 1 ) ) && $asked_by > 0 && empty( $range['tried'] )
+				&& (int) ( $range['rows'] ?? 0 ) * ( $saved_by + 1 ) < self::SWEEP_ROWS_PER_PAGE * ( $asked_by + 2 ) ) {
+				// A range of new listings is held, not dropped (3.30.2 fix
+				// round 1): its rows' GetItem answers are weighed as they
+				// come, and once they show the filter leaving enough of them
+				// out, the rest wait for its page after all (the loop).
+				if ( ! empty( $range['new'] ) ) {
+					$progress['sweep_held']   = isset( $progress['sweep_held'] ) && is_array( $progress['sweep_held'] ) ? $progress['sweep_held'] : array();
+					$progress['sweep_held'][] = array(
+						'from' => (int) ( $range['from'] ?? 0 ),
+						'to'   => (int) ( $range['to'] ?? 0 ),
+						'rows' => (int) ( $range['rows'] ?? 0 ),
+					);
+				}
 				array_shift( $plan );
 				continue;
 			}
@@ -3869,20 +4152,16 @@ class TCGiant_Sync_Importer {
 				if ( self::is_passing_read_failure( $answer ) ) {
 					// Out of calls, or no token: GetItem meets the same, and
 					// the window waits for it. The list has not failed alone.
+					// Anything else is counted once the run's listings are
+					// done (3.30.2 fix round 1): not when they met the same
+					// failure (run_delta_events()).
 					if ( ! self::is_out_of_calls( $answer ) && 'no_token' !== $answer->get_error_code() ) {
-						$progress['sweep_fails'] = (int) ( $progress['sweep_fails'] ?? 0 ) + 1;
-					}
-					if ( (int) ( $progress['sweep_fails'] ?? 0 ) >= self::SWEEP_FAILS_MAX ) {
-						$plan = array();
-						unset( $progress['sweep_fails'] );
-						TCGiant_Sync_Logger::warning( sprintf(
-							'Delta: eBay\'s list of listings for their categories could not be read %d times in a row (%s), so the rest of this window\'s changed listings are asked about one at a time with GetItem, as before.',
-							self::SWEEP_FAILS_MAX,
-							$answer->get_error_message()
-						) );
+						$failed         = (string) $answer->get_error_code();
+						$failed_message = $answer->get_error_message();
 					}
 				} else {
 					$plan = array();
+					unset( $progress['sweep_held'] );
 					update_option( self::SWEEP_REFUSED_OPTION, time(), false );
 					TCGiant_Sync_Logger::warning( sprintf(
 						'Delta: eBay would not send its list of listings for their categories (%s), so the changed listings are asked about one at a time with GetItem, as before. It is not asked again for %d hours.',
@@ -3956,6 +4235,10 @@ class TCGiant_Sync_Importer {
 			}
 			$asked_all  += $asked;
 			$saved_all  += $saves;
+			if ( ! empty( $range['new'] ) ) {
+				$new_asked += $asked;
+				$new_saved += $saves;
+			}
 			$range_asked = (int) ( $range['asked'] ?? 0 ) + $asked;
 			$range_saved = (int) ( $range['saved'] ?? 0 ) + $saves;
 
@@ -3973,6 +4256,7 @@ class TCGiant_Sync_Importer {
 				// range would. The plan goes, and no window reads the list for
 				// SWEEP_RETRY_SECONDS, as when eBay refuses it.
 				$plan = array();
+				unset( $progress['sweep_held'] );
 				update_option( self::SWEEP_REFUSED_OPTION, time(), false );
 				TCGiant_Sync_Logger::warning( sprintf(
 					'Delta: eBay\'s list of listings did not say everything your import settings judge a listing by (%d listings on the page, none kept), so the changed listings are asked about one at a time with GetItem, as before. It is not asked again for %d hours.',
@@ -4009,13 +4293,18 @@ class TCGiant_Sync_Importer {
 		$progress['sweep']       = $plan;
 		$progress['sweep_asked'] = $asked_all;
 		$progress['sweep_saved'] = $saved_all;
+		if ( $new_asked > 0 ) {
+			self::note_sweep_tally( $new_asked, $new_saved );
+		}
 		if ( ! $plan ) {
 			unset( $progress['sweep_fails'] );
 		}
 
 		return array(
-			'pages'    => $pages,
-			'listings' => $listings,
+			'pages'          => $pages,
+			'listings'       => $listings,
+			'failed'         => $failed,
+			'failed_message' => $failed_message,
 		);
 	}
 
@@ -4076,18 +4365,53 @@ class TCGiant_Sync_Importer {
 	 * on from the first refusal noted, so a note left behind - its retry
 	 * cleared by a cron clean-up, say - never makes a later week's refusal
 	 * give up at once. Turned away by a full sync already at work, nothing
-	 * is tried again: that one is the week's full sync.
+	 * is tried again: that one is the week's full sync. Not by one that has
+	 * died (full_sync_has_died(), 3.30.2): it is tried again as before -
+	 * unless nothing can carry the dead one on (no delta position yet), or
+	 * the scheduled sync has had a sync interval and an hour to take it over
+	 * and has not - and a full sync that completes ends the retries too
+	 * (complete_sync(), weekly_full_done()).
 	 *
 	 * @param mixed $refusal start_full_sync()'s WP_Error.
 	 * @param bool  $retry   Whether a retry was turned away, not the weekly event.
 	 * @return void
 	 */
 	public static function weekly_full_refused( $refusal = null, $retry = false ) {
+		$state = self::get_sync_state();
 		if ( is_wp_error( $refusal ) && 'already_running' === $refusal->get_error_code()
-			&& 'full' === (string) ( self::get_sync_state()['sync_mode'] ?? 'full' ) ) {
-			self::end_weekly_retries();
-			TCGiant_Sync_Logger::log( 'Weekly full sync: a full sync is already at work, and stands for this week\'s; it is not tried again.' );
-			return;
+			&& 'full' === (string) ( $state['sync_mode'] ?? 'full' ) ) {
+			if ( ! self::full_sync_has_died( $state ) ) {
+				self::end_weekly_retries();
+				TCGiant_Sync_Logger::log( 'Weekly full sync: a full sync is already at work, and stands for this week\'s; it is not tried again.' );
+				return;
+			}
+
+			// Dead: the scheduled sync takes it over as a delta, and a
+			// retry then starts the week's full sync. Not on a shop with no
+			// delta position yet: the scheduled sync starts a full sync
+			// there, which this one turns away (3.30.2).
+			if ( '' === (string) ( $state['last_successful_sync_at'] ?? '' ) ) {
+				self::end_weekly_retries();
+				TCGiant_Sync_Logger::warning( 'Weekly full sync: the full sync before it stopped part way, and on a shop with no sync completed yet nothing can carry it on, so it is not tried again. Fetch Inventory starts a new one.' );
+				return;
+			}
+
+			// Nor once the scheduled sync has had a run of its own to take
+			// it over - a sync interval, at least an hour, after it was
+			// judged dead, and an hour more - and it is still dead:
+			// something keeps the scheduled sync from it, and trying again
+			// would find the same (3.30.2). On a "Twice Daily" or "Daily"
+			// shop the retries first wait for that run.
+			$idle = self::sync_idle_seconds( $state );
+			$wait = self::SYNC_STALL_MINUTES * MINUTE_IN_SECONDS + max( HOUR_IN_SECONDS, self::sync_interval_seconds() ) + HOUR_IN_SECONDS;
+			if ( $retry && null !== $idle && $idle >= $wait ) {
+				self::end_weekly_retries();
+				TCGiant_Sync_Logger::warning( sprintf(
+					'Weekly full sync: the full sync before it stopped part way, and the scheduled sync has not taken it over in %d hours, so it is not tried again. Fetch Inventory starts a new one.',
+					(int) floor( $idle / HOUR_IN_SECONDS )
+				) );
+				return;
+			}
 		}
 
 		$since = $retry ? (int) get_option( self::WEEKLY_RETRY_OPTION, 0 ) : 0;
@@ -4110,7 +4434,32 @@ class TCGiant_Sync_Importer {
 	}
 
 	/**
-	 * End the weekly full sync's retries: a full sync has started (3.30.1).
+	 * For the weekly full sync's retry (3.30.2): whether a full sync has
+	 * completed since the weekly one was first turned away - the one that
+	 * seemed dead, or the one the retry itself just completed. If so, that
+	 * was the week's full sync: the retries end, and the retry starts no
+	 * other. One completed before the refusal is not counted.
+	 *
+	 * @param int $since The first refusal (WEEKLY_RETRY_OPTION), read before
+	 *                   the retry's own completion, which deletes it.
+	 * @return bool
+	 */
+	public static function weekly_full_done( $since ) {
+		$since = (int) $since;
+		$at    = (int) ( self::get_sync_state()['last_completed_ts'] ?? 0 );
+		if ( $since <= 0 || $at < $since || $at > time() ) {
+			return false;
+		}
+
+		self::end_weekly_retries();
+		TCGiant_Sync_Logger::log( 'Weekly full sync: a full sync has completed since it was turned away, and stands for this week\'s; it is not tried again.' );
+
+		return true;
+	}
+
+	/**
+	 * End the weekly full sync's retries: a full sync has started (3.30.1),
+	 * or completed (3.30.2 fix round 1).
 	 *
 	 * @return void
 	 */
@@ -9335,6 +9684,11 @@ class TCGiant_Sync_Importer {
 			'last_completed_ts' => time(),
 		) ), true );
 
+		// That was the week's full sync: the weekly one's retries, if it
+		// was turned away while this one seemed dead, end (3.30.2 fix
+		// round 1), as they do when a full sync starts.
+		self::end_weekly_retries();
+
 		$inline = (int) ( $state['scan_inline'] ?? 0 );
 		TCGiant_Sync_Logger::log( sprintf(
 			'Sync complete! %d listings found, %d imported (%d as the scan read them, %d of the %d it queued for GetItem), %d errors. The delta sync carries on from when this full sync began, %s.',
@@ -9486,6 +9840,25 @@ class TCGiant_Sync_Importer {
 			&& in_array( (string) ( $state['status'] ?? '' ), array( 'scanning', 'importing' ), true )
 			&& self::sync_has_stalled( $state )
 			&& ! self::delta_run_queued();
+	}
+
+	/**
+	 * Whether a full sync has died (3.30.2): "scanning" or "importing", no
+	 * progress for SYNC_STALL_MINUTES (sync_has_stalled()), and nothing of it
+	 * still to run - no scan batch queued or its backstop due
+	 * (scan_still_running()), no import waiting - as delta_has_died() judges
+	 * a delta. The weekly full sync's retry does not stand down for one: it
+	 * is not the week's full sync.
+	 *
+	 * @param array $state Sync state.
+	 * @return bool
+	 */
+	private static function full_sync_has_died( array $state ) {
+		return 'full' === (string) ( $state['sync_mode'] ?? 'full' )
+			&& in_array( (string) ( $state['status'] ?? '' ), array( 'scanning', 'importing' ), true )
+			&& self::sync_has_stalled( $state )
+			&& ! self::scan_still_running( $state )
+			&& ! self::item_imports_pending();
 	}
 
 	/**
