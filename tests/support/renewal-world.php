@@ -545,6 +545,30 @@ class Scripted_eBay extends TCGiant_Sync_API {
 			}
 			return '' === $oos ? array( 'Ack' => 'Success' ) : array( 'Ack' => 'Success', 'OutOfStockControlPreference' => $oos );
 		}
+		// The delta's list of listings for their categories (3.30.1), read
+		// from the body as eBay's server reads it: the listings ending in
+		// the range, at Coarse - ItemID, PrimaryCategory, Storefront, Site -
+		// 200 a page.
+		if ( 'GetSellerList' === $call_name && false !== strpos( $xml_body, '<GranularityLevel>Coarse</GranularityLevel>' ) ) {
+			$GLOBALS['EBAY']['lists'][] = $xml_body;
+			if ( isset( $GLOBALS['EBAY']['list_answer'] ) ) {
+				return $GLOBALS['EBAY']['list_answer'];
+			}
+			preg_match( '#<EndTimeFrom>([^<]*)</EndTimeFrom>#', $xml_body, $from );
+			preg_match( '#<EndTimeTo>([^<]*)</EndTimeTo>#', $xml_body, $to );
+			preg_match( '#<EntriesPerPage>(\d+)</EntriesPerPage>#', $xml_body, $per );
+			preg_match( '#<PageNumber>(\d+)</PageNumber>#', $xml_body, $page );
+			$hits = array();
+			foreach ( $GLOBALS['EBAY']['items'] as $item ) {
+				$end = strtotime( $item['ListingDetails']['EndTime'] );
+				if ( $end >= strtotime( $from[1] ) && $end <= strtotime( $to[1] ) ) {
+					$hits[] = array_intersect_key( $item, array_flip( array( 'ItemID', 'PrimaryCategory', 'Storefront', 'Site' ) ) );
+				}
+			}
+			$pages = max( 1, (int) ceil( count( $hits ) / (int) $per[1] ) );
+			$hits  = array_slice( $hits, ( (int) $page[1] - 1 ) * (int) $per[1], (int) $per[1] );
+			return array( 'Ack' => 'Success', 'ItemArray' => $hits ? array( 'Item' => 1 === count( $hits ) ? $hits[0] : $hits ) : array(), 'PaginationResult' => array( 'TotalNumberOfPages' => (string) $pages ) );
+		}
 		return new WP_Error( 'harness', 'unexpected eBay call ' . $call_name );
 	}
 }

@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.30.0
+Stable tag: 3.30.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -143,6 +143,14 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.30.1 - 2026-11-04 =
+* FIX: A shop that imports only some categories no longer spends an eBay call on each changed listing it then leaves out, when eBay renews many of its listings at once. eBay's list of changes does not say a listing's category, so the ordinary sync asked eBay about every changed listing it did not remember, only to skip most of them. It remembered a listing's categories for 8 days after a full sync read them, but eBay renews a Good 'Til Cancelled listing once a month, so a shop's monthly renewals cost a call a listing whenever the weekly full sync had not read them in the last 8 days - as on every shop until its first full sync since 3.28.4. On one shop that was over 4,600 calls in a day, for 8 imports, out of the daily allowance every TCGiant Sync shop shares. The ordinary sync now reads eBay's own list of the listings that end at the same times as those changed listings, up to 200 listings a call, for their categories. It reads on through a run of end times only while the changed listings found there save more calls than its pages cost, so each run of end times costs at most one call more than asking about each listing, and a monthly renewal costs a call per 200 listings rather than one each. It asks eBay about a listing on its own, as before, when the listing is already imported here, when it is in a category you import, or when the list did not say everything your import settings judge it by.
+* Listings' categories are now remembered for 35 days rather than 8, so a listing eBay renews each month is still known at its next renewal. A listing you move into a category you import is still imported by the next weekly full sync at the latest.
+* Which listings are imported is unchanged. A changed listing in a category you import whose category had to be looked up may be imported a moment later in the same sync, once eBay's list has been read. If eBay will not send that list, the ordinary sync says so in the log and asks about each listing as before for the next 6 hours. Once your shop reaches the free product limit, which holds back new listings before their category is asked, nothing more is read this way.
+* When the weekly full sync cannot start - the ordinary sync part way through a batch, say - it now tries again every hour, for up to a day, instead of waiting until the next week. Fetch Inventory, or any full sync that starts, ends the retries, and so do Emergency Stop and setting automatic sync to Disabled. A full sync already running when the weekly one is due counts as that week's.
+* On a host short of memory, the ordinary sync now carries on through the changed listings it can settle from what it remembers, with no eBay call, instead of stopping after each one; a listing that needs eBay still waits for a fresh request. A batch of thousands of renewals that took a request a listing now takes a handful.
+* A full sync whose request was stopped part way through a page now learns that page's listings' categories when it reads the page again.
 
 = 3.30.0 - 2026-11-03 =
 * FIX: A full sync now always finishes. One whose listings were all imported as it read them - most full syncs - said "Importing" and was never properly finished: the ordinary sync was not told where to carry on from, and the inventory pruning that follows a full sync did not run. On a new shop the hourly sync started a full sync again, every time, instead of reading only what changed. A full sync is now complete as soon as its last page is read with nothing left to import, or when its last queued import has run. The ordinary sync carries on from when the full sync began, so a sale made while it ran is still read. If the full sync read all your listings cleanly, inventory pruning runs once, and the ordinary sync waits for its first run to finish, for up to two hours, and starts at the next scheduled sync after that. See the Upgrade Notice.

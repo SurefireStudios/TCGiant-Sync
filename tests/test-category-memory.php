@@ -366,6 +366,66 @@ check( 'the page took three batches, each reading it', array( calls_of( 'GetSell
 check( '  its listings written once, on the first', count( $MEM_WRITES ), count( array_unique( array_map( array( 'TCGiant_Sync_Category_Memory', 'chunk_of' ), array( A, B, C ) ) ) ) );
 check( '  and all of them remembered', array( remembered( A ), remembered( B ), remembered( C ) ), array( $LC[ A ], $LC[ B ], $LC[ C ] ) );
 
+echo "\n   A batch killed after reading a page: the page read again teaches it (3.30.1, the owner's ruling 5)\n";
+shop( $STORE_111 );
+full_sync( array( whole( A ), whole( B ), whole( C ), whole( D ) ) );
+age_memory( 3 * DAY );   // last week's full sync
+watch_memory_writes();
+$tcg_killed = 0;
+$ON_UPDATE  = function ( $n, $v, $a ) use ( &$tcg_killed ) {
+	if ( 0 === strpos( $n, TCGiant_Sync_Category_Memory::OPTION_PREFIX ) ) {
+		$GLOBALS['MEM_WRITES'][] = array( $n, $a, count( $GLOBALS['SAVED'] ) );
+	}
+	// The first batch dies once it has read the page: what it held for the
+	// memory goes with it, unwritten.
+	if ( TCGiant_Sync_Importer::SCAN_PROGRESS_OPTION === $n && is_array( $v ) && '' !== (string) ( $v['in_flight'] ?? '' ) && 0 === $tcg_killed++ ) {
+		$pend = new ReflectionProperty( 'TCGiant_Sync_Category_Memory', 'pending' );
+		if ( PHP_VERSION_ID < 80100 ) {
+			$pend->setAccessible( true );
+		}
+		$pend->setValue( null, array() );
+	}
+};
+// Two pages, so the batch that ends the scan reads only the second.
+$EBAY['lister'] = function ( $page ) {
+	$pages = array( 1 => array( whole( A ), whole( B ), whole( C ) ), 2 => array( whole( D ) ) );
+	return isset( $pages[ $page ] ) ? array( 'Ack' => 'Success', 'ItemArray' => array( 'Item' => $pages[ $page ] ), 'PaginationResult' => array( 'TotalNumberOfPages' => 2 ) ) : array( 'Ack' => 'Success' );
+};
+@unlink( $LOCK );
+update_option( TCGiant_Sync_Importer::STATE_OPTION, array_merge( TCGiant_Sync_Importer::get_sync_state(), array( 'scan_finished' => '' ) ) );
+new_request();
+$_SERVER['REQUEST_TIME_FLOAT'] = microtime( true ) - 100;
+$IMP->start_full_sync( true );
+run_queue( 'tcgiant_sync_scan_all_pages' );
+$_SERVER['REQUEST_TIME_FLOAT'] = microtime( true );
+$ON_UPDATE = null;
+check( 'the first batch\'s lessons lost; the batches that read the page again write them', array( calls_of( 'GetSellerList' ) > 2, count( $MEM_WRITES ) > 0 ), array( true, true ) );
+check( '  so the scan\'s end keeps all four, learnt in this scan', array( remembered( A ), remembered( B ), remembered( C ), remembered( D ) ), array( $LC[ A ], $LC[ B ], $LC[ C ], $LC[ D ] ) );
+check( '  each option written once: a later batch reading a page again writes nothing more', count( $MEM_WRITES ), count( array_unique( array_map( array( 'TCGiant_Sync_Category_Memory', 'chunk_of' ), array( A, B, C, D ) ) ) ) );
+
+/** When the memory's line for a listing says it was learnt, or -1. */
+function learnt_at( $id ) {
+	$l = line_of( $id );
+	return '' === $l ? -1 : (int) substr( $l, strrpos( $l, ',' ) + 1 );
+}
+echo "\n   A page read again: a line dated ahead of the clock is written afresh, not taken as the scan's (fix round 2)\n";
+shop( $STORE_111 );
+$SHIFT = 2 * 3600;   // learnt while the clock read two hours on
+TCGiant_Sync_Category_Memory::note_page( array( whole( A ) ) );
+$SHIFT = 0;
+TCGiant_Sync_Category_Memory::note_page( array( whole( A ) ), time() - 600 );   // the scan began ten minutes ago
+check( 'the page read again: remembered, learnt now', array( remembered( A ), abs( learnt_at( A ) - time() ) <= 2 ), array( $LC[ A ], true ) );
+echo "\n   The same listing on a page read fresh and on one read again, in one batch: written afresh (fix round 2)\n";
+shop( $STORE_111 );
+TCGiant_Sync_Category_Memory::note_page( array( whole( A ) ) );
+$SHIFT = 1800;   // half an hour on, the scan begun ten minutes before
+TCGiant_Sync_Category_Memory::begin();
+TCGiant_Sync_Category_Memory::note_page( array( whole( A ) ) );
+TCGiant_Sync_Category_Memory::note_page( array( whole( A ) ), time() + 1800 - 600 );
+TCGiant_Sync_Category_Memory::end();
+$SHIFT = 0;
+check( 'held to be written by the page read fresh, it stays so: learnt now, not left as before', abs( learnt_at( A ) - ( time() + 1800 ) ) <= 2, true );
+
 echo "\n   A shop that does not filter has no use for it\n";
 shop( array() );
 watch_memory_writes();
@@ -395,12 +455,19 @@ check( '  and its answer is remembered', remembered( D ), $LC[ D ] );
 delta( array( bare( D ) ) );
 check( '  so the next change to it costs no GetItem', array( get_items(), summary() ), array( array(), 'Delta sync complete! 0 imported, 0 errors out of 1 modified items, 1 skipped (category filter, remembered).' ) );
 
-$SHIFT = 8 * DAY;
-delta( array( bare( D ) ) );
-check( 'learnt exactly 8 days ago: still fresh, no GetItem', get_items(), array() );
 $SHIFT = 8 * DAY + 1;
 delta( array( bare( D ) ) );
-check( 'learnt 8 days and a second ago: stale, one GetItem', get_items(), array( D ) );
+check( 'learnt 8 days and a second ago: fresh since 3.30.1, no GetItem', get_items(), array() );
+$SHIFT = 30 * DAY;
+delta( array( bare( D ) ) );
+check( 'learnt 30 days ago - its next monthly renewal: still fresh, no GetItem', get_items(), array() );
+$SHIFT = 35 * DAY;
+delta( array( bare( D ) ) );
+check( 'learnt exactly 35 days ago: still fresh, no GetItem', get_items(), array() );
+$SHIFT = 35 * DAY + 1;
+delta( array( bare( D ) ) );
+check( 'learnt 35 days and a second ago: stale, one GetItem', get_items(), array( D ) );
+check( '  FRESH_SECONDS is 35 days', TCGiant_Sync_Category_Memory::FRESH_SECONDS, 35 * DAY );
 check( '  skipped after it as before', saved_ids(), array() );
 delta( array( bare( D ) ) );
 check( '  and learnt afresh by it', get_items(), array() );
@@ -638,7 +705,7 @@ check( 'the next full sync deletes the memory', memory_options(), array() );
 
 echo "\n   What is no longer fresh goes when its option is next written\n";
 shop( $STORE_111 );
-$SHIFT = -9 * DAY;
+$SHIFT = -36 * DAY;
 TCGiant_Sync_Category_Memory::note( whole( D ) );
 $SHIFT = 0;
 $stale_chunk = TCGiant_Sync_Category_Memory::chunk_of( D );
@@ -651,7 +718,7 @@ for ( $n = 500000000000; '' === $fresh_id; $n++ ) {
 check( 'held, though stale', '' !== line_of( D ), true );
 TCGiant_Sync_Category_Memory::note( array( 'ItemID' => $fresh_id, 'PrimaryCategory' => array( 'CategoryID' => '1' ) ) );
 check( '  gone once its option is written', array( line_of( D ), '' !== line_of( $fresh_id ) ), array( '', true ) );
-plant( D, D . ',261328,222,0,' . ( time() - 9 * DAY ) );
+plant( D, D . ',261328,222,0,' . ( time() - 36 * DAY ) );
 TCGiant_Sync_Category_Memory::note( array( 'ItemID' => $fresh_id, 'PrimaryCategory' => array( 'CategoryID' => '1' ) ) );
 check( '  even by an answer that changes nothing else in it', array( line_of( D ), '' !== line_of( $fresh_id ) ), array( '', true ) );
 // An option left with nothing is deleted, not kept empty.
@@ -735,8 +802,8 @@ check( 'within the day: no write', array( count( $MEM_WRITES ), line_of( D ) ), 
 $SHIFT = DAY;
 TCGiant_Sync_Category_Memory::note( whole( D ) );
 check( 'a day on: written, learnt then', array( count( $MEM_WRITES ), line_of( D ) !== $first ), array( 1, true ) );
-$SHIFT = DAY + 8 * DAY;
-check( '  so it is fresh for 8 days from then', remembered( D ), $LC[ D ] );
+$SHIFT = DAY + 35 * DAY;
+check( '  so it is fresh for 35 days from then', remembered( D ), $LC[ D ] );
 $SHIFT = 2 * 3600;
 TCGiant_Sync_Category_Memory::note( ebay_has( E, $LC[ E ] ) );
 $SHIFT = 0;

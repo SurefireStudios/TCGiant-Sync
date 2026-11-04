@@ -50,6 +50,7 @@ $tcgiant_hooks = array(
 	'tcgiant_sync_scan_resume',
 	'tcgiant_sync_localize_images',
 	'tcgiant_sync_weekly_full',         // Added in 3.12.0; was never cleared.
+	'tcgiant_sync_weekly_full_retry',   // The weekly full sync tried again, 3.30.1.
 	'tcgiant_sync_photo_cleanup',       // Photos of deleted products, 3.27.4.
 	'tcgiant_sync_size_trim',           // Old large copies of downloaded photos, 3.27.7.
 );
@@ -203,6 +204,7 @@ $tcgiant_options = array(
 	'tcgiant_sync_last_crash_inventory_pruning',
 	'tcgiant_sync_prune_queue',        // The pruner's list to check, 3.28.0.
 	'tcgiant_sync_full_completed',     // Which full sync last completed, 3.30.0.
+	'tcgiant_sync_weekly_retry_since', // The weekly full sync's first refusal, 3.30.1.
 	'tcgiant_sync_env_verdict',        // Staging check as last recorded, 3.28.0.
 	'tcgiant_sync_live_confirmed',     // "This is my live shop", 3.28.0.
 	'tcgiant_sync_push_failures',      // Stock pushes eBay never took, 3.28.0.

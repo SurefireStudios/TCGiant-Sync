@@ -32,6 +32,7 @@ define( 'ABSPATH', sys_get_temp_dir() . '/' );
 
 $ACTIONS       = array();
 $CLEARED       = array();
+$DELETED       = array();
 $ON_DEACTIVATE = null;
 
 function plugin_dir_path( $file ) { return rtrim( str_replace( '\\', '/', dirname( $file ) ), '/' ) . '/'; }
@@ -41,6 +42,7 @@ function wp_get_environment_type() { return 'production'; }
 function add_action( $hook, $callback, $priority = 10, $args = 1 ) { $GLOBALS['ACTIONS'][ $hook ][] = $callback; return true; }
 function register_deactivation_hook( $file, $callback ) { $GLOBALS['ON_DEACTIVATE'] = $callback; }
 function wp_clear_scheduled_hook( $hook ) { $GLOBALS['CLEARED'][] = $hook; return 0; }
+function delete_option( $name ) { $GLOBALS['DELETED'][] = $name; return true; }
 function esc_html_e( $text ) {}
 
 echo "\nDEACTIVATED WITH WOOCOMMERCE INACTIVE\n" . str_repeat( '=', 110 ) . "\n";
@@ -64,6 +66,7 @@ check( 'the deactivation hook runs to the end', $error, '' );
 foreach ( array( 'tcgiant_sync_poll_ebay_cron', 'tcgiant_sync_scan_resume', 'tcgiant_sync_localize_images', 'tcgiant_sync_photo_cleanup' ) as $hook ) {
 	check( "  and clears {$hook}", in_array( $hook, $CLEARED, true ), true );
 }
+check( '  and deletes the weekly full sync retry note (3.30.1)', in_array( 'tcgiant_sync_weekly_retry_since', $DELETED, true ), true );
 
 // Every class the cron's deactivate() names must be one the hook loads: the
 // next one added there would otherwise bring the fatal back.

@@ -63,6 +63,8 @@ class TCGiant_Sync_Cron {
 		// no callback attached and the check never ran.
 		add_action( 'tcgiant_sync_check_ended_listings', array( $this, 'check_ended_listings' ) );
 		add_action( 'tcgiant_sync_weekly_full', array( $this, 'run_weekly_full_sync' ) );
+		// The weekly full sync tried again when it was turned away (3.30.1).
+		add_action( 'tcgiant_sync_weekly_full_retry', array( $this, 'run_weekly_full_retry' ) );
 		
 		// One-time listing type backfill on upgrade.
 		add_action( 'admin_init', array( $this, 'maybe_backfill_listing_type' ) );
@@ -134,6 +136,11 @@ class TCGiant_Sync_Cron {
 		// nothing running on its own, and that applies here too.
 		if ( 'disabled' === $interval ) {
 			wp_clear_scheduled_hook( 'tcgiant_sync_weekly_full' );
+			// Its retry too (3.30.1): one turned away before the change does
+			// not start a full sync an hour after it.
+			if ( wp_next_scheduled( 'tcgiant_sync_weekly_full_retry' ) ) {
+				TCGiant_Sync_Importer::end_weekly_retries();
+			}
 		} elseif ( ! wp_next_scheduled( 'tcgiant_sync_weekly_full' ) ) {
 			wp_schedule_event( time() + DAY_IN_SECONDS, 'weekly', 'tcgiant_sync_weekly_full' );
 		}
@@ -172,8 +179,36 @@ class TCGiant_Sync_Cron {
 
 		$result = TCGiant_Sync_Importer::instance()->start_full_sync();
 
+		// Turned away - a delta part way through a window, say: tried again
+		// hourly, for a day at most (3.30.1). A full sync that starts ends
+		// the retries.
 		if ( is_wp_error( $result ) ) {
 			TCGiant_Sync_Logger::warning( 'Weekly full sync did not start: ' . $result->get_error_message() );
+			TCGiant_Sync_Importer::weekly_full_refused( $result );
+		}
+	}
+
+	/**
+	 * The weekly full sync tried again, an hour after it was turned away
+	 * (3.30.1): see TCGiant_Sync_Importer::weekly_full_refused(). Not once
+	 * automatic sync is turned off, which wants nothing running on its own.
+	 */
+	public function run_weekly_full_retry() {
+		$settings = TCGiant_Sync_OAuth::instance()->get_settings();
+		if ( 'disabled' === ( is_array( $settings ) ? ( $settings['sync_interval'] ?? '' ) : '' ) ) {
+			TCGiant_Sync_Importer::end_weekly_retries();
+			return;
+		}
+
+		TCGiant_Sync_Logger::log( 'Weekly full sync: trying again, as it was turned away.' );
+
+		TCGiant_Sync_Importer::complete_sync( 'poll' );
+
+		$result = TCGiant_Sync_Importer::instance()->start_full_sync();
+
+		if ( is_wp_error( $result ) ) {
+			TCGiant_Sync_Logger::warning( 'Weekly full sync did not start: ' . $result->get_error_message() );
+			TCGiant_Sync_Importer::weekly_full_refused( $result, true );
 		}
 	}
 
@@ -1178,6 +1213,8 @@ class TCGiant_Sync_Cron {
 		wp_clear_scheduled_hook( 'tcgiant_sync_daily_maintenance' );
 		wp_clear_scheduled_hook( 'tcgiant_sync_check_ended_listings' );
 		wp_clear_scheduled_hook( 'tcgiant_sync_weekly_full' );
+		wp_clear_scheduled_hook( 'tcgiant_sync_weekly_full_retry' );   // 3.30.1.
+		delete_option( 'tcgiant_sync_weekly_retry_since' );   // Its first refusal, 3.30.1.
 		wp_clear_scheduled_hook( 'tcgiant_sync_reconcile_inventory' );
 		wp_clear_scheduled_hook( 'tcgiant_sync_reconcile_stall' );   // The weekly check's stall check, 3.28.0.
 		wp_clear_scheduled_hook( 'tcgiant_sync_import_orders' );

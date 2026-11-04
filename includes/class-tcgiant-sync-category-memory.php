@@ -23,8 +23,10 @@
  *
  * A listing the seller moves into an imported category is read with its old
  * categories until the memory learns the new ones - at the next full sync, or
- * the next GetItem of it, so within about a week. Every delta row is a changed
- * listing, so the change itself cannot say it was a move.
+ * the next GetItem of it. The weekly full sync judges every listing from its
+ * own page, so it imports such a listing whatever is remembered: it waits at
+ * most until then. Every delta row is a changed listing, so the change itself
+ * cannot say it was a move.
  *
  * Kept in CHUNKS options, never autoloaded, each holding the listings whose
  * ItemID falls to it as plain text, one line a listing:
@@ -91,11 +93,15 @@ class TCGiant_Sync_Category_Memory {
 	const CHUNKS = 32;
 
 	/**
-	 * How long what was learnt may stand in for a GetItem: 8 days. The full
-	 * sync runs weekly, so a listing it reads is learnt again before this
-	 * runs out.
+	 * How long what was learnt may stand in for a GetItem: 35 days (3.30.1,
+	 * the owner's ruling; 8 before). A monthly renewal comes round every 30
+	 * days, so a listing learnt at one is still known at the next, and a
+	 * weekly full sync that is late or turned away no longer leaves every
+	 * listing unknown a day later. What a full sync that read every page did
+	 * not see still goes at its end (after_full_scan()), so what is kept is
+	 * still the shop's live listings.
 	 */
-	const FRESH_SECONDS = 691200;
+	const FRESH_SECONDS = 3024000;
 
 	/**
 	 * A GetItem answer that says what the memory already holds, learnt less
@@ -242,21 +248,32 @@ class TCGiant_Sync_Category_Memory {
 	 * with the batch's end() - the scan holds a begin() open for each batch -
 	 * or at once outside one, and every PENDING_MAX listings either way. Each
 	 * is written learnt now, even when the memory says the same: that is what
-	 * keeps it from after_full_scan(). A batch killed before it writes loses
-	 * what its pages taught, which the next full sync learns again; until then
-	 * those listings get their GetItem, as before.
+	 * keeps it from after_full_scan().
 	 *
-	 * @param array $items Listings as GetSellerList sent them.
+	 * A page read again - a batch handing on part way through it - is noted
+	 * whole too, with $seen_since, the scan's start (3.30.1, the owner's
+	 * ruling): a listing already written learnt since then, with the same
+	 * categories, is not written again, and anything else is. A batch PHP
+	 * killed before its end() lost what its page taught; before, the page
+	 * read again noted only listings new to it, so those were never learnt
+	 * in that scan, and after_full_scan() then dropped what was remembered
+	 * of them.
+	 *
+	 * @param array $items      Listings as GetSellerList sent them.
+	 * @param int   $seen_since Unix time: write only what was not written
+	 *                          learnt since then. 0 (the default): write all.
 	 * @return void
 	 */
-	public static function note_page( array $items ) {
+	public static function note_page( array $items, $seen_since = 0 ) {
 		if ( empty( $items ) || ! self::in_use() ) {
 			return;
 		}
 
+		$seen_since = (int) $seen_since;
+
 		foreach ( $items as $item ) {
 			if ( is_array( $item ) ) {
-				self::add( $item, true );
+				self::add( $item, $seen_since > 0 ? $seen_since : true );
 			}
 		}
 
@@ -381,6 +398,32 @@ class TCGiant_Sync_Category_Memory {
 	}
 
 	/**
+	 * What the memory says of the seller's eBay store (3.30.1): 'store' when
+	 * a listing remembered has a store category - a store seller's every
+	 * listing has one in GetItem's answer and a full sync's pages; 'none'
+	 * when listings are remembered and not one has; '' when nothing is.
+	 * Read option by option, until one says so.
+	 *
+	 * @return string
+	 */
+	public static function store_evidence() {
+		$any = false;
+
+		for ( $chunk = 0; $chunk < self::CHUNKS; $chunk++ ) {
+			$raw = get_option( self::option_name( $chunk ), '' );
+			if ( ! is_string( $raw ) || '' === $raw ) {
+				continue;
+			}
+			if ( 1 === preg_match( '/^[0-9]{1,19},[0-9]{0,19},(?:[0-9]*[1-9][0-9]*,[0-9]*|[0-9]*,[0-9]*[1-9][0-9]*),[0-9]{1,12}$/m', $raw ) ) {
+				return 'store';
+			}
+			$any = $any || 1 === preg_match( '/^[0-9]{1,19},/', $raw );
+		}
+
+		return $any ? 'none' : '';
+	}
+
+	/**
 	 * Write what was learnt.
 	 *
 	 * One option at a time: read, merge, tidy, written only if it changed.
@@ -412,8 +455,15 @@ class TCGiant_Sync_Category_Memory {
 				list( $categories, $force ) = $entry;
 
 				// The same as is held, learnt lately: nothing to write.
-				if ( ! $force && isset( $cats[ $item_id ] ) && $cats[ $item_id ] === $categories
+				if ( false === $force && isset( $cats[ $item_id ] ) && $cats[ $item_id ] === $categories
 					&& $now - $when[ $item_id ] < self::REFRESH_SECONDS && $when[ $item_id ] <= $now ) {
+					continue;
+				}
+
+				// A page read again (note_page()'s $seen_since): the same as
+				// is held, written since the scan began - by this scan.
+				if ( is_int( $force ) && isset( $cats[ $item_id ] ) && $cats[ $item_id ] === $categories
+					&& $when[ $item_id ] >= $force - self::SKEW_SECONDS && $when[ $item_id ] <= $now + self::SKEW_SECONDS ) {
 					continue;
 				}
 
@@ -524,8 +574,11 @@ class TCGiant_Sync_Category_Memory {
 	/**
 	 * Hold a listing's categories for the next write, when they can be kept.
 	 *
-	 * @param array $item  eBay's listing.
-	 * @param bool  $force Write it learnt now even if the memory says the same.
+	 * @param array    $item  eBay's listing.
+	 * @param bool|int $force True: write it learnt now even if the memory says
+	 *                        the same. A Unix time: unless the memory says the
+	 *                        same, learnt since then (note_page()). False:
+	 *                        unless it says the same, learnt lately.
 	 * @return void
 	 */
 	private static function add( array $item, $force ) {
@@ -544,7 +597,12 @@ class TCGiant_Sync_Category_Memory {
 			return;
 		}
 
-		self::$pending[ $item_id ] = array( $categories, (bool) $force );
+		// One held already to be written whatever the memory says stays so.
+		if ( isset( self::$pending[ $item_id ] ) && true === self::$pending[ $item_id ][1] ) {
+			$force = true;
+		}
+
+		self::$pending[ $item_id ] = array( $categories, is_int( $force ) ? $force : (bool) $force );
 	}
 
 	/**

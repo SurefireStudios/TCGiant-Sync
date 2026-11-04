@@ -121,6 +121,7 @@ add_action   tcgiant_sync_settle_item => settle_queued
 add_action   tcgiant_sync_size_trim => process_run
 add_action   tcgiant_sync_update_ebay_stock => process_ebay_stock_update
 add_action   tcgiant_sync_weekly_full => run_weekly_full_sync
+add_action   tcgiant_sync_weekly_full_retry => run_weekly_full_retry
 add_action   update_option_tcgiant_sync_ebay_settings => auctions_setting_saved
 add_action   update_option_tcgiant_sync_ebay_settings => connection_saved
 add_action   updated_post_meta => mirror_meta_to_row
@@ -226,3 +227,4 @@ schedule     tcgiant_sync_scan_resume
 schedule     tcgiant_sync_settle_item
 schedule     tcgiant_sync_size_trim
 schedule     tcgiant_sync_weekly_full
+schedule     tcgiant_sync_weekly_full_retry

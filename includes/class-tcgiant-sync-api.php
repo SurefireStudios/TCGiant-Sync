@@ -1046,6 +1046,39 @@ class TCGiant_Sync_API {
 	}
 
 	/**
+	 * A page of the seller's listings ending in a period, each with its
+	 * categories and little else (3.30.1): GetSellerList at GranularityLevel
+	 * Coarse, 200 a page.
+	 *
+	 * eBay's list of changes, GetSellerEvents, sends no listing's categories
+	 * at any DetailLevel, and its OutputSelector can only leave fields out.
+	 * GetSellerList sends PrimaryCategory and Storefront (StoreCategoryID,
+	 * StoreCategory2ID) at Coarse, its smallest level, with ItemID and Site,
+	 * by eBay's call reference, and takes an end time range of under 120
+	 * days. One page answers for up to 200 listings, where GetItem answers
+	 * for one. The delta asks for the listings that end when the changed
+	 * ones it has no category for end - see the importer's
+	 * plan_category_sweep().
+	 *
+	 * @param int $end_from    Unix time: the earliest end time.
+	 * @param int $end_to      Unix time: the latest, under 120 days on.
+	 * @param int $page_number Page, from 1.
+	 * @return array|WP_Error Parsed response or error.
+	 */
+	public function get_listing_categories( $end_from, $end_to, $page_number = 1 ) {
+		$xml = '<ErrorLanguage>en_US</ErrorLanguage>
+<EndTimeFrom>' . gmdate( 'Y-m-d\TH:i:s.000\Z', (int) $end_from ) . '</EndTimeFrom>
+<EndTimeTo>' . gmdate( 'Y-m-d\TH:i:s.000\Z', (int) $end_to ) . '</EndTimeTo>
+<GranularityLevel>Coarse</GranularityLevel>
+<Pagination>
+	<EntriesPerPage>200</EntriesPerPage>
+	<PageNumber>' . max( 1, (int) $page_number ) . '</PageNumber>
+</Pagination>';
+
+		return $this->trading_api_request( 'GetSellerList', $xml );
+	}
+
+	/**
 	 * The listings changed in a period, via GetSellerEvents (Trading API).
 	 *
 	 * In brief: each listing's ItemID, Title, ListingType, ListingDetails

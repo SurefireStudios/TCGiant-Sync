@@ -11,6 +11,7 @@ This file exists so the repository has a changelog where people look for one. It
 
 | Version | Date | Headline |
 |---|---|---|
+| [3.30.1](https://github.com/SurefireStudios/TCGiant-Sync/releases/tag/v3.30.1) | 2026-11-04 | Far fewer eBay calls for shops that import only some categories |
 | [3.30.0](https://github.com/SurefireStudios/TCGiant-Sync/releases/tag/v3.30.0) | 2026-11-03 | A full sync that finishes, and inventory pruning after it |
 | [3.29.2](https://github.com/SurefireStudios/TCGiant-Sync/releases/tag/v3.29.2) | 2026-11-03 | Suggest Category uses your whole title |
 | [3.29.1](https://github.com/SurefireStudios/TCGiant-Sync/releases/tag/v3.29.1) | 2026-11-03 | Choose in bulk whether Updates send your shop defaults |

@@ -143,6 +143,10 @@ class TCGiant_Sync_Importer {
 		// The scan resumes itself through WP-Cron, not Action Scheduler.
 		wp_clear_scheduled_hook( 'tcgiant_sync_scan_resume' );
 
+		// Nor does a weekly full sync turned away before Stop start an hour
+		// after it (3.30.1): the next weekly one does.
+		self::end_weekly_retries();
+
 		// A stopped sync starts its next window cleanly.
 		self::clear_delta_progress();
 
@@ -309,6 +313,116 @@ class TCGiant_Sync_Importer {
 	 * The most rows of its window one delta run looks at (3.28.6).
 	 */
 	const DELTA_ROWS_PER_RUN = 500;
+
+	/**
+	 * The fewest rows of a window that came with no category, are not
+	 * remembered and end within SWEEP_GAP_SECONDS of one another, for the
+	 * delta to read eBay's list of the listings ending then for their
+	 * categories, rather than ask GetItem about each (3.30.1). See
+	 * plan_category_sweep().
+	 */
+	const SWEEP_MIN_ROWS = 3;
+
+	/**
+	 * Two such rows whose listings end further apart than this, in seconds,
+	 * fall to different ranges of end times: an hour (3.30.1). A monthly
+	 * renewal moves a listing's end a month on, so the listings renewed
+	 * together end together, as do the ones listed together.
+	 */
+	const SWEEP_GAP_SECONDS = 3600;
+
+	/**
+	 * The widest range of end times read, in seconds: 30 days, inside the
+	 * 120 eBay allows (3.30.1).
+	 */
+	const SWEEP_SPAN_SECONDS = 2592000;
+
+	/**
+	 * A range is read past a page only while its rows still to come, at the
+	 * share of its rows answered so far that the filter left out, come to
+	 * at least this many for each of its pages still to read (3.30.1): each
+	 * page must stand in for two GetItem calls. A row the filter takes still
+	 * costs its GetItem, so it does not count. The share is the range's own
+	 * rows' - the window's rows its pages carried - not the listings on them
+	 * (run_category_sweep()): a band of listings the filter leaves out could
+	 * hold rows it takes, and was read to its end for them.
+	 */
+	const SWEEP_ROWS_PER_PAGE = 2;
+
+	/**
+	 * Most ranges a window reads (3.30.1), the ones holding the most rows.
+	 */
+	const SWEEP_RANGES_MAX = 10;
+
+	/**
+	 * Most pages one delta run reads (3.30.1). At least one, then within
+	 * the run's time and memory.
+	 */
+	const SWEEP_PAGES_PER_RUN = 25;
+
+	/**
+	 * When eBay last refused a page of the list itself, rather than being
+	 * out of reach or out of calls (3.30.1). For SWEEP_RETRY_SECONDS after,
+	 * no window reads one, and asks GetItem as before. Under the category
+	 * memory's prefix, which uninstall sweeps. Never autoloaded.
+	 */
+	const SWEEP_REFUSED_OPTION = 'tcgiant_sync_category_memory_sweep_refused';
+
+	/**
+	 * Six hours (3.30.1). See SWEEP_REFUSED_OPTION.
+	 */
+	const SWEEP_RETRY_SECONDS = 21600;
+
+	/**
+	 * eBay out of reach for the list this many times in a row, the window's
+	 * plan goes and its rows are asked about with GetItem, as before
+	 * (3.30.1). The list alone can fail that way - eBay's 10007 on it, a
+	 * proxy's timeouts - while GetItem answers. Out of calls, or no token,
+	 * is not counted: GetItem meets the same, and the window waits for it.
+	 * Nor is a failure in a run whose window then pauses for one.
+	 */
+	const SWEEP_FAILS_MAX = 2;
+
+	/**
+	 * Ranges of end times read lately and left after their first page,
+	 * because they held too few rows the filter leaves out for their pages
+	 * (3.30.1): from, to, pages, and when. Listings put up together end
+	 * together in a band dense enough that every window would read its
+	 * first page again for a few rows; a range inside one is not read again
+	 * for SWEEP_BAND_SECONDS unless it holds enough rows for those pages. Under the category
+	 * memory's prefix, which uninstall sweeps. Never autoloaded.
+	 */
+	const SWEEP_BANDS_OPTION = 'tcgiant_sync_category_memory_sweep_bands';
+
+	/** A day (3.30.1). See SWEEP_BANDS_OPTION. */
+	const SWEEP_BAND_SECONDS = 86400;
+
+	/** Most bands kept (3.30.1), the latest. See SWEEP_BANDS_OPTION. */
+	const SWEEP_BANDS_MAX = 20;
+
+	/**
+	 * Most rows a delta run settles past the host-memory stop (3.30.1, the
+	 * owner's ruling): rows the category memory decides, with no call to
+	 * eBay and next to no memory of their own. Time and Emergency Stop still
+	 * stop them; a row that needs eBay still stops at the memory guard.
+	 */
+	const DELTA_PAST_GUARD_MAX = 400;
+
+	/**
+	 * The weekly full sync turned away (3.30.1, the owner's ruling): when
+	 * the first refusal was, while it is tried again hourly
+	 * (WEEKLY_RETRY_HOOK) for at most WEEKLY_RETRY_FOR. Written afresh by
+	 * each weekly event that is turned away, read only by its retries.
+	 * Deleted when a full sync starts, when automatic sync is turned off,
+	 * on Emergency Stop and on deactivation. Never autoloaded.
+	 */
+	const WEEKLY_RETRY_OPTION = 'tcgiant_sync_weekly_retry_since';
+
+	/** The weekly full sync's retry, a single WP-Cron event (3.30.1). */
+	const WEEKLY_RETRY_HOOK = 'tcgiant_sync_weekly_full_retry';
+
+	/** A day (3.30.1). See WEEKLY_RETRY_OPTION. */
+	const WEEKLY_RETRY_FOR = 86400;
 
 	/**
 	 * How far a listing's end time must have moved on since its last full
@@ -1070,6 +1184,10 @@ class TCGiant_Sync_Importer {
 				__( 'Another sync is currently running. Wait for it to finish, or use Emergency Stop first.', 'tcgiant-sync' )
 			);
 		}
+
+		// A full sync that starts - Fetch Inventory, the weekly one or its
+		// retry - ends the weekly full sync's retries (3.30.1).
+		self::end_weekly_retries();
 
 		// Clear any previous pending sync jobs to prevent stacking.
 		if ( function_exists( 'as_unschedule_all_actions' ) ) {
@@ -2085,6 +2203,17 @@ class TCGiant_Sync_Importer {
 			$remaining = array_slice( $items, $offset );
 		}
 
+		// Which of the rest of the window's listings to learn the categories
+		// of from eBay's list of listings, a page at a time, rather than with
+		// a GetItem each (3.30.1). Once a window: on its first run, or on the
+		// first run of 3.30.1 part way through one.
+		if ( ! isset( $progress['sweep'] ) || ! is_array( $progress['sweep'] ) ) {
+			$progress['sweep'] = self::plan_category_sweep( $remaining );
+		}
+		// The rows the plan's pages may answer, by which what each page
+		// saves is counted (fix round 2).
+		$sweep_rows = self::sweep_rows( $remaining, $progress['sweep'] );
+
 		// Up to DELTA_ROWS_PER_RUN rows, of which DELTA_ITEMS_PER_RUN may need
 		// eBay: see the loop.
 		$done  = $total_items - count( $remaining );
@@ -2185,11 +2314,25 @@ class TCGiant_Sync_Importer {
 		$stopped_for  = '';
 		$memory_stop  = false;
 		$read_stop    = null;
+		// Rows settled past the memory stop (3.30.1), and whether a row
+		// stopped the run to wait for the plan's pages.
+		$past_guard   = 0;
+		$waiting      = false;
 
 		// The categories the batch's GetItem answers carry, written once, after
 		// it, rather than once for each: by fetch_delta_events(), however this
 		// run ends.
 		TCGiant_Sync_Category_Memory::begin();
+
+		// The categories of the window's listings that came with none and
+		// are not remembered, from eBay's list of the listings ending when
+		// they do, written before the first listing (3.30.1). Each one it
+		// learns is then judged as remembered: skipped with no GetItem when
+		// the filter does not take it, and asked for in full, as before,
+		// when it does. The plan's place is saved with the window's, before
+		// the first listing below.
+		$swept = self::run_category_sweep( $progress, $standard_cats, $valid_custom_ids, $sweep_rows );
+		unset( $sweep_rows );
 
 		// Reading the window is not the first listing's doing.
 		TCGiant_Sync_Runtime::cache_guard_take();
@@ -2216,11 +2359,25 @@ class TCGiant_Sync_Importer {
 			// and hand the rest to a fresh request - rather than run on until
 			// the host kills the request part way through one. Always at least
 			// one listing, so every run moves the window on.
+			//
+			// But not for a row the category memory settles (3.30.1, the
+			// owner's ruling): skipped with no call to eBay and next to no
+			// memory, it goes on past the memory stop, up to
+			// DELTA_PAST_GUARD_MAX a run - never past the time budget or an
+			// Emergency Stop. On a host already over the line before its
+			// first listing, a window of thousands took a request a row.
 			if ( $handled > 0 ) {
 				$stopped_for = TCGiant_Sync_Runtime::over_budget();
 				if ( '' !== $stopped_for ) {
 					$memory_stop = '' === TCGiant_Sync_Runtime::over_time_budget();
-					break;
+					if ( $memory_stop && $is_filtering && $past_guard < self::DELTA_PAST_GUARD_MAX
+						&& self::memory_settles( $ebay_item, $standard_cats, $valid_custom_ids ) && ! self::stop_pressed() ) {
+						$past_guard++;
+						$stopped_for = '';
+						$memory_stop = false;
+					} else {
+						break;
+					}
 				}
 			}
 
@@ -2347,8 +2504,9 @@ class TCGiant_Sync_Importer {
 					// as before, at no extra cost.
 					if ( '' === (string) $primary_cat && '' === (string) $store_cat1 && '' === (string) $store_cat2 ) {
 						// What the last full sync, or the last GetItem of it,
-						// said its categories were (3.28.4). Learnt within the
-						// last 8 days and not taken by the filter, it is skipped
+						// said its categories were (3.28.4). Learnt within
+						// FRESH_SECONDS (35 days since 3.30.1) and not taken by
+						// the filter, it is skipped
 						// here exactly as it would be after the GetItem below,
 						// which is all that call was for. Taken by the filter,
 						// not remembered, or remembered too long ago: asked
@@ -2362,6 +2520,21 @@ class TCGiant_Sync_Importer {
 							self::forget_event_record( $item_id );
 							$remembered_skips++;
 							continue;
+						}
+
+						// Not remembered, and the window's plan has a range
+						// still to read that takes in its end: it waits for
+						// the next run, which reads more of the plan first,
+						// rather than pay a GetItem a page may make needless
+						// (3.30.1). Only once this run has read a page, so
+						// every run moves the plan on. Not a listing with a
+						// product here: its change - a sale, say - is read
+						// now, as before.
+						if ( null === $known && $swept['pages'] > 0 && self::sweep_covers( $progress['sweep'] ?? array(), $ebay_item )
+							&& ! ( $row_product ? $row_product : self::find_live_product_for_item( $item_id ) ) ) {
+							$waiting = true;
+							$current = null;
+							break;
 						}
 
 						// An unchanged monthly renewal of a product here: its
@@ -2701,11 +2874,12 @@ class TCGiant_Sync_Importer {
 		$site_label = $other_site > 0 ? sprintf( ', %d left out (on other eBay sites)', $other_site ) : '';
 		$fallback_label = $fallback_count > 0 ? sprintf( ', %d GetItem fallbacks', $fallback_count ) : '';
 		$renewal_label  = $renewals > 0 ? sprintf( ', %d renewals (end date moved, nothing else changed)', $renewals ) : '';
+		$sweep_label    = $swept['pages'] > 0 ? sprintf( ', %d %s of eBay\'s listings read for their categories (GetSellerList; %d %s learnt)', $swept['pages'], 1 === $swept['pages'] ? 'page' : 'pages', $swept['listings'], 1 === $swept['listings'] ? 'listing' : 'listings' ) : '';
 		TCGiant_Sync_Logger::log( sprintf(
 			$more || null !== $read_stop
-				? 'Delta batch done: %d imported, %d errors out of %d modified items%s%s%s%s%s.'
-				: 'Delta sync complete! %d imported, %d errors out of %d modified items%s%s%s%s%s.',
-			$processed, $errors, $handled, $renewal_label, $filter_label, $remembered_label, $site_label, $fallback_label
+				? 'Delta batch done: %d imported, %d errors out of %d modified items%s%s%s%s%s%s.'
+				: 'Delta sync complete! %d imported, %d errors out of %d modified items%s%s%s%s%s%s.',
+			$processed, $errors, $handled, $renewal_label, $filter_label, $remembered_label, $site_label, $fallback_label, $sweep_label
 		), 'success' );
 
 		// eBay could not be read. Keep the window and the place, stay running
@@ -2714,6 +2888,9 @@ class TCGiant_Sync_Importer {
 		// hours. Not the "rate_limited" status, whose Resume button starts a
 		// full sync instead.
 		if ( null !== $read_stop ) {
+			// The run's listings met eBay's failure too: the list did not
+			// fail alone, so its count starts again (fix round 2).
+			unset( $progress['sweep_fails'] );
 			self::save_delta_progress( $progress );
 
 			if ( self::stop_pressed() ) {
@@ -2755,20 +2932,30 @@ class TCGiant_Sync_Importer {
 			return;
 		}
 
+		if ( $waiting ) {
+			TCGiant_Sync_Logger::log( sprintf(
+				'Delta sync: %d listing(s) done this run; the rest wait for eBay\'s list of listings, which the next run reads first.',
+				$handled
+			) );
+		}
+
 		if ( '' !== $stopped_for ) {
 			TCGiant_Sync_Logger::log( sprintf(
 				'Delta sync: stopped this batch after %d listing(s) to stay within this host\'s limits (%s). The rest carries on in a fresh request.',
 				$handled,
 				$stopped_for
 			) );
+		}
 
-			// The next run is queued below. Picked up by the queue runner in
-			// this same request, it would start where this one stopped: short
-			// of memory. A stop for time needs nothing: the runner's own time
-			// limit has ended its batch by now.
-			if ( $memory_stop ) {
-				TCGiant_Sync_Runtime::end_queue_runs();
-			}
+		// The next run is queued below. Picked up by the queue runner in this
+		// same request, it would start where this one stopped: short of
+		// memory. So after a stop for memory; and after a run that went on
+		// past the memory stop on rows the memory settles, or that stops to
+		// wait for the plan's pages over the line (fix round 2), however it
+		// ended. A stop for time needs nothing: the runner's own time limit
+		// has ended its batch by now.
+		if ( $memory_stop || $past_guard > 0 || ( $waiting && '' !== TCGiant_Sync_Runtime::over_budget() ) ) {
+			TCGiant_Sync_Runtime::end_queue_runs();
 		}
 
 		// More of this window still to go: record where we got to, keep the sync
@@ -3256,6 +3443,680 @@ class TCGiant_Sync_Importer {
 		}
 
 		return $row;
+	}
+
+	/**
+	 * Which of a window's listings to learn the categories of from eBay's
+	 * list of listings, rather than with a GetItem each (3.30.1).
+	 *
+	 * eBay's list of changes sends no category, and a shop that imports only
+	 * some categories had the delta ask GetItem about every changed listing
+	 * the category memory did not hold, only to skip most of them. Before
+	 * 3.30.1 the memory held a listing for 8 days after a full sync's page or
+	 * a GetItem taught it, but a monthly renewal comes round every 30, so a
+	 * renewal was skipped without a call only while the weekly full sync was
+	 * on time. When it was not - and before the first one after the update
+	 * - a shop's whole monthly renewal cost a GetItem a listing: on the
+	 * live-test shop on 2026-11-03, 4,627 of them, for 8 imports.
+	 *
+	 * A renewal moves a listing's end a month on, and the list of changes
+	 * says each listing's end. The listings renewed together, or listed
+	 * together, end together. So the rows with no category that the memory
+	 * cannot answer for are put in ranges of end times - a new range where
+	 * two are more than SWEEP_GAP_SECONDS apart, or one would span more
+	 * than SWEEP_SPAN_SECONDS - and each range of SWEEP_MIN_ROWS or more is
+	 * read from eBay's list of listings (TCGiant_Sync_API::
+	 * get_listing_categories()), 200 listings a call, by run_category_sweep().
+	 * A range inside a band read lately and found too large for its rows
+	 * (SWEEP_BANDS_OPTION) is left to GetItem.
+	 *
+	 * Rows judged before the filter never get this far, and are not counted:
+	 * another site's listing the shop leaves out, and - at the free limit -
+	 * a listing with nothing here, which is held back first. So at the
+	 * limit nothing is planned. Nor is a listing with a product here: an
+	 * imported listing is one the filter took, and its change - a sale, say
+	 * - is read with its GetItem whatever a page says, so a page read for it
+	 * saves nothing.
+	 *
+	 * @param array $rows The rows of the window still to do.
+	 * @return array Ranges, the most rows first: from and to (Unix times,
+	 *               a minute either side of the rows' own), rows, and the
+	 *               page to read next. Empty for none.
+	 */
+	private static function plan_category_sweep( array $rows ) {
+		if ( ! TCGiant_Sync_Category_Memory::in_use() ) {
+			return array();
+		}
+
+		// eBay refused a page of the list lately: GetItem, as before.
+		$refused = (int) get_option( self::SWEEP_REFUSED_OPTION, 0 );
+		if ( $refused > 0 && $refused <= time() && time() - $refused < self::SWEEP_RETRY_SECONDS ) {
+			return array();
+		}
+
+		if ( self::$limit_reported || ! TCGiant_Sync_Entitlements::instance()->can_import() ) {
+			return array();
+		}
+
+		$sites_on = TCGiant_Sync_Sites::primary_only();
+		$ends     = array();
+
+		foreach ( $rows as $row ) {
+			$end = is_array( $row ) ? self::sweep_row_end( $row, $sites_on ) : 0;
+			if ( $end > 0 ) {
+				$ends[ TCGiant_Sync_API::scalar_value( $row['ItemID'] ?? '' ) ] = $end;
+			}
+		}
+
+		if ( count( $ends ) < self::SWEEP_MIN_ROWS ) {
+			return array();
+		}
+
+		// The ones the memory answers for are judged by it, as before.
+		foreach ( array_keys( TCGiant_Sync_Category_Memory::recall( array_map( 'strval', array_keys( $ends ) ) ) ) as $item_id ) {
+			unset( $ends[ $item_id ] );
+		}
+
+		// A listing with a product here gets its GetItem, as before,
+		// whatever a page says (fix round 2).
+		foreach ( array_keys( $ends ) as $item_id ) {
+			if ( self::find_live_product_for_item( (string) $item_id ) ) {
+				unset( $ends[ $item_id ] );
+			}
+		}
+
+		asort( $ends, SORT_NUMERIC );
+
+		$ranges = array();
+		$range  = null;
+
+		foreach ( $ends as $end ) {
+			if ( null === $range || $end - $range['to'] > self::SWEEP_GAP_SECONDS || $end - $range['from'] > self::SWEEP_SPAN_SECONDS ) {
+				if ( null !== $range ) {
+					$ranges[] = $range;
+				}
+				$range = array( 'from' => $end, 'to' => $end, 'rows' => 0 );
+			}
+			$range['to'] = $end;
+			$range['rows']++;
+		}
+		if ( null !== $range ) {
+			$ranges[] = $range;
+		}
+
+		$bands = self::sweep_bands();
+		$plan  = array();
+		foreach ( $ranges as $range ) {
+			if ( $range['rows'] < self::SWEEP_MIN_ROWS ) {
+				continue;
+			}
+
+			// eBay's end times are to the second: a minute either side.
+			$from = $range['from'] - 60;
+			$to   = $range['to'] + 60;
+
+			// Within an hour of a band read lately that held too many
+			// listings for its rows: its first page again would only cost
+			// a call for rows like these.
+			foreach ( $bands as $band ) {
+				if ( $band[0] - self::SWEEP_GAP_SECONDS <= $to && $from <= $band[1] + self::SWEEP_GAP_SECONDS
+					&& $band[2] * self::SWEEP_ROWS_PER_PAGE > $range['rows'] ) {
+					continue 2;
+				}
+			}
+
+			$plan[] = array(
+				'from' => $from,
+				'to'   => $to,
+				'rows' => $range['rows'],
+				'page' => 1,
+			);
+		}
+
+		// The most rows first; the earliest first among equals.
+		usort( $plan, function ( $a, $b ) {
+			return $b['rows'] !== $a['rows'] ? $b['rows'] - $a['rows'] : $a['from'] - $b['from'];
+		} );
+		$plan = array_slice( $plan, 0, self::SWEEP_RANGES_MAX );
+
+		if ( $plan ) {
+			TCGiant_Sync_Logger::log( sprintf(
+				'Delta: %1$d of the changed listings still to do came with no category, are not remembered and have no product here; %2$d of them end close enough together to read eBay\'s list of the listings that end when they do (%3$d %4$s of end times, up to 200 listings a call) for their categories, rather than asking GetItem about each.',
+				count( $ends ),
+				array_sum( array_column( $plan, 'rows' ) ),
+				count( $plan ),
+				1 === count( $plan ) ? 'range' : 'ranges'
+			) );
+		}
+
+		return $plan;
+	}
+
+	/**
+	 * A row's end, when plan_category_sweep() may plan for it (3.30.1): it
+	 * came with no category, is not another site's listing the shop leaves
+	 * out, and eBay gave its end. 0 otherwise.
+	 *
+	 * @param array $row      A row of the window.
+	 * @param bool  $sites_on TCGiant_Sync_Sites::primary_only().
+	 * @return int Unix time, or 0.
+	 */
+	private static function sweep_row_end( array $row, $sites_on ) {
+		if ( '' === TCGiant_Sync_API::scalar_value( $row['ItemID'] ?? '' ) ) {
+			return 0;
+		}
+
+		// A row that came with a category is judged by it, as before.
+		if ( '' !== TCGiant_Sync_API::scalar_value( $row['PrimaryCategory']['CategoryID'] ?? '' )
+			|| '' !== TCGiant_Sync_API::scalar_value( $row['Storefront']['StoreCategoryID'] ?? '' )
+			|| '' !== TCGiant_Sync_API::scalar_value( $row['Storefront']['StoreCategory2ID'] ?? '' ) ) {
+			return 0;
+		}
+
+		if ( $sites_on && TCGiant_Sync_Sites::leaves_out( TCGiant_Sync_Sites::site_of( $row ) ) ) {
+			return 0;
+		}
+
+		$end = strtotime( TCGiant_Sync_API::scalar_value( $row['ListingDetails']['EndTime'] ?? '' ) );
+
+		return false === $end || $end <= 0 ? 0 : (int) $end;
+	}
+
+	/**
+	 * The window's rows the plan's pages may answer, by ItemID (fix round
+	 * 2): still to do, ones plan_category_sweep() plans for, ending in a
+	 * range of the plan, and not remembered. run_category_sweep() counts by
+	 * them what each page saves; a row with a product here, which the plan
+	 * leaves out, is passed over there.
+	 *
+	 * @param array $rows The rows of the window still to do.
+	 * @param mixed $plan The plan (DELTA_PROGRESS_OPTION['sweep']).
+	 * @return array ItemID => true.
+	 */
+	private static function sweep_rows( array $rows, $plan ) {
+		if ( empty( $plan ) || ! is_array( $plan ) ) {
+			return array();
+		}
+
+		$sites_on = TCGiant_Sync_Sites::primary_only();
+		$ids      = array();
+
+		foreach ( $rows as $row ) {
+			if ( is_array( $row ) && self::sweep_row_end( $row, $sites_on ) > 0 && self::sweep_covers( $plan, $row ) ) {
+				$ids[ TCGiant_Sync_API::scalar_value( $row['ItemID'] ?? '' ) ] = true;
+			}
+		}
+
+		if ( $ids ) {
+			foreach ( array_keys( TCGiant_Sync_Category_Memory::recall( array_map( 'strval', array_keys( $ids ) ) ) ) as $item_id ) {
+				unset( $ids[ $item_id ] );
+			}
+		}
+
+		return $ids;
+	}
+
+	/**
+	 * The bands of end times read lately and left after their first page
+	 * (SWEEP_BANDS_OPTION), still within SWEEP_BAND_SECONDS: from, to, pages.
+	 *
+	 * @return array
+	 */
+	private static function sweep_bands() {
+		$raw   = get_option( self::SWEEP_BANDS_OPTION, array() );
+		$bands = array();
+
+		foreach ( is_array( $raw ) ? $raw : array() as $band ) {
+			if ( is_array( $band ) && 4 === count( $band ) && (int) $band[3] <= time() && time() - (int) $band[3] < self::SWEEP_BAND_SECONDS ) {
+				$bands[] = array( (int) $band[0], (int) $band[1], (int) $band[2], (int) $band[3] );
+			}
+		}
+
+		return $bands;
+	}
+
+	/**
+	 * Note a band read and left after its first page (SWEEP_BANDS_OPTION).
+	 *
+	 * @param int $from  Unix time.
+	 * @param int $to    Unix time.
+	 * @param int $pages eBay's TotalNumberOfPages for it.
+	 * @return void
+	 */
+	private static function note_sweep_band( $from, $to, $pages ) {
+		$bands   = self::sweep_bands();
+		$bands[] = array( (int) $from, (int) $to, (int) $pages, time() );
+
+		update_option( self::SWEEP_BANDS_OPTION, array_slice( $bands, -self::SWEEP_BANDS_MAX ), false );
+	}
+
+	/**
+	 * Whether a row's end falls in a range of the window's plan still to be
+	 * read (3.30.1).
+	 *
+	 * @param mixed $plan The plan (DELTA_PROGRESS_OPTION['sweep']).
+	 * @param array $row  The row.
+	 * @return bool
+	 */
+	private static function sweep_covers( $plan, array $row ) {
+		$end = strtotime( TCGiant_Sync_API::scalar_value( $row['ListingDetails']['EndTime'] ?? '' ) );
+		if ( false === $end || ! is_array( $plan ) ) {
+			return false;
+		}
+
+		foreach ( $plan as $range ) {
+			if ( is_array( $range ) && $end >= (int) ( $range['from'] ?? 0 ) && $end <= (int) ( $range['to'] ?? 0 ) ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Whether the category memory settles a row with no call to eBay: it came
+	 * with no category, the memory holds it fresh, and the filter does not
+	 * take what it holds - skipped as remembered (3.30.1). Every other way
+	 * such a row can go before that, another site's listing left out or a
+	 * new listing held back by the free limit, needs no call either.
+	 *
+	 * @param array $row              The row.
+	 * @param array $standard_cats    The filter's eBay categories.
+	 * @param array $valid_custom_ids The filter's store categories.
+	 * @return bool
+	 */
+	private static function memory_settles( array $row, array $standard_cats, array $valid_custom_ids ) {
+		$item_id = TCGiant_Sync_API::scalar_value( $row['ItemID'] ?? '' );
+		if ( '' === $item_id
+			|| '' !== (string) ( $row['PrimaryCategory']['CategoryID'] ?? '' )
+			|| '' !== (string) ( $row['Storefront']['StoreCategoryID'] ?? '' )
+			|| '' !== (string) ( $row['Storefront']['StoreCategory2ID'] ?? '' ) ) {
+			return false;
+		}
+
+		$known = TCGiant_Sync_Category_Memory::recall( array( $item_id ) );
+		$known = $known[ $item_id ] ?? null;
+
+		return null !== $known && ! self::category_filter_takes( $known[0], $known[1], $known[2], $standard_cats, $valid_custom_ids );
+	}
+
+	/**
+	 * Read the pages plan_category_sweep() planned, into the category
+	 * memory, before the run's first listing (3.30.1).
+	 *
+	 * At least one page a run, as a run does at least one listing; then
+	 * while the run has time and memory left, up to SWEEP_PAGES_PER_RUN.
+	 *
+	 * What a page saves is counted by the window's rows it carries ($rows,
+	 * fix round 2): each one the filter leaves out is a GetItem saved, and
+	 * each one it takes still costs its GetItem. A range is read past a
+	 * page only while
+	 * - its pages so far have saved at least a GetItem each - so a range
+	 *   never costs more than one page over the GetItem calls it stands in
+	 *   for - and
+	 * - its rows not yet answered, at the share of its answered rows the
+	 *   filter left out, come to SWEEP_ROWS_PER_PAGE for each page still to
+	 *   read.
+	 * Otherwise it is left, and what its pages did not teach is asked about
+	 * with GetItem, as before; left after its first page, its band is noted
+	 * (SWEEP_BANDS_OPTION). A range not yet begun is left to GetItem when
+	 * its rows, at the share of the window's answered rows the filter left
+	 * out - counted with one more left out and one more taken, so that a
+	 * share of none still lets a range of many rows try a page - would not
+	 * save SWEEP_ROWS_PER_PAGE GetItem calls even in one page. A row whose
+	 * end is in a range still to be read waits for it (the loop's
+	 * sweep_covers()).
+	 *
+	 * eBay out of reach (is_passing_read_failure()): the page is read again
+	 * next run, and SWEEP_FAILS_MAX such failures in a row drop the plan; a
+	 * window that pauses for one starts the count again. Out of calls
+	 * (is_out_of_calls()), or no token, is not counted: the run's listings
+	 * meet the same and pause the window, as before. Anything else is eBay
+	 * refusing the question itself: the plan goes, and no window plans one
+	 * for SWEEP_RETRY_SECONDS. A run PHP kills while it reads a page hands
+	 * on at once, as one killed on a listing does, and the next run drops
+	 * the window's plan rather than be killed by the same page again. The
+	 * free limit reached since the plan was made drops it too: every row
+	 * with nothing here is now held back before its category is asked.
+	 *
+	 * A listing on a page is kept only when the answer says all the filter
+	 * may judge it by (keeps_listing()), and written to the memory learnt
+	 * now, as a full sync's page is, before the first listing, so the run's
+	 * own rows find what it taught. A page with listings and none such
+	 * says the answer leaves out what the filter needs: the plan goes, noted
+	 * as a refusal for SWEEP_RETRY_SECONDS. An empty page ends its range.
+	 *
+	 * @param array $progress         The delta's place: its plan ('sweep')
+	 *                                is moved on here.
+	 * @param array $standard_cats    The filter's eBay categories.
+	 * @param array $valid_custom_ids The filter's store categories.
+	 * @param array $rows             The window's rows the pages may answer
+	 *                                (sweep_rows()): ItemID => true.
+	 * @return array pages (read this run) and listings (kept from them).
+	 */
+	private static function run_category_sweep( array &$progress, array $standard_cats = array(), array $valid_custom_ids = array(), array $rows = array() ) {
+		$plan     = isset( $progress['sweep'] ) && is_array( $progress['sweep'] ) ? array_values( $progress['sweep'] ) : array();
+		$pages    = 0;
+		$listings = 0;
+
+		// The last run was stopped dead while it read a page - out of
+		// memory or time. Read again, the page could stop every run the
+		// same way, so this window asks GetItem, as before.
+		if ( ! empty( $progress['sweep_reading'] ) ) {
+			unset( $progress['sweep_reading'] );
+			if ( $plan ) {
+				$plan = array();
+				TCGiant_Sync_Logger::warning( 'Delta: the last run was stopped while it read eBay\'s list of listings for their categories, so the rest of this window\'s changed listings are asked about one at a time with GetItem, as before.' );
+			}
+		}
+
+		// The free limit reached since the window was planned.
+		if ( $plan && ( self::$limit_reported || ! TCGiant_Sync_Entitlements::instance()->can_import() ) ) {
+			$plan = array();
+		}
+
+		// What the filter may judge a listing by: see keeps_listing().
+		$settings = $plan ? TCGiant_Sync_OAuth::instance()->get_settings() : array();
+		$needs    = array(
+			'store' => is_array( $settings ) && ! empty( $settings['category_ids'] ),
+			'coin'  => (bool) array_intersect( array_map( 'strval', $standard_cats ), array_map( 'strval', array_keys( TCGiant_Sync_Catalog::COIN_PARENT_CATEGORIES ) ) ),
+		);
+		// Whether the seller may have an eBay store, by what the memory
+		// holds: looked at once, and only for a page that does not say.
+		$has_store = null;
+
+		// The window's rows its pages have answered, and how many of those
+		// the filter leaves out: what a range not yet begun is judged by.
+		$asked_all = (int) ( $progress['sweep_asked'] ?? 0 );
+		$saved_all = (int) ( $progress['sweep_saved'] ?? 0 );
+
+		while ( ! empty( $plan ) ) {
+			if ( $pages > 0 && ( $pages >= self::SWEEP_PAGES_PER_RUN || '' !== TCGiant_Sync_Runtime::over_budget() ) ) {
+				break;
+			}
+
+			if ( self::stop_pressed() ) {
+				break;
+			}
+
+			$range = $plan[0];
+
+			// A range not yet begun whose rows, at the share of the window's
+			// answered rows the filter left out (one more each way), would not
+			// save SWEEP_ROWS_PER_PAGE GetItem calls even in one page: left
+			// to GetItem.
+			if ( 1 === max( 1, (int) ( $range['page'] ?? 1 ) ) && $asked_all > 0
+				&& (int) ( $range['rows'] ?? 0 ) * ( $saved_all + 1 ) < self::SWEEP_ROWS_PER_PAGE * ( $asked_all + 2 ) ) {
+				array_shift( $plan );
+				continue;
+			}
+
+			$page  = max( 1, (int) ( $range['page'] ?? 1 ) );
+
+			// Noted before the page is asked for, and cleared once what it
+			// carried is held: a run PHP kills in between hands on at once
+			// (on_delta_death()), and the next drops the plan, above.
+			$progress['sweep_reading'] = 1;
+			self::save_delta_progress( $progress );
+			self::$slice_in_flight = true;
+
+			TCGiant_Sync_Runtime::stage( 'reading eBay\'s list of listings for their categories (GetSellerList)' );
+			$answer = TCGiant_Sync_API::instance()->get_listing_categories( (int) ( $range['from'] ?? 0 ), (int) ( $range['to'] ?? 0 ), $page );
+
+			if ( is_wp_error( $answer ) || ! is_array( $answer ) ) {
+				unset( $progress['sweep_reading'] );
+				self::$slice_in_flight = false;
+				if ( self::is_passing_read_failure( $answer ) ) {
+					// Out of calls, or no token: GetItem meets the same, and
+					// the window waits for it. The list has not failed alone.
+					if ( ! self::is_out_of_calls( $answer ) && 'no_token' !== $answer->get_error_code() ) {
+						$progress['sweep_fails'] = (int) ( $progress['sweep_fails'] ?? 0 ) + 1;
+					}
+					if ( (int) ( $progress['sweep_fails'] ?? 0 ) >= self::SWEEP_FAILS_MAX ) {
+						$plan = array();
+						unset( $progress['sweep_fails'] );
+						TCGiant_Sync_Logger::warning( sprintf(
+							'Delta: eBay\'s list of listings for their categories could not be read %d times in a row (%s), so the rest of this window\'s changed listings are asked about one at a time with GetItem, as before.',
+							self::SWEEP_FAILS_MAX,
+							$answer->get_error_message()
+						) );
+					}
+				} else {
+					$plan = array();
+					update_option( self::SWEEP_REFUSED_OPTION, time(), false );
+					TCGiant_Sync_Logger::warning( sprintf(
+						'Delta: eBay would not send its list of listings for their categories (%s), so the changed listings are asked about one at a time with GetItem, as before. It is not asked again for %d hours.',
+						is_wp_error( $answer ) ? $answer->get_error_message() : 'no answer',
+						(int) round( self::SWEEP_RETRY_SECONDS / 3600 )
+					) );
+				}
+				break;
+			}
+
+			unset( $progress['sweep_fails'] );
+			$pages++;
+
+			$items = $answer['ItemArray']['Item'] ?? array();
+			if ( is_array( $items ) && isset( $items['ItemID'] ) ) {
+				$items = array( $items );
+			}
+			$items = is_array( $items ) ? array_values( array_filter( $items, 'is_array' ) ) : array();
+
+			// A store category on any listing of the page says the seller has
+			// an eBay store. Failing that, a listing with none is kept only
+			// when what is remembered shows the seller has no store: listings
+			// remembered, and not one with a store category. Kept otherwise,
+			// it would read as in no store category to a store filter set
+			// within FRESH_SECONDS.
+			$page_store = false;
+			foreach ( $items as $item ) {
+				if ( ! in_array( TCGiant_Sync_API::scalar_value( $item['Storefront']['StoreCategoryID'] ?? '' ), array( '', '0' ), true ) ) {
+					$page_store = true;
+					break;
+				}
+			}
+			if ( ! $needs['store'] && ! $page_store && $items && null === $has_store ) {
+				$has_store = 'none' !== TCGiant_Sync_Category_Memory::store_evidence();
+			}
+			$store = $needs['store'] || $page_store || true === $has_store;
+
+			// Kept; and the window's rows among them, and how many of those
+			// the filter leaves out: the GetItem calls the page saves.
+			$kept  = array();
+			$asked = 0;
+			$saves = 0;
+			foreach ( $items as $item ) {
+				if ( ! self::keeps_listing( $item, $store, $needs['coin'] ) ) {
+					continue;
+				}
+				$kept[] = $item;
+
+				$item_id = TCGiant_Sync_API::scalar_value( $item['ItemID'] ?? '' );
+				if ( ! isset( $rows[ $item_id ] ) ) {
+					continue;
+				}
+				unset( $rows[ $item_id ] );
+
+				// Its GetItem is paid whatever the page says: not planned.
+				if ( self::find_live_product_for_item( $item_id ) ) {
+					continue;
+				}
+
+				$asked++;
+				if ( ! self::category_filter_takes(
+					$item['PrimaryCategory']['CategoryID'] ?? '',
+					$item['Storefront']['StoreCategoryID'] ?? '',
+					$item['Storefront']['StoreCategory2ID'] ?? '',
+					$standard_cats,
+					$valid_custom_ids,
+					$item['PrimaryCategory']['CategoryName'] ?? ''
+				) ) {
+					$saves++;
+				}
+			}
+			$asked_all  += $asked;
+			$saved_all  += $saves;
+			$range_asked = (int) ( $range['asked'] ?? 0 ) + $asked;
+			$range_saved = (int) ( $range['saved'] ?? 0 ) + $saves;
+
+			TCGiant_Sync_Category_Memory::note_page( $kept );
+			$listings += count( $kept );
+
+			unset( $progress['sweep_reading'] );
+			self::$slice_in_flight = false;
+
+			$total = max( 1, (int) ( $answer['PaginationResult']['TotalNumberOfPages'] ?? 1 ) );
+
+			if ( empty( $kept ) && $items ) {
+				// Listings, and not one it could keep: the answer leaves out
+				// what this shop's filter judges by, and every page of every
+				// range would. The plan goes, and no window reads the list for
+				// SWEEP_RETRY_SECONDS, as when eBay refuses it.
+				$plan = array();
+				update_option( self::SWEEP_REFUSED_OPTION, time(), false );
+				TCGiant_Sync_Logger::warning( sprintf(
+					'Delta: eBay\'s list of listings did not say everything your import settings judge a listing by (%d listings on the page, none kept), so the changed listings are asked about one at a time with GetItem, as before. It is not asked again for %d hours.',
+					count( $items ),
+					(int) round( self::SWEEP_RETRY_SECONDS / 3600 )
+				) );
+			} elseif ( empty( $kept ) ) {
+				// An empty page: the range ends there.
+				array_shift( $plan );
+			} elseif ( $page >= $total ) {
+				array_shift( $plan );
+			} elseif ( $range_saved < $page
+				|| max( 0, (int) ( $range['rows'] ?? 0 ) - $range_asked ) * $range_saved < self::SWEEP_ROWS_PER_PAGE * ( $total - $page ) * $range_asked ) {
+				// Its pages so far have not saved a GetItem each, or its rows
+				// still to come would not save two for each page left: read
+				// on, it would cost more than their GetItem calls.
+				array_shift( $plan );
+				if ( 1 === $page ) {
+					self::note_sweep_band( (int) ( $range['from'] ?? 0 ), (int) ( $range['to'] ?? 0 ), $total );
+				}
+			} else {
+				$plan[0]['page']  = $page + 1;
+				$plan[0]['asked'] = $range_asked;
+				$plan[0]['saved'] = $range_saved;
+			}
+
+			unset( $answer, $items, $kept );
+		}
+
+		// Written now, not with the batch's end: the run's listings look
+		// them up.
+		TCGiant_Sync_Category_Memory::flush();
+
+		$progress['sweep']       = $plan;
+		$progress['sweep_asked'] = $asked_all;
+		$progress['sweep_saved'] = $saved_all;
+		if ( ! $plan ) {
+			unset( $progress['sweep_fails'] );
+		}
+
+		return array(
+			'pages'    => $pages,
+			'listings' => $listings,
+		);
+	}
+
+	/**
+	 * Whether a listing from a page of eBay's list says all the filter may
+	 * judge it by (3.30.1). Anything less and it is not kept: its row gets
+	 * its GetItem, as before, rather than be skipped on what the answer left
+	 * out.
+	 *
+	 * - Its eBay category, always.
+	 * - Its store category, when the filter names store categories or the
+	 *   seller has an eBay store ($store): the memory outlives a change of
+	 *   filter, and a store seller's listing without one would read as in
+	 *   no store category to a store filter set later.
+	 * - When a ticked coin parent decides (3.28.5, $coin): eBay's full path
+	 *   for its category, which names the parent - or says it is under none
+	 *   - whether or not a parent was learnt for that category before (fix
+	 *   round 2): a sweep's answer is trusted on what it says itself.
+	 *
+	 * eBay's call reference gives PrimaryCategory and Storefront at Coarse;
+	 * the path's place there is not spelled out. Without it, a shop with a
+	 * coin parent ticked keeps nothing from the list, and pays GetItem as
+	 * before. A shop that ticks one later relies on it too: a listing kept
+	 * without its path, under another filter, has no parent learnt, and is
+	 * judged by the memory as under none until a GetItem or the weekly full
+	 * sync reads its path.
+	 *
+	 * @param array $item  A listing as the page carries it.
+	 * @param bool  $store Whether its store category is needed.
+	 * @param bool  $coin  Whether a coin parent is ticked.
+	 * @return bool
+	 */
+	private static function keeps_listing( array $item, $store, $coin ) {
+		$category = TCGiant_Sync_API::scalar_value( $item['PrimaryCategory']['CategoryID'] ?? '' );
+		if ( '' === $category ) {
+			return false;
+		}
+
+		if ( $store && '' === TCGiant_Sync_API::scalar_value( $item['Storefront']['StoreCategoryID'] ?? '' ) ) {
+			return false;
+		}
+
+		if ( $coin && false === strpos( TCGiant_Sync_API::scalar_value( $item['PrimaryCategory']['CategoryName'] ?? '' ), ':' ) ) {
+			return false;
+		}
+
+		return true;
+	}
+
+	/**
+	 * The weekly full sync was turned away (3.30.1, the owner's ruling): try
+	 * again in an hour, and hourly after, for at most WEEKLY_RETRY_FOR from
+	 * the first refusal. One retry waits at most. A delta part way through a
+	 * window turned it away until the next week: the category memory, the
+	 * full sync's clean-up and its imports all waited with it.
+	 *
+	 * The weekly event's refusal is always a first one: only a retry carries
+	 * on from the first refusal noted, so a note left behind - its retry
+	 * cleared by a cron clean-up, say - never makes a later week's refusal
+	 * give up at once. Turned away by a full sync already at work, nothing
+	 * is tried again: that one is the week's full sync.
+	 *
+	 * @param mixed $refusal start_full_sync()'s WP_Error.
+	 * @param bool  $retry   Whether a retry was turned away, not the weekly event.
+	 * @return void
+	 */
+	public static function weekly_full_refused( $refusal = null, $retry = false ) {
+		if ( is_wp_error( $refusal ) && 'already_running' === $refusal->get_error_code()
+			&& 'full' === (string) ( self::get_sync_state()['sync_mode'] ?? 'full' ) ) {
+			self::end_weekly_retries();
+			TCGiant_Sync_Logger::log( 'Weekly full sync: a full sync is already at work, and stands for this week\'s; it is not tried again.' );
+			return;
+		}
+
+		$since = $retry ? (int) get_option( self::WEEKLY_RETRY_OPTION, 0 ) : 0;
+		if ( $since <= 0 || $since > time() ) {
+			$since = time();
+			update_option( self::WEEKLY_RETRY_OPTION, $since, false );
+		}
+
+		if ( time() - $since >= self::WEEKLY_RETRY_FOR ) {
+			self::end_weekly_retries();
+			TCGiant_Sync_Logger::warning( 'Weekly full sync: tried hourly for a day and never started, so it waits for next week. Fetch Inventory runs one now.' );
+			return;
+		}
+
+		if ( ! wp_next_scheduled( self::WEEKLY_RETRY_HOOK ) ) {
+			wp_schedule_single_event( time() + HOUR_IN_SECONDS, self::WEEKLY_RETRY_HOOK );
+		}
+
+		TCGiant_Sync_Logger::log( 'Weekly full sync: tries again in an hour.' );
+	}
+
+	/**
+	 * End the weekly full sync's retries: a full sync has started (3.30.1).
+	 *
+	 * @return void
+	 */
+	public static function end_weekly_retries() {
+		wp_clear_scheduled_hook( self::WEEKLY_RETRY_HOOK );
+		delete_option( self::WEEKLY_RETRY_OPTION );
 	}
 
 	/**
@@ -5944,9 +6805,19 @@ class TCGiant_Sync_Importer {
 
 		// And their categories, matched by the filter or not, for the delta
 		// (TCGiant_Sync_Category_Memory): written as the batch ends, by
-		// scan_all_pages(). A page read again adds only what is new on it.
-		// Nothing while the shop does not filter.
+		// scan_all_pages(). Nothing while the shop does not filter.
+		//
+		// A page read again is noted whole as well (3.30.1, the owner's
+		// ruling), but only what this scan has not written already is
+		// written: a batch PHP killed before its end lost what the page
+		// taught, and the page's listings were never learnt in that scan -
+		// and then dropped by after_full_scan() as not seen.
 		TCGiant_Sync_Category_Memory::note_page( array_values( array_intersect_key( $by_id, array_flip( $new_here ) ) ) );
+		$seen_here = array_values( array_diff( $ids_here, $new_here ) );
+		if ( $seen_here ) {
+			$scan_began = strtotime( (string) ( self::get_sync_state()['full_started_at'] ?? '' ) );
+			TCGiant_Sync_Category_Memory::note_page( array_values( array_intersect_key( $by_id, array_flip( $seen_here ) ) ), false !== $scan_began ? (int) $scan_began : 0 );
+		}
 
 		$order = $in_scan ? self::scan_page_order( $progress, $page_number, $ids_here ) : $ids_here;
 		$first = $in_scan ? min( (int) ( $progress['next'] ?? 0 ), count( $order ) ) : 0;

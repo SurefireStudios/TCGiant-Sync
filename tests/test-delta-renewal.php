@@ -750,6 +750,39 @@ $wire->get_active_listings( 1, 200 );
 check( 'GetSellerEvents no longer sends IncludeItemSpecifics, which is not one of its inputs', false !== strpos( $wire->bodies['GetSellerEvents'], 'IncludeItemSpecifics' ), false );
 check( '  but still IncludeVariationSpecifics', false !== strpos( $wire->bodies['GetSellerEvents'], '<IncludeVariationSpecifics>true</IncludeVariationSpecifics>' ), true );
 check( 'GetItem and GetSellerList still do', array( false !== strpos( $wire->bodies['GetItem'], '<IncludeItemSpecifics>true</IncludeItemSpecifics>' ), false !== strpos( $wire->bodies['GetSellerList'], '<IncludeItemSpecifics>true</IncludeItemSpecifics>' ) ), array( true, true ) );
+$wire->get_listing_categories( 1798898400, 1798903800, 3 );
+check( '3.30.1: the list for categories, by end time, at Coarse, 200 a page', $wire->bodies['GetSellerList'], "<ErrorLanguage>en_US</ErrorLanguage>\n<EndTimeFrom>2027-01-02T14:00:00.000Z</EndTimeFrom>\n<EndTimeTo>2027-01-02T15:30:00.000Z</EndTimeTo>\n<GranularityLevel>Coarse</GranularityLevel>\n<Pagination>\n\t<EntriesPerPage>200</EntriesPerPage>\n\t<PageNumber>3</PageNumber>\n</Pagination>" );
+$wire->get_listing_categories( '1798898400<x>', 'y', 0 );
+check( '  whatever it is handed, only times and a page number from 1', $wire->bodies['GetSellerList'], "<ErrorLanguage>en_US</ErrorLanguage>\n<EndTimeFrom>2027-01-02T14:00:00.000Z</EndTimeFrom>\n<EndTimeTo>1970-01-01T00:00:00.000Z</EndTimeTo>\n<GranularityLevel>Coarse</GranularityLevel>\n<Pagination>\n\t<EntriesPerPage>200</EntriesPerPage>\n\t<PageNumber>1</PageNumber>\n</Pagination>" );
+
+echo "\nA MONTHLY RENEWAL THE CATEGORY MEMORY DOES NOT HOLD, THROUGH THE REAL API CLASS (3.30.1)\n" . str_repeat( '=', 130 ) . "\n";
+
+// Listings outside the filter, none here, renewed together, none of them
+// remembered: their categories come from one page of eBay's list. The shop
+// has no eBay store, and the memory shows it (fix round 1): a listing it
+// remembers, with no store category.
+fresh_shop( array( 'import_standard_category_ids' => array( '33563' ) ) );
+TCGiant_Sync_Category_Memory::note( item( '450000000098', array( 'PrimaryCategory' => array( 'CategoryID' => '6030' ) ) ) );
+$tcg_ids = array();
+for ( $i = 0; $i < 30; $i++ ) {
+	$tcg_ids[] = (string) ( 450000000000 + $i );
+	$GLOBALS['EBAY']['items'][ end( $tcg_ids ) ] = item( end( $tcg_ids ), array( 'PrimaryCategory' => array( 'CategoryID' => '6030' ), 'ListingDetails' => array( 'EndTime' => iso( strtotime( $E2 ) + $i ) ) ) );
+}
+$tcg_ids[] = '450000000099';   // and one the filter takes
+$GLOBALS['EBAY']['items']['450000000099'] = item( '450000000099', array( 'ListingDetails' => array( 'EndTime' => iso( strtotime( $E2 ) + 40 ) ) ) );
+$GLOBALS['EBAY']['window'] = $tcg_ids;
+delta();
+check( 'one GetSellerList, its body as eBay\'s server reads it: the rows\' end times, a minute either side', array( count( $EBAY['lists'] ?? array() ), $EBAY['lists'][0] ?? '' ), array( 1, "<ErrorLanguage>en_US</ErrorLanguage>\n<EndTimeFrom>" . iso( strtotime( $E2 ) - 60 ) . "</EndTimeFrom>\n<EndTimeTo>" . iso( strtotime( $E2 ) + 100 ) . "</EndTimeTo>\n<GranularityLevel>Coarse</GranularityLevel>\n<Pagination>\n\t<EntriesPerPage>200</EntriesPerPage>\n\t<PageNumber>1</PageNumber>\n</Pagination>" ) );
+check( '  a GetItem only for the one the filter takes, which is imported', array( $EBAY['get_items'], saves() ), array( array( '450000000099' ), 1 ) );
+check( '  the summary', summary(), 'Delta sync complete! 1 imported, 0 errors out of 31 modified items, 30 skipped (category filter, remembered), 1 GetItem fallbacks, 1 page of eBay\'s listings read for their categories (GetSellerList; 31 listings learnt).' );
+check( '  and eBay asked nothing else', array_values( array_unique( $EBAY['wire'] ) ), array( 'GetSellerList' ) );
+fresh_shop( array( 'import_standard_category_ids' => array( '33563' ) ) );
+foreach ( $tcg_ids as $n => $id ) {
+	$GLOBALS['EBAY']['items'][ $id ] = item( $id, array( 'PrimaryCategory' => array( 'CategoryID' => 30 === $n ? '33563' : '6030' ), 'ListingDetails' => array( 'EndTime' => iso( strtotime( $E2 ) + $n ) ) ) );
+}
+$GLOBALS['EBAY']['window'] = $tcg_ids;
+delta();
+check( '  nothing remembered at all, the list giving no store category: nothing kept from it, a GetItem each, as 3.30.0', array( count( $EBAY['lists'] ?? array() ), count( $EBAY['get_items'] ), saves() ), array( 1, 31, 1 ) );
 
 echo "\nTHE SIGNATURE\n" . str_repeat( '=', 130 ) . "\n";
 
