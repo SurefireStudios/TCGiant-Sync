@@ -80,7 +80,20 @@ parameters:
         # The WordPress stubs type esc_attr()/esc_html() as string-only, but PHP
         # coerces int/float transparently and WordPress documents them as mixed.
         # Casting ~20 template call sites would be pure churn.
-        - '#^Parameter \#1 \$text of function esc_(attr|html) expects string, (int|float)[<>,0-9a-z |]* given\.$#'
+        - '#^Parameter \#1 \$text of function esc_(attr|html) expects string, (int|float)[<>,0-9a-z |-]* given\.$#'
+
+        # The same strictness elsewhere in the stubs: array_filter()'s callback
+        # is typed bool, but PHP keeps any truthy return, so 'strlen' drops
+        # empty strings exactly as intended.
+        - '#^Parameter \#2 \$callback of function array_filter expects \(callable\(string\): bool\)\|null, .strlen. given\.$#'
+
+        # add_option()'s $autoload is typed bool|null in the stubs of the
+        # WordPress that changed it (6.6), but 'yes' and 'no' are still
+        # accepted, and the plugin supports WordPress back to 5.8, which takes
+        # only those.
+        -
+            message: '#^Parameter \#4 \$autoload of function add_option expects bool\|null, string given\.$#'
+            path: includes/class-tcgiant-sync-photo-cleanup.php
 
         # --- Intentional defensive guards ---
         #
@@ -92,10 +105,27 @@ parameters:
         # a safety net to satisfy the analyser is the wrong trade.
         -
             message: '#^Offset .* on array\{.*\} on left side of \?\? always exists and is not nullable\.$#'
-            path: includes/class-tcgiant-sync-exporter.php
+            paths:
+                - includes/class-tcgiant-sync-exporter.php
+                - includes/class-tcgiant-sync-jobs.php
         -
             message: '#^Comparison operation ">" between 50 and 0 is always true\.$#'
             path: includes/class-tcgiant-sync-license.php
+
+        # Guards for code that runs while files are being replaced or across
+        # versions: a shutdown handler during a plugin update can meet an older
+        # TCGiant_Sync_Logger, and a variation can come from a WooCommerce
+        # without get_stock_managed_by_id(). The analyser sees only this tree's
+        # versions.
+        -
+            message: '#^Call to function method_exists\(\) with .* will always evaluate to true\.$#'
+            paths:
+                - includes/class-tcgiant-sync-inventory.php
+                - includes/class-tcgiant-sync-runtime.php
+        # The post here can be one a hook handed over, not only get_post()'s.
+        -
+            message: '#^Property WP_Post::\$post_type \(string\) in isset\(\) is not nullable\.$#'
+            path: includes/class-tcgiant-sync-photo-cleanup.php
 
     treatPhpDocTypesAsCertain: false
     reportUnmatchedIgnoredErrors: false
