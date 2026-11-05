@@ -260,6 +260,28 @@ $progress_pct = $tc_screen['queued_pct'];
 							$backoff_min
 						);
 					?></p>
+					<?php
+					// This site's own daily allowance (3.31.1): past it, every retry
+					// is refused until 00:00 UTC, whatever the backoff above says.
+					$own_allowance = $api_for_display->site_daily_allowance();
+					if ( $own_allowance > 0 ) :
+						?>
+						<p style="margin:0 0 12px;font-size:13px;color:#555;"><?php
+						if ( $daily_calls >= $own_allowance ) {
+							printf(
+								/* translators: 1: this site's daily allowance of eBay calls */
+								esc_html__( 'This site has used its own daily allowance of %1$d eBay calls, which starts again at 00:00 UTC. Until then each retry is refused, and the import carries on after that. eBay\'s orders and sales still come in, and a sale on your website still updates eBay.', 'tcgiant-sync' ),
+								(int) $own_allowance
+							);
+						} else {
+							printf(
+								/* translators: 1: this site's daily allowance of eBay calls */
+								esc_html__( 'This site\'s own daily allowance is %1$d eBay calls, which starts again at 00:00 UTC.', 'tcgiant-sync' ),
+								(int) $own_allowance
+							);
+						}
+						?></p>
+					<?php endif; ?>
 					<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
 						<input type="hidden" name="action" value="tcgiant_resume_sync">
 						<?php wp_nonce_field( 'tcgiant_resume_sync' ); ?>

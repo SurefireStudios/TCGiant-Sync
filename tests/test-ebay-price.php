@@ -23,7 +23,10 @@
  *    its prices alone: Add, Revise and Verify, an auction's opening bid,
  *    each variation's, Best Offer's thresholds that are fractions of the
  *    price - and never an imported live auction's revise (3.28.8), nor a
- *    relist, which keeps eBay's price;
+ *    relist, which keeps eBay's price unless it changed here;
+ *  - 3.31.1: a fixed-price relist sends the eBay price a push would, and
+ *    each variation's, where it is not the price eBay last had; an
+ *    auction's relist never;
  *  - the price is noted as eBay's once eBay takes it, for the import;
  *  - postage an import added is taken off, so a push and an import, round
  *    after round, never grow the price (the import half for real, in
@@ -389,6 +392,7 @@ exporter()->process_single_push( 330 );
 $row = end( TCGiant_Sync_DB::$rows );
 check( 'a push eBay took: 22.00 noted as eBay\'s price, and the Listings row\'s price is the one sent', array( get_post_meta( 330, '_ebay_price_seen', true ), $row['ebay_price'] ?? null, get_post_meta( 330, '_ebay_export_status', true ) ), array( '22.00', 22.0, 'pushed' ) );
 check( '  marked as one the rule made', get_post_meta( 330, '_ebay_price_marked', true ), '1' );
+check( '  and the price sent noted as the basis too: what a push sends now (3.31.1 fix round 1)', get_post_meta( 330, '_ebay_price_basis', true ), '22.00' );
 part_shop();
 exporter()->process_single_push( 330 );
 check( '  pushed again with no rule: 20.00 noted, and no longer marked', array( get_post_meta( 330, '_ebay_price_seen', true ), get_post_meta( 330, '_ebay_price_marked', true ) ), array( '20.00', '' ) );
@@ -769,6 +773,214 @@ check( 'no rule, boxes empty, a rounding that is not one: saved as none, nothing
 check( 'a save with none of the rule\'s settings in it: left alone', TCGiant_Sync_Ebay_Price::check_settings( array( 'marketplace' => 'EBAY_GB', 'ebay_price_tax' => 'auto' ), array() ), array( 'marketplace' => 'EBAY_GB', 'ebay_price_tax' => 'auto' ) );
 check( 'the push form\'s save checks them, and the form shows what was said', array( false !== strpos( $admin_src, '$sanitized = TCGiant_Sync_Ebay_Price::check_settings( $sanitized, $kept );' ), false !== strpos( printed( function () { TCGiant_Sync_Ebay_Price::render_settings_fields( array() ); } ), 'settings-errors-shown' ) ), array( true, true ) );
 
+echo "\nA FIXED-PRICE RELIST SENDS THE EBAY PRICE WHEN IT CHANGED HERE (3.31.1)\n" . str_repeat( '=', 124 ) . "\n";
+
+// Until 3.31.1 RelistFixedPriceItem sent no price: a price changed here
+// while the listing was ended went back up at eBay's old one until the next
+// Update (3.29.0's question 5). Now the eBay price a push would send goes,
+// when it is not the price eBay last had (_ebay_price_seen).
+
+/** An ended listing as GetItem answers it. */
+function ended_answer( $item_id, $type, array $more = array() ) {
+	return array( 'Ack' => 'Success', 'Item' => array_merge( array( 'ItemID' => $item_id, 'ListingType' => $type, 'Quantity' => '2', 'StartPrice' => '12.0', 'SellingStatus' => array( 'QuantitySold' => '0', 'ListingStatus' => 'Completed' ), 'Site' => 'US' ), $more ) );
+}
+/** Bulk Relist (relist_ended_listing()): its answer, and each call, its UUID as <UUID/>. */
+function relist_now( $id, array $answer ) {
+	$GLOBALS['API']->calls              = array();
+	$GLOBALS['API']->answers['GetItem'] = $answer;
+	$res = exporter()->relist_ended_listing( $id, 'Bulk relist' );
+	unset( $GLOBALS['API']->answers['GetItem'] );
+	return array( $res, array_map( function ( $call ) { return array( $call[0], preg_replace( '#<UUID>[0-9a-fA-F]+</UUID>#', '<UUID/>', (string) $call[1] ) ); }, $GLOBALS['API']->calls ) );
+}
+/** A relist's body as RelistFixedPriceItem sends it. */
+function relist_body( $item_id, $quantity, $price = '' ) {
+	return "\n<Item>\n<ItemID>" . $item_id . "</ItemID>\n<UUID/>\n<Quantity>" . $quantity . '</Quantity>' . ( '' !== $price ? "\n<StartPrice>" . $price . '</StartPrice>' : '' ) . "\n</Item>";
+}
+function relist_logged( $words ) {
+	foreach ( $GLOBALS['W']['log'] as $row ) {
+		if ( false !== strpos( $row[1], $words ) ) {
+			return true;
+		}
+	}
+	return false;
+}
+$ENDED = array( '_ebay_listing_type' => 'FixedPriceItem', '_ebay_listing_status' => 'Ended', '_ebay_origin' => 'push', '_ebay_export_status' => 'pushed' );
+part_shop();
+$GLOBALS['W']['log'] = array();
+
+product( 950, array( 'regular_price' => '15.00' ), $ENDED + array( '_ebay_item_id' => '110000000950', '_ebay_price_seen' => '12.00' ) );
+list( $res, $calls ) = relist_now( 950, ended_answer( '110000000950', 'FixedPriceItem' ) );
+check( 'priced 15.00 here, eBay last had 12.00: the relist sends StartPrice 15.00, after the quantity, nothing else added', array( is_array( $res ) ? $res['item_id'] : $res->get_error_code(), array_column( $calls, 0 ), $calls[1][1] ?? null ), array( '110000000001', array( 'GetItem', 'RelistFixedPriceItem' ), relist_body( '110000000950', 2, '15.00' ) ) );
+check( '  noted as eBay\'s price, as a push notes it - not marked, it is the plain regular price', array( get_post_meta( 950, '_ebay_price_seen', true ), get_post_meta( 950, '_ebay_price_marked', true ) ), array( '15.00', '' ) );
+check( '  the log says so', relist_logged( 'Bulk relist: WC #950 relisted on eBay as 110000000001 (was 110000000950), quantity 2, at 15.00, its eBay price changed here since eBay last had it.' ), true );
+update_post_meta( 950, '_ebay_item_id', '110000000951' );
+update_post_meta( 950, '_ebay_listing_status', 'Ended' );
+list( $res, $calls ) = relist_now( 950, ended_answer( '110000000951', 'FixedPriceItem', array( 'StartPrice' => '15.0' ) ) );
+check( '  relisted again with no change since: no StartPrice - the body as before 3.31.1', $calls[1][1] ?? null, relist_body( '110000000951', 2 ) );
+
+product( 952, array( 'regular_price' => '15.00' ), $ENDED + array( '_ebay_item_id' => '110000000952' ) );
+list( $res, $calls ) = relist_now( 952, ended_answer( '110000000952', 'FixedPriceItem' ) );
+check( 'no note of eBay\'s price (nothing pushed or imported since 3.29.0): nothing known to have changed - no StartPrice, as before, and nothing noted', array( $calls[1][1] ?? null, get_post_meta( 952, '_ebay_price_seen', true ) ), array( relist_body( '110000000952', 2 ), '' ) );
+
+product( 953, array( 'regular_price' => '15.00' ), $ENDED + array( '_ebay_item_id' => '110000000953', '_ebay_price_seen' => '15.00' ) );
+list( $res, $calls ) = relist_now( 953, ended_answer( '110000000953', 'FixedPriceItem', array( 'StartPrice' => '17.0' ) ) );
+check( 'the price changed on eBay to 17.00 and not yet read, unchanged here: no StartPrice - eBay keeps the seller\'s 17.00', $calls[1][1] ?? null, relist_body( '110000000953', 2 ) );
+
+product( 954, array( 'regular_price' => '' ), $ENDED + array( '_ebay_item_id' => '110000000954', '_ebay_price_seen' => '15.00' ) );
+list( $res, $calls ) = relist_now( 954, ended_answer( '110000000954', 'FixedPriceItem' ) );
+check( 'no website price at all: no StartPrice - never 0.00', $calls[1][1] ?? null, relist_body( '110000000954', 2 ) );
+
+product( 955, array( 'regular_price' => '15.00' ), $ENDED + array( '_ebay_item_id' => '110000000955', '_ebay_price_seen' => '12.00', '_ebay_export_price' => '19.50' ) );
+list( $res, $calls ) = relist_now( 955, ended_answer( '110000000955', 'FixedPriceItem' ) );
+check( 'its own eBay price, 19.50: that, marked as one the shop set', array( $calls[1][1] ?? null, get_post_meta( 955, '_ebay_price_seen', true ), get_post_meta( 955, '_ebay_price_marked', true ) ), array( relist_body( '110000000955', 2, '19.50' ), '19.50', '1' ) );
+
+product( 956, array( 'regular_price' => '15.00' ), $ENDED + array( '_ebay_item_id' => '110000000956', '_ebay_price_seen' => '12.00', '_ebay_export_price' => '0.50' ) );
+list( $res, $calls ) = relist_now( 956, ended_answer( '110000000956', 'FixedPriceItem' ) );
+check( 'an own eBay price of 0.50: refused before eBay, as a push is, in the push\'s words; nothing noted', array( is_wp_error( $res ) ? $res->get_error_code() : 'relisted', array_column( $calls, 0 ), get_post_meta( 956, '_ebay_price_seen', true ), get_post_meta( 956, '_ebay_item_id', true ) ), array( 'ebay_price_too_low', array( 'GetItem' ), '12.00', '110000000956' ) );
+
+product( 957, array( 'regular_price' => '15.00' ), $ENDED + array( '_ebay_item_id' => '110000000957', '_ebay_price_seen' => '12.00' ) );
+$API->answers['RelistFixedPriceItem'] = new WP_Error( 'api_error', 'Item cannot be relisted.' );
+list( $res, $calls ) = relist_now( 957, ended_answer( '110000000957', 'FixedPriceItem' ) );
+unset( $API->answers['RelistFixedPriceItem'] );
+check( 'eBay refuses the relist: the price was sent, and nothing is noted', array( is_wp_error( $res ) ? $res->get_error_code() : 'relisted', $calls[1][1] ?? null, get_post_meta( 957, '_ebay_price_seen', true ) ), array( 'api_error', relist_body( '110000000957', 2, '15.00' ), '12.00' ) );
+
+part_shop( array( 'ebay_price_rule' => 'percent', 'ebay_price_percent' => '10', 'ebay_price_rounding' => '99' ) );
+product( 958, array( 'regular_price' => '15.00' ), $ENDED + array( '_ebay_item_id' => '110000000958', '_ebay_price_seen' => '16.99', '_ebay_price_marked' => '1' ) );
+list( $res, $calls ) = relist_now( 958, ended_answer( '110000000958', 'FixedPriceItem', array( 'StartPrice' => '16.99' ) ) );
+check( 'under a rule (plus 10%, to .99), eBay last had the rule\'s 16.99: no StartPrice', $calls[1][1] ?? null, relist_body( '110000000958', 2 ) );
+product( 959, array( 'regular_price' => '15.00' ), $ENDED + array( '_ebay_item_id' => '110000000959', '_ebay_price_seen' => '15.00' ) );
+list( $res, $calls ) = relist_now( 959, ended_answer( '110000000959', 'FixedPriceItem', array( 'StartPrice' => '15.0' ) ) );
+check( '  the rule switched on while it was ended, eBay at 15.00: 16.99 sent, and marked as the rule\'s', array( $calls[1][1] ?? null, get_post_meta( 959, '_ebay_price_seen', true ), get_post_meta( 959, '_ebay_price_marked', true ) ), array( relist_body( '110000000959', 2, '16.99' ), '16.99', '1' ) );
+part_shop();
+
+// A variation listing: each variation as eBay has it, at eBay's own price
+// unless the shop's variation's changed here.
+$var = product( 960, array( 'type' => 'variable', 'sku' => 'VAR-960' ), $ENDED + array( '_ebay_item_id' => '110000000960' ), 'Price_Variable' );
+$var->variation_attributes = array( 'size' => array( 'Small', 'Large', 'Huge' ) );
+$var->children             = array( 9601, 9602, 9603 );
+product( 9601, array( 'sku' => 'VAR-960-S', 'size' => 'Small', 'regular_price' => '10.00', 'stock' => 2 ), array( '_ebay_price_seen' => '11.00' ), 'Price_Variation' );
+product( 9602, array( 'sku' => 'VAR-960-L', 'size' => 'Large', 'regular_price' => '13.75', 'stock' => 1 ), array( '_ebay_price_seen' => '13.75' ), 'Price_Variation' );
+product( 9603, array( 'sku' => 'VAR-960-H', 'size' => 'Huge', 'regular_price' => '20.00', 'stock' => 1 ), array(), 'Price_Variation' );
+$ebay_vars = array( 'Variation' => array(
+	array( 'SKU' => 'VAR-960-S', 'StartPrice' => '11.00', 'Quantity' => '2', 'SellingStatus' => array( 'QuantitySold' => '0' ), 'VariationSpecifics' => array( 'NameValueList' => array( 'Name' => 'size', 'Value' => 'Small' ) ) ),
+	array( 'SKU' => 'VAR-960-L', 'StartPrice' => '13.75', 'Quantity' => '1', 'SellingStatus' => array( 'QuantitySold' => '0' ), 'VariationSpecifics' => array( 'NameValueList' => array( 'Name' => 'size', 'Value' => 'Large' ) ) ),
+	array( 'SKU' => 'VAR-960-H', 'StartPrice' => '18.00', 'Quantity' => '1', 'SellingStatus' => array( 'QuantitySold' => '0' ), 'VariationSpecifics' => array( 'NameValueList' => array( 'Name' => 'size', 'Value' => 'Huge' ) ) ),
+) );
+$GLOBALS['W']['log'] = array();
+list( $res, $calls ) = relist_now( 960, ended_answer( '110000000960', 'FixedPriceItem', array( 'Variations' => $ebay_vars ) ) );
+check( 'a variation listing: Small, 10.00 here where eBay last had 11.00, sends 10.00; Large, unchanged, and Huge, with no note, keep eBay\'s 13.75 and 18.00', array( array_column( $calls, 0 ), start_prices( $calls[1][1] ?? '' ) ), array( array( 'GetItem', 'RelistFixedPriceItem' ), array( '10.00', '13.75', '18.00' ) ) );
+check( '  the rest of the body as before 3.31.1: no item StartPrice, each variation\'s SKU, quantity and specifics', without_prices( $calls[1][1] ?? '' ), without_prices( "\n<Item>\n<ItemID>110000000960</ItemID>\n<UUID/>\n<Variations><Variation><SKU>VAR-960-S</SKU><StartPrice>x</StartPrice><Quantity>2</Quantity><VariationSpecifics><NameValueList><Name>size</Name><Value>Small</Value></NameValueList></VariationSpecifics></Variation><Variation><SKU>VAR-960-L</SKU><StartPrice>x</StartPrice><Quantity>1</Quantity><VariationSpecifics><NameValueList><Name>size</Name><Value>Large</Value></NameValueList></VariationSpecifics></Variation><Variation><SKU>VAR-960-H</SKU><StartPrice>x</StartPrice><Quantity>1</Quantity><VariationSpecifics><NameValueList><Name>size</Name><Value>Huge</Value></NameValueList></VariationSpecifics></Variation></Variations>\n</Item>" ) );
+check( '  Small\'s 10.00 noted as eBay\'s; the others as they were', array( get_post_meta( 9601, '_ebay_price_seen', true ), get_post_meta( 9602, '_ebay_price_seen', true ), get_post_meta( 9603, '_ebay_price_seen', true ) ), array( '10.00', '13.75', '' ) );
+check( '  the log names it', relist_logged( 'with the eBay prices changed here since eBay last had them: variation #9601 at 10.00.' ), true );
+
+// Two published variations answering for one of eBay's - both recorded
+// with its SKU, as a product copied before 3.31.0 has them - at different
+// new prices: eBay's own.
+$var = product( 970, array( 'type' => 'variable', 'sku' => 'VAR-970' ), $ENDED + array( '_ebay_item_id' => '110000000970' ), 'Price_Variable' );
+$var->variation_attributes = array( 'size' => array( 'Small' ) );
+$var->children             = array( 9701, 9702 );
+product( 9701, array( 'sku' => 'VAR-970-S', 'size' => 'Small', 'regular_price' => '10.00', 'stock' => 2 ), array( '_ebay_price_seen' => '11.00', '_ebay_variation_sku' => 'EB-970' ), 'Price_Variation' );
+product( 9702, array( 'sku' => 'VAR-970-S2', 'size' => 'Small', 'regular_price' => '9.00', 'stock' => 1 ), array( '_ebay_price_seen' => '11.00', '_ebay_variation_sku' => 'EB-970' ), 'Price_Variation' );
+$one_var = array( 'Variation' => array( array( 'SKU' => 'EB-970', 'StartPrice' => '11.00', 'Quantity' => '2', 'SellingStatus' => array( 'QuantitySold' => '0' ), 'VariationSpecifics' => array( 'NameValueList' => array( 'Name' => 'size', 'Value' => 'Small' ) ) ) ) );
+list( $res, $calls ) = relist_now( 970, ended_answer( '110000000970', 'FixedPriceItem', array( 'Variations' => $one_var ) ) );
+check( 'two of the shop\'s variations for one of eBay\'s, at 10.00 and 9.00: eBay\'s own 11.00, nothing noted', array( start_prices( $calls[1][1] ?? '' ), get_post_meta( 9701, '_ebay_price_seen', true ), get_post_meta( 9702, '_ebay_price_seen', true ) ), array( array( '11.00' ), '11.00', '11.00' ) );
+update_post_meta( 9702, '_ebay_export_price', '10.00' );
+update_post_meta( 970, '_ebay_item_id', '110000000971' );
+update_post_meta( 970, '_ebay_listing_status', 'Ended' );
+list( $res, $calls ) = relist_now( 970, ended_answer( '110000000971', 'FixedPriceItem', array( 'Variations' => $one_var ) ) );
+check( '  both at 10.00 (one by its own eBay price): 10.00, noted on both', array( start_prices( $calls[1][1] ?? '' ), get_post_meta( 9701, '_ebay_price_seen', true ), get_post_meta( 9702, '_ebay_price_seen', true ) ), array( array( '10.00' ), '10.00', '10.00' ) );
+
+// An auction: RelistItem keeps its opening bid, whatever changed here.
+product( 980, array( 'regular_price' => '37.00', 'stock' => 1 ), array( '_ebay_listing_type' => 'Chinese', '_ebay_listing_status' => 'Ended', '_ebay_origin' => 'push', '_ebay_item_id' => '110000000980', '_ebay_price_seen' => '30.00' ) );
+list( $res, $calls ) = relist_now( 980, ended_answer( '110000000980', 'Chinese', array( 'StartPrice' => '30.0', 'Quantity' => '1' ) ) );
+check( 'an auction priced 37.00 here, its opening bid 30.00 on eBay: RelistItem, no StartPrice - its opening bid as it was', array( array_column( $calls, 0 ), start_prices( $calls[1][1] ?? '' ), get_post_meta( 980, '_ebay_price_seen', true ) ), array( array( 'GetItem', 'RelistItem' ), array(), '30.00' ) );
+
+echo "\nFIX ROUND 1: A RELIST SENDS A PRICE ONLY WHEN IT CHANGED HERE SINCE EBAY LAST HAD IT\n" . str_repeat( '=', 124 ) . "\n";
+
+// The review's H1: with Overwrite Price off, an import notes eBay's price
+// and leaves the shop's own, so a shop that keeps 24.50 on eBay, set in
+// Seller Hub, beside 20.00 here had the relist send 20.00 over it. Each
+// note of eBay's price now keeps what a push would have sent then
+// (_ebay_price_basis), and a relist sends a price only when it is neither.
+
+/** An import's note of eBay's price, as the mapper makes it after its own price writes. */
+function imported_at( WC_Product $product, $ebay ) {
+	TCGiant_Sync_Ebay_Price::note_seen( $product, $ebay );
+}
+/** The same product at another price here, its meta as it is, its listing ended again as $item_id. */
+function repriced( $id, $price, $item_id ) {
+	$old  = wc_get_product( $id );
+	$data = ( function () { return $this->data; } )->call( $old );
+	$cls  = get_class( $old );
+	$new  = new $cls( $id, array_merge( $data, array( 'regular_price' => $price ) ) );
+	update_post_meta( $id, '_ebay_item_id', $item_id );
+	update_post_meta( $id, '_ebay_listing_status', 'Ended' );
+	return $new;
+}
+
+part_shop( array( 'overwrite_price' => '0' ) );
+$p1 = product( 990, array( 'regular_price' => '20.00' ), $ENDED + array( '_ebay_item_id' => '110000000990' ) );
+imported_at( $p1, '24.50' );
+check( 'P1, Overwrite Price off: the import notes eBay\'s 24.50 and, beside it, 20.00 - what a push would send', array( get_post_meta( 990, '_ebay_price_seen', true ), get_post_meta( 990, '_ebay_price_basis', true ) ), array( '24.50', '20.00' ) );
+list( $res, $calls ) = relist_now( 990, ended_answer( '110000000990', 'FixedPriceItem', array( 'StartPrice' => '24.5' ) ) );
+check( '  relisted, nothing changed here: no StartPrice - Seller Hub\'s 24.50 kept, the body as before 3.31.1', array( $calls[1][1] ?? null, get_post_meta( 990, '_ebay_price_seen', true ) ), array( relist_body( '110000000990', 2 ), '24.50' ) );
+repriced( 990, '21.00', '110000000991' );
+list( $res, $calls ) = relist_now( 990, ended_answer( '110000000991', 'FixedPriceItem', array( 'StartPrice' => '24.5' ) ) );
+check( '  the shop then prices it 21.00 here: changed here since - 21.00 sent, and noted as both', array( $calls[1][1] ?? null, get_post_meta( 990, '_ebay_price_seen', true ), get_post_meta( 990, '_ebay_price_basis', true ) ), array( relist_body( '110000000991', 2, '21.00' ), '21.00', '21.00' ) );
+
+$p5 = product( 992, array( 'type' => 'variable', 'sku' => 'VAR-992' ), $ENDED + array( '_ebay_item_id' => '110000000992' ), 'Price_Variable' );
+$p5->variation_attributes = array( 'size' => array( 'Small' ) );
+$p5->children             = array( 9921 );
+imported_at( product( 9921, array( 'sku' => 'VAR-992-S', 'size' => 'Small', 'regular_price' => '20.00', 'stock' => 2 ), array(), 'Price_Variation' ), '24.50' );
+$p5_vars = array( 'Variation' => array( array( 'SKU' => 'VAR-992-S', 'StartPrice' => '24.50', 'Quantity' => '2', 'SellingStatus' => array( 'QuantitySold' => '0' ), 'VariationSpecifics' => array( 'NameValueList' => array( 'Name' => 'size', 'Value' => 'Small' ) ) ) ) );
+list( $res, $calls ) = relist_now( 992, ended_answer( '110000000992', 'FixedPriceItem', array( 'Variations' => $p5_vars ) ) );
+check( 'P5, its variation twin: eBay\'s 24.50 kept for the variation', array( start_prices( $calls[1][1] ?? '' ), get_post_meta( 9921, '_ebay_price_basis', true ) ), array( array( '24.50' ), '20.00' ) );
+
+part_shop();
+$on = product( 993, array( 'regular_price' => '24.50' ), $ENDED + array( '_ebay_item_id' => '110000000993' ) );
+imported_at( $on, '24.50' );
+list( $res, $calls ) = relist_now( 993, ended_answer( '110000000993', 'FixedPriceItem', array( 'StartPrice' => '24.5' ) ) );
+check( 'Overwrite Price on: the import wrote eBay\'s 24.50 here, and noted it as both - relisted with nothing changed: no StartPrice', array( get_post_meta( 993, '_ebay_price_basis', true ), $calls[1][1] ?? null ), array( '24.50', relist_body( '110000000993', 2 ) ) );
+repriced( 993, '26.00', '110000000994' );
+list( $res, $calls ) = relist_now( 993, ended_answer( '110000000994', 'FixedPriceItem', array( 'StartPrice' => '24.5' ) ) );
+check( '  priced 26.00 here since: sent', $calls[1][1] ?? null, relist_body( '110000000994', 2, '26.00' ) );
+
+product( 995, array( 'regular_price' => '15.00' ), $ENDED + array( '_ebay_item_id' => '110000000995' ) );
+TCGiant_Sync_Ebay_Price::record_sent( null, array( 995 => '12.00' ) );
+check( 'a push\'s note: the price sent, as eBay\'s and as the basis', array( get_post_meta( 995, '_ebay_price_seen', true ), get_post_meta( 995, '_ebay_price_basis', true ) ), array( '12.00', '12.00' ) );
+list( $res, $calls ) = relist_now( 995, ended_answer( '110000000995', 'FixedPriceItem' ) );
+check( '  priced 15.00 here since the push: sent', $calls[1][1] ?? null, relist_body( '110000000995', 2, '15.00' ) );
+
+// A note from before fix round 1: eBay's price, no basis.
+foreach ( array( '1' => 'on', '0' => 'off' ) as $setting => $label ) {
+	part_shop( array( 'overwrite_price' => $setting ) );
+	product( 996, array( 'regular_price' => '15.00' ), $ENDED + array( '_ebay_item_id' => '110000000996', '_ebay_price_seen' => '12.00' ) );
+	list( $res, $calls ) = relist_now( 996, ended_answer( '110000000996', 'FixedPriceItem' ) );
+	$legacy[ $label ] = $calls[1][1] ?? null;
+}
+check( 'a legacy note (no basis), 15.00 here, eBay 12.00: Overwrite Price on - the import writes eBay\'s price here, so the difference is a change here: sent; off - eBay\'s kept', $legacy, array( 'on' => relist_body( '110000000996', 2, '15.00' ), 'off' => relist_body( '110000000996', 2 ) ) );
+part_shop();
+
+// L1 (P3): a plain price below 0.99, which a push sends for eBay to judge,
+// keeps eBay's on a relist, as before 3.31.1, rather than one eBay refuses.
+product( 997, array( 'regular_price' => '0.50' ), $ENDED + array( '_ebay_item_id' => '110000000997', '_ebay_price_seen' => '0.99', '_ebay_price_basis' => '0.99' ) );
+list( $res, $calls ) = relist_now( 997, ended_answer( '110000000997', 'FixedPriceItem', array( 'StartPrice' => '0.99' ) ) );
+check( 'P3, 0.50 here with no rule, eBay last 0.99: relisted, no StartPrice - eBay\'s 0.99, as before 3.31.1', array( is_array( $res ) ? 'relisted' : $res->get_error_code(), $calls[1][1] ?? null, get_post_meta( 997, '_ebay_price_seen', true ) ), array( 'relisted', relist_body( '110000000997', 2 ), '0.99' ) );
+
+// L5: the only variation of the shop's answering for one of eBay's is a
+// retired (private) one: never its price - eBay's own.
+$var = product( 998, array( 'type' => 'variable', 'sku' => 'VAR-998' ), $ENDED + array( '_ebay_item_id' => '110000000998' ), 'Price_Variable' );
+$var->variation_attributes = array( 'size' => array( 'Small', 'Large' ) );
+$var->children             = array( 9981, 9982 );
+product( 9981, array( 'sku' => 'VAR-998-S', 'size' => 'Small', 'regular_price' => '9.50', 'stock' => 2, 'status' => 'private' ), array( '_ebay_price_seen' => '11.00', '_ebay_price_basis' => '11.00' ), 'Price_Variation' );
+product( 9982, array( 'sku' => 'VAR-998-L', 'size' => 'Large', 'regular_price' => '13.75', 'stock' => 1 ), array( '_ebay_price_seen' => '13.75', '_ebay_price_basis' => '13.75' ), 'Price_Variation' );
+$l5_vars = array( 'Variation' => array(
+	array( 'SKU' => 'VAR-998-S', 'StartPrice' => '11.00', 'Quantity' => '2', 'SellingStatus' => array( 'QuantitySold' => '0' ), 'VariationSpecifics' => array( 'NameValueList' => array( 'Name' => 'size', 'Value' => 'Small' ) ) ),
+	array( 'SKU' => 'VAR-998-L', 'StartPrice' => '13.75', 'Quantity' => '1', 'SellingStatus' => array( 'QuantitySold' => '0' ), 'VariationSpecifics' => array( 'NameValueList' => array( 'Name' => 'size', 'Value' => 'Large' ) ) ),
+) );
+list( $res, $calls ) = relist_now( 998, ended_answer( '110000000998', 'FixedPriceItem', array( 'Variations' => $l5_vars ) ) );
+check( 'L5, a retired (private) variation 9.50 here answering for eBay\'s Small: eBay\'s 11.00 kept, nothing noted', array( start_prices( $calls[1][1] ?? '' ), get_post_meta( 9981, '_ebay_price_seen', true ) ), array( array( '11.00', '13.75' ), '11.00' ) );
+
 echo "\nEVERY PRICE A REQUEST CARRIES COMES FROM THE ONE HELPER\n" . str_repeat( '=', 124 ) . "\n";
 
 $builders = array();
@@ -786,13 +998,15 @@ foreach ( array_merge( glob( $ROOT . '/includes/*.php' ), glob( $ROOT . '/admin/
 		$builders[] = basename( $file ) . ': sends a ' . $file;
 	}
 }
-check( 'three places put a StartPrice in a request: the item\'s, each variation\'s, and a relist\'s variations at eBay\'s own', $builders, array(
-	'class-tcgiant-sync-exporter.php: . \'<StartPrice>\' . esc_xml( $ev[\'start_price\'] ) . \'</StartPrice>\'',
+check( 'four places put a StartPrice in a request: the item\'s, each variation\'s, a relist\'s variations\', and a fixed-price relist\'s own where it changed here (3.31.1)', $builders, array(
+	'class-tcgiant-sync-api.php: . ( \'\' !== (string) $start_price ? "\n<StartPrice>" . esc_xml( (string) $start_price ) . \'</StartPrice>\' : \'\' )',
+	'class-tcgiant-sync-exporter.php: . \'<StartPrice>\' . esc_xml( $price ) . \'</StartPrice>\'',
 	'class-tcgiant-sync-exporter.php: $xml .= \'<StartPrice>\' . esc_attr( $price ) . \'</StartPrice>\' . "\n";',
 	'class-tcgiant-sync-exporter.php: $xml        .= "\t\t<StartPrice>" . esc_attr( $child_price ) . "</StartPrice>\n";',
 ) );
 $exporter_src = (string) file_get_contents( $ROOT . '/includes/class-tcgiant-sync-exporter.php' );
 check( '  the item\'s and each variation\'s from TCGiant_Sync_Ebay_Price::for_product(), and no regular price read for a body', array( substr_count( $exporter_src, '$price               = TCGiant_Sync_Ebay_Price::for_product( $product );' ), substr_count( $exporter_src, '$child_price = TCGiant_Sync_Ebay_Price::for_product( $child );' ), substr_count( $exporter_src, 'get_regular_price()' ) ), array( 1, 1, 1 ) );
+check( '  a relist\'s from for_product() too, by relist_price(), only where it is not the price eBay last had; eBay\'s own otherwise', array( substr_count( $exporter_src, '$price = TCGiant_Sync_Ebay_Price::for_product( $product );' ), substr_count( $exporter_src, '$seen = TCGiant_Sync_Ebay_Price::seen( $product );' ), substr_count( $exporter_src, '$price = $ev[\'start_price\'];' ), substr_count( $exporter_src, 'self::relist_price(' ) ), array( 1, 1, 1, 2 ) );
 check( '  the one regular price read left is the Listings row\'s, where no price was sent', false !== strpos( $exporter_src, '$price = $result[\'prices\'][ $product_id ] ?? $product->get_regular_price();' ), true );
 
 done();

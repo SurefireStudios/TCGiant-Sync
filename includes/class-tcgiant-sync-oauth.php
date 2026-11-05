@@ -1282,7 +1282,36 @@ class TCGiant_Sync_OAuth {
 			// kept whatever happens to the token below.
 			if ( isset( $body['remaining_budget'] ) ) {
 				$date_key = $calls_date;
-				set_transient( 'tcgiant_relay_budget_' . $date_key, array(
+
+				// An answer that says this site is capped reports the fleet
+				// as spent (the relay, 2026-11-03), which tells older plugins
+				// to stop. The sales reads that may still go past this site's
+				// own allowance (TCGiant_Sync_API::SALES_READS, 3.31.1 fix
+				// round 1) judge the fleet by the last true figure of this UTC
+				// day: the answer before, if it was true, or the one it
+				// carried.
+				//
+				// For the rest of that day, however old (fix round 2): the
+				// answer is kept under the day, so the next day starts with
+				// none, and an answer that is not capped replaces it with a
+				// true figure. A refresh comes only once the two-hour token has
+				// expired and a call needs it, so two refreshes are normally a
+				// little over two hours apart, and an age limit of two hours
+				// dropped the figure at the second capped refresh - the sales
+				// reads then stopped two to four hours after the site capped.
+				// Other shops' calls since that figure are not seen; what that
+				// can cost is bounded by sales_reads_margin(), per site and day.
+				$fleet = array();
+				$kept  = get_transient( 'tcgiant_relay_budget_' . $date_key );
+				if ( ! empty( $body['site_capped'] ) && is_array( $kept ) ) {
+					if ( empty( $kept['site_capped'] ) && isset( $kept['global_calls'], $kept['local_calls'] ) ) {
+						$fleet = array( 'fleet_calls' => (int) $kept['global_calls'], 'fleet_local' => (int) $kept['local_calls'] );
+					} elseif ( isset( $kept['fleet_calls'], $kept['fleet_local'] ) ) {
+						$fleet = array( 'fleet_calls' => (int) $kept['fleet_calls'], 'fleet_local' => (int) $kept['fleet_local'] );
+					}
+				}
+
+				set_transient( 'tcgiant_relay_budget_' . $date_key, $fleet + array(
 					'remaining'    => (int) $body['remaining_budget'],
 					'global_calls' => (int) ( $body['global_api_calls'] ?? 0 ),
 					'daily_limit'  => (int) ( $body['daily_limit'] ?? 50000 ),

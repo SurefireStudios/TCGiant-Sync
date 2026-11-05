@@ -14,9 +14,15 @@
  * Here the real TCGiant_Sync_Exporter, TCGiant_Sync_Identifiers,
  * TCGiant_Sync_Motors and TCGiant_Sync_API push, with eBay played
  * (support/motors-api.php): each listing call with the site header the real
- * API class would send it with, and the two metadata reads this adds -
- * GetCategoryFeatures and GeteBayDetails - recorded apart, as "Call@site",
- * with their bodies, and answered by site (support/template-world.php).
+ * API class would send it with, and the metadata read this adds -
+ * GeteBayDetails - recorded apart, as "Call@site", with its body, and
+ * answered by site (support/template-world.php).
+ *
+ * 3.31.1: GetCategoryFeatures, which 3.30.3 asked too, answered eBay's live
+ * API with no XML at all on 2026-11-04, and is asked no more. A category's
+ * requirement is its item specifics' (an aspect named UPC, EAN or ISBN that
+ * eBay requires) and what eBay's own refusals taught; what 3.30.3 kept of
+ * GetCategoryFeatures' answers is deleted once, and nothing logs it.
  *
  * Proved:
  *  - request bodies on eBay US (a UPC; "Does not apply"), eBay Motors (the
@@ -32,13 +38,14 @@
  *    for that refusal, once, and never with the setting off; said with each
  *    error's severity (fix round 2);
  *  - fix round 2: a variation's own WooCommerce GTIN only, never its
- *    parent's; GetCategoryFeatures not asked again for a day after a
- *    failure, and never once the category is learnt; a 14-digit GTIN not
- *    sent, the product taken as having none, said once; Check with eBay's
- *    words for the push's own refusal;
+ *    parent's; a 14-digit GTIN not sent, the product taken as having none,
+ *    said once; Check with eBay's words for the push's own refusal;
  *  - the refusal before eBay, and a product's own choice over the setting;
- *  - the two reads: their bodies, their sites, kept a week, an hour when
- *    they fail, eBay's documented text when GeteBayDetails cannot answer;
+ *  - GeteBayDetails: its body, its site, kept a week, an hour when it
+ *    fails, eBay's documented text when it cannot answer;
+ *  - 3.31.1: GetCategoryFeatures asked by no push, Verify, Update or relist
+ *    here, nor anywhere in the plugin; its kept answers deleted once, by
+ *    their own LIKE patterns, and never read; its log line gone;
  *  - the item specifics: a UPC there is the product's; a required UPC
  *    aspect is the identifier's, not refused as a missing attribute;
  *  - the fields and the setting save; the import still reads an identifier,
@@ -112,7 +119,10 @@ class Id_Variation extends WC_Product_Variation {
 class Queue_API extends Motors_API {
 	/** @var array Call name => answers, the next one first. */
 	public $queue = array();
+	/** @var string[] Every Trading call this harness saw made, all along (3.31.1). */
+	public $asked = array();
 	public function trading_api_request( $call_name, $xml_body, $allow_retry = true, $max_body_bytes = 0 ) {
+		$this->asked[] = $call_name;
 		if ( ! empty( $this->queue[ $call_name ] ) ) {
 			$this->sites[] = $call_name . '@' . $this->request_site_id();
 			$this->calls[] = array( $call_name, $xml_body );
@@ -182,17 +192,18 @@ function fresh_ebay() {
 	$GLOBALS['W']['log']        = array();
 	delete_option( TCGiant_Sync_Motors::OPTION );
 }
-/** GetCategoryFeatures' answer for a category: TYPE => Disabled, Enabled or Required. */
-function features( $category, array $types, array $defaults = array() ) {
-	$node = array( 'CategoryID' => (string) $category );
-	foreach ( $types as $type => $says ) {
-		$node[ $type . 'Enabled' ] = $says;
+/**
+ * The category's item specifics, as getItemAspectsForCategory gives them:
+ * these identifiers as aspects eBay requires (3.31.1: what a category's
+ * requirement is, with eBay's own refusals), beside the Brand every item
+ * here has.
+ */
+function requires( array $types ) {
+	$aspects = array( array( 'name' => 'Brand', 'required' => true ) );
+	foreach ( $types as $type ) {
+		$aspects[] = array( 'name' => $type, 'required' => true );
 	}
-	$site = array();
-	foreach ( $defaults as $type => $says ) {
-		$site[ $type . 'Enabled' ] = $says;
-	}
-	return array( 'Ack' => 'Success', 'Category' => $node, 'SiteDefaults' => $site );
+	return $aspects;
 }
 /** GeteBayDetails' ProductDetails answer. */
 function details( $text ) {
@@ -215,10 +226,15 @@ function push( WC_Product $product ) {
 	$res = private_method( 'TCGiant_Sync_Exporter', 'do_push' )->invoke( exporter(), $product );
 	return array( $res, $GLOBALS['API']->sites, array_map( function ( $l ) { return $l[0]; }, $GLOBALS['API']->lookups ), $GLOBALS['API']->calls );
 }
-/** Verify's item, as the eBay tab's Verify builds it. */
+/** Verify's item, as the eBay tab's Verify builds it - in a request of its own, with no push's item specifics read before it. */
 function verify_item( WC_Product $product ) {
 	$GLOBALS['API']->lookups = array();
 	$exporter = exporter();
+	$read     = new ReflectionProperty( 'TCGiant_Sync_Exporter', 'aspects_read' );
+	if ( PHP_VERSION_ID < 80100 ) {
+		$read->setAccessible( true );
+	}
+	$read->setValue( $exporter, array() );
 	$settings = $exporter->settle_motors( $exporter->get_export_settings( $product->get_id() ), true );
 	return $exporter->build_item_xml_public( $product, $settings );
 }
@@ -266,8 +282,8 @@ echo "\nEBAY US: A UPC, AND EBAY'S \"DOES NOT APPLY\" WHERE ONE IS REQUIRED\n" .
 
 shop( 'EBAY_US', '31387' );
 fresh_ebay();
-$API->lookup_answers['GetCategoryFeatures@0'] = features( '31387', array( 'UPC' => 'Required', 'EAN' => 'Enabled', 'ISBN' => 'Disabled' ) );
-$API->lookup_answers['GeteBayDetails@0']      = details( 'Does not apply' );
+$API->aspects                            = requires( array( 'UPC' ) );
+$API->lookup_answers['GeteBayDetails@0'] = details( 'Does not apply' );
 
 list( $res, $sites, $looked, $calls ) = push( item( 101, array( '_ebay_export_identifier' => '036000291452' ) ) );
 check( 'a product with its UPC: listed, the UPC in ProductListingDetails, with IncludeeBayProductDetails false', array( code_of( $res ), $sites, pld( $calls[0][1] ?? '' ) ), array( 'created', array( 'AddFixedPriceItem@0' ), $UPC_PLD ) );
@@ -275,22 +291,20 @@ check( '  nothing asked of eBay for it: a product with an identifier needs no re
 check( '  placed after the item specifics', strpos( $calls[0][1], '</ItemSpecifics>' ) < strpos( $calls[0][1], '<ProductListingDetails>' ), true );
 
 list( $res, $sites, $looked, $calls ) = push( item( 102 ) );
-check( 'one with none, in a category that requires a UPC: eBay asked which it requires, and its text for "none"', array( code_of( $res ), $sites, $looked ), array( 'created', array( 'AddFixedPriceItem@0' ), array( 'GetCategoryFeatures@0', 'GeteBayDetails@0' ) ) );
+check( 'one with none, in a category whose item specifics require a UPC: eBay asked only its text for "none" - never GetCategoryFeatures (3.31.1)', array( code_of( $res ), $sites, $looked ), array( 'created', array( 'AddFixedPriceItem@0' ), array( 'GeteBayDetails@0' ) ) );
 check( '  sent eBay\'s "Does not apply" for the UPC, and nothing for EAN or ISBN', pld( $calls[0][1] ?? '' ), $DNA_PLD );
-check( '  GetCategoryFeatures\' request, byte for byte', $API->lookups[0][1], "<CategoryID>31387</CategoryID>\n<AllFeaturesForCategory>true</AllFeaturesForCategory>\n<ViewAllNodes>true</ViewAllNodes>\n<DetailLevel>ReturnAll</DetailLevel>\n<FeatureID>UPCEnabled</FeatureID>\n<FeatureID>EANEnabled</FeatureID>\n<FeatureID>ISBNEnabled</FeatureID>" );
-check( '  GeteBayDetails\' request, byte for byte', $API->lookups[1][1], '<DetailName>ProductDetails</DetailName>' );
+check( '  GeteBayDetails\' request, byte for byte', $API->lookups[0][1], '<DetailName>ProductDetails</DetailName>' );
 check( '  said once, as info', logged( 'Push: WC #102 has no UPC, EAN or ISBN, and eBay requires UPC in category 31387, so eBay\'s own "Does not apply" was sent for it.' ), 'info' );
-check( '  and that eBay requires it, as learnt', logged( 'Product identifiers: eBay requires UPC in category 31387 on site 0 (GetCategoryFeatures), kept a week.' ), 'info' );
+check( '  and no GetCategoryFeatures line: 3.30.3\'s "eBay requires ... (GetCategoryFeatures), kept a week." is gone', logged( '(GetCategoryFeatures)' ), null );
 $dna_body = (string) ( $calls[0][1] ?? '' );
 
 list( $res, $sites, $looked, $calls ) = push( item( 103 ) );
-check( 'a second in the same category: nothing asked again, kept a week', array( code_of( $res ), $looked, pld( $calls[0][1] ?? '' ) ), array( 'created', array(), $DNA_PLD ) );
-check( '  kept under the site and the category, a week', array( isset( $GLOBALS['W']['transients']['tcgiant_gtin_req_0_31387'] ), $GLOBALS['W']['transients']['tcgiant_gtin_req_0_31387']['types'] ?? null, $GLOBALS['W']['transients']['tcgiant_gtin_text_0']['text'] ?? null ), array( true, array( 'EAN' => 'Enabled', 'ISBN' => 'Disabled', 'UPC' => 'Required' ), 'Does not apply' ) );
-$kept = $GLOBALS['W']['transients']['tcgiant_gtin_req_0_31387'];
-$GLOBALS['W']['transients']['tcgiant_gtin_req_0_31387'] = array( 'types' => array( 'EAN' => 'Enabled', 'ISBN' => 'Disabled', 'UPC' => 'Enabled' ) );
+check( 'a second in the same category: nothing asked again, eBay\'s text kept a week', array( code_of( $res ), $looked, pld( $calls[0][1] ?? '' ) ), array( 'created', array(), $DNA_PLD ) );
+check( '  nothing kept of GetCategoryFeatures, the text under the site', array( isset( $GLOBALS['W']['transients']['tcgiant_gtin_req_0_31387'] ), $GLOBALS['W']['transients']['tcgiant_gtin_text_0']['text'] ?? null ), array( false, 'Does not apply' ) );
+$API->aspects = requires( array() );
 list( $res, , , $calls ) = push( item( 102 ) );
-check( '  the same product where none is required: the same body, byte for byte, without ProductListingDetails', array( pld( $calls[0][1] ?? '' ), no_uuid( $calls[0][1] ?? '' ) === no_uuid( without_pld( $dna_body ) ) ), array( null, true ) );
-$GLOBALS['W']['transients']['tcgiant_gtin_req_0_31387'] = $kept;
+check( '  the same product where the item specifics require none: the same body, byte for byte, without ProductListingDetails', array( pld( $calls[0][1] ?? '' ), no_uuid( $calls[0][1] ?? '' ) === no_uuid( without_pld( $dna_body ) ) ), array( null, true ) );
+$API->aspects = requires( array( 'UPC' ) );
 
 $body = verify_item( item( 104 ) );
 check( 'Verify sends the same as a new listing', pld( $body ), $DNA_PLD );
@@ -318,11 +332,11 @@ echo "\nTHE SHOP'S CASE: EBAY US, AN EBAY MOTORS PARTS & ACCESSORIES CATEGORY\n"
 
 shop( 'EBAY_US', '33564' );
 fresh_ebay();
-$API->lookup_answers['GetCategoryFeatures@100'] = features( '33564', array( 'UPC' => 'Required', 'EAN' => 'Disabled', 'ISBN' => 'Disabled' ) );
-$API->lookup_answers['GeteBayDetails@100']      = details( 'Does not apply' );
+$API->tree_aspects['100']['33564']         = requires( array( 'UPC' ) );
+$API->lookup_answers['GeteBayDetails@100'] = details( 'Does not apply' );
 list( $res, $sites, $looked, $calls ) = push( item( 201 ) );
-check( 'a caliper with no UPC in 33564: listed on eBay Motors with "Does not apply" for the UPC', array( code_of( $res ), $sites, pld( $calls[0][1] ?? '' ) ), array( 'created', array( 'AddFixedPriceItem@100' ), $DNA_PLD ) );
-check( '  the category asked about on eBay Motors\' site, 100, where it is', $looked, array( 'GetCategoryFeatures@100', 'GeteBayDetails@100' ) );
+check( 'a caliper with no UPC in 33564, eBay Motors\' item specifics requiring one: listed on eBay Motors with "Does not apply" for the UPC', array( code_of( $res ), $sites, pld( $calls[0][1] ?? '' ) ), array( 'created', array( 'AddFixedPriceItem@100' ), $DNA_PLD ) );
+check( '  eBay Motors\' text asked of its site, 100, where it is; nothing else', $looked, array( 'GeteBayDetails@100' ) );
 list( $res, $sites, $looked, $calls ) = push( item( 202, array( '_ebay_export_identifier' => '036000291452' ) ) );
 check( '  one with its UPC: the UPC', array( code_of( $res ), pld( $calls[0][1] ?? '' ), $looked ), array( 'created', $UPC_PLD, array() ) );
 
@@ -331,30 +345,30 @@ echo "\nEBAY GERMANY AND THE UK: AN EAN, AND EBAY'S OWN WORDS FOR NONE\n" . str_
 
 shop( 'EBAY_DE', '9355', array( 'export_location' => 'Berlin', 'export_postal_code' => '10115' ) );
 fresh_ebay();
-$API->lookup_answers['GetCategoryFeatures@77'] = features( '9355', array( 'EAN' => 'Required', 'UPC' => 'Disabled' ), array( 'ISBN' => 'Disabled' ) );
+$API->aspects = requires( array( 'EAN' ) );
 // GeteBayDetails' answer for eBay Germany kept from an earlier push.
 set_transient( 'tcgiant_gtin_text_77', array( 'text' => 'Nicht zutreffend' ), 604800 );
 list( $res, $sites, $looked, $calls ) = push( item( 301, array( '_ebay_export_identifier' => '4006381333931' ) ) );
 check( 'eBay Germany, a product with its EAN: AddFixedPriceItem with 77, the EAN', array( code_of( $res ), $sites, pld( $calls[0][1] ?? '' ) ), array( 'created', array( 'AddFixedPriceItem@77' ), "\t<EAN>4006381333931</EAN>\n\t<IncludeeBayProductDetails>false</IncludeeBayProductDetails>\n" ) );
 list( $res, $sites, $looked, $calls ) = push( item( 302 ) );
 check( '  one with none: eBay Germany\'s own "Nicht zutreffend" for the EAN, from the GeteBayDetails answer kept', array( code_of( $res ), pld( $calls[0][1] ?? '' ) ), array( 'created', "\t<EAN>Nicht zutreffend</EAN>\n\t<IncludeeBayProductDetails>false</IncludeeBayProductDetails>\n" ) );
-check( '  only the category asked about, on site 77; ISBN from the site\'s defaults', array( $looked, $GLOBALS['W']['transients']['tcgiant_gtin_req_77_9355']['types'] ?? null ), array( array( 'GetCategoryFeatures@77' ), array( 'EAN' => 'Required', 'ISBN' => 'Disabled', 'UPC' => 'Disabled' ) ) );
+check( '  nothing asked of site 77: the text kept, the requirement the item specifics\'', array( $looked, isset( $GLOBALS['W']['transients']['tcgiant_gtin_req_77_9355'] ) ), array( array(), false ) );
 
 shop( 'EBAY_GB', '9355', array( 'export_location' => 'Leeds', 'export_postal_code' => 'LS1 1AA' ) );
 fresh_ebay();
-$API->lookup_answers['GetCategoryFeatures@3'] = features( '9355', array( 'EAN' => 'Required' ) );
-$API->lookup_answers['GeteBayDetails@3']      = details( 'Does not apply' );
+$API->aspects                            = requires( array( 'EAN' ) );
+$API->lookup_answers['GeteBayDetails@3'] = details( 'Does not apply' );
 list( $res, $sites, $looked, $calls ) = push( item( 311, array( '_ebay_export_identifier' => '5012345678900' ) ) );
 check( 'eBay UK, an EAN: listed with 3, the EAN', array( code_of( $res ), $sites, pld( $calls[0][1] ?? '' ) ), array( 'created', array( 'AddFixedPriceItem@3' ), "\t<EAN>5012345678900</EAN>\n\t<IncludeeBayProductDetails>false</IncludeeBayProductDetails>\n" ) );
 list( $res, , $looked, $calls ) = push( item( 312 ) );
-check( '  none: "Does not apply" for the EAN, eBay UK\'s words, asked of site 3', array( pld( $calls[0][1] ?? '' ), $looked ), array( "\t<EAN>Does not apply</EAN>\n\t<IncludeeBayProductDetails>false</IncludeeBayProductDetails>\n", array( 'GetCategoryFeatures@3', 'GeteBayDetails@3' ) ) );
+check( '  none: "Does not apply" for the EAN, eBay UK\'s words, asked of site 3', array( pld( $calls[0][1] ?? '' ), $looked ), array( "\t<EAN>Does not apply</EAN>\n\t<IncludeeBayProductDetails>false</IncludeeBayProductDetails>\n", array( 'GeteBayDetails@3' ) ) );
 
 shop( 'EBAY_IT', '9355', array( 'export_location' => 'Roma', 'export_postal_code' => '00100' ) );
 fresh_ebay();
-$API->lookup_answers['GetCategoryFeatures@101'] = features( '9355', array( 'EAN' => 'Required' ) );
-$API->lookup_answers['GeteBayDetails@101']      = new WP_Error( 'api_error', 'GeteBayDetails has been decommissioned.' );
+$API->aspects                              = requires( array( 'EAN' ) );
+$API->lookup_answers['GeteBayDetails@101'] = new WP_Error( 'api_error', 'GeteBayDetails has been decommissioned.' );
 list( $res, , $looked, $calls ) = push( item( 321 ) );
-check( 'eBay Italy with GeteBayDetails gone: eBay\'s documented "Non applicabile"', array( code_of( $res ), pld( $calls[0][1] ?? '' ), $looked ), array( 'created', "\t<EAN>Non applicabile</EAN>\n\t<IncludeeBayProductDetails>false</IncludeeBayProductDetails>\n", array( 'GetCategoryFeatures@101', 'GeteBayDetails@101' ) ) );
+check( 'eBay Italy with GeteBayDetails gone: eBay\'s documented "Non applicabile"', array( code_of( $res ), pld( $calls[0][1] ?? '' ), $looked ), array( 'created', "\t<EAN>Non applicabile</EAN>\n\t<IncludeeBayProductDetails>false</IncludeeBayProductDetails>\n", array( 'GeteBayDetails@101' ) ) );
 list( , , $looked ) = push( item( 322 ) );
 check( '  not asked again within the hour', $looked, array() );
 unset( $GLOBALS['W']['transients']['tcgiant_gtin_text_101'] );
@@ -367,7 +381,7 @@ echo "\nA BOOK, A VARIATION LISTING, AND CATEGORIES THAT REQUIRE NONE OR DO NOT 
 
 shop( 'EBAY_US', '261186' );
 fresh_ebay();
-$API->lookup_answers['GetCategoryFeatures@0'] = features( '261186', array( 'ISBN' => 'Required', 'UPC' => 'Enabled', 'EAN' => 'Enabled' ) );
+$API->aspects = requires( array( 'ISBN' ) );
 list( $res, , $looked, $calls ) = push( item( 401, array( '_ebay_export_identifier' => '978-0-306-40615-7' ) ) );
 check( 'a book with its ISBN-13 (978...): sent as the ISBN', array( code_of( $res ), pld( $calls[0][1] ?? '' ), $looked ), array( 'created', "\t<ISBN>9780306406157</ISBN>\n\t<IncludeeBayProductDetails>false</IncludeeBayProductDetails>\n", array() ) );
 list( $res, , , $calls ) = push( item( 402, array( '_ebay_export_identifier' => '0-306-40615-2' ) ) );
@@ -378,8 +392,8 @@ check( '  a book with none: "Does not apply" for the ISBN alone', pld( $calls[0]
 // A variation listing: each variation its own, in its Variation.
 shop( 'EBAY_US', '31387' );
 fresh_ebay();
-$API->lookup_answers['GetCategoryFeatures@0'] = features( '31387', array( 'UPC' => 'Required' ) );
-$API->lookup_answers['GeteBayDetails@0']      = details( 'Does not apply' );
+$API->aspects                            = requires( array( 'UPC' ) );
+$API->lookup_answers['GeteBayDetails@0'] = details( 'Does not apply' );
 $var = item( 500, array(), array( 'type' => 'variable', 'sku' => 'VAR-500' ), 'Id_Variable' );
 $var->variation_attributes = array( 'size' => array( 'Small', 'Large', 'Huge' ) );
 $var->children             = array( 5001, 5002, 5003 );
@@ -404,32 +418,25 @@ item( 5102, array(), array( 'sku' => 'VAR-510-L', 'size' => 'Large', 'attributes
 list( $res, , , $calls ) = push( $var );
 check( 'variations with EANs where a UPC is required: the EAN, and nothing for the one with none - never a UPC beside EANs', array( code_of( $res ), vpld( $calls[0][1] ?? '' ) ), array( 'created', array( 'VAR-510-S' => "\t\t\t<EAN>4006381333931</EAN>\n", 'VAR-510-L' => null ) ) );
 
-// A category that requires none, and one eBay could not say for.
+// A category that requires none, and one whose item specifics cannot be read.
 shop( 'EBAY_US', '31388' );
 fresh_ebay();
-$API->lookup_answers['GetCategoryFeatures@0'] = features( '31388', array( 'UPC' => 'Enabled', 'EAN' => 'Enabled', 'ISBN' => 'Disabled' ) );
+$API->aspects = requires( array() );
 list( $res, , $looked, $calls ) = push( item( 601 ) );
-check( 'a category that requires none: nothing sent, asked once', array( code_of( $res ), pld( $calls[0][1] ?? '' ), $looked ), array( 'created', null, array( 'GetCategoryFeatures@0' ) ) );
+check( 'a category whose item specifics require none: nothing sent, nothing asked', array( code_of( $res ), pld( $calls[0][1] ?? '' ), $looked ), array( 'created', null, array() ) );
 list( $res, , $looked, $calls ) = push( item( 602, array( '_ebay_export_identifier' => '036000291452' ) ) );
 check( '  one with a UPC there: the UPC still goes', pld( $calls[0][1] ?? '' ), $UPC_PLD );
 
 shop( 'EBAY_US', '31389' );
 fresh_ebay();
-$API->lookup_answers['GetCategoryFeatures@0'] = new WP_Error( 'api_error', 'GetCategoryFeatures is no longer supported.' );
+$API->tree_aspects['0']['31389'] = motors_error( 62004 );
 list( $res, , $looked, $calls ) = push( item( 611 ) );
-check( 'eBay cannot say what the category requires: nothing sent, nothing refused - eBay judges, as before 3.30.3', array( code_of( $res ), pld( $calls[0][1] ?? '' ), $looked ), array( 'created', null, array( 'GetCategoryFeatures@0' ) ) );
-list( , , $looked ) = push( item( 612 ) );
-check( '  not asked again within the hour', array( $looked, $GLOBALS['W']['transients']['tcgiant_gtin_req_0_31389'] ?? null ), array( array(), array( 'failed' => 1 ) ) );
-$API->lookup_answers['GetCategoryFeatures@0'] = array( 'Ack' => 'Success', 'Category' => array( 'CategoryID' => '99999', 'UPCEnabled' => 'Required' ) );
-unset( $GLOBALS['W']['transients']['tcgiant_gtin_req_0_31389'] );
-list( $res, , , $calls ) = push( item( 613 ) );
-check( '  an answer with no node for the category: none known, nothing sent', array( pld( $calls[0][1] ?? '' ), $GLOBALS['W']['transients']['tcgiant_gtin_req_0_31389']['types'] ?? null ), array( null, array( 'EAN' => '', 'ISBN' => '', 'UPC' => '' ) ) );
+check( 'the item specifics cannot be read, nothing learnt: none known - nothing sent, nothing refused, nothing asked; eBay judges, as before 3.30.3', array( code_of( $res ), pld( $calls[0][1] ?? '' ), $looked ), array( 'created', null, array() ) );
 
-// The category's item specifics say UPC is required, GetCategoryFeatures does not.
+// The category's item specifics say UPC is required.
 shop( 'EBAY_US', '31390' );
 fresh_ebay();
 $API->aspects = array( array( 'name' => 'UPC', 'required' => true ), array( 'name' => 'Brand', 'required' => true ) );
-$API->lookup_answers['GetCategoryFeatures@0'] = features( '31390', array( 'UPC' => 'Enabled' ) );
 list( $res, , , $calls ) = push( item( 621 ) );
 check( 'a required UPC aspect: not refused as a missing attribute, and "Does not apply" sent', array( code_of( $res ), pld( $calls[0][1] ?? '' ) ), array( 'created', $DNA_PLD ) );
 $reads_none = count( array_keys( $API->rest, 'aspects:0:31390', true ) );
@@ -442,7 +449,6 @@ check( '  "Does not apply" typed as an item specific: the same', array( code_of(
 shop( 'EBAY_US', '31391' );
 fresh_ebay();
 $API->aspects = array( array( 'name' => 'UPC', 'required' => false, 'selection' => 'RECOMMENDED' ), array( 'name' => 'Brand', 'required' => true ) );
-$API->lookup_answers['GetCategoryFeatures@0'] = features( '31391', array( 'UPC' => 'Enabled' ) );
 list( $res, , , $calls ) = push( item( 625 ) );
 check( 'a UPC aspect eBay recommends, not requires: nothing sent', array( code_of( $res ), pld( $calls[0][1] ?? '' ) ), array( 'created', null ) );
 $API->aspects = array();
@@ -452,10 +458,10 @@ echo "\nTHE SETTING OFF: REFUSED BEFORE EBAY, UNLESS THE PRODUCT SAYS IT HAS NON
 
 shop( 'EBAY_US', '31387', array( 'export_identifier_unavailable' => '0' ) );
 fresh_ebay();
-$API->lookup_answers['GetCategoryFeatures@0'] = features( '31387', array( 'UPC' => 'Required' ) );
-$API->lookup_answers['GeteBayDetails@0']      = details( 'Does not apply' );
+$API->aspects                            = requires( array( 'UPC' ) );
+$API->lookup_answers['GeteBayDetails@0'] = details( 'Does not apply' );
 list( $res, $sites, $looked ) = push( item( 701 ) );
-check( 'none, required, the setting off: refused before eBay, in 3.28.5\'s words', array( code_of( $res ), $sites, $looked ), array( 'missing_export_settings', array(), array( 'GetCategoryFeatures@0' ) ) );
+check( 'none, required, the setting off: refused before eBay, in 3.28.5\'s words, nothing asked', array( code_of( $res ), $sites, $looked ), array( 'missing_export_settings', array(), array() ) );
 check( '  saying what to do', message_of( $res ), 'Cannot push to eBay — missing required settings: Product Identifier — eBay requires UPC in category 31387, and this product has none: enter it in Product Identifier on the product\'s eBay tab, or tick "This product has no UPC, EAN or ISBN" there, or choose to send eBay\'s "Does not apply" in Settings, Push to eBay Settings' );
 $exporter = exporter();
 $exporter->build_item_xml_public( item( 702 ), $exporter->settle_motors( $exporter->get_export_settings( 702 ), true ) );
@@ -464,8 +470,7 @@ list( $res, $sites, , $calls ) = push( item( 703, array( '_ebay_export_identifie
 check( 'the product ticked as having none: "Does not apply", whatever Settings says', array( code_of( $res ), $sites, pld( $calls[0][1] ?? '' ) ), array( 'created', array( 'AddFixedPriceItem@0' ), $DNA_PLD ) );
 list( $res, , , $calls ) = push( item( 704, array( '_ebay_export_identifier' => '036000291452' ) ) );
 check( 'one with its UPC: listed with it', array( code_of( $res ), pld( $calls[0][1] ?? '' ) ), array( 'created', $UPC_PLD ) );
-$API->lookup_answers['GetCategoryFeatures@0'] = features( '31387', array( 'UPC' => 'Enabled' ) );
-unset( $GLOBALS['W']['transients']['tcgiant_gtin_req_0_31387'] );
+$API->aspects = requires( array() );
 list( $res, , , $calls ) = push( item( 705 ) );
 check( 'none, not required: listed with nothing, never refused', array( code_of( $res ), pld( $calls[0][1] ?? '' ) ), array( 'created', null ) );
 
@@ -474,8 +479,7 @@ $var->variation_attributes = array( 'size' => array( 'Small', 'Large' ) );
 $var->children             = array( 7101, 7102 );
 item( 7101, array( '_ebay_export_identifier' => '036000291452' ), array( 'sku' => 'VAR-710-S', 'size' => 'Small', 'attributes' => array() ), 'Id_Variation' );
 item( 7102, array(), array( 'sku' => 'VAR-710-L', 'size' => 'Large', 'attributes' => array() ), 'Id_Variation' );
-$API->lookup_answers['GetCategoryFeatures@0'] = features( '31387', array( 'UPC' => 'Required' ) );
-unset( $GLOBALS['W']['transients']['tcgiant_gtin_req_0_31387'] );
+$API->aspects = requires( array( 'UPC' ) );
 list( $res, $sites ) = push( $var );
 check( 'a variation with none, the setting off: refused, naming it', array( code_of( $res ), $sites, false !== strpos( message_of( $res ), 'variation #7102 has none' ) ), array( 'missing_export_settings', array(), true ) );
 
@@ -484,7 +488,7 @@ echo "\nUPDATES SEND NONE, PUSHED OR IMPORTED (FIX ROUND 1)\n" . str_repeat( '='
 
 shop( 'EBAY_US', '31387' );
 fresh_ebay();
-$API->lookup_answers['GetCategoryFeatures@0'] = features( '31387', array( 'UPC' => 'Required' ) );
+$API->aspects = requires( array( 'UPC' ) );
 $pushed = array( '_ebay_item_id' => '110000000801', '_ebay_site' => 'US', '_ebay_origin' => 'push', '_ebay_export_status' => 'pushed', '_ebay_export_last_pushed' => '2026-10-31 10:00:00', '_ebay_listing_type' => 'FixedPriceItem', '_ebay_listing_status' => 'Active' );
 list( $res, $sites, $looked, $calls ) = push( item( 801, $pushed + array( '_ebay_export_identifier' => '036000291452' ) ) );
 check( 'a pushed listing\'s Update: no identifier, even its own UPC - as before 3.30.3', array( code_of( $res ), $sites, pld( $calls[0][1] ?? '' ), $looked ), array( 'updated', array( 'ReviseFixedPriceItem@0' ), null, array() ) );
@@ -511,36 +515,34 @@ $API->answers = array();
 // ─────────────────────────────────────────────────────────────────────────────
 echo "\nEBAY'S OWN REFUSAL FOR A MISSING UPC, EAN OR ISBN: LEARNT, AND SENT ONCE MORE (FIX ROUND 1)\n" . str_repeat( '=', 124 ) . "\n";
 
-// GetCategoryFeatures does not answer, and the aspects say nothing: not known.
+// The item specifics say nothing of it: not known.
 shop( 'EBAY_US', '31392' );
 fresh_ebay();
-$API->lookup_answers['GetCategoryFeatures@0'] = new WP_Error( 'api_error', 'GetCategoryFeatures is no longer supported.' );
-$API->lookup_answers['GeteBayDetails@0']      = details( 'Does not apply' );
-$API->queue['AddFixedPriceItem']              = array( ebay_refusal( array( $CUSTOMER ) ) );
+$API->lookup_answers['GeteBayDetails@0'] = details( 'Does not apply' );
+$API->queue['AddFixedPriceItem']         = array( ebay_refusal( array( $CUSTOMER ) ) );
 list( $res, $sites, $looked, $calls ) = push( item( 1001 ) );
 check( 'the shop\'s own error, "' . $CUSTOMER . '": listed by a second Add', array( code_of( $res ), $sites ), array( 'created', array( 'AddFixedPriceItem@0', 'AddFixedPriceItem@0' ) ) );
 check( '  the first sent none, the second eBay\'s "Does not apply" for the UPC', array( pld( $calls[0][1] ?? '' ), pld( $calls[1][1] ?? '' ) ), array( null, $DNA_PLD ) );
 check( '  the second otherwise the first, byte for byte, with a UUID of its own', array( no_uuid( without_pld( $calls[1][1] ?? '' ) ) === no_uuid( $calls[0][1] ?? '' ), preg_match( '#<UUID>(\w+)</UUID>#', $calls[0][1] ?? '', $u1 ) && preg_match( '#<UUID>(\w+)</UUID>#', $calls[1][1] ?? '', $u2 ) && $u1[1] !== $u2[1] ), array( true, true ) );
-check( '  eBay asked only GetCategoryFeatures (which failed), then its text for none', $looked, array( 'GetCategoryFeatures@0', 'GeteBayDetails@0' ) );
+check( '  eBay asked only its text for none, after the refusal', $looked, array( 'GeteBayDetails@0' ) );
 check( '  learnt for the category on site 0, a week', $GLOBALS['W']['transients']['tcgiant_gtin_learnt_0_31392'] ?? null, array( 'UPC' ) );
 check( '  said: what eBay taught, and the second Add', array( logged( 'Product identifiers: eBay refused a listing in category 31392 on site 0 for a missing UPC; kept a week' ), logged( 'Push: eBay refused WC #1001 for a missing UPC (Error: The UPC field is missing. Please add UPC to the listing and try again.), so it was sent once more with eBay\'s own "Does not apply" for it.' ) ), array( 'info', 'info' ) );
 list( $res, $sites, $looked, $calls ) = push( item( 1002 ) );
 check( 'the next product in the category: "Does not apply" the first time, one Add, nothing asked', array( code_of( $res ), $sites, pld( $calls[0][1] ?? '' ), $looked ), array( 'created', array( 'AddFixedPriceItem@0' ), $DNA_PLD, array() ) );
 
-// The shop's case: eBay Motors, GetCategoryFeatures gone.
+// The shop's case: eBay Motors, whose item specifics for 33564 name Brand
+// alone (fresh_ebay()).
 shop( 'EBAY_US', '33564' );
 fresh_ebay();
-$API->lookup_answers['GetCategoryFeatures@100'] = new WP_Error( 'api_error', 'GetCategoryFeatures is no longer supported.' );
-$API->lookup_answers['GeteBayDetails@100']      = details( 'Does not apply' );
-$API->queue['AddFixedPriceItem']                = array( ebay_refusal( array( $CUSTOMER ) ) );
-list( $res, $sites, , $calls ) = push( item( 1011 ) );
-check( 'the shop\'s case, 33564 on eBay Motors with GetCategoryFeatures gone: refused, then listed with "Does not apply"', array( code_of( $res ), $sites, pld( $calls[0][1] ?? '' ), pld( $calls[1][1] ?? '' ), $GLOBALS['W']['transients']['tcgiant_gtin_learnt_100_33564'] ?? null ), array( 'created', array( 'AddFixedPriceItem@100', 'AddFixedPriceItem@100' ), null, $DNA_PLD, array( 'UPC' ) ) );
+$API->lookup_answers['GeteBayDetails@100'] = details( 'Does not apply' );
+$API->queue['AddFixedPriceItem']           = array( ebay_refusal( array( $CUSTOMER ) ) );
+list( $res, $sites, $looked, $calls ) = push( item( 1011 ) );
+check( 'the shop\'s case, 33564 on eBay Motors, its item specifics silent on the UPC: refused, then listed with "Does not apply", learnt', array( code_of( $res ), $sites, pld( $calls[0][1] ?? '' ), pld( $calls[1][1] ?? '' ), $GLOBALS['W']['transients']['tcgiant_gtin_learnt_100_33564'] ?? null, $looked ), array( 'created', array( 'AddFixedPriceItem@100', 'AddFixedPriceItem@100' ), null, $DNA_PLD, array( 'UPC' ), array( 'GeteBayDetails@100' ) ) );
 
 // Only that refusal, only once.
 shop( 'EBAY_US', '31393' );
 fresh_ebay();
-$API->lookup_answers['GetCategoryFeatures@0'] = features( '31393', array( 'UPC' => 'Enabled' ) );
-$API->queue['AddFixedPriceItem']              = array( new WP_Error( 'api_error', $CUSTOMER ) );
+$API->queue['AddFixedPriceItem'] = array( new WP_Error( 'api_error', $CUSTOMER ) );
 list( $res, $sites ) = push( item( 1021 ) );
 check( 'the refusal with its words alone (no Errors with it): the same', array( code_of( $res ), $sites ), array( 'created', array( 'AddFixedPriceItem@0', 'AddFixedPriceItem@0' ) ) );
 foreach ( array(
@@ -551,8 +553,7 @@ foreach ( array(
 ) as $label => $refusal ) {
 	shop( 'EBAY_US', '31394' );
 	fresh_ebay();
-	$API->lookup_answers['GetCategoryFeatures@0'] = features( '31394', array( 'UPC' => 'Enabled' ) );
-	$API->queue['AddFixedPriceItem']              = array( $refusal );
+	$API->queue['AddFixedPriceItem'] = array( $refusal );
 	list( $res, $sites ) = push( item( 1031 ) );
 	check( 'no second Add for ' . $label . ': eBay\'s answer stands, nothing learnt', array( code_of( $res ), $sites, $GLOBALS['W']['transients']['tcgiant_gtin_learnt_0_31394'] ?? null ), array( $refusal->get_error_code(), array( 'AddFixedPriceItem@0' ), null ) );
 }
@@ -656,12 +657,12 @@ $exporter_src = (string) file_get_contents( dirname( __DIR__ ) . '/includes/clas
 check( '  relist_ended_listing() asks nothing of the identifiers (the source)', 0 === preg_match( '/Identifiers::/', substr( $exporter_src, strpos( $exporter_src, 'public function relist_ended_listing(' ), 20000 ) ), true );
 
 // ─────────────────────────────────────────────────────────────────────────────
-echo "\nFIX ROUND 2: A VARIATION'S OWN GTIN, THE FAILED READ, A 14-DIGIT GTIN, THE ERRORS SAID\n" . str_repeat( '=', 124 ) . "\n";
+echo "\nFIX ROUND 2: A VARIATION'S OWN GTIN, A REFUSAL TEACHES THE CATEGORY, A 14-DIGIT GTIN, THE ERRORS SAID\n" . str_repeat( '=', 124 ) . "\n";
 
 // M1: the parent's GTIN, which a variation's getter could give it in 'view'.
 shop( 'EBAY_US', '31399' );
 fresh_ebay();
-$API->lookup_answers['GetCategoryFeatures@0'] = features( '31399', array( 'UPC' => 'Required' ) );
+$API->aspects = requires( array( 'UPC' ) );
 $var = item( 1200, array(), array( 'type' => 'variable', 'sku' => 'VAR-1200', 'gtin' => '036000291452' ), 'Id_Variable' );
 $var->variation_attributes = array( 'size' => array( 'Small', 'Large' ) );
 $var->children             = array( 12001, 12002 );
@@ -671,21 +672,17 @@ check( 'a variation\'s getter offers its parent\'s GTIN in "view" (as played)', 
 list( $res, , , $calls ) = push( $var );
 check( '  a variation with none of its own: "Does not apply", never its parent\'s code; one with its own: its own', array( code_of( $res ), vpld( $calls[0][1] ?? '' ) ), array( 'created', array( 'VAR-1200-S' => "\t\t\t<UPC>012345678905</UPC>\n", 'VAR-1200-L' => "\t\t\t<UPC>Does not apply</UPC>\n" ) ) );
 
-// L1: a failed GetCategoryFeatures kept a day; never asked once learnt.
+// L1 (3.31.1): GetCategoryFeatures is never asked; eBay's refusal teaches
+// the category.
 shop( 'EBAY_US', '31400' );
 fresh_ebay();
-$API->lookup_answers['GetCategoryFeatures@0'] = new WP_Error( 'api_error', 'GetCategoryFeatures is no longer supported.' );
 list( , , $looked ) = push( item( 1210 ) );
-check( 'GetCategoryFeatures failing: asked once, its failure kept a day', array( $looked, $GLOBALS['W']['transients']['tcgiant_gtin_req_0_31400'] ?? null, $GLOBALS['W']['expiry']['tcgiant_gtin_req_0_31400'] ?? null ), array( array( 'GetCategoryFeatures@0' ), array( 'failed' => 1 ), 86400 ) );
-list( , , $looked ) = push( item( 1211 ) );
-check( '  not asked again within it', $looked, array() );
+check( 'a product with none where the item specifics say nothing: nothing asked, nothing kept for the category', array( $looked, isset( $GLOBALS['W']['transients']['tcgiant_gtin_req_0_31400'] ) ), array( array(), false ) );
 $API->queue['AddFixedPriceItem'] = array( ebay_refusal( array( $CUSTOMER ) ) );
-unset( $GLOBALS['W']['transients']['tcgiant_gtin_req_0_31400'] );
 list( $res, $sites, $looked ) = push( item( 1212 ) );
-check( '  the day over, eBay\'s refusal teaches the category (one more read, then the Add sent once more)', array( code_of( $res ), $sites, $looked ), array( 'created', array( 'AddFixedPriceItem@0', 'AddFixedPriceItem@0' ), array( 'GetCategoryFeatures@0', 'GeteBayDetails@0' ) ) );
-unset( $GLOBALS['W']['transients']['tcgiant_gtin_req_0_31400'] );
+check( '  eBay\'s refusal teaches the category: its text asked, the Add sent once more', array( code_of( $res ), $sites, $looked ), array( 'created', array( 'AddFixedPriceItem@0', 'AddFixedPriceItem@0' ), array( 'GeteBayDetails@0' ) ) );
 list( $res, $sites, $looked, $calls ) = push( item( 1213 ) );
-check( '  learnt: GetCategoryFeatures never asked again, failure kept or not; "Does not apply" the first time', array( code_of( $res ), $sites, $looked, pld( $calls[0][1] ?? '' ) ), array( 'created', array( 'AddFixedPriceItem@0' ), array(), $DNA_PLD ) );
+check( '  learnt: "Does not apply" the first time, nothing asked', array( code_of( $res ), $sites, $looked, pld( $calls[0][1] ?? '' ) ), array( 'created', array( 'AddFixedPriceItem@0' ), array(), $DNA_PLD ) );
 check( '  GeteBayDetails\' failure is still kept an hour', ( function () {
 	fresh_ebay();
 	$GLOBALS['API']->lookup_answers['GeteBayDetails@0'] = new WP_Error( 'api_error', 'GeteBayDetails has been decommissioned.' );
@@ -696,7 +693,7 @@ check( '  GeteBayDetails\' failure is still kept an hour', ( function () {
 // L5: a 14-digit GTIN is none of eBay's identifier types.
 shop( 'EBAY_US', '31401' );
 fresh_ebay();
-$API->lookup_answers['GetCategoryFeatures@0'] = features( '31401', array( 'UPC' => 'Required' ) );
+$API->aspects = requires( array( 'UPC' ) );
 list( $res, , , $calls ) = push( item( 1220, array(), array( 'gtin' => '00036000291452' ) ) );
 check( 'a 14-digit GTIN in WooCommerce\'s field: not sent, the product taken as having none - "Does not apply"', array( code_of( $res ), pld( $calls[0][1] ?? '' ) ), array( 'created', $DNA_PLD ) );
 $gtin14_said = function () {
@@ -742,11 +739,17 @@ check( '  a declared type wins; an unknown one does not', array( TCGiant_Sync_Id
 check( 'stand-ins for none, any case, eBay\'s localised ones too', array_map( array( 'TCGiant_Sync_Identifiers', 'is_placeholder' ), array( 'Does not apply', 'N/A', ' none ', 'Nicht zutreffend', 'NON APPLICABILE', 'No aplicable', 'Non applicable', 'Niet van toepassing', 'Nie dotyczy', '-', '', '036000291452' ) ), array( true, true, true, true, true, true, true, true, true, true, true, false ) );
 check( 'the setting: on when never saved, off only at "0"', array( TCGiant_Sync_Identifiers::sends_unavailable( array() ), TCGiant_Sync_Identifiers::sends_unavailable( array( 'export_identifier_unavailable' => '1' ) ), TCGiant_Sync_Identifiers::sends_unavailable( array( 'export_identifier_unavailable' => '0' ) ) ), array( true, true, false ) );
 check( 'eBay\'s documented text for every site the plugin lists on, and eBay Motors', array_map( function ( $id ) { return TCGiant_Sync_Identifiers::UNAVAILABLE_TEXT[ $id ] ?? null; }, array( '0', '2', '3', '15', '77', '71', '101', '186', '100' ) ), array( 'Does not apply', 'Does not apply', 'Does not apply', 'Does not apply', 'Nicht zutreffend', 'Non applicable', 'Non applicabile', 'No aplicable', 'Does not apply' ) );
-check( 'GetCategoryFeatures\' answer read from a list of nodes, the site\'s default for one left out', ( function () {
-	$api = $GLOBALS['API'];
-	$api->lookup_answers['GetCategoryFeatures@0'] = array( 'Ack' => 'Success', 'Category' => array( array( 'CategoryID' => '5', 'UPCEnabled' => 'Disabled' ), array( 'CategoryID' => '7', 'UPCEnabled' => 'Required', 'EANEnabled' => 'Optional' ) ), 'SiteDefaults' => array( 'ISBNEnabled' => 'Enabled', 'UPCEnabled' => 'Disabled' ) );
-	return $api->get_identifier_features( '7', '0' );
-} )(), array( 'EAN' => '', 'ISBN' => 'Enabled', 'UPC' => 'Required' ) );
+check( 'the requirement: the item specifics\' required aspects and what eBay\'s refusals taught, nothing else (3.31.1)', ( function () {
+	fresh_ebay();
+	$GLOBALS['API']->lookups = array();
+	$settings                = array( 'category_id' => '31405' );
+	$one      = TCGiant_Sync_Identifiers::required_types( $settings, requires( array( 'ISBN' ) ) );
+	$none     = TCGiant_Sync_Identifiers::required_types( $settings, null );
+	$error    = TCGiant_Sync_Identifiers::required_types( $settings, motors_error( 62004 ) );
+	set_transient( 'tcgiant_gtin_learnt_0_31405', array( 'UPC' ), 604800 );
+	$both = TCGiant_Sync_Identifiers::required_types( $settings, requires( array( 'ISBN' ) ) );
+	return array( $one, $none, $error, $both, $GLOBALS['API']->lookups );
+} )(), array( array( 'ISBN' ), array(), array(), array( 'ISBN', 'UPC' ), array() ) );
 
 // The import still reads an identifier, and takes eBay's own texts for none.
 $placeholder = new ReflectionMethod( 'TCGiant_Sync_Mapper', 'is_placeholder_identifier' );
@@ -829,5 +832,63 @@ item( 1241 );
 $API->queue['VerifyAddFixedPriceItem'] = array( ebay_refusal( array( $CUSTOMER ) ) );
 list( $ok, $said, $sites ) = check_with_ebay( 1241 );
 check( '  the setting on: checked once more with "Does not apply", and accepted', array( $ok, $sites ), array( true, array( 'VerifyAddFixedPriceItem@0', 'VerifyAddFixedPriceItem@0' ) ) );
+
+// ─────────────────────────────────────────────────────────────────────────────
+echo "\nGETCATEGORYFEATURES IS ASKED NO MORE, AND WHAT 3.30.3 KEPT OF IT GOES (3.31.1)\n" . str_repeat( '=', 124 ) . "\n";
+
+// On 2026-11-04, on eBay's live API, it answered with no XML at all, every
+// time: "eBay Trading API Error: Invalid XML Response.".
+check( 'in every push, Verify, Update, relist and check above: GetCategoryFeatures never asked; GeteBayDetails still is', array( count( $API->asked ) > 100, in_array( 'GetCategoryFeatures', $API->asked, true ), in_array( 'GeteBayDetails', $API->asked, true ) ), array( true, false, true ) );
+$plugin_src = '';
+foreach ( array_merge( glob( dirname( __DIR__ ) . '/includes/*.php' ), glob( dirname( __DIR__ ) . '/admin/*.php' ), glob( dirname( __DIR__ ) . '/admin/views/*.php' ), array( dirname( __DIR__ ) . '/tcgiant-sync.php', dirname( __DIR__ ) . '/uninstall.php' ) ) as $tcg_file ) {
+	$plugin_src .= (string) file_get_contents( $tcg_file );
+}
+check( '  nor anywhere in the plugin: no request names it; get_identifier_features() and features() are gone', array( preg_match( '/[\'"]GetCategoryFeatures[\'"]/', $plugin_src ), method_exists( 'TCGiant_Sync_API', 'get_identifier_features' ), method_exists( 'TCGiant_Sync_Identifiers', 'features' ) ), array( 0, false, false ) );
+check( '  and its log line, "... (GetCategoryFeatures), kept a week.", is gone', strpos( $plugin_src, '(GetCategoryFeatures), kept a week.' ), false );
+
+/** LIKE as MySQL reads it: % any run, _ any one character, \ the next as itself. */
+function sql_like( $pattern, $subject ) {
+	$re = '';
+	for ( $i = 0, $n = strlen( $pattern ); $i < $n; $i++ ) {
+		$c = $pattern[ $i ];
+		if ( '\\' === $c && $i + 1 < $n ) {
+			$re .= preg_quote( $pattern[ ++$i ], '/' );
+		} elseif ( '%' === $c ) {
+			$re .= '.*';
+		} elseif ( '_' === $c ) {
+			$re .= '.';
+		} else {
+			$re .= preg_quote( $c, '/' );
+		}
+	}
+	return 1 === preg_match( '/^' . $re . '$/s', $subject );
+}
+/** The database as the clean-up asks it: each statement recorded. */
+class Forget_DB extends Template_World_DB {
+	public $queries = array();
+	public function query( $query ) {
+		$this->queries[] = $query;
+		return 4;
+	}
+}
+$tcg_was_db      = $GLOBALS['wpdb'];
+$GLOBALS['wpdb'] = new Forget_DB();
+delete_option( 'tcgiant_sync_gtin_req_forgotten' );
+TCGiant_Sync_Identifiers::forget_category_features();
+$first = $GLOBALS['wpdb']->queries;
+check( 'at the update: one DELETE of the options table, recorded as done', array( count( $first ), $first[0][0] ?? null, get_option( 'tcgiant_sync_gtin_req_forgotten' ) ), array( 1, 'DELETE FROM wp_options WHERE option_name LIKE %s OR option_name LIKE %s', '3.31.1' ) );
+$names = array( '_transient_tcgiant_gtin_req_0_31387', '_transient_timeout_tcgiant_gtin_req_0_31387', '_transient_tcgiant_gtin_req_100_33564', '_transient_timeout_tcgiant_gtin_req_77_9355', '_transient_tcgiant_gtin_text_0', '_transient_timeout_tcgiant_gtin_text_0', '_transient_tcgiant_gtin_learnt_0_31392', '_transient_tcgiant_gtin14_1220', '_transient_tcgiantxgtinxreqx0_1', 'tcgiant_gtin_req_0_1', '_site_transient_tcgiant_gtin_req_0_1' );
+$gone  = array();
+foreach ( $names as $name ) {
+	if ( sql_like( (string) ( $first[0][1][0] ?? '' ), $name ) || sql_like( (string) ( $first[0][1][1] ?? '' ), $name ) ) {
+		$gone[] = $name;
+	}
+}
+check( '  by its LIKE patterns, only 3.30.3\'s kept answers and their timeouts: never eBay\'s text, what refusals taught, a 14-digit GTIN\'s note, or a name its underscores would match', $gone, array( '_transient_tcgiant_gtin_req_0_31387', '_transient_timeout_tcgiant_gtin_req_0_31387', '_transient_tcgiant_gtin_req_100_33564', '_transient_timeout_tcgiant_gtin_req_77_9355' ) );
+TCGiant_Sync_Identifiers::forget_category_features();
+check( '  never again', count( $GLOBALS['wpdb']->queries ), 1 );
+$GLOBALS['wpdb'] = $tcg_was_db;
+$core_src = (string) file_get_contents( dirname( __DIR__ ) . '/includes/class-tcgiant-sync.php' );
+check( '  run on init, on every request (a shop whose admin is never opened too); its record deleted with the plugin\'s data', array( substr_count( $core_src, "add_action( 'init', array( 'TCGiant_Sync_Identifiers', 'forget_category_features' ) );" ), false !== strpos( (string) file_get_contents( dirname( __DIR__ ) . '/uninstall.php' ), "'tcgiant_sync_gtin_req_forgotten'," ) ), array( 1, true ) );
 
 done();

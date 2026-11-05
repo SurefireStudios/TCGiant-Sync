@@ -1304,7 +1304,7 @@ class TCGiant_Sync_Importer {
 		$api = TCGiant_Sync_API::instance();
 		TCGiant_Sync_Logger::log( sprintf(
 			'Starting full sync for: %s (API budget: %d/%d calls remaining today)',
-			$filter_name, $api->get_remaining_daily_budget(), TCGiant_Sync_API::DAILY_CALL_LIMIT
+			$filter_name, $api->get_remaining_today(), TCGiant_Sync_API::DAILY_CALL_LIMIT
 		) );
 		self::queue_scan_batch( $scan_started );
 
@@ -5717,7 +5717,7 @@ class TCGiant_Sync_Importer {
 			'Scan batch starting at page %d%s. API budget: %d/%d.',
 			$start_page,
 			$start_item > 0 ? sprintf( ', listing %d', $start_item + 1 ) : '',
-			$api->get_remaining_daily_budget(),
+			$api->get_remaining_today(),
 			TCGiant_Sync_API::DAILY_CALL_LIMIT
 		) );
 

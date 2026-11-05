@@ -212,6 +212,9 @@ $tcgiant_options = array(
 	'tcgiant_sync_orders_follow',      // Open eBay orders followed by their OrderID, 3.31.0.
 	'tcgiant_sync_push_failures',      // Stock pushes eBay never took, 3.28.0.
 	'tcgiant_sync_push_switch',        // What the 3.28.0 upgrade did about stock pushes, and its notice.
+	'tcgiant_sync_tax_default',        // "eBay Prices Include Tax" never saved: new install or not, and its notice, 3.31.1.
+	'tcgiant_sync_gtin_req_forgotten', // 3.30.3's GetCategoryFeatures answers deleted, 3.31.1.
+	'tcgiant_sync_allowance_noted',    // The day the log said only eBay's sales reads go, 3.31.1.
 	'tcgiant_sync_disconnected_at',    // When the eBay connection was last taken away, 3.28.0.
 	'tcgiant_sync_last_crash_stock_push',      // A stock push PHP killed, 3.28.0.
 	'tcgiant_auction_import_notice',   // "Import eBay auctions" decided at upgrade, 3.28.0.
@@ -337,7 +340,8 @@ $wpdb->query(
 // eBay's own values for each imported listing (3.28.8, _ebay_live), which
 // the import records and its next read writes again, and eBay's price as
 // last sent or read, with its mark (3.29.0, _ebay_price_seen and
-// _ebay_price_marked), and the photos the last push sent and those of its
+// _ebay_price_marked) and what a push would have sent then (3.31.1,
+// _ebay_price_basis), and the photos the last push sent and those of its
 // listing held, not downloaded, or let go (3.30.4, _tcgiant_pushed_photos,
 // _tcgiant_photos_held and _tcgiant_photos_released). Who made each listing, _ebay_origin, and who said
 // so, _ebay_origin_by, stay with the product's link to it; so do the shop's
@@ -347,7 +351,7 @@ $wpdb->query(
 // address does (_tcgiant_eps_url).
 $wpdb->query(
 	"DELETE FROM {$wpdb->prefix}postmeta
-	 WHERE meta_key IN ( '_ebay_live', '_ebay_price_seen', '_ebay_price_marked', '_tcgiant_pushed_photos', '_tcgiant_photos_held', '_tcgiant_photos_released' )"
+	 WHERE meta_key IN ( '_ebay_live', '_ebay_price_seen', '_ebay_price_marked', '_ebay_price_basis', '_tcgiant_pushed_photos', '_tcgiant_photos_held', '_tcgiant_photos_released' )"
 );
 
 // Listing templates and their text blocks (3.27.8): private posts of the

@@ -36,9 +36,13 @@
  *   EANEnabled and ISBNEnabled (Disabled, Enabled or Required). That call is
  *   deprecated too, and its guide maps the three to the Taxonomy API's
  *   getItemAspectsForCategory - an aspect named UPC, EAN or ISBN, with
- *   aspectRequired - which every push already reads (cached a week). Either
- *   saying required is enough; neither answering is "not known", and then
- *   nothing is sent and nothing refused, as before 3.30.3.
+ *   aspectRequired - which every push already reads (cached a week). 3.30.3
+ *   asked both. On 2026-11-04, on eBay's live API, GetCategoryFeatures
+ *   answered with no XML at all, every time ("eBay Trading API Error:
+ *   Invalid XML Response."), so since 3.31.1 it is not asked: the
+ *   requirement is the category's item specifics, and eBay's own refusals
+ *   (below). Neither saying so is "not known", and then nothing is sent and
+ *   nothing refused, as before 3.30.3.
  * - IncludeeBayProductDetails defaults to true: eBay looks the identifier up
  *   in its catalogue and builds the listing from the catalogue product's
  *   title, description, item specifics and stock photo. The plugin's
@@ -56,19 +60,18 @@
  * EAN or ISBN (refused_for() - "The UPC field is missing.
  * Please add UPC to the listing and try again.", by its words: eBay's error
  * reference lists no code for it) is learnt for the category on that site, a
- * week (learn()), whatever GetCategoryFeatures says or could not say, and
- * the item is sent once more with "Does not apply" for what eBay named, when
- * the setting or the product says so (TCGiant_Sync_Exporter::
- * identifier_resend()). So the shop's case is mended even where
- * GetCategoryFeatures no longer answers, and later pushes in the category
- * send it the first time.
+ * week (learn()), whatever the item specifics say, and the item is sent once
+ * more with "Does not apply" for what eBay named, when the setting or the
+ * product says so (TCGiant_Sync_Exporter::identifier_resend()). So the
+ * shop's case is mended where the item specifics do not say, and later
+ * pushes in the category send it the first time.
  *
- * Calls this adds, each cached per site: GetCategoryFeatures once a week for
- * each category a product with no identifier is listed or verified in - a
- * day after it fails, and never once eBay's own refusal has taught the
- * category (fix round 2) - and GeteBayDetails once a week for the site a
- * "Does not apply" goes to, an hour after it fails. A refusal eBay names an
- * identifier in costs the one call sent again.
+ * Calls this adds, each cached per site: GeteBayDetails once a week for the
+ * site a "Does not apply" goes to, an hour after it fails. The item
+ * specifics are the push's own read. A refusal eBay names an identifier in
+ * costs the one call sent again. (3.30.3 also asked GetCategoryFeatures once
+ * a week a category; 3.31.1 asks it nothing, and deletes what was kept of
+ * its answers - forget_category_features().)
  *
  * @package TCGiant_Sync
  * @license GPL-2.0-or-later
@@ -104,8 +107,15 @@ class TCGiant_Sync_Identifiers {
 	/** The identifiers eBay takes in ProductListingDetails, in the order sent. */
 	const TYPES = array( 'EAN', 'ISBN', 'UPC' );
 
-	/** What GetCategoryFeatures said of a category, by site: tcgiant_gtin_req_<site>_<category>. */
+	/**
+	 * What 3.30.3 kept of GetCategoryFeatures' answer for a category, by
+	 * site: tcgiant_gtin_req_<site>_<category>. Read by nothing since 3.31.1;
+	 * named only so forget_category_features() can delete them.
+	 */
 	const FEATURES_TRANSIENT = 'tcgiant_gtin_req_';
+
+	/** That they were deleted (3.31.1): the version that did it. */
+	const FEATURES_FORGOTTEN_OPTION = 'tcgiant_sync_gtin_req_forgotten';
 
 	/** GeteBayDetails' ProductIdentifierUnavailableText, by site: tcgiant_gtin_text_<site>. */
 	const TEXT_TRANSIENT = 'tcgiant_gtin_text_';
@@ -127,9 +137,6 @@ class TCGiant_Sync_Identifiers {
 
 	/** How long a call that failed is not asked again: GeteBayDetails. */
 	const FAILED_SECONDS = 3600;
-
-	/** How long GetCategoryFeatures is not asked again after it failed (fix round 2): a day. */
-	const FEATURES_FAILED_SECONDS = 86400;
 
 	/** A product a 14-digit GTIN was said of, a month: tcgiant_gtin14_<product> (fix round 2). */
 	const GTIN14_TRANSIENT = 'tcgiant_gtin14_';
@@ -320,40 +327,31 @@ class TCGiant_Sync_Identifiers {
 	}
 
 	/**
-	 * What GetCategoryFeatures says of a category's identifiers on a site,
-	 * kept a week; asked once a day at most while it fails (fix round 2), so
-	 * its failure is logged once a day.
+	 * Delete what 3.30.3 kept of GetCategoryFeatures' answers (3.31.1), once:
+	 * nothing reads them now that the call is not made. Their rows in the
+	 * options table, each with its timeout. A host with a persistent object
+	 * cache keeps transients in the cache only, where they cannot be listed;
+	 * there they go when they expire - a week at most, a day for a failure -
+	 * read by nothing meanwhile.
 	 *
-	 * @param string $site_id     X-EBAY-API-SITEID.
-	 * @param string $category_id eBay category.
-	 * @return array<string,string>|null TYPE => Disabled, Enabled or Required
-	 *                                   (or '' where eBay said nothing); null
-	 *                                   when eBay could not be asked.
+	 * Recorded first, so two requests do not both run it.
+	 *
+	 * @return void
 	 */
-	public static function features( $site_id, $category_id ) {
-		$category_id = trim( (string) $category_id );
-		if ( '' === $category_id ) {
-			return null;
+	public static function forget_category_features() {
+		if ( '3.31.1' === get_option( self::FEATURES_FORGOTTEN_OPTION, '' ) ) {
+			return;
 		}
+		update_option( self::FEATURES_FORGOTTEN_OPTION, '3.31.1', true );
 
-		$key  = self::FEATURES_TRANSIENT . preg_replace( '/[^0-9]/', '', (string) $site_id ) . '_' . preg_replace( '/[^0-9A-Za-z]/', '', $category_id );
-		$kept = get_transient( $key );
-		if ( is_array( $kept ) ) {
-			return empty( $kept['failed'] ) ? (array) ( $kept['types'] ?? array() ) : null;
-		}
-
-		$answer = TCGiant_Sync_API::instance()->get_identifier_features( $category_id, (string) $site_id );
-		if ( is_wp_error( $answer ) ) {
-			set_transient( $key, array( 'failed' => 1 ), self::FEATURES_FAILED_SECONDS );
-			return null;
-		}
-
-		set_transient( $key, array( 'types' => $answer ), self::KEEP_SECONDS );
-		$required = array_keys( $answer, 'Required', true );
-		if ( $required ) {
-			TCGiant_Sync_Logger::log( sprintf( 'Product identifiers: eBay requires %1$s in category %2$s on site %3$s (GetCategoryFeatures), kept a week.', implode( ' and ', $required ), $category_id, $site_id ) );
-		}
-		return $answer;
+		global $wpdb;
+		// The LIKE patterns escaped as wpdb::esc_like() escapes them.
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$wpdb->query( $wpdb->prepare(
+			"DELETE FROM {$wpdb->options} WHERE option_name LIKE %s OR option_name LIKE %s",
+			addcslashes( '_transient_' . self::FEATURES_TRANSIENT, '_%\\' ) . '%',
+			addcslashes( '_transient_timeout_' . self::FEATURES_TRANSIENT, '_%\\' ) . '%'
+		) );
 	}
 
 	/**
@@ -481,10 +479,11 @@ class TCGiant_Sync_Identifiers {
 	}
 
 	/**
-	 * Which identifiers a category requires: those GetCategoryFeatures says
-	 * Required, those its item specifics (getItemAspectsForCategory, as the
-	 * push reads them) have as required aspects, and those eBay's own
-	 * refusals named this week (learn()).
+	 * Which identifiers a category requires: those its item specifics
+	 * (getItemAspectsForCategory, as the push reads them) have as required
+	 * aspects, and those eBay's own refusals named this week (learn()).
+	 * GetCategoryFeatures is not asked (3.31.1): eBay's live API answered it
+	 * with no XML at all.
 	 *
 	 * @param array               $settings Settled export settings.
 	 * @param array|WP_Error|null $aspects  The category's aspects, if read.
@@ -494,15 +493,6 @@ class TCGiant_Sync_Identifiers {
 		$site     = self::lookup_site( $settings );
 		$category = (string) ( $settings['category_id'] ?? '' );
 		$required = array_fill_keys( self::learnt( $site, $category ), true );
-
-		// GetCategoryFeatures is not asked once eBay's own refusal has
-		// taught the category (fix round 2): eBay has said it.
-		$features = $required ? array() : self::features( $site, $category );
-		foreach ( (array) $features as $type => $says ) {
-			if ( 'Required' === $says ) {
-				$required[ $type ] = true;
-			}
-		}
 
 		if ( is_array( $aspects ) ) {
 			foreach ( $aspects as $aspect ) {
@@ -565,9 +555,9 @@ class TCGiant_Sync_Identifiers {
 	 *   the eBay tab) is the product's identifier of that type: it goes as an
 	 *   item specific, as before, and nothing is added for it.
 	 *
-	 * Where the category's requirement is not known - eBay could not be asked,
-	 * and has not refused a listing there for one - a product with none is
-	 * sent none, and eBay judges, as before 3.30.3.
+	 * Where the category's requirement is not known - its item specifics do
+	 * not say, and eBay has not refused a listing there for one - a product
+	 * with none is sent none, and eBay judges, as before 3.30.3.
 	 *
 	 * @param WC_Product           $product   The product.
 	 * @param array                $settings  Settled export settings.

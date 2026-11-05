@@ -63,6 +63,37 @@ class TCGiant_Sync_API {
 	const STOCK_PRIORITY_CALLS = array( 'GetItem', 'ReviseInventoryStatus', 'EndItem', 'GeteBayOfficialTime' );
 
 	/**
+	 * The reads that bring eBay's sales into WooCommerce: the order import's
+	 * GetOrders and the delta's GetSellerEvents (3.31.1 fix round 1). Past
+	 * this site's own daily allowance they still go, up to
+	 * sales_reads_margin() calls more, while the fleet is under its ceiling;
+	 * every other call waits for 00:00 UTC. The stock push covers a website
+	 * sale on eBay; these cover an eBay sale here, which would otherwise stay
+	 * in stock on the website until the day turns.
+	 */
+	const SALES_READS = array( 'GetOrders', 'GetSellerEvents' );
+
+	/**
+	 * How far past its own allowance a site's sales reads may go: a tenth
+	 * of the allowance, and never less than SALES_READS_MARGIN_MIN.
+	 */
+	const SALES_READS_MARGIN_SHARE = 0.1;
+
+	/** The least margin: a day of 15-minute order imports and hourly deltas, twice over. */
+	const SALES_READS_MARGIN_MIN = 200;
+
+	/** The UTC day the log last said only the sales reads go (3.31.1 fix round 1). */
+	const ALLOWANCE_NOTED_OPTION = 'tcgiant_sync_allowance_noted';
+
+	/**
+	 * Whether the call budget_refuses() just let through is a sales read past
+	 * this site's own allowance, for the day's one log line.
+	 *
+	 * @var bool
+	 */
+	private $past_own_allowance = false;
+
+	/**
 	 * Depth of with_stock_priority() calls under way.
 	 *
 	 * @var int
@@ -287,18 +318,23 @@ class TCGiant_Sync_API {
 		}
 
 		// Pre-flight: check if we're approaching the daily call limit. What
-		// stops an oversell goes past it - see DAILY_CALL_LIMIT.
-		if ( ! $this->bypasses_soft_ceiling( $call_name ) && $this->is_daily_budget_exhausted() ) {
+		// stops an oversell goes past it - see DAILY_CALL_LIMIT - and the
+		// reads that bring eBay's sales in go past this site's own allowance,
+		// within a margin (SALES_READS).
+		if ( ! $this->bypasses_soft_ceiling( $call_name ) && $this->budget_refuses( $call_name ) ) {
 			// The figure that stopped it: every shop's, when the relay's is
 			// in use, or this site's own.
 			$relay = $this->get_relay_budget();
+			$own   = $this->site_daily_allowance();
 
-			// The relay said this site has used its own daily allowance: say
-			// that, not that every shop together has (fix round 1).
-			if ( false !== $relay && ! empty( $relay['site_capped'] ) && (int) ( $relay['site_cap'] ?? 0 ) > 0 ) {
+			// This site has used its own daily allowance - the relay said so
+			// at the last refresh (fix round 1), or this site's own count has
+			// reached it since (3.31.1): say that, not that every shop
+			// together has.
+			if ( $own > 0 && ( $this->get_daily_call_count() >= $own || ( false !== $relay && ! empty( $relay['site_capped'] ) ) ) ) {
 				TCGiant_Sync_Logger::log( sprintf(
 					'eBay daily API budget reached: this site has used its own daily allowance of %d eBay calls (%d calls today). Blocking %s until 00:00 UTC.',
-					(int) $relay['site_cap'],
+					$own,
 					$this->get_daily_call_count(),
 					$call_name
 				), 'warning' );
@@ -314,6 +350,12 @@ class TCGiant_Sync_API {
 				$call_name
 			), 'warning' );
 			return new WP_Error( 'rate_limited', 'Daily API call budget exhausted. Will resume tomorrow.', array( 'daily_budget' => true ) );
+		}
+
+		// A sales read past this site's own allowance: said once a UTC day.
+		if ( $this->past_own_allowance ) {
+			$this->past_own_allowance = false;
+			$this->note_sales_reads_only();
 		}
 
 		$token = TCGiant_Sync_OAuth::instance()->get_access_token();
@@ -949,12 +991,23 @@ class TCGiant_Sync_API {
 	/**
 	 * Check if the daily API call budget is exhausted.
 	 *
-	 * Checks the relay-provided global budget first (all client sites combined).
-	 * Falls back to local-only tracking when relay data is unavailable.
+	 * Checks this site's own daily allowance first, then the relay-provided
+	 * global budget (all client sites combined). Falls back to local-only
+	 * tracking when relay data is unavailable.
 	 *
 	 * @return bool True if the daily budget is exhausted.
 	 */
 	public function is_daily_budget_exhausted() {
+		// 0. This site's own daily allowance (3.31.1): its own calls today
+		// have reached the figure the relay gave it at the last token
+		// refresh. Until 3.31.1 only the relay held a site to it, at its
+		// next refresh, up to two hours on - a site at 990 of 1,000 could
+		// spend thousands more before then.
+		$own = $this->site_daily_allowance();
+		if ( $own > 0 && $this->get_daily_call_count() >= $own ) {
+			return true;
+		}
+
 		// 1. Check global budget from relay (preferred — covers all client sites).
 		$relay = $this->get_relay_budget();
 		if ( false !== $relay ) {
@@ -989,6 +1042,110 @@ class TCGiant_Sync_API {
 		$count   = $this->get_daily_call_count();
 		$ceiling = (int) ( self::DAILY_CALL_LIMIT * self::DAILY_CALL_SOFT_CEILING );
 		return max( 0, $ceiling - $count );
+	}
+
+	/**
+	 * The calls left today, for the log and the screens (3.31.1 fix round 1):
+	 * get_remaining_daily_budget(), or this site's own room under its
+	 * allowance where that is less. The importer's reserves still read
+	 * get_remaining_daily_budget(), which is fleet-sized.
+	 *
+	 * @return int
+	 */
+	public function get_remaining_today() {
+		$left = $this->get_remaining_daily_budget();
+		$own  = $this->site_daily_allowance();
+		if ( $own > 0 ) {
+			$left = min( $left, max( 0, $own - $this->get_daily_call_count() ) );
+		}
+		return $left;
+	}
+
+	/**
+	 * Whether the budget refuses a Trading call (3.31.1 fix round 1): as
+	 * is_daily_budget_exhausted() says, except for the sales reads
+	 * (SALES_READS).
+	 *
+	 * Those still go once this site's own calls today have reached its own
+	 * allowance, up to sales_reads_margin() calls past it - every call
+	 * counting, so nothing else can spend the margin and nothing past it
+	 * goes - and only while the fleet is under its ceiling. A relay answer
+	 * that says this site is capped reports the fleet as spent to stop older
+	 * plugins, so the fleet's figure is then the last true one it gave today
+	 * (fleet_calls, kept by the token refresh), with this site's own calls
+	 * since; none known, and the sales reads wait as well.
+	 *
+	 * The worst case for a site in a day: its allowance and the margin -
+	 * 1,200 calls free, 11,000 paid - besides what stops an oversell, which
+	 * the soft ceiling never held back.
+	 *
+	 * @param string $call_name Trading API call.
+	 * @return bool
+	 */
+	private function budget_refuses( $call_name ) {
+		$own = in_array( $call_name, self::SALES_READS, true ) ? $this->site_daily_allowance() : 0;
+		if ( $own <= 0 ) {
+			return $this->is_daily_budget_exhausted();
+		}
+
+		$count = $this->get_daily_call_count();
+		if ( $count < $own ) {
+			return $this->is_daily_budget_exhausted();
+		}
+		if ( $count >= $own + self::sales_reads_margin( $own ) ) {
+			return true;
+		}
+
+		$ceiling = (int) ( self::DAILY_CALL_LIMIT * self::DAILY_CALL_SOFT_CEILING );
+		$relay   = $this->get_relay_budget();
+		if ( false === $relay ) {
+			// After UTC midnight, on the allowance the last refresh gave:
+			// no fleet figure yet today, so the site's own 40,000, as for
+			// every call with none.
+			$refused = $count >= $ceiling;
+		} elseif ( empty( $relay['site_capped'] ) ) {
+			$refused = $this->fleet_calls_now( $relay ) >= (int) ( $relay['daily_limit'] * self::DAILY_CALL_SOFT_CEILING );
+		} elseif ( isset( $relay['fleet_calls'], $relay['fleet_local'] ) ) {
+			$refused = (int) $relay['fleet_calls'] + max( 0, $count - (int) $relay['fleet_local'] ) >= (int) ( $relay['daily_limit'] * self::DAILY_CALL_SOFT_CEILING );
+		} else {
+			$refused = true;
+		}
+
+		$this->past_own_allowance = ! $refused;
+		return $refused;
+	}
+
+	/**
+	 * How many calls past its own allowance a site's sales reads may make in
+	 * a day: SALES_READS_MARGIN_SHARE of it, at least SALES_READS_MARGIN_MIN.
+	 *
+	 * @param int $own The allowance.
+	 * @return int
+	 */
+	public static function sales_reads_margin( $own ) {
+		return max( self::SALES_READS_MARGIN_MIN, (int) floor( (int) $own * self::SALES_READS_MARGIN_SHARE ) );
+	}
+
+	/**
+	 * Say, once a UTC day, that this site is past its own allowance and only
+	 * the sales reads go (3.31.1 fix round 1).
+	 *
+	 * @return void
+	 */
+	private function note_sales_reads_only() {
+		$day = gmdate( 'Y-m-d' );
+		if ( get_option( self::ALLOWANCE_NOTED_OPTION, '' ) === $day ) {
+			return;
+		}
+		update_option( self::ALLOWANCE_NOTED_OPTION, $day, true );
+
+		$own = $this->site_daily_allowance();
+		TCGiant_Sync_Logger::log( sprintf(
+			'eBay daily API budget: this site has used its own daily allowance of %1$d eBay calls (%2$d calls today). Until 00:00 UTC only the reads that bring eBay\'s orders and sales into WooCommerce go (GetOrders, GetSellerEvents), up to %3$d calls past the allowance; syncs, scans, look-ups and relists wait. A website sale\'s stock update still goes to eBay.',
+			$own,
+			$this->get_daily_call_count(),
+			self::sales_reads_margin( $own )
+		), 'warning' );
 	}
 
 	/**
@@ -1035,6 +1192,33 @@ class TCGiant_Sync_API {
 		}
 
 		return $budget;
+	}
+
+	/**
+	 * This site's own daily allowance of eBay calls, as the relay gave it at
+	 * the last token refresh (site_daily_cap, kept as site_cap since 3.31.0),
+	 * or 0 when none is known: a relay that does not send it, no refresh in
+	 * the last two hours, or none ever.
+	 *
+	 * The relay's answer is kept under the UTC day the refresh reported.
+	 * Unlike the fleet's figures, the allowance is not the day's but the
+	 * site's own, so the answer of a refresh made just before midnight still
+	 * gives it after midnight, against the new day's count, until the next
+	 * refresh (3.31.1). Two hours, as for the fleet's figures: by then the
+	 * token has been refreshed, and the relay has answered again.
+	 *
+	 * @return int
+	 */
+	public function site_daily_allowance() {
+		$now = time();
+		foreach ( array( gmdate( 'Y-m-d', $now ), gmdate( 'Y-m-d', $now - DAY_IN_SECONDS ) ) as $date_key ) {
+			$budget = get_transient( 'tcgiant_relay_budget_' . $date_key );
+			if ( is_array( $budget ) && ! empty( $budget['updated_at'] ) && ( $now - (int) $budget['updated_at'] ) <= 2 * HOUR_IN_SECONDS ) {
+				return max( 0, (int) ( $budget['site_cap'] ?? 0 ) );
+			}
+		}
+
+		return 0;
 	}
 
 	/**
@@ -1188,59 +1372,6 @@ class TCGiant_Sync_API {
 <IncludeItemSpecifics>true</IncludeItemSpecifics>';
 
 		return $this->trading_api_request( 'GetItem', $xml );
-	}
-
-	/**
-	 * Which product identifiers a category takes on an eBay site (3.30.3):
-	 * GetCategoryFeatures' UPCEnabled, EANEnabled and ISBNEnabled - Disabled,
-	 * Enabled or Required - for the category itself (AllFeaturesForCategory,
-	 * so eBay gives each even where it is the site's), and the site's
-	 * defaults (SiteDefaults) for one its node leaves out. None known for a
-	 * category eBay's answer has no node for. eBay has deprecated the call
-	 * and maps these to getItemAspectsForCategory, which
-	 * TCGiant_Sync_Identifiers reads too. A read, cached by the caller.
-	 *
-	 * @param string $category_id eBay category.
-	 * @param string $site_id     X-EBAY-API-SITEID: the listing's site.
-	 * @return array<string,string>|WP_Error EAN, ISBN, UPC => Disabled, Enabled, Required or ''.
-	 */
-	public function get_identifier_features( $category_id, $site_id ) {
-		$category_id = (string) $category_id;
-		$xml         = '<CategoryID>' . esc_xml( $category_id ) . '</CategoryID>' . "\n"
-			. '<AllFeaturesForCategory>true</AllFeaturesForCategory>' . "\n"
-			. '<ViewAllNodes>true</ViewAllNodes>' . "\n"
-			. '<DetailLevel>ReturnAll</DetailLevel>' . "\n"
-			. '<FeatureID>UPCEnabled</FeatureID>' . "\n"
-			. '<FeatureID>EANEnabled</FeatureID>' . "\n"
-			. '<FeatureID>ISBNEnabled</FeatureID>';
-
-		$answer = $this->with_site( (string) $site_id, function () use ( $xml ) {
-			return $this->trading_api_request( 'GetCategoryFeatures', $xml );
-		} );
-		if ( is_wp_error( $answer ) ) {
-			return $answer;
-		}
-
-		$nodes = $answer['Category'] ?? array();
-		if ( is_array( $nodes ) && isset( $nodes['CategoryID'] ) ) {
-			$nodes = array( $nodes );
-		}
-		$mine = null;
-		foreach ( (array) $nodes as $node ) {
-			if ( is_array( $node ) && self::scalar_value( $node['CategoryID'] ?? '' ) === $category_id ) {
-				$mine = $node;
-				break;
-			}
-		}
-
-		$defaults = is_array( $answer['SiteDefaults'] ?? null ) ? $answer['SiteDefaults'] : array();
-		$out      = array();
-		foreach ( array( 'EAN', 'ISBN', 'UPC' ) as $type ) {
-			$says         = null === $mine ? '' : self::scalar_value( $mine[ $type . 'Enabled' ] ?? ( $defaults[ $type . 'Enabled' ] ?? '' ) );
-			$out[ $type ] = in_array( $says, array( 'Disabled', 'Enabled', 'Required' ), true ) ? $says : '';
-		}
-
-		return $out;
 	}
 
 	/**
@@ -1804,9 +1935,13 @@ class TCGiant_Sync_API {
 	 *                                 without variations.
 	 * @param string   $variations_xml A Variations block giving every
 	 *                                 variation's quantity, for one with.
+	 * @param string   $start_price    The eBay price, for a listing without
+	 *                                 variations whose price changed here
+	 *                                 while it was ended (3.31.1); '' keeps
+	 *                                 eBay's.
 	 * @return array|WP_Error
 	 */
-	public function relist_fixed_price_item( $item_id, $quantity = null, $variations_xml = '' ) {
+	public function relist_fixed_price_item( $item_id, $quantity = null, $variations_xml = '', $start_price = '' ) {
 		// Without a quantity eBay relists at the quantity the listing was
 		// first given, whatever sold since, so the shop's own figure is sent
 		// when there is one.
@@ -1814,11 +1949,16 @@ class TCGiant_Sync_API {
 		// A variation listing takes its quantities per variation instead: a
 		// variation that had none left when the listing ended comes back at
 		// the quantity it was first listed with unless one is sent.
+		//
+		// eBay keeps the listing's price unless one is sent: the exporter
+		// sends one only when it changed here
+		// (TCGiant_Sync_Exporter::relist_price()).
 		$xml = '
 <Item>
 <ItemID>' . esc_attr( $item_id ) . '</ItemID>
 <UUID>' . self::generate_ebay_uuid() . '</UUID>'
 			. ( null !== $quantity ? "\n<Quantity>" . max( 1, (int) $quantity ) . '</Quantity>' : '' )
+			. ( '' !== (string) $start_price ? "\n<StartPrice>" . esc_xml( (string) $start_price ) . '</StartPrice>' : '' )
 			. ( '' !== (string) $variations_xml ? "\n" . $variations_xml : '' ) . '
 </Item>';
 

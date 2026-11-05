@@ -242,6 +242,8 @@ class TCGiant_Sync_API {
 	public static function get_events_byte_limit() { return $GLOBALS['CAP']; }
 	public function get_last_body_bytes() { return $this->last_bytes; }
 	public function get_remaining_daily_budget() { return $GLOBALS['EBAY']['budget'] ?? 40000; }
+	// What the log and the screens show (3.31.1 fix round 1): no allowance of the site's own here.
+	public function get_remaining_today() { return $this->get_remaining_daily_budget(); }
 	/**
 	 * GetItem: the whole listing. The delta asks for it whenever what it holds
 	 * lacks item specifics or pictures - which a window kept in brief always

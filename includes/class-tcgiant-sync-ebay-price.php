@@ -58,6 +58,26 @@ class TCGiant_Sync_Ebay_Price {
 	const SEEN_META = '_ebay_price_seen';
 
 	/**
+	 * The eBay price a push would have sent at the moment SEEN_META was
+	 * written (3.31.1 fix round 1): the price a push sent, or for_product()
+	 * once an import has written its own prices. A relist sends a price only
+	 * when for_product() differs from both - when the price changed here
+	 * since eBay last had it, and not merely because a shop with Overwrite
+	 * Price off keeps another price on eBay (TCGiant_Sync_Exporter::
+	 * relist_price()).
+	 */
+	const BASIS_META = '_ebay_price_basis';
+
+	/**
+	 * While note_seen() works out the basis: own_price() and baked() read
+	 * the product object's meta, with the import's changes not yet saved,
+	 * rather than the table.
+	 *
+	 * @var bool
+	 */
+	private static $from_object = false;
+
+	/**
 	 * The postage the last import that wrote the website price added to it,
 	 * which a push takes off again.
 	 */
@@ -69,8 +89,20 @@ class TCGiant_Sync_Ebay_Price {
 	const FIXED_SETTING    = 'ebay_price_fixed';
 	const ROUNDING_SETTING = 'ebay_price_rounding';
 
-	/** Settings: "eBay prices include tax" - no (the default), auto or yes. */
+	/**
+	 * Settings: "eBay prices include tax" - no, auto or yes. Never saved:
+	 * auto on a new install, no on a shop updated from before 3.31.1
+	 * (tax_default()).
+	 */
 	const TAX_SETTING = 'ebay_price_tax';
+
+	/**
+	 * What decide_tax_default() found (3.31.1): array( default => auto or
+	 * no, since => 3.31.1, notice => none, pending - the notice offering Auto
+	 * is still due - or auto, kept or chosen once it is not). Autoloaded:
+	 * tax_mode() reads it whenever the setting was never saved.
+	 */
+	const TAX_DEFAULT_OPTION = 'tcgiant_sync_tax_default';
 
 	/** Every setting here, as the Settings screen's export form posts them. */
 	const SETTING_KEYS = array( self::RULE_SETTING, self::PERCENT_SETTING, self::FIXED_SETTING, self::ROUNDING_SETTING, self::TAX_SETTING );
@@ -155,16 +187,72 @@ class TCGiant_Sync_Ebay_Price {
 	}
 
 	/**
-	 * "eBay prices include tax": 'no' (the default: prices go as they are
-	 * entered), 'auto' or 'yes' (tax added, on the eBay sites in
-	 * TAX_COUNTRIES only).
+	 * "eBay prices include tax": 'no' (prices go as they are entered),
+	 * 'auto' or 'yes' (tax added, on the eBay sites in TAX_COUNTRIES only).
+	 * Never saved, it is tax_default()'s: Auto on an install made with
+	 * 3.31.1 or later, No on a shop that ran an earlier version.
 	 *
 	 * @param array|null $settings The plugin's settings, or null for the stored ones.
 	 * @return string
 	 */
 	public static function tax_mode( $settings = null ) {
-		$mode = (string) ( self::settings( $settings )[ self::TAX_SETTING ] ?? 'no' );
+		$settings = self::settings( $settings );
+		$mode     = isset( $settings[ self::TAX_SETTING ] ) ? (string) $settings[ self::TAX_SETTING ] : self::tax_default();
 		return in_array( $mode, array( 'auto', 'yes' ), true ) ? $mode : 'no';
+	}
+
+	/**
+	 * "eBay prices include tax" for a shop that has never saved it (3.31.1):
+	 * 'auto' where decide_tax_default() found a new install, 'no' otherwise -
+	 * a shop updated from an earlier version, or before it has decided.
+	 *
+	 * @return string
+	 */
+	public static function tax_default() {
+		$record = function_exists( 'get_option' ) ? get_option( self::TAX_DEFAULT_OPTION, array() ) : array();
+		return is_array( $record ) && 'auto' === ( $record['default'] ?? '' ) ? 'auto' : 'no';
+	}
+
+	/**
+	 * Decide, once, what "eBay prices include tax" is for a shop that has
+	 * never saved it (3.31.1, the owner's answer to 3.29.0's question 1): at
+	 * the first request this version runs, on init.
+	 *
+	 * A new install is a site with no settings saved at all: no eBay account
+	 * ever connected, no form saved, nothing pushed. It starts on Auto.
+	 * Every other shop ran an earlier version, pushed its prices with No, and
+	 * keeps No until it chooses; on eBay UK, Germany, France, Italy, Spain or
+	 * Australia, with WooCommerce's tax on and prices entered without it, it
+	 * is offered Auto once (tax_notice_due()). The setup wizard is no sign
+	 * of a new install: it is reached only by its address, and saves its own
+	 * four settings.
+	 *
+	 * And no product linked to an eBay listing either (fix round 1): one
+	 * query, once, so that a settings row the database failed to give on
+	 * that first request does not put a shop with listings on Auto. A query
+	 * that fails counts as a shop with listings.
+	 *
+	 * add_option() is the claim: two first requests at once write one record.
+	 *
+	 * @return void
+	 */
+	public static function decide_tax_default() {
+		if ( false !== get_option( self::TAX_DEFAULT_OPTION, false ) ) {
+			return;
+		}
+
+		$new = false === get_option( 'tcgiant_sync_ebay_settings', false );
+		if ( $new ) {
+			global $wpdb;
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- once, at the first request.
+			$linked = $wpdb->get_var( $wpdb->prepare( "SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key = %s AND meta_value <> '' LIMIT 1", '_ebay_item_id' ) );
+			$new    = null === $linked && '' === (string) $wpdb->last_error;
+		}
+		add_option( self::TAX_DEFAULT_OPTION, array(
+			'default' => $new ? 'auto' : 'no',
+			'since'   => '3.31.1',
+			'notice'  => $new ? 'none' : 'pending',
+		), '', true );
 	}
 
 	/**
@@ -210,8 +298,24 @@ class TCGiant_Sync_Ebay_Price {
 			return 0.0;
 		}
 
-		$class = $product instanceof WC_Product ? (string) $product->get_tax_class() : '';
-		$rates = WC_Tax::get_base_tax_rates( $class );
+		return self::base_rate( $product instanceof WC_Product ? (string) $product->get_tax_class() : '' );
+	}
+
+	/**
+	 * WooCommerce's tax rate for a tax class at the shop's base address, as
+	 * a fraction (0.2 for 20%), whatever "eBay prices include tax" says: the
+	 * rate tax_rate() adds, and the one the notice offering Auto names
+	 * (3.31.1). 0 where the address has none, or WooCommerce's tax is not
+	 * loaded.
+	 *
+	 * @param string $class The tax class: '' for the standard rate.
+	 * @return float
+	 */
+	public static function base_rate( $class = '' ) {
+		if ( ! class_exists( 'WC_Tax' ) ) {
+			return 0.0;
+		}
+		$rates = WC_Tax::get_base_tax_rates( (string) $class );
 		if ( empty( $rates ) || ! is_array( $rates ) ) {
 			return 0.0;
 		}
@@ -493,8 +597,12 @@ class TCGiant_Sync_Ebay_Price {
 	 * @return string
 	 */
 	public static function own_price( $product ) {
-		$id  = $product instanceof WC_Product ? (int) $product->get_id() : (int) $product;
-		$raw = $id > 0 ? self::parse_figure( get_post_meta( $id, self::OWN_META, true ) ) : null;
+		$id = $product instanceof WC_Product ? (int) $product->get_id() : (int) $product;
+		if ( self::$from_object && $product instanceof WC_Product ) {
+			$raw = self::parse_figure( $product->get_meta( self::OWN_META ) );
+		} else {
+			$raw = $id > 0 ? self::parse_figure( get_post_meta( $id, self::OWN_META, true ) ) : null;
+		}
 		if ( null === $raw || $raw <= 0 ) {
 			return '';
 		}
@@ -515,7 +623,7 @@ class TCGiant_Sync_Ebay_Price {
 	 * @return float
 	 */
 	public static function baked( $product, $settings = null ) {
-		$raw = get_post_meta( (int) $product->get_id(), self::BAKED_META, true );
+		$raw = self::$from_object ? $product->get_meta( self::BAKED_META ) : get_post_meta( (int) $product->get_id(), self::BAKED_META, true );
 		return is_numeric( $raw ) && (float) $raw > 0 ? (float) $raw : 0.0;
 	}
 
@@ -529,19 +637,25 @@ class TCGiant_Sync_Ebay_Price {
 	 * alone does not mark it: that shop's import writes eBay's price, with
 	 * the postage it adds now, into the website price, as before 3.29.0.
 	 *
-	 * @param WC_Product $product The product pushed, before its save.
-	 * @param array      $prices  Product or variation ID => the price sent.
+	 * A relist (3.31.1) gives no product: each price goes straight to the
+	 * table, as a push's variations' do.
+	 *
+	 * @param WC_Product|null $product The product pushed, before its save; null for a relist.
+	 * @param array           $prices  Product or variation ID => the price sent.
 	 */
 	public static function record_sent( $product, array $prices ) {
 		foreach ( $prices as $id => $price ) {
 			if ( ! is_numeric( $price ) ) {
 				continue;
 			}
-			$own    = (int) $id === (int) $product->get_id();
+			$own    = $product instanceof WC_Product && (int) $id === (int) $product->get_id();
 			$item   = $own ? $product : wc_get_product( (int) $id );
 			$marked = $item && (string) $price !== wc_format_decimal( $item->get_regular_price(), 2 ) && self::feature_made( $item );
-			if ( $own ) {
+			// The price sent is the one a push would send now: the basis
+			// too (3.31.1 fix round 1).
+			if ( $own && $product instanceof WC_Product ) {
 				$product->update_meta_data( self::SEEN_META, (string) $price );
+				$product->update_meta_data( self::BASIS_META, (string) $price );
 				if ( $marked ) {
 					$product->update_meta_data( self::MARKED_META, '1' );
 				} else {
@@ -549,6 +663,7 @@ class TCGiant_Sync_Ebay_Price {
 				}
 			} else {
 				update_post_meta( (int) $id, self::SEEN_META, (string) $price );
+				update_post_meta( (int) $id, self::BASIS_META, (string) $price );
 				if ( $marked ) {
 					update_post_meta( (int) $id, self::MARKED_META, '1' );
 				} else {
@@ -812,6 +927,23 @@ class TCGiant_Sync_Ebay_Price {
 			return;
 		}
 		$product->update_meta_data( self::SEEN_META, self::money( self::cents( $ebay ) ) );
+
+		// And what a push would send now (3.31.1 fix round 1): called after
+		// the import's own price writes, which are not saved yet, so read
+		// from the product as it stands. With Overwrite Price off that is
+		// still the shop's own price, which a relist then keeps from
+		// replacing eBay's.
+		self::$from_object = true;
+		try {
+			$basis = self::for_product( $product );
+		} finally {
+			self::$from_object = false;
+		}
+		if ( is_numeric( $basis ) ) {
+			$product->update_meta_data( self::BASIS_META, self::money( self::cents( $basis ) ) );
+		} else {
+			$product->delete_meta_data( self::BASIS_META );
+		}
 		if ( $marked ) {
 			$product->update_meta_data( self::MARKED_META, '1' );
 		} elseif ( '' !== (string) $product->get_meta( self::MARKED_META ) ) {
@@ -828,6 +960,31 @@ class TCGiant_Sync_Ebay_Price {
 	public static function seen( $product ) {
 		$raw = $product->get_meta( self::SEEN_META );
 		return is_numeric( $raw ) && (float) $raw > 0 ? self::money( self::cents( $raw ) ) : '';
+	}
+
+	/**
+	 * What a push would have sent when eBay's price was last noted
+	 * (BASIS_META), two decimal places, or '' for a note written before
+	 * 3.31.1 fix round 1.
+	 *
+	 * @param WC_Product $product The product or variation.
+	 * @return string
+	 */
+	public static function basis( $product ) {
+		$raw = $product->get_meta( self::BASIS_META );
+		return is_numeric( $raw ) && (float) $raw >= 0 ? self::money( self::cents( $raw ) ) : '';
+	}
+
+	/**
+	 * "Overwrite Price" (Import Settings): on unless saved as anything but
+	 * '1', as the import reads it.
+	 *
+	 * @param array|null $settings The plugin's settings, or null for the stored ones.
+	 * @return bool
+	 */
+	public static function overwrites_price( $settings = null ) {
+		$settings = self::settings( $settings );
+		return '1' === (string) ( isset( $settings['overwrite_price'] ) ? $settings['overwrite_price'] : '1' );
 	}
 
 	// -------------------------------------------------------------------------
@@ -1006,12 +1163,15 @@ class TCGiant_Sync_Ebay_Price {
 	/**
 	 * The eBay price fields' hooks: the variation field and every save. The
 	 * product's own field is drawn on its eBay tab by
-	 * TCGiant_Sync_Admin::render_ebay_listing_panel().
+	 * TCGiant_Sync_Admin::render_ebay_listing_panel(). And the notice
+	 * offering Auto for tax, with its answer (3.31.1).
 	 */
 	public static function register_admin() {
 		add_action( 'woocommerce_process_product_meta', array( __CLASS__, 'save_product_field' ) );
 		add_action( 'woocommerce_variation_options_pricing', array( __CLASS__, 'render_variation_field' ), 20, 3 );
 		add_action( 'woocommerce_save_product_variation', array( __CLASS__, 'save_variation_field' ), 10, 2 );
+		add_action( 'admin_notices', array( __CLASS__, 'render_tax_notice' ) );
+		add_action( 'admin_post_tcgiant_tax_notice', array( __CLASS__, 'handle_tax_notice' ) );
 	}
 
 	/**
@@ -1233,7 +1393,7 @@ class TCGiant_Sync_Ebay_Price {
 			<p class="tc-hint"><?php esc_html_e( 'With Overwrite Price on, an import never writes the eBay price into the website price: a product with its own eBay price has eBay\'s changes put in that field, and under a rule the website price changes only when eBay\'s price has changed since it was last sent or read, to the price the rule turns into eBay\'s.', 'tcgiant-sync' ); ?></p>
 		</div>
 
-		<div class="tc-field">
+		<div class="tc-field" id="tc-ebay-price-tax">
 			<label class="tc-label"><?php esc_html_e( 'eBay Prices Include Tax', 'tcgiant-sync' ); ?></label>
 			<div class="tc-radio-group">
 				<label><input type="radio" name="<?php echo esc_attr( $name( self::TAX_SETTING ) ); ?>" value="no" <?php checked( $tax, 'no' ); ?>> <?php esc_html_e( 'No', 'tcgiant-sync' ); ?></label>
@@ -1243,6 +1403,161 @@ class TCGiant_Sync_Ebay_Price {
 			<p class="tc-hint"><?php esc_html_e( 'Buyers on eBay UK, Germany, France, Italy, Spain and Australia see prices with tax in them. If WooCommerce calculates tax and your prices are entered without it, Yes or Auto adds your WooCommerce tax rate (for each product\'s tax class, at your shop\'s address) before the eBay price rule on those six eBay sites, and an import takes it off again. On eBay US and Canada nothing is added, whichever you choose: eBay adds sales tax at checkout there. No sends prices as they are entered, as before. Nothing is added when your prices are entered with tax.', 'tcgiant-sync' ); ?></p>
 		</div>
 		<?php
+	}
+
+	/**
+	 * Whether the notice offering Auto is due (3.31.1): once, to a shop that
+	 * ran an earlier version (decide_tax_default()), still on No, on eBay UK,
+	 * Germany, France, Italy, Spain or Australia, whose WooCommerce
+	 * calculates tax with its prices entered without it - the shops Auto
+	 * changes. Not after it was answered.
+	 *
+	 * @param array|null $settings The plugin's settings, or null for the stored ones.
+	 * @return bool
+	 */
+	public static function tax_notice_due( $settings = null ) {
+		$record = get_option( self::TAX_DEFAULT_OPTION, array() );
+		if ( ! is_array( $record ) || 'pending' !== ( $record['notice'] ?? '' ) ) {
+			return false;
+		}
+		if ( 'no' !== self::tax_mode( $settings ) || ! class_exists( 'TCGiant_Sync_API' ) ) {
+			return false;
+		}
+		$config = TCGiant_Sync_API::instance()->get_marketplace_config();
+		if ( ! in_array( (string) ( $config['country'] ?? '' ), self::TAX_COUNTRIES, true ) ) {
+			return false;
+		}
+
+		return function_exists( 'wc_tax_enabled' ) && wc_tax_enabled()
+			&& ! ( function_exists( 'wc_prices_include_tax' ) && wc_prices_include_tax() );
+	}
+
+	/**
+	 * The notice offering Auto (3.31.1), on the WordPress dashboard and
+	 * TCGiant Sync's own screens (fix round 1: not the product screens), to
+	 * administrators, while it is due (tax_notice_due()). It says what Auto
+	 * changes: each eBay price rises by the shop's tax rate at its listing's
+	 * next push, update or relist. Answered with Use Auto or Keep No
+	 * (handle_tax_notice()); a shop that chose Auto or Yes in Settings
+	 * meanwhile has answered, and does not see it.
+	 *
+	 * @return void
+	 */
+	public static function render_tax_notice() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			return;
+		}
+		$screen = function_exists( 'get_current_screen' ) ? get_current_screen() : null;
+		if ( ! $screen || ( 'dashboard' !== $screen->id && false === strpos( (string) $screen->id, 'tcgiant' ) ) ) {
+			return;
+		}
+
+		// Chosen in Settings since: answered, for good.
+		$record = get_option( self::TAX_DEFAULT_OPTION, array() );
+		if ( is_array( $record ) && 'pending' === ( $record['notice'] ?? '' ) && 'no' !== self::tax_mode() ) {
+			$record['notice'] = 'chosen';
+			update_option( self::TAX_DEFAULT_OPTION, $record, true );
+			return;
+		}
+		if ( ! self::tax_notice_due() ) {
+			return;
+		}
+
+		$config = TCGiant_Sync_API::instance()->get_marketplace_config();
+		$site   = (string) ( TCGiant_Sync_API::MARKETPLACES[ (string) ( $config['marketplace_id'] ?? '' ) ]['label'] ?? '' );
+		$tax    = 'AU' === (string) ( $config['country'] ?? '' ) ? __( 'GST', 'tcgiant-sync' ) : __( 'VAT', 'tcgiant-sync' );
+		$rate   = self::base_rate( '' );
+		?>
+		<div class="notice notice-info" id="tc-tax-notice">
+			<p>
+				<strong>
+					<?php
+					/* translators: %s: VAT, or GST in Australia */
+					echo esc_html( sprintf( __( 'TCGiant Sync - should your eBay prices include %s?', 'tcgiant-sync' ), $tax ) );
+					?>
+				</strong><br>
+				<?php
+				echo esc_html( sprintf(
+					/* translators: 1: an eBay site, e.g. United Kingdom, 2: VAT, or GST in Australia */
+					__( 'Buyers on eBay %1$s see prices with %2$s in them. Your WooCommerce prices are entered without tax, and "eBay Prices Include Tax" is No, so TCGiant Sync sends eBay your prices as they are entered, without %2$s.', 'tcgiant-sync' ),
+					$site,
+					$tax
+				) );
+				?>
+			</p>
+			<p>
+				<?php
+				echo esc_html( $rate > 0
+					? sprintf(
+						/* translators: 1: VAT, or GST in Australia, 2: the standard rate, e.g. 20% */
+						__( 'Auto adds your %1$s to your eBay prices: your eBay prices rise by your %1$s rate (%2$s, the standard rate at your shop\'s address; each product\'s own tax class decides its rate) at each listing\'s next Push, Update or relist.', 'tcgiant-sync' ),
+						$tax,
+						self::percent_words( $rate * 100 ) . '%'
+					)
+					: sprintf(
+						/* translators: 1: VAT, or GST in Australia */
+						__( 'Auto adds your %1$s to your eBay prices: your eBay prices rise by your %1$s rate (each product\'s, from its tax class, at your shop\'s address) at each listing\'s next Push, Update or relist.', 'tcgiant-sync' ),
+						$tax
+					) );
+				?>
+				<?php esc_html_e( 'A product with an eBay price of its own keeps it, a running auction keeps its opening bid, and an import takes the tax off again before it writes a website price. New installs start on Auto since 3.31.1; this shop stays on No unless you choose Auto.', 'tcgiant-sync' ); ?>
+			</p>
+			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin:0 0 10px;">
+				<input type="hidden" name="action" value="tcgiant_tax_notice">
+				<?php wp_nonce_field( 'tcgiant_tax_notice' ); ?>
+				<button type="submit" class="button button-primary" name="tcgiant_tax_choice" value="auto"><?php esc_html_e( 'Use Auto', 'tcgiant-sync' ); ?></button>
+				<button type="submit" class="button" name="tcgiant_tax_choice" value="no"><?php esc_html_e( 'Keep No', 'tcgiant-sync' ); ?></button>
+				<a href="<?php echo esc_url( admin_url( 'admin.php?page=tcgiant-settings#tc-ebay-price-tax' ) ); ?>" style="margin-left:8px;"><?php esc_html_e( 'See the setting', 'tcgiant-sync' ); ?></a>
+			</form>
+		</div>
+		<?php
+	}
+
+	/**
+	 * The notice's answer, posted (3.31.1).
+	 *
+	 * @return void
+	 */
+	public static function handle_tax_notice() {
+		check_admin_referer( 'tcgiant_tax_notice' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'Unauthorized.', 'tcgiant-sync' ) );
+		}
+
+		// phpcs:ignore WordPress.Security.NonceVerification.Missing -- checked above.
+		self::apply_tax_choice( isset( $_POST['tcgiant_tax_choice'] ) ? sanitize_key( wp_unslash( $_POST['tcgiant_tax_choice'] ) ) : '' );
+
+		$back = wp_get_referer();
+		wp_safe_redirect( $back ? $back : admin_url( 'admin.php?page=tcgiant-settings' ) );
+		exit;
+	}
+
+	/**
+	 * Save the notice's answer (3.31.1): Auto, or No kept, saved as the
+	 * shop's own choice - only that key, onto the settings as they are now
+	 * (TCGiant_Sync_Inventory::save_settings_keys()) - and the notice put
+	 * away for good. Nothing is pushed: each price changes at its listing's
+	 * next push.
+	 *
+	 * @param string $choice 'auto' or 'no'.
+	 * @return bool Whether it was an answer.
+	 */
+	public static function apply_tax_choice( $choice ) {
+		if ( ! in_array( $choice, array( 'auto', 'no' ), true ) ) {
+			return false;
+		}
+
+		TCGiant_Sync_Inventory::save_settings_keys( array( self::TAX_SETTING => $choice ) );
+		$record           = get_option( self::TAX_DEFAULT_OPTION, array() );
+		$record           = is_array( $record ) ? $record : array();
+		$record['notice'] = 'auto' === $choice ? 'auto' : 'kept';
+		update_option( self::TAX_DEFAULT_OPTION, $record, true );
+
+		TCGiant_Sync_Logger::log( 'auto' === $choice
+			? '"eBay Prices Include Tax" set to Auto from the notice: each eBay price has the WooCommerce tax rate added at its listing\'s next push.'
+			: '"eBay Prices Include Tax" kept at No from the notice: eBay prices go as they are entered, as before.' );
+
+		return true;
 	}
 
 	// -------------------------------------------------------------------------

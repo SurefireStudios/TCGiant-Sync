@@ -42,6 +42,8 @@ class TCGiant_Sync_API {
 	public static function get_events_byte_limit() { return 26843545; }
 	public function get_last_body_bytes() { return 2048; }
 	public function get_remaining_daily_budget() { return 40000; }
+	// What the log and the screens show (3.31.1 fix round 1): no allowance of the site's own here.
+	public function get_remaining_today() { return $this->get_remaining_daily_budget(); }
 	public function with_stock_priority( callable $fn ) { return $fn(); }
 	public function get_item( $item_id ) {
 		$GLOBALS['EBAY']['calls'][]     = 'GetItem ' . $item_id;

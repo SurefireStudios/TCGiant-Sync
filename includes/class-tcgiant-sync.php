@@ -104,6 +104,14 @@ final class TCGiant_Sync {
 		// Initialize API.
 		TCGiant_Sync_API::instance();
 
+		// "eBay Prices Include Tax" for a shop that has never saved it: Auto on
+		// a new install, No on a shop updated from an earlier version -
+		// decided once, at the first request of 3.31.1, on any request.
+		add_action( 'init', array( 'TCGiant_Sync_Ebay_Price', 'decide_tax_default' ), 1 );
+		// What 3.30.3 kept of GetCategoryFeatures' answers, which nothing
+		// reads since 3.31.1: deleted once.
+		add_action( 'init', array( 'TCGiant_Sync_Identifiers', 'forget_category_features' ) );
+
 		// Initialize Admin.
 		if ( is_admin() ) {
 			TCGiant_Sync_Admin::instance();

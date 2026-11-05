@@ -262,6 +262,8 @@ class TCGiant_Sync_API {
 	// The push mark in ApplicationData (3.28.7) is test-push-mark.php's: none here.
 	public static function count_push_marks( array $items ) { return 0; }
 	public function get_remaining_daily_budget() { return 40000; }
+	// What the log and the screens show (3.31.1 fix round 1): no allowance of the site's own here.
+	public function get_remaining_today() { return $this->get_remaining_daily_budget(); }
 	public function get_item( $item_id ) { $GLOBALS['GOT_ITEMS'][] = (string) $item_id; return array( 'Item' => array( 'ItemID' => $item_id, 'Title' => 'GetItem ' . $item_id, 'SellingStatus' => array( 'ListingStatus' => $GLOBALS['EBAY_STATUS'][ (string) $item_id ] ?? 'Active' ), 'ItemSpecifics' => array(), 'PictureDetails' => array( 'PictureURL' => 'u' ) ) ); }
 	public function get_active_listings( $page, $per_page = 200, $mod_from = '', $end_from = '' ) {
 		$GLOBALS['LOCK_AGE_AT_READ'][] = lock_age();

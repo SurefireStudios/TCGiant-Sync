@@ -2703,6 +2703,83 @@ class TCGiant_Sync_Exporter {
 	}
 
 	/**
+	 * The price a fixed-price relist sends eBay for a product or a variation
+	 * (3.31.1): TCGiant_Sync_Ebay_Price::for_product()'s, as a push would
+	 * send it, when it changed here since eBay last had the price - its
+	 * price, its own eBay price, or the shop's rule or tax. Until 3.31.1 a
+	 * relist sent no price, and the listing went back up at eBay's old one
+	 * until its next Update.
+	 *
+	 * "Changed here" (fix round 1): for_product() is neither the price eBay
+	 * last had (_ebay_price_seen, noted by every push and import since
+	 * 3.29.0) nor what a push would have sent when that was noted
+	 * (_ebay_price_basis). With Overwrite Price off an import notes eBay's
+	 * price and leaves the shop's own, so a shop that keeps another price on
+	 * eBay - set in Seller Hub - has seen and for_product() apart for good;
+	 * the basis is the shop's price then, and the relist keeps eBay's. A note
+	 * from before fix round 1 has no basis: then only with Overwrite Price on,
+	 * where an import writes eBay's price into the shop's, does a difference
+	 * from eBay's price mean a change here.
+	 *
+	 * '' keeps eBay's price, as before: the same price; not changed here;
+	 * nothing noted of eBay's, so nothing known to have changed; a price
+	 * changed on eBay since, that no import has read yet, which stays
+	 * eBay's; or no price to send. A price the rule, tax or an own eBay
+	 * price makes below TCGiant_Sync_Ebay_Price::MIN_PRICE refuses the
+	 * relist before eBay, as it refuses a push (floor_refusal()); a plain
+	 * price below it, which a push sends for eBay to judge, keeps eBay's
+	 * (fix round 1, L1): a relist that went before must not start failing.
+	 *
+	 * @param WC_Product $product A simple product or a variation.
+	 * @return string|WP_Error
+	 */
+	private static function relist_price( WC_Product $product ) {
+		$seen = TCGiant_Sync_Ebay_Price::seen( $product );
+		if ( '' === $seen ) {
+			return '';
+		}
+
+		$price = TCGiant_Sync_Ebay_Price::for_product( $product );
+		if ( ! is_numeric( $price ) || (float) $price <= 0 || TCGiant_Sync_Ebay_Price::cents( $price ) === TCGiant_Sync_Ebay_Price::cents( $seen ) ) {
+			return '';
+		}
+
+		$basis = TCGiant_Sync_Ebay_Price::basis( $product );
+		if ( '' !== $basis ? TCGiant_Sync_Ebay_Price::cents( $price ) === TCGiant_Sync_Ebay_Price::cents( $basis ) : ! TCGiant_Sync_Ebay_Price::overwrites_price() ) {
+			return '';
+		}
+
+		if ( (float) $price < TCGiant_Sync_Ebay_Price::MIN_PRICE ) {
+			$refused = TCGiant_Sync_Ebay_Price::floor_refusal( $product, $price );
+			return $refused ? $refused : '';
+		}
+
+		return (string) $price;
+	}
+
+	/**
+	 * What a relist's log line says of the prices it sent (3.31.1): nothing
+	 * when eBay kept its own.
+	 *
+	 * @param array  $prices      Product or variation ID => the price sent.
+	 * @param string $start_price The listing's own, for one without variations.
+	 * @return string
+	 */
+	private static function relist_prices_said( array $prices, $start_price ) {
+		if ( '' !== (string) $start_price ) {
+			return sprintf( ', at %s, its eBay price changed here since eBay last had it', $start_price );
+		}
+		if ( ! $prices ) {
+			return '';
+		}
+		$each = array();
+		foreach ( $prices as $id => $price ) {
+			$each[] = sprintf( '#%d at %s', (int) $id, $price );
+		}
+		return sprintf( ', with the eBay prices changed here since eBay last had them: variation %s', implode( ', ', $each ) );
+	}
+
+	/**
 	 * The Variations block for relisting a variation listing.
 	 *
 	 * Every variation eBay has, named as eBay knows it - its SKU when it has
@@ -2715,12 +2792,19 @@ class TCGiant_Sync_Exporter {
 	 * the next import then retires its variation here, as for any variation
 	 * eBay drops.
 	 *
+	 * The price, since 3.31.1: the shop's variation's eBay price where it
+	 * changed here while the listing was ended (relist_price()) - every
+	 * published variation answering for it agreeing on one - and eBay's own
+	 * otherwise, as before.
+	 *
 	 * @param WC_Product $product      Variable product.
 	 * @param array      $item         GetItem's Item for the ended listing.
 	 * @param string     $ebay_item_id The ended listing.
+	 * @param array      $prices       Given each variation's price that is
+	 *                                 not eBay's: variation ID => price.
 	 * @return string|WP_Error
 	 */
-	private function relist_variations_xml( WC_Product $product, array $item, $ebay_item_id ) {
+	private function relist_variations_xml( WC_Product $product, array $item, $ebay_item_id, array &$prices = array() ) {
 		$ebay = TCGiant_Sync_Variations::from_item( $item );
 		if ( ! $ebay ) {
 			return new WP_Error( 'relist_unchecked', sprintf(
@@ -2744,7 +2828,26 @@ class TCGiant_Sync_Exporter {
 				) );
 			}
 
+			$price = $ev['start_price'];
 			if ( isset( $match['pairs'][ $i ] ) ) {
+				// The price changed here, when every published variation
+				// answering for it says the same (3.31.1); eBay's otherwise.
+				$changed = array();
+				foreach ( $match['pairs'][ $i ] as $child_id ) {
+					$child = wc_get_product( $child_id );
+					if ( $child && 'publish' === $child->get_status() ) {
+						$one = self::relist_price( $child );
+						if ( is_wp_error( $one ) ) {
+							return $one;
+						}
+						$changed[ (int) $child_id ] = $one;
+					}
+				}
+				if ( $changed && 1 === count( array_unique( $changed ) ) && '' !== reset( $changed ) ) {
+					$price  = (string) reset( $changed );
+					$prices = $prices + $changed;
+				}
+
 				// Published duplicates of one combination all answer for it;
 				// the best-stocked one decides, never their sum.
 				$qty = 0;
@@ -2774,7 +2877,7 @@ class TCGiant_Sync_Exporter {
 
 			$xml .= '<Variation>'
 				. ( '' !== $ev['sku'] ? '<SKU>' . esc_xml( $ev['sku'] ) . '</SKU>' : '' )
-				. '<StartPrice>' . esc_xml( $ev['start_price'] ) . '</StartPrice>'
+				. '<StartPrice>' . esc_xml( $price ) . '</StartPrice>'
 				. '<Quantity>' . $qty . '</Quantity>'
 				. TCGiant_Sync_Variations::specifics_xml( $ev['specifics'] )
 				. '</Variation>';
@@ -3030,11 +3133,24 @@ class TCGiant_Sync_Exporter {
 			$quantity = null !== $stock ? max( 1, (int) $stock ) : max( 1, (int) ( $settings['default_quantity'] ?? 1 ) );
 		}
 
+		// The eBay price where it changed here while the listing was ended
+		// (3.31.1): a fixed-price listing's, or each variation's. Never an
+		// auction's: RelistItem keeps its opening bid, as before.
+		$relist_prices  = array();
+		$start_price    = '';
 		$variations_xml = '';
 		if ( $fixed && $product->is_type( 'variable' ) ) {
-			$variations_xml = $this->relist_variations_xml( $product, $item, $ebay_item_id );
+			$variations_xml = $this->relist_variations_xml( $product, $item, $ebay_item_id, $relist_prices );
 			if ( is_wp_error( $variations_xml ) ) {
 				return $variations_xml;
+			}
+		} elseif ( $fixed ) {
+			$start_price = self::relist_price( $product );
+			if ( is_wp_error( $start_price ) ) {
+				return $start_price;
+			}
+			if ( '' !== $start_price ) {
+				$relist_prices[ $product_id ] = $start_price;
 			}
 		}
 
@@ -3062,9 +3178,9 @@ class TCGiant_Sync_Exporter {
 
 		// A push's relist of an auction carries the shop's edits (3.28.8).
 		$changes = $from_push && ! $fixed ? (string) $changes : '';
-		$relist  = function () use ( $api, $fixed, $ebay_item_id, $quantity, $variations_xml, $changes ) {
+		$relist  = function () use ( $api, $fixed, $ebay_item_id, $quantity, $variations_xml, $changes, $start_price ) {
 			return $fixed
-				? $api->relist_fixed_price_item( $ebay_item_id, $quantity, $variations_xml )
+				? $api->relist_fixed_price_item( $ebay_item_id, $quantity, $variations_xml, $start_price )
 				: $api->relist_item( $ebay_item_id, $quantity, $changes );
 		};
 		$result  = $motors_site ? TCGiant_Sync_Motors::listing_call( 'relist', $relist, sprintf( 'eBay listing %1$s of WC #%2$d', $ebay_item_id, $product_id ), $product_id, TCGiant_Sync_API::scalar_value( $item['PrimaryCategory']['CategoryID'] ?? '' ) ) : $relist();
@@ -3093,6 +3209,12 @@ class TCGiant_Sync_Exporter {
 
 		update_post_meta( $product_id, '_ebay_item_id', $new_id );
 		update_post_meta( $product_id, '_ebay_listing_status', 'Active' );
+		// The prices the relist sent, as eBay's last known (3.31.1), as a
+		// push notes its own: the next import does not take them for a
+		// change made on eBay.
+		if ( $relist_prices ) {
+			TCGiant_Sync_Ebay_Price::record_sent( null, $relist_prices );
+		}
 		// RelistItem keeps the listing as it was, so eBay's own values for it
 		// go with the product to the new number (3.28.8): its next Update
 		// leaves them alone as before.
@@ -3154,13 +3276,14 @@ class TCGiant_Sync_Exporter {
 		// And what a push's relist carried: the photos only when it sent them.
 		$photos_sent = false !== strpos( (string) substr( $changes, (int) strrpos( $changes, '</Description>' ) ), 'PictureDetails' );
 		TCGiant_Sync_Logger::log( sprintf(
-			'%s: WC #%d relisted on eBay as %s (was %s)%s%s.',
+			'%s: WC #%d relisted on eBay as %s (was %s)%s%s%s.',
 			$source,
 			$product_id,
 			$new_id,
 			$ebay_item_id,
 			null !== $quantity ? sprintf( ', quantity %d', $quantity ) : '',
-			'' === $changes ? '' : ( $photos_sent ? ', with the product\'s title, description and photos' : ', with the product\'s title and description, and its photos as they were on eBay' )
+			'' === $changes ? '' : ( $photos_sent ? ', with the product\'s title, description and photos' : ', with the product\'s title and description, and its photos as they were on eBay' ),
+			self::relist_prices_said( $relist_prices, $start_price )
 		), 'success' );
 
 		return array(

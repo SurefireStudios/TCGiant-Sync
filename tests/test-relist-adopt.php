@@ -319,6 +319,8 @@ function wp_trash_post( $id ) {
 	return true;
 }
 function get_post_thumbnail_id( $id ) { return 0; }
+// WooCommerce's, as far as the eBay price's two places go (3.31.1 fix round 1).
+function wc_format_decimal( $n, $dp = false ) { return false === $dp ? (string) $n : number_format( (float) $n, (int) $dp, '.', '' ); }
 
 // WooCommerce's product. Its fields live in the same meta the plugin reads
 // directly; a set_*() is held until save(), and save() keeps the stock status
@@ -359,6 +361,9 @@ class WC_Product {
 	public function get_stock_status() { return (string) $this->field( '_stock_status', 'instock' ); }
 	public function is_in_stock() { return 'outofstock' !== $this->get_stock_status(); }
 	public function set_regular_price( $price ) { $this->changes['_regular_price'] = $price; }
+	/** The import notes what a push would send beside eBay's price (3.31.1 fix round 1). */
+	public function get_regular_price() { return (string) $this->field( '_regular_price' ); }
+	public function delete_meta_data( $key ) { $this->changes[ $key ] = ''; }
 	public function set_sale_price( $price ) { $this->changes['_sale_price'] = $price; }
 	public function set_weight( $v ) { $this->changes['_weight'] = $v; }
 	public function set_length( $v ) { $this->changes['_length'] = $v; }
