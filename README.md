@@ -48,8 +48,9 @@ Names in **bold** are the names the plugin's own screens use.
 
 | | |
 |---|---|
-| Import active listings, with images localised to your media library | ✅ |
+| Import active listings, with images localised to your media library. Photos you pushed to eBay are known when they come back, so they are never downloaded again | ✅ |
 | Automatic product mapping: attributes from item specifics, categories, variations | ✅ |
+| Variations on your global attributes (**Products → Attributes**) keep their values at every sync; **Add eBay's new variation values to global attributes?** (No by default) adds a value eBay sells that the attribute lacks | ✅ |
 | **Import listings from**: every eBay site, or only your **Primary eBay Marketplace** — for sellers whose listings are copied to other eBay sites | ✅ |
 | **eBay Custom Store Categories to Import** and **eBay Standard Categories to Import** filters. The plugin remembers each listing's categories, so a changed listing outside your categories is skipped without an eBay call | ✅ |
 | **Import eBay auctions** (off for new shops). A product on a running auction shows its bid, links to the auction and cannot be bought on your website | ✅ |
@@ -61,7 +62,7 @@ Names in **bold** are the names the plugin's own screens use.
 | Bake eBay shipping cost into the product price | ✅ |
 | Map eBay SKU to a Bin Location field | ✅ |
 | **Remove products when their eBay listing sells out?**, with **Preserve Categories (Do Not Trash)**. Products you pushed to eBay yourself are never removed | ✅ |
-| **Import eBay orders into WooCommerce?** — every 15 minutes; tracking numbers go back to eBay when an order is marked Completed | ✅ |
+| **Import eBay orders into WooCommerce?** — at every **Auto-Sync Interval** (hourly by default, every 15 minutes at the shortest); an unpaid order arrives as Pending payment and follows eBay for 30 days (paid, cancelled, cancel requested); tracking numbers go back to eBay when an order is marked Completed | ✅ |
 
 ### Push — WooCommerce → eBay
 
@@ -76,13 +77,15 @@ Names in **bold** are the names the plugin's own screens use.
 | **eBay Motors Parts & Accessories** categories, for shops on eBay United States | ✅ |
 | **Item Specifics** section: which item specifics the category requires, the value that would be sent, and what is missing | ✅ |
 | Condition descriptors for Trading Cards and Coins (Graded with grader/grade/cert, or Ungraded) | ✅ |
+| **UPC, EAN or ISBN** on new listings, from the product's eBay tab or WooCommerce's own GTIN field. Where a category requires one and the product has none, **Products With No UPC, EAN or ISBN** sends eBay's own "Does not apply", or refuses the push | ✅ |
 | **"All Other"** item type for non-collectibles, with eBay's plain condition list | ✅ |
 | Package weight and dimensions, converted to the listing site's system (optional) | ✅ |
 | Per-product listing type (Fixed Price / Auction), duration, shipping policy, category, condition | ✅ |
 | Business Policies (shipping, returns, payment) fetched with **Fetch / Refresh Policies from eBay** | ✅ |
 | **Best Offer** and **GPSR** (EU product safety) defaults from Settings, sent to the products that use your defaults | ✅ |
 | **Send website stock changes to eBay?** — a website sale, refund, cancellation or stock edit updates the eBay listing, which is read first so eBay is never sent more than it shows | ✅ |
-| **Auto-relist ended listings?** — up to 50 a day, only listings that still have stock; a listing you ended in TCGiant Sync or in Seller Hub stays ended | ✅ |
+| **Auto-relist ended listings?** — up to 50 a day, only listings that still have stock; a listing you ended in TCGiant Sync or in Seller Hub stays ended. A fixed-price relist, automatic or by hand, goes up at the price a push would send when you changed the price here | ✅ |
+| A new listing never goes up without its main photo | ✅ |
 
 ### eBay listing templates
 
@@ -105,7 +108,7 @@ Nothing changes until you choose a template: the default is **None**, the plain 
 |---|---|
 | A separate **eBay price** for each product, and for each variation of a variable product. Your website keeps its own price | ✅ |
 | An **eBay Price** rule for products without their own: the regular price plus a percentage, a fixed amount or both, with optional rounding up to .99 or to a whole number | ✅ |
-| **eBay Prices Include Tax** (No, Auto or Yes) for shops on eBay UK, Germany, France, Italy, Spain and Australia whose prices are entered without tax | ✅ |
+| **eBay Prices Include Tax** (No, Auto or Yes) for shops on eBay UK, Germany, France, Italy, Spain and Australia whose prices are entered without tax; Auto in a new install | ✅ |
 | With **Overwrite Price** on, an import never writes a marked-up eBay price into your website price | ✅ |
 
 ### Listings, Stock Review and Image Cleanup
@@ -116,15 +119,16 @@ Nothing changes until you choose a template: the default is **None**, the plain 
 | **Origin** column and filter: whether each listing was imported from eBay or pushed from here, and what its Updates send | ✅ |
 | Bulk actions: Push to eBay, End Listing, Relist, Change listing format, and **Send my shop defaults to eBay on Update** / **Keep each listing's own eBay values on Update** | ✅ |
 | **Stock Review**: products that sold out on eBay but are still here, stock changes eBay never took, products that may be the same item twice, and products imported from other eBay sites | ✅ |
-| **Image Cleanup**: photos left behind by deleted products, old 1,536 px copies of downloaded photos, and copies downloaded over your own photographs | ✅ |
+| **Image Cleanup**: photos left behind by deleted products, old 1,536 px copies of downloaded photos, and copies downloaded over your own photographs; **Products to look at** lists products whose photos need a check by hand | ✅ |
 
 ### Safety
 
 | | |
 |---|---|
 | Checked before anything reaches eBay: card listings outside eBay's three single-card categories, coin parent categories, whole vehicles, business policies eBay keeps for motor vehicles only, prices under 0.99 and descriptions over 500,000 characters | ✅ |
-| Staging and development copies of your shop send nothing to eBay, and still read from it | ✅ |
+| Staging and development copies of your shop send nothing to eBay, and still read from it. A copy at any address other than the one your shop was at when you connected eBay waits until an administrator presses **This is my live shop** | ✅ |
 | Respects the daily eBay call allowance all TCGiant shops share: past 80% of it, hand edits and imports wait until just after midnight UTC; bulk pushes are limited to 2,000 products a day by default | ✅ |
+| Keeps your site to its own daily share of eBay calls: once it is used, syncs, scans, look-ups and relists wait until 00:00 UTC, while sales still reach eBay | ✅ |
 | **Emergency Stop** cancels the sync's pending jobs; **Resume Import** carries a stopped full sync on from where it stopped | ✅ |
 
 ### Everywhere
@@ -175,7 +179,7 @@ The relay exists for one reason: eBay's OAuth requires an application secret, an
 |---|---|
 | You press *Fetch Inventory* | Full sync of the eBay account, 200 listings per page, carrying on across as many requests as a large store needs. *Resume Import* carries on one that stopped; *Emergency Stop* cancels it |
 | Every sync interval (*Auto-Sync Interval*, hourly by default) | Delta: eBay is asked what changed since the last run; changed listings are re-mapped, new ones imported (within the free cap), sold-out ones removed if you've asked |
-| Every 15 minutes | eBay orders imported into WooCommerce, if *Import eBay orders into WooCommerce?* is on |
+| Every sync interval, with the delta | eBay orders imported into WooCommerce, if *Import eBay orders into WooCommerce?* is on |
 | Every hour | Ended-listing check: stock settled from the listing's *listed − sold*, so an unsold end keeps your goods in stock |
 | Daily, 3 AM | *Auto-Relist*, if on: up to 50 ended listings that still have stock |
 | Weekly | Full sync, to catch anything a delta could not see. If it reads all your listings cleanly, *inventory pruning* follows once: products whose listing the sync did not see are checked with eBay, about 300 an hour, and stock is only ever lowered to match. The weekly full sync does not run while the *Auto-Sync Interval* is Disabled. Separately, *Check stock against eBay weekly?* compares stock and only reports |
@@ -236,6 +240,8 @@ Updates arrive through WordPress's normal update screen.
 |---|---|
 | ![Dashboard](assets/src/img/screenshot.jpg) | ![Import](assets/src/img/screenshot-2.jpg) |
 | Dashboard: connection health, sync status, activity | Import: category filters, usage, live progress |
+| ![Listing Templates](assets/src/img/screenshot-3.jpg) | |
+| Listing Templates: the preview of exactly what a push would send | |
 
 ## Use Cases
 
@@ -254,7 +260,7 @@ Tracked as [issues labelled `roadmap`](https://github.com/SurefireStudios/TCGian
 
 - **Editions.** Lite on WordPress.org and Standard on WooCommerce.com, built from this tree. Stage 1 (the extractions) shipped in 3.14.1; Stage 2 (splitting the scheduler and stock-push halves out) is next.
 - **Per-product condition** with eBay's per-category condition list, including refurbished and for-parts.
-- **Brand, MPN, UPC and EAN** on pushed listings.
+- **Brand and MPN** fields on pushed listings (UPC, EAN and ISBN shipped in 3.30.3).
 - **Lossless weight round-trips** by storing kilograms and pounds to four decimals.
 
 ## Contributing
