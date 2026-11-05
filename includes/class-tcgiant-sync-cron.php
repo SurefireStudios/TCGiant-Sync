@@ -1127,6 +1127,18 @@ class TCGiant_Sync_Cron {
 				}
 			}
 
+			// Refused for its photos (3.32.1 fix round 1), which the log has
+			// said: asked again only once its photos or its listing change, or
+			// after a week (fix round 2) - no GetItem and no upload every day
+			// until then.
+			if ( '' !== (string) get_post_meta( $product_id, TCGiant_Sync_Exporter::RELIST_PHOTOS_MEMO, true ) ) {
+				$pictured = wc_get_product( $product_id );
+				if ( $pictured && TCGiant_Sync_Exporter::relist_photos_refused( $pictured, (string) $ebay_item_id ) ) {
+					$skipped++;
+					continue;
+				}
+			}
+
 			// Every check - stock, whether eBay says it sold out, the right call
 			// for its format, the quantity - is in the exporter, shared with bulk
 			// Relist. This used to check WooCommerce's stock only and send no

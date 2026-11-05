@@ -280,8 +280,9 @@ function set_transient( $transient, $value, $expiration = 0 ) {
 /**
  * eBay: every Trading call answered Success, in its own envelope - unless
  * $ANSWERS holds the next answer (3.31.0): 503, 429, 'transport' (nothing
- * came back) or 'token' (eBay refusing an expired token). A REST call is
- * answered in JSON. $DURING runs while a request is out.
+ * came back) or 'token' (eBay refusing an expired token), or (3.32.1 fix
+ * round 2) eBay's whole answer, as XML. A REST call is answered in JSON.
+ * $DURING runs while a request is out.
  */
 $ANSWERS = array();
 $DURING  = null;
@@ -302,6 +303,9 @@ function wp_remote_request( $url, $args ) {
 	if ( '' === $call ) {
 		$get = 'GET' === strtoupper( (string) ( $args['method'] ?? 'GET' ) );
 		return array( 'body' => $get ? '{"sku":"SKU-1"}' : '', 'response' => array( 'code' => $get ? 200 : 204 ), 'headers' => array() );
+	}
+	if ( is_string( $answer ) && 0 === strpos( $answer, '<' ) ) {
+		return array( 'body' => $answer, 'response' => array( 'code' => 200 ), 'headers' => array() );
 	}
 	if ( 'token' === $answer ) {
 		return array( 'body' => '<?xml version="1.0" encoding="UTF-8"?><' . $call . 'Response xmlns="urn:ebay:apis:eBLBaseComponents"><Ack>Failure</Ack><Errors><ShortMessage>Expired IAF token.</ShortMessage><LongMessage>IAF token supplied is expired.</LongMessage><ErrorCode>21917053</ErrorCode></Errors></' . $call . 'Response>', 'response' => array( 'code' => 200 ), 'headers' => array() );
@@ -1054,6 +1058,41 @@ check( 'no allowance known, at the site\'s 40,000: GetOrders refused, as before'
 $uninstall = (string) file_get_contents( dirname( __DIR__ ) . '/uninstall.php' );
 check( 'the day\'s note deleted with the plugin\'s data', false !== strpos( $uninstall, "'tcgiant_sync_allowance_noted'," ), true );
 
+echo "\nTHE LOG'S \"API BUDGET: N/M\" - M IS WHAT N IS COUNTED AGAINST (3.32.1)\n" . str_repeat( '=', 124 ) . "\n";
+
+// The full sync's and the scan's lines gave get_remaining_today() over the
+// fleet's 50,000 whatever it was counted against: a site with its own
+// allowance of 10,000, 3 calls in, read "9997/50000".
+
+/** get_today_limit(), or null where the API has none (before 3.32.1). */
+function today_limit( $api ) { return method_exists( $api, 'get_today_limit' ) ? $api->get_today_limit() : null; }
+
+fresh_site( true );
+$api = TCGiant_Sync_API::instance();
+set_counter_row( 0 );
+$REPLY = array( 'access_token' => 'fresh-token', 'expires_in' => 7200, 'remaining_budget' => 30000, 'global_api_calls' => 20000, 'daily_limit' => 50000, 'site_daily_cap' => 10000, 'site_capped' => false );
+refresh();
+set_counter_row( 3 );
+check( 'an allowance of 10,000, 3 calls today, the fleet at 20,000: 9997 of this site\'s 10000', array( $api->get_remaining_today(), today_limit( $api ) ), array( 9997, 10000 ) );
+set_counter_row( 10000 );
+check( '  at the allowance: 0 of 10000', array( $api->get_remaining_today(), today_limit( $api ) ), array( 0, 10000 ) );
+set_counter_row( 3 );
+$REPLY = array( 'access_token' => 'fresh-token', 'expires_in' => 7200, 'remaining_budget' => 2000, 'global_api_calls' => 38000, 'daily_limit' => 50000, 'site_daily_cap' => 10000, 'site_capped' => false );
+refresh();
+check( '  the fleet nearer its ceiling than this site its allowance: the fleet\'s room, against the fleet\'s soft ceiling, 40000 (80% of 50,000; fix round 1)', array( $api->get_remaining_today(), today_limit( $api ) ), array( 2000, 40000 ) );
+$REPLY = array( 'access_token' => 'fresh-token', 'expires_in' => 7200, 'remaining_budget' => 9997, 'global_api_calls' => 30003, 'daily_limit' => 50000, 'site_daily_cap' => 10000, 'site_capped' => false );
+refresh();
+check( '  both 9,997 from their ceilings: the fleet\'s 40000, as the smaller is not the site\'s own', array( $api->get_remaining_today(), today_limit( $api ) ), array( 9997, 40000 ) );
+$REPLY = array( 'access_token' => 'fresh-token', 'expires_in' => 7200, 'remaining_budget' => 30000, 'global_api_calls' => 6000, 'daily_limit' => 45000, 'site_daily_cap' => 0, 'site_capped' => false );
+refresh();
+check( 'no allowance known, the relay\'s limit 45,000: its room, against its soft ceiling, 36000', array( $api->get_remaining_today(), today_limit( $api ) ), array( 30000, 36000 ) );
+fresh_site( true );
+$api = TCGiant_Sync_API::instance();
+set_counter_row( 5 );
+check( 'no relay figure at all: the site\'s own 40,000 ceiling\'s room, against that 40000 - never "39995/50000", which read as 10,005 used', array( $api->get_remaining_today(), today_limit( $api ) ), array( 39995, 40000 ) );
+$imp_src = (string) file_get_contents( dirname( __DIR__ ) . '/includes/class-tcgiant-sync-importer.php' );
+check( 'the full sync\'s and the scan\'s lines give the pair, and nothing else puts DAILY_CALL_LIMIT beside the calls left', array( substr_count( $imp_src, 'get_today_limit()' ), substr_count( $imp_src, 'get_remaining_today()' ), preg_match( '/get_remaining_today\(\)\s*,\s*TCGiant_Sync_API::DAILY_CALL_LIMIT/', $imp_src ) ), array( 2, 2, 0 ) );
+
 echo "\nWHAT READS THE COUNTER, AND WHAT IS LEFT OF IT\n" . str_repeat( '=', 124 ) . "\n";
 
 $src = '';
@@ -1083,6 +1122,82 @@ check( 'the counter is named once, and read and written by that name', array( su
 check( 'the daily summary and GET /sync/status give the day\'s count itself', array( substr_count( $src, "settings['api_calls_today']" ), substr_count( (string) file_get_contents( dirname( __DIR__ ) . '/includes/class-tcgiant-sync-cron.php' ), '$api_calls = TCGiant_Sync_API::instance()->get_daily_call_count();' ), substr_count( (string) file_get_contents( dirname( __DIR__ ) . '/includes/class-tcgiant-sync-rest.php' ), "'api_calls_today' => TCGiant_Sync_API::instance()->get_daily_call_count()," ) ), array( 0, 1, 1 ) );
 $uninstall = (string) file_get_contents( dirname( __DIR__ ) . '/uninstall.php' );
 check( 'deleting the plugin with its data deletes the counts, both names, and the note of the last tidy', array( false !== strpos( $uninstall, "OR option_name LIKE 'tcgiant_sync_api_calls_%'" ), false !== strpos( $uninstall, "OR option_name LIKE '_transient_tcgiant_api_calls_%'" ), false !== strpos( $uninstall, "OR option_name LIKE '_transient_timeout_tcgiant_api_calls_%'" ), false !== strpos( $uninstall, "'tcgiant_sync_call_count_tidied'," ) ), array( true, true, true, true ) );
+
+echo "\nWHAT WENT TO EBAY AGAIN, AND WHAT AN UPLOAD WAS REFUSED FOR (3.32.1 FIX ROUND 2)\n" . str_repeat( '=', 124 ) . "\n";
+
+// resends(): how many times request_with_retry() sent a request again after
+// an attempt eBay may have had. A relist reads it before and after its call:
+// one sent again keeps the record of the photos it sent, whatever eBay's last
+// answer (TCGiant_Sync_Exporter::relist_ended_listing()).
+fresh_site( false );
+$api         = TCGiant_Sync_API::instance();
+$tcg_resends = function ( array $answers, callable $call ) use ( $api ) {
+	$GLOBALS['ANSWERS'] = $answers;
+	$before             = $api->resends();
+	$call();
+	return $api->resends() - $before;
+};
+if ( ! function_exists( 'wp_generate_uuid4' ) ) {
+	/** WordPress's, for the relist's UUID. */
+	function wp_generate_uuid4() { return sprintf( '%08x-%04x-4%03x-a%03x-%012x', mt_rand(), mt_rand( 0, 65535 ), mt_rand( 0, 4095 ), mt_rand( 0, 4095 ), mt_rand() ); }
+}
+$tcg_get    = function () use ( $api ) { return $api->get_item( '110000000001' ); };
+$tcg_relist = function () use ( $api ) { return $api->relist_fixed_price_item( '110000000001', 1 ); };
+check( 'resends(): answered at once 0; after a 503 1; three 503s 2; a timeout, then through 1; three timeouts 2; turned away with 429 0; an expired token renewed and the call sent again 0', array(
+	$tcg_resends( array(), $tcg_get ),
+	$tcg_resends( array( 503 ), $tcg_get ),
+	$tcg_resends( array( 503, 503, 503 ), $tcg_get ),
+	$tcg_resends( array( 'transport' ), $tcg_get ),
+	$tcg_resends( array( 'transport', 'transport', 'transport' ), $tcg_get ),
+	$tcg_resends( array( 429 ), $tcg_get ),
+	$tcg_resends( array( 'token' ), $tcg_get ),
+), array( 0, 1, 2, 1, 2, 0, 0 ) );
+check( '  a RelistFixedPriceItem timed out and sent again: counted, as the relist reads it', array( $tcg_resends( array( 'transport' ), $tcg_relist ), $tcg_resends( array(), $tcg_relist ) ), array( 1, 0 ) );
+
+// upload_picture(): eBay's Ack Failure coded by what it refused. Until fix
+// round 2 every one was upload_failed, which a relist takes for a refusal
+// that lasts until the photo changes, and Auto-Relist stopped asking.
+$tcg_picture = $WORLD . '/picture.jpg';
+file_put_contents( $tcg_picture, 'not really a jpeg' );
+$tcg_upload = function ( array $answers ) use ( $api, $tcg_picture ) {
+	$GLOBALS['ANSWERS'] = $answers;
+	$got                = $api->upload_picture( $tcg_picture );
+	return is_wp_error( $got ) ? array( $got->get_error_code(), $got->get_error_message() ) : $got;
+};
+$tcg_refused = function ( array $errors ) {
+	$xml = '<?xml version="1.0" encoding="UTF-8"?><UploadSiteHostedPicturesResponse xmlns="urn:ebay:apis:eBLBaseComponents"><Ack>Failure</Ack>';
+	foreach ( $errors as $e ) {
+		$xml .= '<Errors><ShortMessage>' . $e[2] . '</ShortMessage><LongMessage>' . $e[2] . '</LongMessage><ErrorCode>' . $e[0] . '</ErrorCode><SeverityCode>Error</SeverityCode><ErrorClassification>' . $e[1] . '</ErrorClassification></Errors>';
+	}
+	return $xml . '</UploadSiteHostedPicturesResponse>';
+};
+$tcg_said = array();
+$tcg_want = array();
+foreach ( array(
+	array( array( array( '518', 'RequestError', 'Calls to this call have exceeded the call limit.' ) ), 'rate_limited' ),
+	array( array( array( '10007', 'SystemError', 'Internal error to the application.' ) ), 'rate_limited' ),
+	array( array( array( '931', 'RequestError', 'Validation of the authentication token in API request failed.' ) ), 'no_token' ),
+	array( array( array( '21917053', 'RequestError', 'IAF token supplied is expired.' ) ), 'no_token' ),
+	array( array( array( '10000', 'SystemError', 'The picture service is temporarily unavailable.' ) ), 'upload_unavailable' ),
+	array( array( array( '21919137', 'RequestError', 'The picture file is not a supported image.' ) ), 'upload_failed' ),
+	array( array( array( '21919138', 'RequestError', 'The picture is too small.' ), array( '10000', 'SystemError', 'Also unavailable.' ) ), 'upload_failed' ),
+	array( array( array( '10000', 'SystemError', 'Unavailable.' ), array( '518', 'RequestError', 'Calls to this call have exceeded the call limit.' ) ), 'rate_limited' ),
+	// Said in words only, under a code not listed.
+	array( array( array( '21919300', 'RequestError', 'You have exceeded the call limit for this call.' ) ), 'rate_limited' ),
+	array( array( array( '21919301', 'RequestError', 'The rate limit for picture uploads was reached.' ) ), 'rate_limited' ),
+	array( array( array( '21919302', 'RequestError', 'Daily limit exceeded.' ) ), 'rate_limited' ),
+	array( array( array( '21919303', 'RequestError', 'Your quota exceeded for today.' ) ), 'rate_limited' ),
+	array( array( array( '21919304', 'RequestError', 'The token you sent was revoked.' ) ), 'no_token' ),
+	// By its code only: eBay's sign-in expired, in words that do not say token.
+	array( array( array( '17470', 'RequestError', 'Please login again now. Your security session has expired.' ) ), 'no_token' ),
+	array( array( array( '932', 'RequestError', 'Your authorization has been hard expired.' ) ), 'no_token' ),
+) as $tcg_case ) {
+	$tcg_said[] = $tcg_upload( array( $tcg_refused( $tcg_case[0] ) ) );
+	$tcg_want[] = array( $tcg_case[1], $tcg_case[0][0][2] );
+}
+check( 'upload_picture(), eBay\'s refusals: its call limit (518) and daily limit (10007) rate_limited, a token it will not take (931, expired) no_token, a failure on its side (all SystemError) upload_unavailable, the picture itself (a RequestError) upload_failed - each in the first error\'s words', $tcg_said, $tcg_want );
+check( '  eBay out of reach: three 503s, invalid_xml; three timeouts, http_request_failed - neither upload_failed', array( $tcg_upload( array( 503, 503, 503 ) )[0], $tcg_upload( array( 'transport', 'transport', 'transport' ) )[0] ), array( 'invalid_xml', 'http_request_failed' ) );
+@unlink( $tcg_picture );
 
 $wpdb->db->close();
 foreach ( array( '', '-wal', '-shm' ) as $tail ) {

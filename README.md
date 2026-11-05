@@ -84,7 +84,7 @@ Names in **bold** are the names the plugin's own screens use.
 | Business Policies (shipping, returns, payment) fetched with **Fetch / Refresh Policies from eBay** | ✅ |
 | **Best Offer** and **GPSR** (EU product safety) defaults from Settings, sent to the products that use your defaults | ✅ |
 | **Send website stock changes to eBay?** — a website sale, refund, cancellation or stock edit updates the eBay listing, which is read first so eBay is never sent more than it shows | ✅ |
-| **Auto-relist ended listings?** — up to 50 a day, only listings that still have stock; a listing you ended in TCGiant Sync or in Seller Hub stays ended. A fixed-price relist, automatic or by hand, goes up at the price a push would send when you changed the price here | ✅ |
+| **Auto-relist ended listings?** — up to 50 a day, only listings that still have stock; a listing you ended in TCGiant Sync or in Seller Hub stays ended. A fixed-price relist, automatic or by hand, goes up at the price a push would send when you changed the price here, and any relist goes up with the product's photos when you changed them here | ✅ |
 | A new listing never goes up without its main photo | ✅ |
 
 ### eBay listing templates

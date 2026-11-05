@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.32.0
+Stable tag: 3.32.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -148,6 +148,14 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.32.1 - 2026-11-05 =
+* FIX: A product you reuse for a new item - new photos, a new price - now goes back on eBay with its new photos when it is relisted, by Relist on the Listings screen or by Auto-Relist. Until now a relist sent eBay no photos, so the listing went back up showing the item that sold, and the next sync brought that item's photos, still in your Media Library, back onto the product: in place of the new ones with "Overwrite Images" on, behind them with it off. A relist now sends the product's photos whenever they are not the photos its listing had, in the same order, the same way a push sends them, and the next sync knows them and downloads nothing. A photo you edited in WordPress counts as a new photo, and so does one put on eBay by upload whose file was replaced since; a file replaced in place on any other photo is not noticed. When they are the same, the relist is sent as before, with no extra eBay call. With "Host listing images on eBay?" on, a photo not yet on eBay is uploaded, as for a push.
+* If eBay relists the item but its answer never reaches your site - a timeout, say, or the same request sent again - the next sync downloads none of the new listing's pictures and leaves the product's photos as they are. With "Host listing images on eBay?" on it knows them by number; otherwise it leaves them on eBay, and Image Cleanup names the product, as after a push whose pictures could not be matched.
+* If one of a product's photos cannot be put on eBay beside the others, or its main photo cannot go, the product is not relisted, rather than relisted with the old photos: the log says why, and Update eBay Listing lists it with its photos as they are now. So is a product that shows copies of its own photos that a sync downloaded from eBay before 3.30.4, which a relist would have put on eBay: the log names the copies, so remove them from the product's photos, then use Update eBay Listing. Auto-Relist leaves such a product until its photos change, for a week at most; a photo that could not go only for the moment - eBay's call limit, the eBay token, eBay out of reach - is tried again at its next run. A listing with variations is sent the product's photos only; each variation's own pictures stay as they are on eBay.
+* Relist on the Listings screen now ends each step after a product whose photos changed, or once the step has used its time, so a large selection takes more steps. One product with many photos to upload can still take longer than your host allows.
+* Image Cleanup: the list of products that no longer show a photo of their own still attached to them now says that a product reused for a new item can be on it only because an earlier item's photo is still attached to it, and to leave it as it is if its photos are right. The list of products that may show copies of their own photos now says to deal with them before you push or relist them.
+* The log's "API budget" line at the start of a full sync and of each batch of its scan now gives the calls left against the limit they are counted against: your site's own daily allowance when that is what runs out first, otherwise the share TCGiant Sync keeps to of the calls every shop shares (80% of eBay's daily limit, 40,000). A site with an allowance of 10,000 that had made 3 calls read "9997/50000", and a site with no allowance that had made 5, "39995/50000"; they now read "9997/10000" and "39995/40000".
 
 = 3.32.0 - 2026-11-05 =
 * FIX: A product whose variations use one of your global attributes (Products > Attributes) - a Color you gave a product yourself and pushed to eBay, say - no longer has its variations made again at every sync. The sync looked for each variation by WooCommerce's own name for the attribute rather than its label, never found it, and made a new one, which your website showed as "Any Color", while yours were set to private and out of stock. One it found by its SKU lost its color the same way. Each variation now keeps its value in your global attribute and is found again. At its next sync, a product this already happened to gets its own variations back with eBay's stock, and the ones the sync made are set to private and out of stock.
@@ -1659,6 +1667,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.32.1 =
+A relist now sends a product's photos when they are not the photos its listing had, so a product reused for a new item goes back on eBay with its new photos, and the old item's photos no longer come back from eBay. With "Host listing images on eBay?" on, those photos are uploaded as for a push. A product whose photos cannot all go, or that shows copies of its own photos, is not relisted, and the log says why and what to do.
 
 = 3.32.0 =
 Products whose variations use a global attribute (Products > Attributes) get their own variations back at their next sync, and the copies earlier syncs made of them, shown as "Any", are set to private and out of stock. The values eBay's variations sell are now added to each product's attributes whatever "Overwrite Attributes" says, including any you took off it while its eBay listing still sells it. New values are added to your global attributes only if you turn on "Add eBay's new variation values to global attributes?".

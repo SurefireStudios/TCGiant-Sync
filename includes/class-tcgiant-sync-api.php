@@ -152,6 +152,15 @@ class TCGiant_Sync_API {
 	private $last_body_bytes = 0;
 
 	/**
+	 * How many times, in this request to the site, a request went to eBay
+	 * again after an attempt eBay may have had (3.32.1 fix round 2): see
+	 * resends().
+	 *
+	 * @var int
+	 */
+	protected $resends = 0;
+
+	/**
 	 * Supported Marketplaces.
 	 */
 	const MARKETPLACES = array(
@@ -199,6 +208,23 @@ class TCGiant_Sync_API {
 	 */
 	public function get_last_body_bytes() {
 		return $this->last_body_bytes;
+	}
+
+	/**
+	 * How many times, in this request to the site, request_with_retry() has
+	 * sent a request to eBay again, the same body, after an attempt whose
+	 * outcome it could not know - a timeout, a connection error, an HTTP
+	 * 5xx (3.32.1 fix round 2). eBay may have acted on the earlier attempt,
+	 * whatever it answers the later one: a relist read before and after its
+	 * call knows whether its request was one of them
+	 * (TCGiant_Sync_Exporter::relist_ended_listing()). A call sent again
+	 * after eBay refused an expired token is not counted: eBay plainly did
+	 * nothing with the first.
+	 *
+	 * @return int
+	 */
+	public function resends() {
+		return $this->resends;
 	}
 
 	/**
@@ -942,6 +968,9 @@ class TCGiant_Sync_API {
 			if ( $counted ) {
 				$this->increment_daily_call_count();
 			}
+			if ( $attempt > 1 ) {
+				++$this->resends;
+			}
 
 			$response = wp_remote_request( $url, $args );
 
@@ -1053,12 +1082,45 @@ class TCGiant_Sync_API {
 	 * @return int
 	 */
 	public function get_remaining_today() {
-		$left = $this->get_remaining_daily_budget();
-		$own  = $this->site_daily_allowance();
+		return $this->today_budget()[0];
+	}
+
+	/**
+	 * The limit get_remaining_today() is counted against, for the same log
+	 * lines (3.32.1): this site's own daily allowance where its room under
+	 * that is what is left, else the fleet's soft ceiling - DAILY_CALL_SOFT_
+	 * CEILING of the relay's daily limit, or of DAILY_CALL_LIMIT with none
+	 * known (fix round 1), which is what get_remaining_daily_budget() counts
+	 * down to: so the limit less the calls left is the calls used. Until
+	 * 3.32.1 the log always gave the fleet's 50,000, so a site with an
+	 * allowance of 10,000 read "9997/50000", and a site with none, 5 calls
+	 * in, "39995/50000".
+	 *
+	 * @return int
+	 */
+	public function get_today_limit() {
+		return $this->today_budget()[1];
+	}
+
+	/**
+	 * The calls left today and the limit they are counted against: see
+	 * get_remaining_today() and get_today_limit().
+	 *
+	 * @return int[] [ left, limit ]
+	 */
+	private function today_budget() {
+		$left  = $this->get_remaining_daily_budget();
+		$relay = $this->get_relay_budget();
+		$limit = (int) ( ( false !== $relay ? (int) $relay['daily_limit'] : self::DAILY_CALL_LIMIT ) * self::DAILY_CALL_SOFT_CEILING );
+		$own   = $this->site_daily_allowance();
 		if ( $own > 0 ) {
-			$left = min( $left, max( 0, $own - $this->get_daily_call_count() ) );
+			$room = max( 0, $own - $this->get_daily_call_count() );
+			if ( $room < $left ) {
+				$left  = $room;
+				$limit = $own;
+			}
 		}
-		return $left;
+		return array( $left, $limit );
 	}
 
 	/**
@@ -1939,9 +2001,14 @@ class TCGiant_Sync_API {
 	 *                                 variations whose price changed here
 	 *                                 while it was ended (3.31.1); '' keeps
 	 *                                 eBay's.
+	 * @param string   $pictures_xml   The listing's PictureDetails, when the
+	 *                                 product's photos changed here since
+	 *                                 the listing had them (3.32.1), as the
+	 *                                 exporter builds it for a push; '' keeps
+	 *                                 eBay's.
 	 * @return array|WP_Error
 	 */
-	public function relist_fixed_price_item( $item_id, $quantity = null, $variations_xml = '', $start_price = '' ) {
+	public function relist_fixed_price_item( $item_id, $quantity = null, $variations_xml = '', $start_price = '', $pictures_xml = '' ) {
 		// Without a quantity eBay relists at the quantity the listing was
 		// first given, whatever sold since, so the shop's own figure is sent
 		// when there is one.
@@ -1952,14 +2019,17 @@ class TCGiant_Sync_API {
 		//
 		// eBay keeps the listing's price unless one is sent: the exporter
 		// sends one only when it changed here
-		// (TCGiant_Sync_Exporter::relist_price()).
+		// (TCGiant_Sync_Exporter::relist_price()). And its photos, the same
+		// (TCGiant_Sync_Exporter::relist_photos()): after the Variations, as
+		// a push's item has them.
 		$xml = '
 <Item>
 <ItemID>' . esc_attr( $item_id ) . '</ItemID>
 <UUID>' . self::generate_ebay_uuid() . '</UUID>'
 			. ( null !== $quantity ? "\n<Quantity>" . max( 1, (int) $quantity ) . '</Quantity>' : '' )
 			. ( '' !== (string) $start_price ? "\n<StartPrice>" . esc_xml( (string) $start_price ) . '</StartPrice>' : '' )
-			. ( '' !== (string) $variations_xml ? "\n" . $variations_xml : '' ) . '
+			. ( '' !== (string) $variations_xml ? "\n" . $variations_xml : '' )
+			. ( '' !== (string) $pictures_xml ? "\n" . $pictures_xml : '' ) . '
 </Item>';
 
 		$result = $this->trading_api_request( 'RelistFixedPriceItem', $xml );
@@ -1982,7 +2052,10 @@ class TCGiant_Sync_API {
 	 * @param int|null $quantity The quantity, or none to keep eBay's.
 	 * @param string   $changes  Item fields the relist changes, as XML: a
 	 *                           push's title, description and photos
-	 *                           (3.28.8). eBay keeps everything it is not sent.
+	 *                           (3.28.8), or the product's photos alone,
+	 *                           changed here since the listing had them
+	 *                           (3.32.1). eBay keeps everything it is not
+	 *                           sent.
 	 * @return array|WP_Error
 	 */
 	public function relist_item( $item_id, $quantity = null, $changes = '' ) {
@@ -2382,10 +2455,7 @@ class TCGiant_Sync_API {
 		$parsed = json_decode( wp_json_encode( $xml_body ), true );
 
 		if ( isset( $parsed['Ack'] ) && in_array( $parsed['Ack'], array( 'Failure', 'PartialFailure' ), true ) ) {
-			$errors = $parsed['Errors'] ?? array();
-			$first  = isset( $errors[0] ) ? $errors[0] : $errors;
-			$msg    = $first['LongMessage'] ?? $first['ShortMessage'] ?? 'Unknown upload error';
-			return new WP_Error( 'upload_failed', is_string( $msg ) ? $msg : 'Picture upload failed.' );
+			return self::upload_refusal( $parsed );
 		}
 
 		$url = $parsed['SiteHostedPictureDetails']['FullURL'] ?? '';
@@ -2394,6 +2464,50 @@ class TCGiant_Sync_API {
 		}
 
 		return $url;
+	}
+
+	/**
+	 * The error for an upload eBay answered with Ack Failure, in its first
+	 * error's words, coded by what it was refused for (3.32.1 fix round 2):
+	 * 'rate_limited', its call limit (518, 10007, or said in words), and
+	 * 'no_token', a token it will not take - each as trading_api_request()
+	 * says them; 'upload_unavailable', a failure on eBay's side (every error
+	 * a SystemError); otherwise 'upload_failed', the picture itself refused.
+	 * Until then every one was 'upload_failed', which a relist takes for a
+	 * refusal that lasts until the photo changes
+	 * (TCGiant_Sync_Exporter::LASTING_UPLOAD_REFUSALS).
+	 *
+	 * @param array $parsed UploadSiteHostedPictures' answer.
+	 * @return WP_Error
+	 */
+	public static function upload_refusal( array $parsed ) {
+		$errors = $parsed['Errors'] ?? array();
+		$errors = is_array( $errors ) ? ( isset( $errors[0] ) ? $errors : array( $errors ) ) : array();
+		$first  = is_array( $errors[0] ?? null ) ? $errors[0] : array();
+		$msg    = $first['LongMessage'] ?? $first['ShortMessage'] ?? 'Unknown upload error';
+		$msg    = is_string( $msg ) ? $msg : 'Picture upload failed.';
+
+		$codes  = array();
+		$words  = '';
+		$system = (bool) $errors;
+		foreach ( $errors as $error ) {
+			$error   = is_array( $error ) ? $error : array();
+			$codes[] = self::scalar_value( $error['ErrorCode'] ?? '' );
+			$words  .= ' ' . strtolower( self::scalar_value( $error['LongMessage'] ?? '' ) . ' ' . self::scalar_value( $error['ShortMessage'] ?? '' ) );
+			if ( 'SystemError' !== self::scalar_value( $error['ErrorClassification'] ?? '' ) ) {
+				$system = false;
+			}
+		}
+
+		if ( array_intersect( $codes, array( '518', '10007' ) ) || false !== strpos( $words, 'call limit' ) || false !== strpos( $words, 'rate limit' ) || false !== strpos( $words, 'limit exceeded' ) || false !== strpos( $words, 'quota exceeded' ) ) {
+			$code = 'rate_limited';
+		} elseif ( array_intersect( $codes, array( '21916013', '21917053', '21916017', '21917054', '21916984', '931', '932', '16110', '17470' ) ) || false !== strpos( $words, 'token' ) ) {
+			$code = 'no_token';
+		} else {
+			$code = $system ? 'upload_unavailable' : 'upload_failed';
+		}
+
+		return new WP_Error( $code, $msg, $parsed );
 	}
 
 	/**

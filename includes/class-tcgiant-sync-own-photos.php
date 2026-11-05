@@ -328,6 +328,102 @@ class TCGiant_Sync_Own_Photos {
 	}
 
 	/**
+	 * Record what a relist is about to send, before eBay has answered it
+	 * (3.32.1 fix round 2, TCGiant_Sync_Exporter::relist_ended_listing()):
+	 * as record_push() records a push, but already spent, as a record whose
+	 * first read has been. It makes the product one this site pushed, so the
+	 * next import holds the pictures of its listing it does not know
+	 * (may_hold()) rather than download eBay's copies of the photos sent; and
+	 * it can never teach a place (learn_by_place()). Nothing says eBay made
+	 * the relist yet: the next read may be of the old listing, still showing
+	 * the item that sold, whose pictures would be learnt as the photos sent.
+	 * The held pictures and the released mark stay as they are. Once eBay
+	 * has answered, the relist records the push itself, unread, against the
+	 * new listing (record_push()).
+	 *
+	 * @param int    $product_id Product.
+	 * @param string $item_id    The listing being relisted.
+	 * @param array  $sent       'ids', 'urls' and 'shown', from the build.
+	 * @return void
+	 */
+	public static function record_unanswered( $product_id, $item_id, array $sent ) {
+		$ids  = array_values( array_map( 'intval', (array) ( $sent['ids'] ?? array() ) ) );
+		$urls = array_values( array_map( 'strval', (array) ( $sent['urls'] ?? array() ) ) );
+		if ( ! empty( $sent['kept'] ) || ! $ids || count( $ids ) !== count( $urls ) ) {
+			return;
+		}
+
+		update_post_meta( (int) $product_id, self::PUSHED_META, array(
+			'item'   => (string) $item_id,
+			'ids'    => $ids,
+			'urls'   => $urls,
+			'shown'  => self::id_list( (array) ( $sent['shown'] ?? array() ) ),
+			'time'   => time(),
+			'read'   => time(),
+			'learnt' => 0,
+		) );
+	}
+
+	/**
+	 * A product's push record as it is now, for put_back().
+	 *
+	 * @param int $product_id Product.
+	 * @return mixed The record, or '' when it has none.
+	 */
+	public static function record_state( $product_id ) {
+		return get_post_meta( (int) $product_id, self::PUSHED_META, true );
+	}
+
+	/**
+	 * Put back the push record record_state() read: a relist recorded what
+	 * it was about to send before eBay answered (record_unanswered()), and
+	 * eBay, or the site, then plainly refused it, so the listing still shows
+	 * what it showed (3.32.1 fix round 1).
+	 *
+	 * @param int   $product_id Product.
+	 * @param mixed $state      record_state()'s answer.
+	 * @return void
+	 */
+	public static function put_back( $product_id, $state ) {
+		if ( is_array( $state ) && $state ) {
+			update_post_meta( (int) $product_id, self::PUSHED_META, $state );
+		} else {
+			delete_post_meta( (int) $product_id, self::PUSHED_META );
+		}
+	}
+
+	/**
+	 * How a photo is on eBay as a number (3.32.1 fix round 1): 'upload', one
+	 * an upload of it was given (kept on it, or its cached copy's); 'place',
+	 * one learnt by its place in this product's listing (numbers_of()'s rule);
+	 * 'source', the number of the picture it was downloaded from; '' none.
+	 *
+	 * @param int    $attachment_id Photo.
+	 * @param int    $product_id    The product asking.
+	 * @param string $number        eBay's number.
+	 * @return string
+	 */
+	public static function kind_of( $attachment_id, $product_id, $number ) {
+		$number = (string) $number;
+		if ( '' === $number ) {
+			return '';
+		}
+
+		$rows = array_map( 'strval', (array) get_post_meta( (int) $attachment_id, self::NUMBER_META, false ) );
+		if ( in_array( $number, $rows, true ) || self::number( (string) get_post_meta( (int) $attachment_id, '_tcgiant_eps_url', true ) ) === $number ) {
+			return 'upload';
+		}
+		if ( in_array( self::PLACE . $number, $rows, true ) && ( (int) $product_id < 1 || self::recorded( $product_id, $attachment_id ) ) ) {
+			return 'place';
+		}
+		if ( self::number( (string) get_post_meta( (int) $attachment_id, '_tcgiant_source_url', true ) ) === $number ) {
+			return 'source';
+		}
+
+		return '';
+	}
+
+	/**
 	 * Whether a product's listing shows eBay's own photos, as the import
 	 * left them: its last push to this listing was a revise that kept them
 	 * (record_push()). Such a product follows eBay's photos, "Overwrite
@@ -1620,15 +1716,20 @@ class TCGiant_Sync_Own_Photos {
 	/**
 	 * How many of the photos a product shows may be copies of its own that a
 	 * sync downloaded after a push from the website it has no record of
-	 * (note_listing()): 0 when its photos do not have that shape.
+	 * (note_listing()): 0 when its photos do not have that shape. Public
+	 * since 3.32.1 fix round 1: a relist that would send such a product's
+	 * photos is refused instead, as it would put the copies on eBay
+	 * (TCGiant_Sync_Exporter::relist_photos()).
 	 *
-	 * @param int      $product_id Product.
-	 * @param string[] $pictures   Its listing's pictures, as last read.
+	 * @param int        $product_id Product.
+	 * @param string[]   $pictures   Its listing's pictures, as last read.
+	 * @param int[]|null $shown      The photos it shows, main photo first, as
+	 *                               shown() gives them; null to read them.
 	 * @return int
 	 */
-	private static function copies_shown( $product_id, array $pictures ) {
+	public static function copies_shown( $product_id, array $pictures, $shown = null ) {
 		$k     = count( $pictures );
-		$shown = self::shown( $product_id );
+		$shown = null === $shown ? self::shown( $product_id ) : self::id_list( (array) $shown );
 		$after = self::pushed_at( $product_id );
 		if ( $k < 1 || $after < 1 ) {
 			return 0;

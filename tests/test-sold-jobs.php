@@ -59,6 +59,10 @@ class TCGiant_Sync_Exporter {
 	public function relist_ended_listing( $product_id, $source ) { self::$relisted[] = (int) $product_id; return array( 'item_id' => '1' ); }
 	public static function push_progress( $product_id ) { return ''; }
 	public static function relist_stock_state( $product ) { return ''; }
+	// A relist refused for its photos (3.32.1 fix rounds 1 and 2): none here.
+	const RELIST_PHOTOS_MEMO = '_ebay_relist_photos_refused';
+	public static function relist_photos_refused( $product, $ebay_item_id ) { return false; }
+	public function relist_decided_photos() { return false; }
 	// Bulk Verify (3.28.5): the settings a product resolves to, a retired ID
 	// mapped, and each check it was asked, with whether as a new listing.
 	// The checks themselves are test-category-ids.php's.

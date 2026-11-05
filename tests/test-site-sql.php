@@ -237,6 +237,10 @@ class TCGiant_Sync_DB {
 }
 /** Relist, as far as auto-relist is concerned: which products it was handed. */
 class TCGiant_Sync_Exporter {
+	// A relist refused for its photos (3.32.1 fix rounds 1 and 2): none here.
+	const RELIST_PHOTOS_MEMO = '_ebay_relist_photos_refused';
+	public static function relist_photos_refused( $product, $ebay_item_id ) { return false; }
+	public function relist_decided_photos() { return false; }
 	public static $asked = array();
 	public static function instance() { static $i; return $i ? $i : ( $i = new self() ); }
 	public function relist_ended_listing( $product_id, $source ) {

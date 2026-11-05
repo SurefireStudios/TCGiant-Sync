@@ -1776,6 +1776,8 @@ class TCGiant_Sync_Exporter {
 		$this->build_for    = 'Push';
 		$this->read_missed  = null;
 		$this->aspects_read = array();
+		// And the uploads refused while deciding them (3.32.1 fix round 1).
+		$this->upload_refusals = array();
 
 		$settings = $this->get_export_settings( $product->get_id() );
 
@@ -2468,6 +2470,8 @@ class TCGiant_Sync_Exporter {
 		$this->grade_said   = array();
 		$this->card_said    = array();
 		$this->build_for    = 'Verify';
+		// And the uploads refused while deciding them (3.32.1 fix round 1).
+		$this->upload_refusals = array();
 
 		return $this->build_item_xml( $product, $settings );
 	}
@@ -2936,6 +2940,13 @@ class TCGiant_Sync_Exporter {
 	 * stock: the push holds a product to its own rules, as for the new
 	 * listing it would otherwise make.
 	 *
+	 * Any other relist - Bulk Relist, Auto-Relist - sends the product's
+	 * photos when they changed here since the listing had them (3.32.1,
+	 * relist_photos()), recorded as a push records them - before the call,
+	 * so a lost answer leaves the record (fix round 1) - or is refused when
+	 * one of them could not go, or the product shows copies of its own
+	 * photos; and nothing of them otherwise, as before.
+	 *
 	 * @param int        $product_id Product.
 	 * @param string     $source     For the log, e.g. "Bulk relist".
 	 * @param array|null $in_hand    eBay's GetItem answer for the listing the
@@ -2949,6 +2960,8 @@ class TCGiant_Sync_Exporter {
 	public function relist_ended_listing( $product_id, $source, $in_hand = null, $changes = '' ) {
 		$product_id = (int) $product_id;
 		$product    = wc_get_product( $product_id );
+
+		$this->relist_decided_photos = false;
 
 		if ( ! $product ) {
 			return new WP_Error( 'relist_refused', __( 'the product is not published', 'tcgiant-sync' ) );
@@ -3176,16 +3189,46 @@ class TCGiant_Sync_Exporter {
 			}
 		}
 
+		// The product's photos, where they changed here since the listing had
+		// them (3.32.1, relist_photos()), for a relist of either format. Not
+		// for a push's, which sends its own item's (3.28.8). Decided last,
+		// after every refusal that costs nothing, as it may upload them.
+		$photos = $from_push ? null : $this->relist_photos( $product, $item, $ebay_item_id, $source );
+		if ( is_wp_error( $photos ) ) {
+			return $photos;
+		}
+		$photos_xml = is_array( $photos ) ? (string) $photos['xml'] : '';
+
+		// Recorded before the call, against the listing it relists (fix round
+		// 1), already spent (fix round 2, TCGiant_Sync_Own_Photos::
+		// record_unanswered()): if eBay makes the relist and its answer is
+		// lost - a timeout and the same request sent again, a request the host
+		// killed - the next import holds the new listing's pictures rather
+		// than download copies of the shop's new photos. It never learns them
+		// by place: the listing it reads may be the old one, eBay having made
+		// nothing. Put back as it was below only when the request went once
+		// and eBay, or this site, plainly refused it.
+		$photos_before = null;
+		$resends       = 0;
+		if ( is_array( $photos ) ) {
+			$photos_before = TCGiant_Sync_Own_Photos::record_state( $product_id );
+			$resends       = $api->resends();
+			TCGiant_Sync_Own_Photos::record_unanswered( $product_id, (string) $ebay_item_id, (array) $photos['sent'] );
+		}
+
 		// A push's relist of an auction carries the shop's edits (3.28.8).
 		$changes = $from_push && ! $fixed ? (string) $changes : '';
-		$relist  = function () use ( $api, $fixed, $ebay_item_id, $quantity, $variations_xml, $changes, $start_price ) {
+		$relist  = function () use ( $api, $fixed, $ebay_item_id, $quantity, $variations_xml, $changes, $start_price, $photos_xml ) {
 			return $fixed
-				? $api->relist_fixed_price_item( $ebay_item_id, $quantity, $variations_xml, $start_price )
-				: $api->relist_item( $ebay_item_id, $quantity, $changes );
+				? $api->relist_fixed_price_item( $ebay_item_id, $quantity, $variations_xml, $start_price, $photos_xml )
+				: $api->relist_item( $ebay_item_id, $quantity, '' !== $changes ? $changes : $photos_xml );
 		};
 		$result  = $motors_site ? TCGiant_Sync_Motors::listing_call( 'relist', $relist, sprintf( 'eBay listing %1$s of WC #%2$d', $ebay_item_id, $product_id ), $product_id, TCGiant_Sync_API::scalar_value( $item['PrimaryCategory']['CategoryID'] ?? '' ) ) : $relist();
 
 		if ( is_wp_error( $result ) ) {
+			if ( null !== $photos_before && $api->resends() === $resends && self::relist_not_made( $result ) ) {
+				TCGiant_Sync_Own_Photos::put_back( $product_id, $photos_before );
+			}
 			return $result;
 		}
 
@@ -3193,6 +3236,9 @@ class TCGiant_Sync_Exporter {
 		if ( '' === $new_id ) {
 			return new WP_Error( 'no_item_id', __( 'eBay did not return a new Item ID. The listing may have been relisted - check your eBay account.', 'tcgiant-sync' ) );
 		}
+
+		// Relisted: a refusal for its photos is over.
+		delete_post_meta( $product_id, self::RELIST_PHOTOS_MEMO );
 
 		// RelistItem sends no category: the relist stays in the one the
 		// listing was in, a retired ID's too (3.28.1). Said, with how to move it.
@@ -3215,12 +3261,24 @@ class TCGiant_Sync_Exporter {
 		if ( $relist_prices ) {
 			TCGiant_Sync_Ebay_Price::record_sent( null, $relist_prices );
 		}
+		// And the photos it sent, recorded exactly as a push records them
+		// (3.32.1), now against the new listing: the next import knows eBay's
+		// copies of them, by number or by place, and downloads none of them
+		// (TCGiant_Sync_Own_Photos).
+		if ( is_array( $photos ) ) {
+			TCGiant_Sync_Own_Photos::record_push( $product_id, (string) $new_id, (array) $photos['sent'] );
+		}
 		// RelistItem keeps the listing as it was, so eBay's own values for it
 		// go with the product to the new number (3.28.8): its next Update
-		// leaves them alone as before.
+		// leaves them alone as before. Its pictures only where the relist
+		// sent none: photos it sent are the product's, not eBay's as last
+		// read, and the next read records eBay's copies of them (3.32.1).
 		$live = get_post_meta( $product_id, TCGiant_Sync_Ebay_Live::META, true );
 		if ( is_array( $live ) && (string) ( $live['item_id'] ?? '' ) === (string) $ebay_item_id ) {
 			$live['item_id'] = (string) $new_id;
+			if ( is_array( $photos ) ) {
+				unset( $live['pictures'] );
+			}
 			update_post_meta( $product_id, TCGiant_Sync_Ebay_Live::META, $live );
 		}
 		// RelistItem keeps the description eBay had, so the record of what was
@@ -3276,14 +3334,15 @@ class TCGiant_Sync_Exporter {
 		// And what a push's relist carried: the photos only when it sent them.
 		$photos_sent = false !== strpos( (string) substr( $changes, (int) strrpos( $changes, '</Description>' ) ), 'PictureDetails' );
 		TCGiant_Sync_Logger::log( sprintf(
-			'%s: WC #%d relisted on eBay as %s (was %s)%s%s%s.',
+			'%s: WC #%d relisted on eBay as %s (was %s)%s%s%s%s.',
 			$source,
 			$product_id,
 			$new_id,
 			$ebay_item_id,
 			null !== $quantity ? sprintf( ', quantity %d', $quantity ) : '',
 			'' === $changes ? '' : ( $photos_sent ? ', with the product\'s title, description and photos' : ', with the product\'s title and description, and its photos as they were on eBay' ),
-			self::relist_prices_said( $relist_prices, $start_price )
+			self::relist_prices_said( $relist_prices, $start_price ),
+			is_array( $photos ) ? ', with the product\'s photos, changed here since the listing had them' : ''
 		), 'success' );
 
 		return array(
@@ -3627,12 +3686,7 @@ class TCGiant_Sync_Exporter {
 
 		// What it sends of the product's photos, for the push's record.
 		if ( ! empty( $images ) ) {
-			$sent_urls         = array_values( array_slice( $images, 0, self::MAX_IMAGES ) );
-			$this->photos_sent = array(
-				'ids'   => array_slice( array_values( array_map( 'intval', (array) ( $this->pictures_for[ $product->get_id() ]['ids'] ?? array() ) ) ), 0, count( $sent_urls ) ),
-				'urls'  => $sent_urls,
-				'shown' => array_values( array_filter( array_merge( array( (int) $product->get_image_id() ), array_map( 'intval', (array) $product->get_gallery_image_ids() ) ) ) ),
-			);
+			$this->photos_sent = $this->photos_sent_of( $product, $images );
 		} elseif ( $photos_kept ) {
 			// Or that it kept the listing's own photos, eBay's as the import
 			// found them: the product follows them as an imported one does
@@ -3642,14 +3696,7 @@ class TCGiant_Sync_Exporter {
 
 		// Build picture URLs XML. No photos, no PictureDetails at all: an empty
 		// one would tell eBay the listing has none.
-		$picture_xml = '';
-		if ( ! empty( $images ) ) {
-			$picture_xml = '<PictureDetails>' . "\n";
-			foreach ( array_slice( $images, 0, self::MAX_IMAGES ) as $url ) {
-				$picture_xml .= "\t<PictureURL>" . esc_url( $url ) . "</PictureURL>\n";
-			}
-			$picture_xml .= '</PictureDetails>';
-		}
+		$picture_xml = self::picture_details_xml( $images );
 
 		// Build seller profiles XML (business policies). Not for an imported
 		// listing's revise unless the product sets a policy of its own: its
@@ -6401,7 +6448,9 @@ class TCGiant_Sync_Exporter {
 	/**
 	 * Whose build this is, for its warnings: 'Push' (do_push()) or 'Verify'
 	 * (build_item_xml_public(): Verify, Check with eBay, the template
-	 * preview), which lists nothing.
+	 * preview), which lists nothing. While a relist decides the photos it
+	 * sends (3.32.1, relist_photos()), the relist's source, "Bulk relist" or
+	 * "Auto-Relist", which the photo warnings use (said_for()).
 	 *
 	 * @var string
 	 */
@@ -7659,14 +7708,16 @@ class TCGiant_Sync_Exporter {
 		// copies the live shop cached, above.
 		$blocked = TCGiant_Sync_Environment::write_block();
 		if ( $blocked ) {
-			$reason = rtrim( $blocked->get_error_message(), '. ' );
+			$reason                  = rtrim( $blocked->get_error_message(), '. ' );
+			$this->upload_refusals[] = (string) $blocked->get_error_code();
 			return '';
 		}
 
 		$uploaded = TCGiant_Sync_API::instance()->upload_picture( $file, get_the_title( $attachment_id ) );
 
 		if ( is_wp_error( $uploaded ) ) {
-			$reason = rtrim( $uploaded->get_error_message(), '. ' );
+			$reason                  = rtrim( $uploaded->get_error_message(), '. ' );
+			$this->upload_refusals[] = (string) $uploaded->get_error_code();
 			return '';
 		}
 
@@ -7712,8 +7763,10 @@ class TCGiant_Sync_Exporter {
 	 *
 	 * Every item built for eBay gets its PictureDetails from here: AddItem and
 	 * AddFixedPriceItem, the two Revise calls, a new listing for an ended one,
-	 * and both Verify calls. RelistItem and RelistFixedPriceItem send no
-	 * pictures; eBay keeps the listing's own.
+	 * and both Verify calls. RelistItem and RelistFixedPriceItem send the
+	 * product's photos only when they changed here since the listing had them
+	 * (3.32.1), decided the same way (relist_photos(), through
+	 * decide_pictures()); otherwise none, and eBay keeps the listing's own.
 	 *
 	 * A product with more photos than a listing has room for - MAX_IMAGES of
 	 * them, MAX_PICTURE_CHARS of their addresses together - sends the first
@@ -7734,6 +7787,32 @@ class TCGiant_Sync_Exporter {
 			return $this->pictures_for[ $product_id ]['urls'];
 		}
 
+		$urls     = $this->decide_pictures( $product );
+		$left_out = $this->pictures_for[ $product_id ]['left_out'];
+
+		// A new listing whose main photo is not among them is not sent at all
+		// (3.30.4): its refusal says why, and nothing more is said here.
+		if ( ( ! $revise || ! $left_out ) && ! ( ! $revise && $this->main_photo_left_out( $product ) ) ) {
+			if ( $left_out ) {
+				TCGiant_Sync_Logger::warning( self::left_out_warning( $product_id, $left_out, $this->build_for ) );
+			}
+			$this->say_pictures_not_sent( $product_id );
+		}
+
+		return $urls;
+	}
+
+	/**
+	 * get_product_image_urls()'s decision, made and kept for the push
+	 * ($pictures_for), with nothing said: its caller says what it must.
+	 * Split out in 3.32.1 for a relist, which is refused, with its own words,
+	 * where a push's photo would be left out (relist_photos()).
+	 *
+	 * @param WC_Product $product The WooCommerce product.
+	 * @return string[] The addresses to send.
+	 */
+	private function decide_pictures( WC_Product $product ) {
+		$product_id = $product->get_id();
 		$left_out   = array();
 		$past_cap   = 0;
 		$no_address = array();
@@ -7759,16 +7838,547 @@ class TCGiant_Sync_Exporter {
 
 		$this->pictures_for[ $product_id ] = array( 'urls' => $urls, 'left_out' => $left_out, 'past_cap' => $past_cap, 'too_long' => $too_long, 'no_address' => $no_address, 'ids' => $sent_ids, 'missing' => $missing );
 
-		// A new listing whose main photo is not among them is not sent at all
-		// (3.30.4): its refusal says why, and nothing more is said here.
-		if ( ( ! $revise || ! $left_out ) && ! ( ! $revise && $this->main_photo_left_out( $product ) ) ) {
-			if ( $left_out ) {
-				TCGiant_Sync_Logger::warning( self::left_out_warning( $product_id, $left_out, $this->build_for ) );
-			}
-			$this->say_pictures_not_sent( $product_id );
+		return $urls;
+	}
+
+	/**
+	 * A listing's PictureDetails for the addresses decided, the first
+	 * MAX_IMAGES of them; '' for none - no photos, no PictureDetails at all:
+	 * an empty one would tell eBay the listing has none. The one builder, for
+	 * a push's item and a relist's alike.
+	 *
+	 * @param string[] $images Addresses, in order.
+	 * @return string
+	 */
+	private static function picture_details_xml( array $images ) {
+		if ( empty( $images ) ) {
+			return '';
 		}
 
-		return $urls;
+		$picture_xml = '<PictureDetails>' . "\n";
+		foreach ( array_slice( $images, 0, self::MAX_IMAGES ) as $url ) {
+			$picture_xml .= "\t<PictureURL>" . esc_url( $url ) . "</PictureURL>\n";
+		}
+		return $picture_xml . '</PictureDetails>';
+	}
+
+	/**
+	 * What an item sends of a product's photos, as a push records it once
+	 * eBay has taken it (TCGiant_Sync_Own_Photos::record_push()): 'ids', the
+	 * photos sent, in order; 'urls', their addresses as sent; 'shown', the
+	 * photos the product shows, main photo first.
+	 *
+	 * @param WC_Product $product The product.
+	 * @param string[]   $images  The addresses decided (get_product_image_urls()).
+	 * @return array
+	 */
+	private function photos_sent_of( WC_Product $product, array $images ) {
+		$sent_urls = array_values( array_slice( $images, 0, self::MAX_IMAGES ) );
+
+		return array(
+			'ids'   => array_slice( array_values( array_map( 'intval', (array) ( $this->pictures_for[ $product->get_id() ]['ids'] ?? array() ) ) ), 0, count( $sent_urls ) ),
+			'urls'  => $sent_urls,
+			'shown' => array_values( array_filter( array_merge( array( (int) $product->get_image_id() ), array_map( 'intval', (array) $product->get_gallery_image_ids() ) ) ) ),
+		);
+	}
+
+	/**
+	 * Whose words a photo warning is in: Verify's, a relist's own (3.32.1:
+	 * "Bulk relist", "Auto-Relist"), or a push's.
+	 *
+	 * @param string $for build_for, or a warning's own.
+	 * @return string
+	 */
+	private static function said_for( $for ) {
+		$for = (string) $for;
+
+		return 'Verify' === $for || false !== stripos( $for, 'relist' ) ? $for : 'Push';
+	}
+
+	/**
+	 * The pictures of a listing as GetItem gives them, in eBay's order:
+	 * PictureDetails.PictureURL, read as the import reads it
+	 * (TCGiant_Sync_Ebay_Live::from_item(), TCGiant_Sync_Mapper's images). A
+	 * variation's own pictures are not among them.
+	 *
+	 * @param array $item GetItem's Item.
+	 * @return string[]
+	 */
+	private static function listing_pictures_of( array $item ) {
+		if ( ! isset( $item['PictureDetails']['PictureURL'] ) ) {
+			return array();
+		}
+
+		$pictures = array();
+		foreach ( (array) $item['PictureDetails']['PictureURL'] as $url ) {
+			$url = trim( TCGiant_Sync_API::scalar_value( $url ) );
+			if ( '' !== $url ) {
+				$pictures[] = $url;
+			}
+		}
+
+		return $pictures;
+	}
+
+	/**
+	 * The first picture's original address on the website, where GetItem
+	 * gives one (PictureDetails.ExternalPictureURL): a listing sent its
+	 * photos from the website. '' for none.
+	 *
+	 * @param array $item GetItem's Item.
+	 * @return string
+	 */
+	private static function listing_external_of( array $item ) {
+		if ( ! isset( $item['PictureDetails']['ExternalPictureURL'] ) ) {
+			return '';
+		}
+
+		foreach ( (array) $item['PictureDetails']['ExternalPictureURL'] as $url ) {
+			$url = trim( TCGiant_Sync_API::scalar_value( $url ) );
+			if ( '' !== $url ) {
+				return $url;
+			}
+		}
+
+		return '';
+	}
+
+	/**
+	 * A product's photos as a push sends them: the featured image, then the
+	 * gallery, the first MAX_IMAGES.
+	 *
+	 * @param WC_Product $product The product.
+	 * @return int[]
+	 */
+	private static function relist_photo_ids( WC_Product $product ) {
+		$photos = array();
+		foreach ( array_merge( array( (int) $product->get_image_id() ), array_map( 'intval', (array) $product->get_gallery_image_ids() ) ) as $id ) {
+			if ( $id > 0 ) {
+				$photos[] = $id;
+			}
+		}
+
+		return array_slice( $photos, 0, self::MAX_IMAGES );
+	}
+
+	/**
+	 * Whether an ended listing's pictures are the product's photos, each in
+	 * its place (3.32.1): the featured image, then the gallery, up to
+	 * MAX_IMAGES, as a push sends them, and as many of them as the listing
+	 * has pictures. A picture is a photo's when its number is one the photo
+	 * is on eBay as (TCGiant_Sync_Own_Photos::numbers_of(): an upload's, one
+	 * learnt by place for this product, a cached copy's), or the number of
+	 * the address the photo was downloaded from (_tcgiant_source_url: an
+	 * imported photo, or an eBay stand-in; see TCGiant_Sync_Ebay_Live::
+	 * photos_match()) - and its file has not changed since (fix round 1,
+	 * relist_photo_changed()).
+	 *
+	 * A listing whose only picture GetItem gives as its original on the
+	 * website (ExternalPictureURL, no PictureURL: GetItem's other possible
+	 * shape for a listing sent from the website, see TCGiant_Sync_Own_Photos::
+	 * learn_by_place()) is the same when the product has one photo, at that
+	 * address (fix round 1).
+	 *
+	 * Null when it cannot be told: no pictures in eBay's answer, no photos on
+	 * the product, or a picture whose address carries no number.
+	 *
+	 * @param WC_Product $product  The product.
+	 * @param string[]   $pictures The listing's (listing_pictures_of()).
+	 * @param string     $external Its ExternalPictureURL (listing_external_of()).
+	 * @return bool|null
+	 */
+	private static function relist_photos_same( WC_Product $product, array $pictures, $external = '' ) {
+		if ( ! $pictures && '' !== (string) $external ) {
+			$photos = self::relist_photo_ids( $product );
+			if ( ! $photos ) {
+				return null;
+			}
+			$own = (string) wp_get_attachment_image_url( $photos[0], 'full' );
+
+			return 1 === count( $photos ) && '' !== $own && preg_replace( '/\?.*$/', '', $own ) === preg_replace( '/\?.*$/', '', (string) $external );
+		}
+
+		$numbers = array_map( array( 'TCGiant_Sync_Own_Photos', 'number' ), array_values( $pictures ) );
+		if ( ! $numbers || in_array( '', $numbers, true ) ) {
+			return null;
+		}
+
+		$photos = self::relist_photo_ids( $product );
+		if ( ! $photos ) {
+			return null;
+		}
+
+		if ( count( $numbers ) !== count( $photos ) ) {
+			return false;
+		}
+
+		foreach ( $photos as $i => $photo ) {
+			$kind = TCGiant_Sync_Own_Photos::kind_of( $photo, $product->get_id(), $numbers[ $i ] );
+			if ( '' === $kind || self::relist_photo_changed( $photo, $product->get_id(), $kind ) ) {
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	/**
+	 * Whether a photo's file changed under the same attachment since eBay was
+	 * given the picture its number names (3.32.1 fix round 1), by the kind of
+	 * number it matched (TCGiant_Sync_Own_Photos::kind_of()):
+	 *
+	 * - an upload's: the file is here and is not the one last uploaded - its
+	 *   modified time is not the cache's key (_tcgiant_eps_key), exactly as a
+	 *   push decides to upload it again (eps_picture_url()). Edited in
+	 *   WordPress, or replaced in place by a plugin;
+	 * - learnt by place, from a push from the website: its address is not
+	 *   the one that push sent (the record's), as after an edit in WordPress,
+	 *   which names a new file;
+	 * - downloaded from the picture (an imported photo): edited in WordPress
+	 *   since, as TCGiant_Sync_Ebay_Live::photos_match() tells it - the
+	 *   original's sizes kept (_wp_attachment_backup_sizes), or the file named
+	 *   "-e" and 13 digits.
+	 *
+	 * A file replaced in place that leaves no such trace - one a push from
+	 * the website sent, or an imported one - is not seen, as photos_match()
+	 * does not see it either.
+	 *
+	 * @param int    $photo      Photo.
+	 * @param int    $product_id Product.
+	 * @param string $kind       'upload', 'place' or 'source'.
+	 * @return bool
+	 */
+	private static function relist_photo_changed( $photo, $product_id, $kind ) {
+		if ( 'upload' === $kind ) {
+			$key  = (string) get_post_meta( $photo, '_tcgiant_eps_key', true );
+			$file = get_attached_file( $photo );
+
+			return '' !== $key && $file && file_exists( $file ) && (string) filemtime( $file ) !== $key;
+		}
+
+		if ( 'place' === $kind ) {
+			$record = get_post_meta( (int) $product_id, TCGiant_Sync_Own_Photos::PUSHED_META, true );
+			$ids    = is_array( $record ) ? array_values( array_map( 'intval', (array) ( $record['ids'] ?? array() ) ) ) : array();
+			$urls   = is_array( $record ) ? array_values( array_map( 'strval', (array) ( $record['urls'] ?? array() ) ) ) : array();
+			$at     = array_search( (int) $photo, $ids, true );
+			if ( false === $at || ! isset( $urls[ $at ] ) ) {
+				return false;
+			}
+
+			return (string) wp_get_attachment_image_url( $photo, 'full' ) !== $urls[ $at ];
+		}
+
+		$backup = get_post_meta( $photo, '_wp_attachment_backup_sizes', true );
+
+		return ! empty( $backup ) || 1 === preg_match( '/-e\d{13}\.[a-z0-9]+$/i', (string) get_post_meta( $photo, '_wp_attached_file', true ) );
+	}
+
+	/**
+	 * What a product's photos are now, for the memo of a relist refused for
+	 * them (RELIST_PHOTOS_MEMO): the photos a push would send, each with its
+	 * file's modified time, and the photo-hosting setting. Any change - a
+	 * photo added, taken off, moved or edited - is a new state.
+	 *
+	 * @param WC_Product $product The product.
+	 * @return string
+	 */
+	public static function relist_photos_state( WC_Product $product ) {
+		$state = array();
+		foreach ( self::relist_photo_ids( $product ) as $id ) {
+			$file    = get_attached_file( $id );
+			$state[] = array( $id, $file && file_exists( $file ) ? (string) filemtime( $file ) : '0' );
+		}
+		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
+		$state[]  = ! empty( $settings['host_images_on_ebay'] );
+
+		return md5( (string) wp_json_encode( $state ) );
+	}
+
+	/**
+	 * Whether a product's relist was refused for its photos as they are now,
+	 * of this listing, within RELIST_PHOTOS_MEMO_DAYS (RELIST_PHOTOS_MEMO):
+	 * Auto-Relist leaves it until then (TCGiant_Sync_Cron::
+	 * auto_relist_ended_items()).
+	 *
+	 * @param WC_Product $product      The product.
+	 * @param string     $ebay_item_id Its ended listing.
+	 * @return bool
+	 */
+	public static function relist_photos_refused( WC_Product $product, $ebay_item_id ) {
+		$memo = explode( '>', (string) get_post_meta( $product->get_id(), self::RELIST_PHOTOS_MEMO, true ) );
+
+		return 3 === count( $memo )
+			&& (string) $ebay_item_id === $memo[0]
+			&& self::relist_photos_state( $product ) === $memo[1]
+			&& (int) $memo[2] > time() - self::RELIST_PHOTOS_MEMO_DAYS * DAY_IN_SECONDS;
+	}
+
+	/**
+	 * On a product whose relist was refused for its photos (3.32.1 fix round
+	 * 1): "<listing>><relist_photos_state()>><when>". Auto-Relist does not
+	 * ask eBay again for it - no GetItem, no upload - until the listing or
+	 * its photos change, or RELIST_PHOTOS_MEMO_DAYS pass (fix round 2,
+	 * relist_photos_refused()). Not written when an upload failed for a
+	 * reason that passes - the day's calls, the token, eBay out of reach -
+	 * which the next run tries again.
+	 */
+	const RELIST_PHOTOS_MEMO = '_ebay_relist_photos_refused';
+
+	/**
+	 * How long Auto-Relist leaves a product refused for its photos, its
+	 * photos unchanged, before it asks again (3.32.1 fix round 2): a
+	 * refusal remembered by mistake stops it no longer than this.
+	 */
+	const RELIST_PHOTOS_MEMO_DAYS = 7;
+
+	/**
+	 * Upload refusals that stay as they are until the photo changes: eBay
+	 * refused the picture itself (upload_failed: TCGiant_Sync_API::
+	 * upload_picture() gives its call limit, a token it will not take and a
+	 * failure on its side codes of their own since fix round 2), or there is
+	 * no file to read. Any other - the day's calls spent, no token, eBay out
+	 * of reach - passes.
+	 */
+	const LASTING_UPLOAD_REFUSALS = array( 'upload_failed', 'file_missing' );
+
+	/**
+	 * The error codes of the uploads refused while a relist decided its
+	 * photos (eps_picture_url()).
+	 *
+	 * @var string[]
+	 */
+	private $upload_refusals = array();
+
+	/**
+	 * Whether the last relist_ended_listing() decided photos to send, which
+	 * may upload: Bulk Relist ends its request after such a product
+	 * (TCGiant_Sync_Jobs::ajax_process_batch(), 3.32.1 fix round 1).
+	 *
+	 * @var bool
+	 */
+	private $relist_decided_photos = false;
+
+	/**
+	 * Whether the last relist_ended_listing() decided photos to send.
+	 *
+	 * @return bool
+	 */
+	public function relist_decided_photos() {
+		return $this->relist_decided_photos;
+	}
+
+	/**
+	 * What a relist sends of the product's photos (3.32.1). Until 3.32.1 a
+	 * relist sent none, and eBay put the listing back up with the photos it
+	 * had. A shop that reuses a product for a new coin - new photos, a new
+	 * price - relisted it with the sold coin's photos; the next import read
+	 * them back as the old photos, still in the Media Library, and the
+	 * product showed the old coin again.
+	 *
+	 * Now, when the listing's pictures are not the product's photos
+	 * (relist_photos_same()), the product's photos go, decided exactly as a
+	 * push decides them (decide_pictures(): all on eBay or all from the
+	 * website, never a mix; uploaded with "Host listing images on eBay?" on,
+	 * each upload's number kept on its photo; on a staging copy, nothing
+	 * uploaded), and they are recorded as a push records them
+	 * (relist_ended_listing()), so the next import knows eBay's copies of
+	 * them and downloads nothing.
+	 *
+	 * Refused before eBay, never relisted with the old photos:
+	 *
+	 * - before anything is decided or uploaded, when the product shows
+	 *   copies of its own photos that a sync downloaded from eBay after a push
+	 *   from the website before 3.30.4 (fix round 1,
+	 *   TCGiant_Sync_Own_Photos::copies_shown()): sent, they would go on the
+	 *   live listing beside the photos they copy. The refusal names the
+	 *   copies (fix round 2): Image Cleanup's list of such products is made
+	 *   once and may not have it. A product showing such copies in place of
+	 *   its photos is the same as its listing (each copy is the download of
+	 *   the picture in its place), so nothing is sent for it, as before;
+	 * - when a photo would be left out because the others are on eBay, the
+	 *   main photo cannot go (main_photo_left_out()), or nothing can go.
+	 *
+	 * Said in the log and in the refusal, with what to do; and kept on the
+	 * product (RELIST_PHOTOS_MEMO) unless an upload failed for a reason that
+	 * passes.
+	 *
+	 * The listing's own pictures only: a variation listing's
+	 * VariationSpecificPictureSet is not sent, and stays as eBay has it.
+	 *
+	 * @param WC_Product $product      The product.
+	 * @param array      $item         GetItem's Item for the ended listing.
+	 * @param string     $ebay_item_id The ended listing.
+	 * @param string     $source       For the log, e.g. "Bulk relist".
+	 * @return array|null|WP_Error Null to send none, as before 3.32.1; or
+	 *                             'xml', the PictureDetails, and 'sent', for
+	 *                             the record; or the refusal.
+	 */
+	private function relist_photos( WC_Product $product, array $item, $ebay_item_id, $source ) {
+		$pictures = self::listing_pictures_of( $item );
+		if ( false !== self::relist_photos_same( $product, $pictures, self::listing_external_of( $item ) ) ) {
+			return null;
+		}
+
+		$product_id = $product->get_id();
+
+		// Copies of its own photos, left by the sync before 3.30.4: refused
+		// before anything is decided or uploaded, the copies named (fix round
+		// 2) - the last of the photos it shows - as Image Cleanup's list of
+		// them may not name the product.
+		$shown_ids = self::relist_photo_ids( $product );
+		$copies    = $pictures ? TCGiant_Sync_Own_Photos::copies_shown( $product_id, $pictures, $shown_ids ) : 0;
+		if ( $copies > 0 ) {
+			$named = array();
+			foreach ( array_slice( $shown_ids, -$copies ) as $id ) {
+				$named[] = '#' . (int) $id;
+			}
+			return $this->refuse_relist_photos(
+				$product,
+				$ebay_item_id,
+				$source,
+				sprintf(
+					/* translators: 1: the copies' attachment IDs, e.g. "photos #8003, #8004" */
+					__( 'it shows copies of its own photos that a sync downloaded from eBay (%1$s), and a relist would put them on eBay beside the photos they copy. Remove the copies from its photos, then use Update eBay Listing', 'tcgiant-sync' ),
+					1 === count( $named )
+						/* translators: 1: an attachment ID, e.g. "#8004" */
+						? sprintf( __( 'photo %1$s', 'tcgiant-sync' ), $named[0] )
+						/* translators: 1: attachment IDs, e.g. "#8003, #8004" */
+						: sprintf( __( 'photos %1$s', 'tcgiant-sync' ), implode( ', ', $named ) )
+				),
+				true
+			);
+		}
+
+		// Decided afresh (decide_pictures() writes the push's memo over any
+		// kept), and said in the relist's own words.
+		$this->relist_decided_photos = true;
+		$this->upload_refusals       = array();
+		$was                         = $this->build_for;
+		$this->build_for             = (string) $source;
+
+		$images  = $this->decide_pictures( $product );
+		$decided = $this->pictures_for[ $product_id ];
+		$main    = $this->main_photo_left_out( $product );
+
+		$why  = '';
+		$then = __( 'Use Update eBay Listing to list it with its photos as they are now', 'tcgiant-sync' );
+		if ( $decided['left_out'] ) {
+			$named = array();
+			foreach ( $decided['left_out'] as $id => $reason ) {
+				$named[] = sprintf( '#%d (%s)', (int) $id, $reason );
+			}
+			$why = 1 === count( $named )
+				/* translators: 1: a photo's ID, with why */
+				? sprintf( __( 'photo %1$s could not be put on eBay, and its other photos are on eBay, which does not accept a mix', 'tcgiant-sync' ), $named[0] )
+				/* translators: 1: photo IDs, each with why */
+				: sprintf( __( 'photos %1$s could not be put on eBay, and its other photos are on eBay, which does not accept a mix', 'tcgiant-sync' ), implode( ', ', $named ) );
+		} elseif ( $main ) {
+			$main_id = (int) $product->get_image_id();
+			$reason  = (string) ( $decided['missing'][ $main_id ] ?? '' );
+			$why     = sprintf(
+				/* translators: 1: attachment ID, 2: why */
+				__( 'its main photo (#%1$d) could not be put on eBay (%2$s)', 'tcgiant-sync' ),
+				$main_id,
+				'' !== $reason ? $reason : __( 'it could not be sent', 'tcgiant-sync' )
+			);
+			$then    = __( 'Use Update eBay Listing to list it with its photos as they are now, once the main photo can be put on eBay, or choose another main photo', 'tcgiant-sync' );
+		} elseif ( ! $images ) {
+			$why = __( 'none of them could be sent to eBay', 'tcgiant-sync' );
+		}
+
+		$this->build_for = $was;
+
+		if ( '' !== $why ) {
+			return $this->refuse_relist_photos(
+				$product,
+				$ebay_item_id,
+				$source,
+				sprintf(
+					/* translators: 1: eBay item ID, 2: what could not go, 3: what to do */
+					__( 'its photos changed here since eBay listing %1$s had them, but %2$s, so a relist would put it back up with its old photos. %3$s', 'tcgiant-sync' ),
+					$ebay_item_id,
+					$why,
+					$then
+				),
+				! array_diff( $this->upload_refusals, self::LASTING_UPLOAD_REFUSALS )
+			);
+		}
+
+		// Going: what a push says of the photos it had no room or nothing
+		// to send for.
+		$this->build_for = (string) $source;
+		$this->say_pictures_not_sent( $product_id );
+		$this->build_for = $was;
+
+		return array(
+			'xml'  => self::picture_details_xml( $images ),
+			'sent' => $this->photos_sent_of( $product, $images ),
+		);
+	}
+
+	/**
+	 * Whether a relist call's error says eBay did not make the relist (3.32.1
+	 * fix round 1): this site sent nothing - a staging copy, the day's calls,
+	 * no token - or eBay answered and refused it. Not when eBay may have made
+	 * it with its answer lost: no answer at all, one that could not be read,
+	 * or eBay saying the request was a second sending of one it has already
+	 * taken (a UUID used before, error 488, DuplicateInvocationDetails) - which
+	 * is what a timeout and the same request sent again
+	 * (TCGiant_Sync_API::request_with_retry()) comes back as. Asked only of a
+	 * request that went once (fix round 2): one sent again may have been
+	 * made by eBay whatever its last answer says (TCGiant_Sync_API::
+	 * resends()).
+	 *
+	 * @param WP_Error $error The relist call's error.
+	 * @return bool
+	 */
+	private static function relist_not_made( WP_Error $error ) {
+		$code = (string) $error->get_error_code();
+		if ( in_array( $code, array( 'staging_blocked', 'rate_limited', 'no_token' ), true ) ) {
+			return true;
+		}
+		if ( 'api_error' !== $code ) {
+			return false;
+		}
+
+		$data = $error->get_error_data();
+		if ( is_array( $data ) && isset( $data['DuplicateInvocationDetails'] ) ) {
+			return false;
+		}
+		$errors = is_array( $data ) && isset( $data['Errors'] ) ? (array) $data['Errors'] : array();
+		if ( isset( $errors['ErrorCode'] ) || isset( $errors['ShortMessage'] ) || isset( $errors['LongMessage'] ) ) {
+			$errors = array( $errors );
+		}
+		foreach ( $errors as $one ) {
+			if ( is_array( $one ) && '488' === TCGiant_Sync_API::scalar_value( $one['ErrorCode'] ?? '' ) ) {
+				return false;
+			}
+		}
+
+		return false === stripos( $error->get_error_message(), 'UUID' );
+	}
+
+	/**
+	 * Refuse a relist for its photos: logged as a warning, in the reason's
+	 * own words, and remembered for Auto-Relist (RELIST_PHOTOS_MEMO) when it
+	 * lasts until the photos change.
+	 *
+	 * @param WC_Product $product      The product.
+	 * @param string     $ebay_item_id The ended listing.
+	 * @param string     $source       For the log.
+	 * @param string     $refusal      Why, in plain words.
+	 * @param bool       $lasting      Whether it lasts until the photos change.
+	 * @return WP_Error
+	 */
+	private function refuse_relist_photos( WC_Product $product, $ebay_item_id, $source, $refusal, $lasting ) {
+		TCGiant_Sync_Logger::warning( sprintf( '%1$s: WC #%2$d was not relisted: %3$s.', $source, $product->get_id(), $refusal ) );
+		if ( $lasting ) {
+			update_post_meta( $product->get_id(), self::RELIST_PHOTOS_MEMO, (string) $ebay_item_id . '>' . self::relist_photos_state( $product ) . '>' . time() );
+		} else {
+			delete_post_meta( $product->get_id(), self::RELIST_PHOTOS_MEMO );
+		}
+
+		return new WP_Error( 'relist_refused', $refusal );
 	}
 
 	/**
@@ -7835,11 +8445,12 @@ class TCGiant_Sync_Exporter {
 	 *
 	 * @param int    $product_id Product.
 	 * @param int[]  $ids        Attachment IDs.
-	 * @param string $for        'Push' or 'Verify'.
+	 * @param string $for        'Push' or 'Verify', or a relist's source
+	 *                           (3.32.1, said_for()).
 	 * @return string
 	 */
 	private static function no_address_warning( $product_id, array $ids, $for = 'Push' ) {
-		$for = 'Verify' === $for ? 'Verify' : 'Push';
+		$for = self::said_for( $for );
 
 		if ( 1 === count( $ids ) ) {
 			return sprintf(
@@ -7975,7 +8586,7 @@ class TCGiant_Sync_Exporter {
 				$id,
 				$product_id,
 				$reason,
-				'Verify' === $this->build_for ? 'Verify' : 'Push'
+				self::said_for( $this->build_for )
 			) );
 
 			$past_cap   = $site_past;
@@ -7997,11 +8608,12 @@ class TCGiant_Sync_Exporter {
 	 * @param int  $sent       How many were.
 	 * @param bool   $too_long   Whether the addresses' length together, rather
 	 *                           than their number, left no room.
-	 * @param string $for        'Push' or 'Verify'.
+	 * @param string $for        'Push' or 'Verify', or a relist's source
+	 *                           (3.32.1, said_for()).
 	 * @return string
 	 */
 	private static function past_cap_warning( $product_id, $not_sent, $sent, $too_long, $for = 'Push' ) {
-		$for = 'Verify' === $for ? 'Verify' : 'Push';
+		$for = self::said_for( $for );
 
 		if ( $too_long ) {
 			if ( 1 === (int) $not_sent ) {

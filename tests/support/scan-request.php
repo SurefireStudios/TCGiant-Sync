@@ -521,6 +521,7 @@ if ( 'apixml' !== $DO ) {
 		public function get_remaining_daily_budget() { return 40000; }
 		// What the log and the screens show (3.31.1 fix round 1): no allowance of the site's own here.
 		public function get_remaining_today() { return $this->get_remaining_daily_budget(); }
+		public function get_today_limit() { return (int) ( self::DAILY_CALL_LIMIT * 0.8 ); }
 		public function get_item( $item_id ) {
 			$item_id = (string) $item_id;
 			w_line( 'getitem', $GLOBALS['REQ'] . ' ' . $item_id );

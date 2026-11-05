@@ -961,14 +961,15 @@ foreach ( array_merge( glob( dirname( __DIR__ ) . '/includes/*.php' ), glob( dir
 		$builders[ basename( $file ) ] = $n;
 	}
 }
-check( 'one place builds PictureDetails: build_item_xml(), from get_product_image_urls()', $builders, array( 'class-tcgiant-sync-exporter.php' => 2 ) );
+check( 'one place builds PictureDetails: picture_details_xml(), for build_item_xml() and, since 3.32.1, a relist whose photos changed here', $builders, array( 'class-tcgiant-sync-exporter.php' => 2 ) );
 $exp_src = (string) file_get_contents( dirname( __DIR__ ) . '/includes/class-tcgiant-sync-exporter.php' );
 check( '  get_product_image_urls() is called once, there', substr_count( $exp_src, '$this->get_product_image_urls(' ), 1 );
+check( '  the builder is called by build_item_xml() and relist_photos(), from one decision, decide_pictures(), which get_product_image_urls() and relist_photos() call (3.32.1)', array( substr_count( $exp_src, 'self::picture_details_xml( $images )' ), substr_count( $exp_src, '$this->decide_pictures( $product )' ), substr_count( $exp_src, '$this->decide_product_image_urls(' ) ), array( 2, 2, 1 ) );
 $adm_src = (string) file_get_contents( dirname( __DIR__ ) . '/admin/class-tcgiant-sync-admin.php' );
 $tpl_src = (string) file_get_contents( dirname( __DIR__ ) . '/includes/class-tcgiant-sync-template-admin.php' );
 check( '  Verify and the preview\'s Check with eBay build through it', array( false !== strpos( $adm_src, '$exporter->build_item_xml_public( $product, $settings )' ), false !== strpos( $tpl_src, '$exporter->build_item_xml_public( $product, $settings )' ) ), array( true, true ) );
 $relist_src = substr( $api_src, (int) strpos( $api_src, 'public function relist_fixed_price_item(' ), (int) strpos( $api_src, 'public function get_orders(' ) - (int) strpos( $api_src, 'public function relist_fixed_price_item(' ) );
-check( '  RelistItem and RelistFixedPriceItem make no pictures of their own: eBay keeps the listing\'s, unless a push hands RelistItem its item\'s (3.28.8)', array( false !== strpos( $relist_src, "'RelistItem'" ), false !== strpos( $relist_src, "'RelistFixedPriceItem'" ), false === stripos( $relist_src, 'Picture' ) ), array( true, true, true ) );
+check( '  RelistItem and RelistFixedPriceItem make no pictures of their own: eBay keeps the listing\'s, unless the exporter hands them its own - a push\'s RelistItem its item\'s (3.28.8), or a relist the product\'s photos changed here (3.32.1)', array( false !== strpos( $relist_src, "'RelistItem'" ), false !== strpos( $relist_src, "'RelistFixedPriceItem'" ), false === strpos( $relist_src, '<PictureDetails>' ), false === strpos( $relist_src, '<PictureURL>' ) ), array( true, true, true, true ) );
 
 // Every Revise of an item: one place, do_push(), whose item is built for it.
 $revise_sites = array();
@@ -1004,6 +1005,6 @@ foreach ( $GLOBALS['ITEMS'] as $item ) {
 ksort( $nodes );
 check( 'no empty PictureDetails node in any item built or sent: every PictureDetails has its photos', $empty, 0 );
 check( '  each new listing and Verify item has one; a revise none only where photos were held back (10 here)', array( $nodes['AddFixedPriceItem'] ?? array(), $nodes['AddItem'] ?? array(), $nodes['ReviseFixedPriceItem'][0] ?? 0, $nodes['ReviseItem'][0] ?? 0, isset( $nodes['Verify'][0] ), $nodes['GetItem'] ?? array() ), array( array( 1 => count( array_filter( $GLOBALS['ITEMS'], function ( $i ) { return 'AddFixedPriceItem' === $i[0]; } ) ) ), array( 1 => count( array_filter( $GLOBALS['ITEMS'], function ( $i ) { return 'AddItem' === $i[0]; } ) ) ), 9, 1, false, array( 0 => 8 ) ) );
-check( '  the shipped code never writes one: <PictureDetails> only when there are photos, and no self-closed one', array( substr_count( $exp_src, "if ( ! empty( \$images ) ) {\n\t\t\t\$picture_xml = '<PictureDetails>' . \"\\n\";" ), preg_match( '#<PictureDetails\s*/>#', implode( '', array_map( 'file_get_contents', array_merge( glob( dirname( __DIR__ ) . '/includes/*.php' ), glob( dirname( __DIR__ ) . '/admin/*.php' ) ) ) ) ) ), array( 1, 0 ) );
+check( '  the shipped code never writes one: <PictureDetails> only when there are photos, and no self-closed one', array( substr_count( $exp_src, "if ( empty( \$images ) ) {\n\t\t\treturn '';\n\t\t}\n\n\t\t\$picture_xml = '<PictureDetails>' . \"\\n\";" ), preg_match( '#<PictureDetails\s*/>#', implode( '', array_map( 'file_get_contents', array_merge( glob( dirname( __DIR__ ) . '/includes/*.php' ), glob( dirname( __DIR__ ) . '/admin/*.php' ) ) ) ) ) ), array( 1, 0 ) );
 
 done();

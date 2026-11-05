@@ -321,10 +321,17 @@ class WC_Product {
 	// A variation's own: attribute => value, as WooCommerce gives it. A
 	// product here has none of the other kind.
 	public function get_attributes() { return $GLOBALS['POSTS'][ $this->id ]['attrs'] ?? array(); }
-	public function get_image_id() { return 0; }
-	public function get_gallery_image_ids() { return array(); }
+	// Its photos, as WooCommerce reads them (3.32.1 fix round 1): none
+	// unless a check gives it some.
+	public function get_image_id() { return (int) $this->get_meta( '_thumbnail_id' ); }
+	public function get_gallery_image_ids() { return array_values( array_filter( array_map( 'intval', explode( ',', (string) $this->get_meta( '_product_image_gallery' ) ) ) ) ); }
 	public function get_weight() { return ''; }
 }
+// A photo's address on the website, and its file, as far as a relist that
+// sends photos reads them (3.32.1 fix round 1): from $IMAGES; no file here.
+function wp_get_attachment_image_url( $id, $size = 'thumbnail' ) { return $GLOBALS['IMAGES'][ (int) $id ] ?? false; }
+function get_attached_file( $id ) { return false; }
+function get_the_title( $id ) { return ''; }
 class WC_Product_Variable extends WC_Product {
 	/** Every value its variations use, per attribute, as a push lists them. */
 	public function get_variation_attributes() {
@@ -599,18 +606,26 @@ class Recording_eBay extends TCGiant_Sync_API {
 		$this->calls[] = array( 'GetItem', (string) $item_id );
 		return $this->items[ (string) $item_id ] ?? $this->item;
 	}
+	// The photos, when a relist sends them (3.32.1), recorded in $photos.
+	public $photos = array();
 	public function relist_item( $item_id, $quantity = null, $changes = '' ) {
 		$this->calls[] = array( 'RelistItem', (string) $item_id, $quantity );
+		if ( '' !== (string) $changes ) {
+			$this->photos[ count( $this->calls ) - 1 ] = (string) $changes;
+		}
 		return is_callable( $this->relists ) ? call_user_func( $this->relists, (string) $item_id ) : $this->relists;
 	}
 	// A variation listing's Variations block, when one is sent, is recorded as
 	// a fourth entry; a price, when one is sent (3.31.1), as a fifth.
-	public function relist_fixed_price_item( $item_id, $quantity = null, $variations_xml = '', $start_price = '' ) {
+	public function relist_fixed_price_item( $item_id, $quantity = null, $variations_xml = '', $start_price = '', $pictures_xml = '' ) {
 		$this->calls[] = '' !== (string) $start_price
 			? array( 'RelistFixedPriceItem', (string) $item_id, $quantity, (string) $variations_xml, (string) $start_price )
 			: ( '' === (string) $variations_xml
 				? array( 'RelistFixedPriceItem', (string) $item_id, $quantity )
 				: array( 'RelistFixedPriceItem', (string) $item_id, $quantity, (string) $variations_xml ) );
+		if ( '' !== (string) $pictures_xml ) {
+			$this->photos[ count( $this->calls ) - 1 ] = (string) $pictures_xml;
+		}
 		return is_callable( $this->relists ) ? call_user_func( $this->relists, (string) $item_id ) : $this->relists;
 	}
 	// A push: revising a listing, or adding a new one. Recorded with the
@@ -2762,7 +2777,7 @@ check( '  it settles the variations', $settles > 0, true );
 check( '  before the listing\'s figures go into the parent', $settles > 0 && at( $var_check, 'apply_ended_listing_stock(' ) > $settles, true );
 check( '  and still never trashes the product', false === strpos( $var_check, 'maybe_remove_sold_out(' ), true );
 check( 'the relist builds the variations it sends', false !== strpos( $guarded, 'relist_variations_xml(' ), true );
-check( '  and passes them to RelistFixedPriceItem, as its third argument (a price changed here its fourth, 3.31.1)', 1 === preg_match( '/->\s*relist_fixed_price_item\s*\(\s*\$\w+\s*,\s*\$\w+\s*,\s*\$variations_xml\s*,\s*\$start_price\s*\)/', $guarded ), true );
+check( '  and passes them to RelistFixedPriceItem, as its third argument (a price changed here its fourth, 3.31.1; photos changed here its fifth, 3.32.1)', 1 === preg_match( '/->\s*relist_fixed_price_item\s*\(\s*\$\w+\s*,\s*\$\w+\s*,\s*\$variations_xml\s*,\s*\$start_price\s*,\s*\$photos_xml\s*\)/', $guarded ), true );
 
 echo "\nA LISTING ON ANOTHER EBAY SITE IS NEVER PUT BACK UP (3.27.5)\n" . str_repeat( '=', 126 ) . "\n";
 
@@ -3200,6 +3215,86 @@ remember( $item );
 remember( '226100009673' );
 check( 'a relist', outcome( relist( 673 ) ), 'relisted' );
 check( '  forgets the old listing and the new number alike', array( remembered_line( $item ), remembered_line( '226100009673' ) ), array( false, false ) );
+
+echo "\nBULK RELIST KEEPS TO ITS REQUEST'S TIME NOW THAT A RELIST CAN UPLOAD (3.32.1 FIX ROUND 1)\n" . str_repeat( '=', 126 ) . "\n";
+
+// A relist that decides photos may upload up to 24 of them. Bulk Relist ran
+// five products a request regardless: some 130 calls in one request on a
+// host that stops it at 30 seconds. Now it ends the request after a product
+// whose photos were decided, and starts none once the request's time budget
+// is spent; the screen sends the next request at once.
+$SOLD_PICTURE = array( 'PictureDetails' => array( 'PictureURL' => 'https://i.ebayimg.com/images/g/soldAAOSw00001/s-l1600.jpg' ) );
+$ebay = fresh_shop();
+$GLOBALS['IMAGES'] = array();
+$items = array();
+foreach ( array( 661, 662, 663 ) as $id ) {
+	$items[ $id ] = coin( $id, array( '_thumbnail_id' => (string) ( $id * 10 ) ) );
+	$GLOBALS['IMAGES'][ $id * 10 ] = 'https://shop.example/wp-content/uploads/coin-' . ( $id * 10 ) . '.jpg';
+	$ebay->items[ $items[ $id ] ] = listing_says( $items[ $id ], 'Completed', 3, 0, $SOLD_PICTURE );
+}
+$ebay->relists = function ( $item_id ) { return relisted_as( '9' . substr( $item_id, 1 ) ); };
+$job   = TCGiant_Sync_Jobs::create_job( 'bulk_relist', array( 661, 662, 663 ) );
+$first = run_batch( $job );
+check( 'three products whose photos changed: the first request relists the first, sending its photo, and ends', array( $first['data']['status'] ?? null, $first['data']['processed'] ?? null, count( relist_calls( $ebay ) ), count( $ebay->photos ) ), array( 'running', 1, 1, 1 ) );
+$second = run_batch( $job );
+$third  = run_batch( $job );
+check( '  one a request: the job completes in three, each relisted with its photo, none twice', array( $second['data']['processed'] ?? null, $third['data']['status'] ?? null, $third['data']['processed'] ?? null, count( relist_calls( $ebay ) ), count( $ebay->photos ), array_map( function ( $c ) { return $c[1]; }, relist_calls( $ebay ) ) ), array( 2, 'completed', 3, 3, 3, array_values( $items ) ) );
+// Photos unchanged: five a request, as before.
+$ebay = fresh_shop();
+foreach ( array( 664, 665, 666, 667, 668 ) as $id ) {
+	coin( $id );
+}
+$ebay->item    = ebay_says( 'Completed', 3, 0 );
+$ebay->relists = function ( $item_id ) { return relisted_as( '9' . substr( $item_id, 1 ) ); };
+$job  = TCGiant_Sync_Jobs::create_job( 'bulk_relist', array( 664, 665, 666, 667, 668 ) );
+$sent = run_batch( $job );
+check( 'five whose photos need nothing: all five in one request, as before', array( $sent['data']['status'] ?? null, $sent['data']['processed'] ?? null, count( relist_calls( $ebay ) ) ), array( 'completed', 5, 5 ) );
+// The request's time budget spent: no product after the first is started.
+$ebay = fresh_shop();
+foreach ( array( 664, 665, 666 ) as $id ) {
+	coin( $id );
+}
+$ebay->item    = ebay_says( 'Completed', 3, 0 );
+$ebay->relists = function ( $item_id ) { return relisted_as( '9' . substr( $item_id, 1 ) ); };
+$job                         = TCGiant_Sync_Jobs::create_job( 'bulk_relist', array( 664, 665, 666 ) );
+TCGiant_Sync_Runtime::$clock = function () { return (float) $_SERVER['REQUEST_TIME_FLOAT'] + 3600; };
+$sent                        = run_batch( $job );
+TCGiant_Sync_Runtime::$clock = null;
+check( '  the request\'s time spent: one product, then the next request', array( $sent['data']['status'] ?? null, $sent['data']['processed'] ?? null, count( relist_calls( $ebay ) ) ), array( 'running', 1, 1 ) );
+$jobs_src = method_code( $ROOT . '/includes/class-tcgiant-sync-jobs.php', 'ajax_process_batch' );
+check( '  the other jobs\' batches as they were: the time is only Bulk Relist\'s', array( substr_count( $jobs_src, "'bulk_relist' === \$job['type'] && \$handled > 0" ), substr_count( $jobs_src, '$new_processed = $start_index + $handled;' ) ), array( 1, 1 ) );
+
+echo "\nAUTO-RELIST DOES NOT ASK AGAIN, EVERY DAY, FOR A ROW REFUSED FOR ITS PHOTOS (3.32.1 FIX ROUNDS 1 AND 2)\n" . str_repeat( '=', 126 ) . "\n";
+
+$ebay = fresh_shop();
+$OPTIONS['tcgiant_sync_ebay_settings'] = array( 'auto_relist_enabled' => 1 );
+$GLOBALS['IMAGES'] = array( 6761 => 'https://shop.example/wp-content/uploads/coin-6761.jpg', 6762 => 'https://shop.example/wp-content/uploads/coin-6762.jpg' );
+// Its main photo deleted: no address, no copy on eBay - a refusal that
+// lasts until the photos change.
+$item          = coin( 676, array( '_thumbnail_id' => '6760', '_product_image_gallery' => '6761' ) );
+$ENDED_ROWS    = array( array( 'product_id' => '676', 'ebay_item_id' => $item ) );
+$ebay->items   = array( $item => listing_says( $item, 'Completed', 3, 0, $SOLD_PICTURE ) );
+$ebay->relists = function ( $item_id ) { return relisted_as( '9' . substr( $item_id, 1 ) ); };
+TCGiant_Sync_Cron::instance()->auto_relist_ended_items();
+check( 'the first run asks eBay, refuses it for its photos, and says why', array( array_column( $ebay->calls_about( $item ), 0 ), count( log_lines_naming( 'Auto-Relist: WC #676 was not relisted: its photos changed here' ) ) ), array( array( 'GetItem' ), 1 ) );
+$ebay->calls = array();
+TCGiant_Sync_Cron::instance()->auto_relist_ended_items();
+check( '  the next run asks eBay nothing for it - no GetItem, no upload - and says nothing more', array( $ebay->calls_about( $item ), count( log_lines_naming( 'Auto-Relist: WC #676 was not relisted' ) ), logged( 'Auto-Relist: Complete. 0 relisted, 1 not relisted' ) ), array( array(), 1, true ) );
+// Over a week on, its photos unchanged (fix round 2): asked again - a memo
+// written by mistake stops Auto-Relist no longer than that - and, refused
+// again, left for another week.
+$tcg_memo = explode( '>', (string) meta( 676, '_ebay_relist_photos_refused' ) );
+check( '  the memo: the listing, the photos, and when', array( count( $tcg_memo ), $tcg_memo[0], abs( (int) ( $tcg_memo[2] ?? 0 ) - time() ) < 5 ), array( 3, $item, true ) );
+$META[676]['_ebay_relist_photos_refused'] = $tcg_memo[0] . '>' . $tcg_memo[1] . '>' . ( time() - 7 * 86400 - 60 );
+$ebay->calls = array();
+TCGiant_Sync_Cron::instance()->auto_relist_ended_items();
+check( '  just over 7 days on, its photos unchanged: asked again, refused again, and said again', array( array_column( $ebay->calls_about( $item ), 0 ), count( log_lines_naming( 'Auto-Relist: WC #676 was not relisted' ) ) ), array( array( 'GetItem' ), 2 ) );
+$ebay->calls = array();
+TCGiant_Sync_Cron::instance()->auto_relist_ended_items();
+check( '    and then left for another week', $ebay->calls_about( $item ), array() );
+$META[676]['_thumbnail_id'] = '6762';
+TCGiant_Sync_Cron::instance()->auto_relist_ended_items();
+check( '  another main photo chosen: asked again, and relisted with its photos', array( array_column( $ebay->calls_about( $item ), 0 ), count( $ebay->photos ), meta( 676, '_ebay_item_id' ) ), array( array( 'GetItem', 'RelistFixedPriceItem' ), 1, '9' . substr( $item, 1 ) ) );
 
 printf( "\n  %d passed, %d failed\n\n", $pass, $fail );
 exit( $fail > 0 ? 1 : 0 );

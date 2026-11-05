@@ -427,7 +427,25 @@ class TCGiant_Sync_Jobs {
 		// screens in any build that ships no exporter.
 		$api = TCGiant_Sync_API::instance();
 
+		// A relist can upload its product's photos since 3.32.1 - up to 24
+		// calls for one product, in this request - so Bulk Relist keeps to
+		// the request's time: it ends the request after a product whose
+		// photos were decided, and before starting one once the request's
+		// time budget is spent. The products left are the next request's,
+		// which the screen sends at once. Each product is relisted whole, as
+		// before.
+		if ( 'bulk_relist' === $job['type'] ) {
+			TCGiant_Sync_Runtime::raise_time_limit();
+		}
+		$handled = 0;
+
 		foreach ( $batch as $product_id ) {
+			if ( 'bulk_relist' === $job['type'] && $handled > 0
+				&& ( TCGiant_Sync_Exporter::instance()->relist_decided_photos() || '' !== (string) TCGiant_Sync_Runtime::over_time_budget() ) ) {
+				break;
+			}
+			$handled++;
+
 			$product = wc_get_product( $product_id );
 			if ( ! $product ) {
 				$failed++;
@@ -729,7 +747,7 @@ class TCGiant_Sync_Jobs {
 			}
 		}
 
-		$new_processed = $start_index + count( $batch );
+		$new_processed = $start_index + $handled;
 		$is_done       = $new_processed >= $job['total'];
 
 		// A choice changed (3.29.1): the upgrade notice counts again.

@@ -70,7 +70,8 @@ if ( ! class_exists( 'SQLite3' ) ) {
 }
 
 $ROOT  = getenv( 'TCG_ROOT' ) ?: dirname( __DIR__ );
-$WORLD = str_replace( '\\', '/', sys_get_temp_dir() ) . '/tcg-own-photos-' . substr( md5( __FILE__ ), 0, 8 );
+// test-relist-photos.php's shop (--child=relist-*) is a world of its own.
+$WORLD = str_replace( '\\', '/', sys_get_temp_dir() ) . '/tcg-own-photos-' . substr( md5( __FILE__ ), 0, 8 ) . ( null !== $CHILD && 0 === strpos( $CHILD, 'relist-' ) ? '-relist' : '' );
 @mkdir( $WORLD . '/uploads/2026/10', 0777, true );
 
 define( 'ABSPATH', $WORLD . '/' );
@@ -703,6 +704,142 @@ function admin_page() {
 function repair() {
 	admin_page();
 	run_queue();
+}
+
+// ─── test-relist-photos.php's shop, in this world (3.32.1) ────────────────────
+
+/**
+ * The shop's half of test-relist-photos.php's loop (--child=relist-shop:<in>):
+ * a product imported from its eBay listing, the import and the image batch
+ * for real; the coin sold, the listing ended, and the shop's photos of a new
+ * coin uploaded to the product and made its main photo and gallery, the sold
+ * coin's still attached to it. Printed as JSON for the relist: the product,
+ * the photos, the listing's pictures, and every meta row of the product and
+ * its photos. The database stays, for relist_import().
+ *
+ * @param array $in settings, tag, old (how many pictures the listing had), new (how many new photos),
+ *                  pushed (the old listing made since by a push with eBay hosting).
+ */
+function relist_shop( array $in ) {
+	fresh_db();
+	foreach ( (array) glob( $GLOBALS['WORLD'] . '/uploads/2026/10/*' ) as $file ) {
+		@unlink( $file );
+	}
+	TCGiant_Sync_Image_Localizer::instance();
+	settings( (array) ( $in['settings'] ?? array() ) );
+	$tag = (string) ( $in['tag'] ?? 'sold' );
+	list( $pid, $old ) = imported( '1921 Morgan Dollar', $tag, (int) ( $in['old'] ?? 2 ) );
+	$listing = array();
+	for ( $i = 1; $i <= (int) ( $in['old'] ?? 2 ); $i++ ) {
+		$listing[] = ebay_z( num( $tag, $i ) );
+	}
+	// Pushed since with eBay hosting, as a 3.30.4 push leaves it: the
+	// listing's pictures are the old photos' uploads.
+	if ( ! empty( $in['pushed'] ) ) {
+		foreach ( $old as $n => $id ) {
+			add_post_meta( $id, NUMBER_META, num( $tag, $n + 1 ) );
+		}
+		record( $pid, $old, array_map( function ( $url ) { return preg_replace( '#\$_57\.JPG#', '$_1.JPG', $url ); }, $listing ) );
+		update_post_meta( $pid, '_ebay_export_last_pushed', pushed_on() );
+	}
+	$new = array();
+	for ( $i = 1; $i <= (int) ( $in['new'] ?? 2 ); $i++ ) {
+		$id = new_post( 'attachment', 'inherit', $pid, 'New coin ' . $i );
+		add_post_meta( $id, '_wp_attached_file', '2026/10/new-coin-' . $id . '.jpg' );
+		file_put_contents( $GLOBALS['WORLD'] . '/uploads/2026/10/new-coin-' . $id . '.jpg', 'JPEG new ' . $id );
+		$new[] = $id;
+	}
+	set_post_thumbnail( $pid, $new[0] );
+	update_post_meta( $pid, '_product_image_gallery', implode( ',', array_slice( $new, 1 ) ) );
+	update_post_meta( $pid, '_ebay_listing_status', 'Ended' );
+	update_post_meta( $pid, '_ebay_listing_type', 'FixedPriceItem' );
+
+	$meta = array();
+	foreach ( array_merge( array( $pid ), $old, $new ) as $id ) {
+		$meta[ $id ] = array_map( function ( $rows ) {
+			return array_map( 'maybe_unserialize', $rows );
+		}, get_post_meta( $id ) );
+	}
+	echo json_encode( array( 'product' => $pid, 'old' => $old, 'new' => $new, 'listing' => $listing, 'attachments' => attachments(), 'downloads' => count( $GLOBALS['DOWNLOADS'] ), 'meta' => $meta ) );
+}
+
+/**
+ * The import's half (--child=relist-import:<in>): relist_shop()'s shop, with
+ * what the relist wrote applied to it (delta: per post, 'set' and 'delete'
+ * as update_post_meta() and delete_post_meta(), 'add' as a row each, as the
+ * numbers are kept), read by the import once for each answer eBay gives the
+ * new listing, the image batch run after each. Printed as JSON: what each
+ * read left.
+ *
+ * @param array $in settings, product, delta, reads (each a list of addresses).
+ */
+function relist_import( array $in ) {
+	open_db();
+	$GLOBALS['NEXT_ID'] = max( 1000, (int) $GLOBALS['wpdb']->get_var( 'SELECT MAX(ID) FROM wp_posts' ) );
+	TCGiant_Sync_Image_Localizer::instance();
+	settings( (array) ( $in['settings'] ?? array() ) );
+	$pid = (int) $in['product'];
+	foreach ( (array) ( $in['delta'] ?? array() ) as $id => $d ) {
+		foreach ( (array) ( $d['set'] ?? array() ) as $key => $value ) {
+			update_post_meta( (int) $id, $key, $value );
+		}
+		foreach ( (array) ( $d['add'] ?? array() ) as $key => $values ) {
+			foreach ( (array) $values as $value ) {
+				if ( ! in_array( (string) $value, array_map( 'strval', get_post_meta( (int) $id, $key ) ), true ) ) {
+					add_post_meta( (int) $id, $key, $value );
+				}
+			}
+		}
+		foreach ( (array) ( $d['delete'] ?? array() ) as $key ) {
+			delete_post_meta( (int) $id, $key );
+		}
+		// The import following a relist eBay made whose answer was lost
+		// (3.32.1 fix round 1): what TCGiant_Sync_Inventory::follow_relist()
+		// writes of it here - test-relist-adopt.php runs the real one. It
+		// moves no record of photos sent (fix round 2).
+		if ( ! empty( $d['follow'] ) ) {
+			list( $old_item, $new_item ) = $d['follow'];
+			update_post_meta( (int) $id, '_ebay_item_id', $new_item );
+			update_post_meta( (int) $id, '_ebay_previous_item_id', $old_item );
+			update_post_meta( (int) $id, '_ebay_listing_status', 'Active' );
+		}
+	}
+
+	$out = array( 'before' => attachments(), 'files' => files_on_disk(), 'reads' => array() );
+	foreach ( (array) $in['reads'] as $urls ) {
+		$GLOBALS['DOWNLOADS'] = array();
+		sync( $pid, (array) $urls );
+		$numbers = array();
+		foreach ( shown( $pid ) as $id ) {
+			$numbers[ $id ] = get_post_meta( $id, NUMBER_META );
+		}
+		$record          = get_post_meta( $pid, PUSHED_META, true );
+		$out['reads'][] = array(
+			'downloads'   => $GLOBALS['DOWNLOADS'],
+			'attachments' => attachments(),
+			'files'       => files_on_disk(),
+			'shown'       => shown( $pid ),
+			'held'        => in_array( $pid, held(), true ),
+			'numbers'     => $numbers,
+			'read'        => is_array( $record ) && ! empty( $record['read'] ),
+			'learnt'      => is_array( $record ) ? (int) ( $record['learnt'] ?? 0 ) : 0,
+		);
+	}
+	echo json_encode( $out );
+}
+
+if ( null !== $CHILD && 0 === strpos( $CHILD, 'relist-' ) ) {
+	foreach ( array( 'LOG', 'QUEUE', 'TRANSIENTS', 'DOWNLOADS', 'DELETED', 'REFUSE', 'LATER', 'CLEANED', 'TRANSIENTS_CLEARED' ) as $tcg_global ) {
+		$GLOBALS[ $tcg_global ] = array();
+	}
+	$GLOBALS['NEXT_ID'] = 1000;
+	$tcg_in             = json_decode( (string) file_get_contents( substr( $CHILD, strpos( $CHILD, ':' ) + 1 ) ), true );
+	if ( 0 === strpos( $CHILD, 'relist-shop:' ) ) {
+		relist_shop( (array) $tcg_in );
+	} else {
+		relist_import( (array) $tcg_in );
+	}
+	exit( 0 );
 }
 
 // ─── in a request of its own ──────────────────────────────────────────────────

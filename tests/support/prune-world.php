@@ -357,6 +357,7 @@ class TCGiant_Sync_API {
 	public function get_remaining_daily_budget() { return (int) ( $GLOBALS['EBAY']['budget'] ?? 40000 ); }
 	// What the log and the screens show (3.31.1 fix round 1): no allowance of the site's own here.
 	public function get_remaining_today() { return $this->get_remaining_daily_budget(); }
+	public function get_today_limit() { return (int) ( self::DAILY_CALL_LIMIT * 0.8 ); }
 	public function get_item( $item_id ) {
 		$GLOBALS['EBAY']['get_items'][] = (string) $item_id;
 		// Something another request does while eBay is being asked.
