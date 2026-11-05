@@ -70,6 +70,7 @@ if ( function_exists( 'as_unschedule_all_actions' ) ) {
 		'tcgiant_sync_push_stock',         // Stock pushes, 3.28.0.
 		'tcgiant_sync_settle_item',        // Per-listing stock checks, 3.27.0.
 		'tcgiant_sync_gallery_heal',       // The gallery pass, 3.28.0.
+		'tcgiant_sync_own_photos',         // The pass over copies of the shop's own photos, 3.30.4.
 		'tcgiant_sync_reconcile_continue', // The weekly check's follow-up, 3.28.0.
 
 		// The exporter's queue. This was listed as tcgiant_sync_push_product,
@@ -244,6 +245,8 @@ $tcgiant_options = array(
 	'tcgiant_listing_type_backfilled',
 	'tcgiant_sync_gallery_heal',       // The gallery pass, how far it got and what it did, 3.28.0.
 	'tcgiant_sync_gallery_heal_open',  // The gallery pass's batch in hand, 3.28.0.
+	'tcgiant_sync_own_photos_heal',      // The pass over copies of the shop's own photos, what it did, 3.30.4.
+	'tcgiant_sync_own_photos_heal_open', // Its batch in hand, 3.30.4.
 	'tcgiant_sync_settle_chains',      // Stock checks waiting to try again, 3.28.0.
 	'tcgiant_sync_call_count_tidied',  // The day the eBay call counts were last tidied, 3.28.0.
 	'tcgiant_sync_reconcile_pass',     // Where the weekly check has got to, 3.28.0.
@@ -330,13 +333,17 @@ $wpdb->query(
 // eBay's own values for each imported listing (3.28.8, _ebay_live), which
 // the import records and its next read writes again, and eBay's price as
 // last sent or read, with its mark (3.29.0, _ebay_price_seen and
-// _ebay_price_marked). Who made each listing, _ebay_origin, and who said so,
-// _ebay_origin_by, stay with the product's link to it; so do the shop's own
-// eBay prices, _ebay_export_price, and the postage in its website prices,
-// _ebay_baked_shipping.
+// _ebay_price_marked), and the photos the last push sent and those of its
+// listing held, not downloaded, or let go (3.30.4, _tcgiant_pushed_photos,
+// _tcgiant_photos_held and _tcgiant_photos_released). Who made each listing, _ebay_origin, and who said
+// so, _ebay_origin_by, stay with the product's link to it; so do the shop's
+// own eBay prices, _ebay_export_price, and the postage in its website
+// prices, _ebay_baked_shipping. The eBay numbers a photo was put on eBay as
+// (3.30.4, _tcgiant_ebay_number) stay with the photo, as its eBay copy's
+// address does (_tcgiant_eps_url).
 $wpdb->query(
 	"DELETE FROM {$wpdb->prefix}postmeta
-	 WHERE meta_key IN ( '_ebay_live', '_ebay_price_seen', '_ebay_price_marked' )"
+	 WHERE meta_key IN ( '_ebay_live', '_ebay_price_seen', '_ebay_price_marked', '_tcgiant_pushed_photos', '_tcgiant_photos_held', '_tcgiant_photos_released' )"
 );
 
 // Listing templates and their text blocks (3.27.8): private posts of the

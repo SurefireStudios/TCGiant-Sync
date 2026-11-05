@@ -20,6 +20,7 @@ add_action   admin_init => maybe_clean_placeholder_paths
 add_action   admin_init => maybe_dispatch_overdue
 add_action   admin_init => maybe_install
 add_action   admin_init => maybe_queue_gallery_heal
+add_action   admin_init => maybe_queue_heal
 add_action   admin_init => maybe_rearm
 add_action   admin_init => maybe_rearm_cleanup
 add_action   admin_init => maybe_rearm_trim
@@ -105,6 +106,7 @@ add_action   tcgiant_sync_fetch_delta_events => fetch_delta_events
 add_action   tcgiant_sync_gallery_heal => run_gallery_heal
 add_action   tcgiant_sync_import_orders => import_recent_orders
 add_action   tcgiant_sync_localize_images => process_batch
+add_action   tcgiant_sync_own_photos => run_heal
 add_action   tcgiant_sync_photo_cleanup => process_queue
 add_action   tcgiant_sync_poll_ebay_cron => ping_telemetry
 add_action   tcgiant_sync_poll_ebay_cron => poll_ebay
@@ -214,6 +216,7 @@ schedule     tcgiant_sync_fetch_delta_events
 schedule     tcgiant_sync_gallery_heal
 schedule     tcgiant_sync_import_orders
 schedule     tcgiant_sync_localize_images
+schedule     tcgiant_sync_own_photos
 schedule     tcgiant_sync_photo_cleanup
 schedule     tcgiant_sync_poll_ebay_cron
 schedule     tcgiant_sync_process_item_import

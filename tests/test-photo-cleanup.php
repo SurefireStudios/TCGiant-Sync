@@ -3704,5 +3704,158 @@ check( '  and it still shows them', array( get_post_thumbnail_id( $US ), get_pos
 check( '  no longer waiting, so the image batch may hand them out again', array( marked( $A ), marked( $S ), reused_for( $US, $url_s ) ), array( false, false, $S ) );
 check( '  the copy whose push did not finish keeps its photo', array( exists( $WIP ), exists( $W ), files_intact( $paths[ $W ] ) ), array( true, true, true ) );
 
+// ─────────────────────────────────────────────────────────────────────────────
+echo "\nCOPIES THAT CAME BACK FROM EBAY OF THE SHOP'S OWN PHOTOS (3.30.4)\n" . str_repeat( '=', 124 ) . "\n";
+
+// A push put a product's photos on eBay, and the old sync downloaded each
+// back as a new photo, attached to the product. 3.30.4's pass shows the
+// photos themselves again, so the copies are attached and unused: the check
+// counts them, and the shop's button removes them - never one something
+// shows, never one whose photo is gone, never the photo itself.
+fresh_db();
+boot();
+installed_days_ago( 40 );
+
+/** A copy the old sync downloaded of photo $of, which a push had put on eBay. */
+function copy_back( $parent, $of ) {
+	$id     = photo( $parent );
+	$number = 'up' . $of . 'AAOSw';
+	add_post_meta( $of, '_tcgiant_ebay_number', $number );
+	update_post_meta( $id, '_tcgiant_source_url', 'https://i.ebayimg.com/images/g/' . $number . '/s-l1600.jpg' );
+	return $id;
+}
+
+/** A product the shop has pushed to eBay. */
+function pushed_product() {
+	$id = product( 'publish' );
+	update_post_meta( $id, '_ebay_export_last_pushed', '2026-11-03 10:00:00' );
+	return $id;
+}
+
+$CP   = pushed_product();
+$m    = photo( $CP );
+$g    = photo( $CP );
+$cm   = copy_back( $CP, $m );   // unused: goes
+$cg   = copy_back( $CP, $g );   // still in the gallery: stays
+set_post_thumbnail( $CP, $m );
+update_post_meta( $CP, '_product_image_gallery', "{$g},{$cg}" );
+// A 3.30.3 push of the product while it showed the copy uploaded the copy
+// too: a listing may show it under that number of its own.
+add_post_meta( $cm, '_tcgiant_ebay_number', 'cp' . $cm . 'AAOSw' );
+// And an upload of it cached since, not yet copied over by the pass.
+update_post_meta( $cm, '_tcgiant_eps_url', 'https://i.ebayimg.com/00/s/MTYwMFgxMjAw/z/ce' . $cm . 'AAOSw/$_1.JPG?set_id=8800005007' );
+// Another product's own download of a picture this one put on eBay - a
+// listing made on eBay with "Sell similar", imported: no copy of a photo of
+// its own, so not the button's, though the product is pushed.
+$OTHER = pushed_product();
+$co    = copy_back( $OTHER, $m );
+set_post_thumbnail( $OTHER, $co );
+$LOST  = pushed_product();
+$lp    = photo( $LOST );
+$cl    = copy_back( $LOST, $lp ); // its photo is gone: stays
+set_post_thumbnail( $LOST, $lp );
+// Gone from the Media Library, its number left behind in a stray meta row.
+q( "DELETE FROM wp_posts WHERE ID = {$lp}" );
+$ODD   = pushed_product();
+$od    = photo( $ODD );         // put on eBay under its own source's number: no copy of itself
+add_post_meta( $od, '_tcgiant_ebay_number', TCGiant_Sync_Own_Photos::number( get_post_meta( $od, '_tcgiant_source_url', true ) ) );
+$WAIT  = pushed_product();
+$wo    = photo( $WAIT );        // the photo copied, waiting to be removed
+add_post_meta( $wo, '_tcgiant_delete_after', (string) ( time() + 900 ) );
+$cw    = copy_back( $WAIT, $wo ); // its photo is waiting to be removed: stays
+$PLAIN = product( 'publish' );
+$pl    = photo( $PLAIN );       // an ordinary download, attached, unused: stays
+$keep_paths = array();
+foreach ( array( $m, $g, $cm, $cg, $co, $cl, $pl, $od, $cw ) as $id ) {
+	$keep_paths[ $id ] = paths_of( $id );
+}
+
+$v = TCGiant_Sync_Photo_Cleanup::verdicts( array( $m, $g, $cm, $cg, $co, $cl, $pl, $od, $cw ) );
+check( 'judged: the unused copy may go; the photos, the copy in use, another product\'s own download, the one whose photo is gone, an ordinary download stay', array( $v[ $m ], $v[ $g ], $v[ $cm ], $v[ $cg ], $v[ $co ], $v[ $cl ], $v[ $pl ] ), array( 'attached', 'attached', '', 'in_use', 'attached', 'attached', 'attached' ) );
+check( '  a photo on eBay under its own source\'s number is no copy of itself; a copy whose photo waits to be removed stays', array( $v[ $od ], $v[ $cw ] ), array( 'attached', 'attached' ) );
+
+// Never a copy whose photo could not stand in its place, or one of a product
+// the shop never pushed. Each in a world of its own, then the world as it was.
+$rules = array();
+foreach ( array( 'trash', 'no_record', 'no_record_offloaded', 'no_file', 'not_pushed', 'offloaded', 'both_offloaded' ) as $case ) {
+	$P = 'not_pushed' === $case ? product( 'publish' ) : pushed_product();
+	$o = photo( $P, in_array( $case, array( 'offloaded', 'both_offloaded' ), true ) ? 'offloaded' : 'ours' );
+	$c = copy_back( $P, $o );
+	if ( in_array( $case, array( 'both_offloaded', 'no_record_offloaded' ), true ) ) {
+		foreach ( paths_of( $c ) as $f ) {
+			unlink( $f );
+		}
+	}
+	set_post_thumbnail( $P, $o );
+	if ( 'trash' === $case ) {
+		q( "UPDATE wp_posts SET post_status = 'trash' WHERE ID = {$o}" );
+	} elseif ( in_array( $case, array( 'no_record', 'no_record_offloaded' ), true ) ) {
+		delete_post_meta( $o, '_wp_attached_file' );
+	} elseif ( 'no_file' === $case ) {
+		foreach ( paths_of( $o ) as $f ) {
+			unlink( $f );
+		}
+	}
+	$rules[ $case ] = TCGiant_Sync_Photo_Cleanup::verdicts( array( $c ) )[ $c ];
+	q( "DELETE FROM wp_postmeta WHERE post_id IN ( {$P}, {$o}, {$c} )" );
+	q( "DELETE FROM wp_posts WHERE ID IN ( {$P}, {$o}, {$c} )" );
+}
+check( '  never one whose photo is in the media trash, has no file on record (the copy\'s file here or not), has lost its file here, or is of a product never pushed', array( $rules['trash'], $rules['no_record'], $rules['no_record_offloaded'], $rules['no_file'], $rules['not_pushed'] ), array( 'attached', 'attached', 'attached', 'attached', 'attached' ) );
+check( '  a photo whose file is not here stands in only for a copy whose file is not here either - a site whose files an offloader keeps', array( $rules['offloaded'], $rules['both_offloaded'] ), array( 'attached', '' ) );
+
+TCGiant_Sync_Photo_Cleanup::start_scan();
+$scan = TCGiant_Sync_Photo_Cleanup::scan_step( 9999 );
+check( 'the check, which deletes nothing, counts it, apart, with the space it takes', array( $scan['found'], $scan['copies'] ?? null, $scan['copy_bytes'] ?? null ), array( 1, 1, bytes_of( $cm ) ) );
+check( '  and says so in the log', logged( '1 more are copies that came back from eBay of photos your products show, which no product shows any more' ), true );
+check( '  nothing removed by checking', array_map( 'exists', array( $m, $g, $cm, $cg, $co, $cl, $pl ) ), array_fill( 0, 7, true ) );
+TCGiant_Sync_Photo_Cleanup::approve( $scan['id'] );
+TCGiant_Sync_Photo_Cleanup::queue_approved( 9999 );
+// Meanwhile the image batch shows the copy again on a product: it is kept.
+$NEWP = product( 'publish' );
+check( 'marked, it is not handed to another product by the image batch, which finds the photo itself', array( marked( $cm ), reused_for( $NEWP, 'https://i.ebayimg.com/images/g/up' . $m . 'AAOSw/s-l500.jpg' ) ), array( true, $m ) );
+time_passes();
+run_queue();
+check( 'after the quarantine: the copy is removed, with its files', array( exists( $cm ), files_intact( $keep_paths[ $cm ] ) ), array( false, false ) );
+$intact = true;
+foreach ( array( $m, $g, $cg, $co, $cl, $pl, $od, $cw ) as $id ) {
+	$intact = $intact && exists( $id ) && files_intact( $keep_paths[ $id ] );
+}
+check( '  everything else is there, every file of it', $intact, true );
+check( '  and the product still shows its own photos', array( get_post_thumbnail_id( $CP ), get_post_meta( $CP, '_product_image_gallery', true ) ), array( $m, "{$g},{$cg}" ) );
+$NEWQ = product( 'publish' );
+check( '  the copy\'s own eBay numbers went to the photo first, its cached upload\'s too: a listing still showing one is the photo, never a new download', array( in_array( 'cp' . $cm . 'AAOSw', get_post_meta( $m, '_tcgiant_ebay_number', false ), true ), in_array( 'ce' . $cm . 'AAOSw', get_post_meta( $m, '_tcgiant_ebay_number', false ), true ), reused_for( $NEWQ, 'https://i.ebayimg.com/images/g/cp' . $cm . 'AAOSw/s-l1600.jpg' ) ), array( true, true, $m ) );
+
+// A copy the product starts showing again between the check and its turn is kept.
+$CP2 = pushed_product();
+$m2  = photo( $CP2 );
+$c2  = copy_back( $CP2, $m2 );
+set_post_thumbnail( $CP2, $m2 );
+TCGiant_Sync_Photo_Cleanup::start_scan();
+$scan = TCGiant_Sync_Photo_Cleanup::scan_step( 9999 );
+TCGiant_Sync_Photo_Cleanup::approve( $scan['id'] );
+TCGiant_Sync_Photo_Cleanup::queue_approved( 9999 );
+update_post_meta( $CP2, '_product_image_gallery', (string) $c2 );
+time_passes();
+run_queue();
+check( 'a copy shown again after the check: kept at its turn', array( exists( $c2 ), exists( $m2 ) ), array( true, true ) );
+
+// A copy attached to a product that is still here, shown only by another
+// product that is then deleted for good: marked with that product's photos,
+// and kept - copies go only through the check and the button.
+$KEEP = pushed_product();
+$m3   = photo( $KEEP );
+$c3   = copy_back( $KEEP, $m3 );
+set_post_thumbnail( $KEEP, $m3 );
+$GONE = product( 'publish' );
+update_post_meta( $GONE, '_product_image_gallery', (string) $c3 );
+wp_trash_post( $GONE );
+trashed_days_ago( 31 );
+wp_scheduled_delete();
+do_action( 'shutdown' );
+check( 'a copy that only a product deleted for good showed: marked with its photos', array( exists( $GONE ), marked( $c3 ) ), array( false, true ) );
+time_passes();
+run_queue();
+check( '  kept at its turn, attached as before: not the button\'s', array( exists( $c3 ), exists( $m3 ) ), array( true, true ) );
+
 printf( "\n  %d passed, %d failed\n\n", $pass, $fail );
 exit( $fail > 0 ? 1 : 0 );

@@ -701,6 +701,9 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 							<label><input type="radio" name="tcgiant_sync_ebay_settings[<?php echo esc_attr( $field_key ); ?>]" value="1" <?php checked( $settings[ $field_key ] ?? $field['default'], '1' ); ?>> Yes</label>
 							<label><input type="radio" name="tcgiant_sync_ebay_settings[<?php echo esc_attr( $field_key ); ?>]" value="0" <?php checked( $settings[ $field_key ] ?? $field['default'], '0' ); ?>> No</label>
 						</div>
+						<?php if ( 'overwrite_images' === $field_key ) : ?>
+							<p class="tc-hint"><?php esc_html_e( 'Yes: when a listing\'s photos change on eBay, a product whose photos came from eBay shows eBay\'s photos, in eBay\'s order, eBay\'s first as its main photo. No: its own stay, and photos new on eBay are added to the end of its gallery. Either way, a product you have pushed keeps its own photos, its main photo and its gallery\'s order, since what eBay shows of it is what you sent: only photos added to the listing on eBay are added, to the end of its gallery. A photo it already has is never downloaded again.', 'tcgiant-sync' ); ?></p>
+						<?php endif; ?>
 						<?php if ( 'overwrite_desc' === $field_key ) : ?>
 							<p class="tc-hint"><?php esc_html_e( 'A listing sent with a TCGiant listing template brings back only its description, not the template around it, and only what the template\'s cleaning kept of it: no videos, no links off eBay, no pictures not served over https, and its shortcodes as what they showed. So while the listing still holds what TCGiant sent it, the product\'s own description is left as it is.', 'tcgiant-sync' ); ?></p>
 						<?php endif; ?>

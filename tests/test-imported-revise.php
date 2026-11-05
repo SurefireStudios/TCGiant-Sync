@@ -260,6 +260,12 @@ $p = imported( 'card', 108, array( 'image_id' => own_photo( 9308 ) ), array( '_e
 list( , $calls ) = push( $p );
 check( '  a listing eBay has in Canada: Country CA, not the marketplace\'s US', value_of( $calls[0][1] ?? '', 'e:Country' ), 'CA' );
 check( 'PHOTOS. its photos are still the listing\'s, each in its place: none decided, none uploaded (get_product_image_urls() not asked)', decided_photos( 101 ), null );
+push( $card );
+$tcg_sent = new ReflectionProperty( 'TCGiant_Sync_Exporter', 'photos_sent' );
+if ( PHP_VERSION_ID < 80100 ) {
+	$tcg_sent->setAccessible( true );
+}
+check( '  and the push says it kept them, for its record: the product follows eBay\'s photos as an imported one does (3.30.4)', $tcg_sent->getValue( exporter() ), array( 'kept' => true ) );
 $bo_settings                       = exporter()->get_export_settings( 101 );
 $bo_settings['best_offer_enabled'] = true;
 $build                             = private_method( 'TCGiant_Sync_Exporter', 'build_item_xml' );

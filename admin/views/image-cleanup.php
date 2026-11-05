@@ -49,6 +49,58 @@ $base_url  = admin_url( 'admin.php?page=tcgiant-image-cleanup' );
 	<?php TCGiant_Sync_Admin::instance()->render_tabs( 'image_cleanup' ); ?>
 
 	<?php
+	// What 3.30.4's pass over copies of the shop's own photos found to look
+	// at. See TCGiant_Sync_Own_Photos::run_heal().
+	$tc_own   = get_option( TCGiant_Sync_Own_Photos::HEAL_OPTION, array() );
+	$tc_own   = is_array( $tc_own ) ? $tc_own : array();
+	$tc_done  = ! empty( $tc_own['done'] );
+	$tc_wrong = $tc_done ? array_map( 'intval', (array) ( $tc_own['wrong'] ?? array() ) ) : array();
+	$tc_check = $tc_done ? array_map( 'intval', array_keys( (array) ( $tc_own['review'] ?? array() ) ) ) : array();
+	$tc_tails = $tc_done ? array_map( 'intval', array_keys( (array) ( $tc_own['tails'] ?? array() ) ) ) : array();
+	$tc_skip  = $tc_done ? array_map( 'intval', (array) ( $tc_own['skipped'] ?? array() ) ) : array();
+
+	// And the products whose listing's pictures the image batch held, not
+	// downloaded (3.30.4): the first 500, and how many. See
+	// TCGiant_Sync_Own_Photos::may_hold().
+	list( $tc_held, $tc_held_all ) = TCGiant_Sync_Own_Photos::held_products( TCGiant_Sync_Own_Photos::LIST_KEEP );
+
+	$tc_own_lists = array(
+		array( $tc_wrong, __( 'Their eBay listing shows a different photo first from their main photo here. Push them again to put their main photo first on eBay:', 'tcgiant-sync' ) ),
+		array( $tc_check, __( 'They no longer show a photo of their own that is still attached to them, which may have been their main photo before a new listing went up without it. Check each, and choose its main photo again if it is not the right one:', 'tcgiant-sync' ) ),
+		array( $tc_tails, __( 'They may show copies of their own photos that a sync downloaded from eBay after a push from the website TCGiant has no record of - at the end of the gallery, or in place of their photos. Open each and compare: remove only a photo that looks the same as one of the product\'s own photos; keep any that is different - that is the listing\'s own, changed on eBay. Where copies took the place of its photos, choose its own photos again. Do it before you push them: a push would send the copies to eBay. Image Cleanup does not count these copies; delete them from the Media Library yourself:', 'tcgiant-sync' ) ),
+		array( $tc_held, __( 'Soon after a push, their eBay listing showed only pictures TCGiant does not know: they may be eBay\'s copies of their own photos, or photos changed on eBay. They were not downloaded, and the products\' photos are as they were. Check each listing on eBay first. If they are photos you changed on eBay, run an images-only sync for its item to bring them in. Push a product only if eBay shows its photos wrongly: a push replaces eBay\'s photos with the product\'s:', 'tcgiant-sync' ) ),
+		array( $tc_skip, __( 'The pass was stopped twice while it was working on each of these, and went on past them. Check that they show their own photos, not copies of them:', 'tcgiant-sync' ) ),
+	);
+	?>
+	<?php if ( $tc_wrong || $tc_check || $tc_tails || $tc_held || $tc_skip ) : ?>
+		<div class="notice notice-warning" style="margin-top:16px;padding:12px 14px;">
+			<h2 style="margin:0 0 8px;font-size:15px;"><?php esc_html_e( 'Products to look at after 3.30.4 put your photos back', 'tcgiant-sync' ); ?></h2>
+			<?php foreach ( $tc_own_lists as $tc_list ) : ?>
+				<?php if ( $tc_list[0] ) : ?>
+					<p>
+						<?php echo esc_html( $tc_list[1] ); ?>
+						<?php
+						$tc_links = array();
+						foreach ( $tc_list[0] as $tc_pid ) {
+							$tc_links[] = '<a href="' . esc_url( admin_url( 'post.php?post=' . $tc_pid . '&action=edit' ) ) . '">#' . esc_html( (string) $tc_pid ) . '</a>';
+						}
+						echo wp_kses( implode( ', ', $tc_links ), array( 'a' => array( 'href' => array() ) ) );
+						if ( $tc_list[0] === $tc_held && $tc_held_all > count( $tc_held ) ) {
+							echo ' ' . esc_html( sprintf(
+								/* translators: %s: number of products */
+								__( 'and %s more: the activity log has a line for each.', 'tcgiant-sync' ),
+								number_format_i18n( $tc_held_all - count( $tc_held ) )
+							) );
+						}
+						?>
+					</p>
+				<?php endif; ?>
+			<?php endforeach; ?>
+			<p style="color:#555;font-size:12px;"><?php esc_html_e( 'TCGiant Sync changed nothing on eBay, and pushes nothing by itself. Each list names up to 500 products, and the activity log names each one.', 'tcgiant-sync' ); ?></p>
+		</div>
+	<?php endif; ?>
+
+	<?php
 	// Photos of deleted products. See TCGiant_Sync_Photo_Cleanup.
 	$tc_photo  = TCGiant_Sync_Photo_Cleanup::status();
 	$tc_scan   = $tc_photo['scan'];
@@ -61,6 +113,7 @@ $base_url  = admin_url( 'admin.php?page=tcgiant-image-cleanup' );
 	<div class="notice notice-info tc-photo-cleanup" id="tc-photo-cleanup" style="margin-top:16px;padding:12px 14px;"
 		data-scan-id="<?php echo esc_attr( $tc_scan['id'] ); ?>"
 		data-found="<?php echo esc_attr( $tc_scan['found'] ); ?>"
+		data-copies="<?php echo esc_attr( (string) (int) ( $tc_scan['copies'] ?? 0 ) ); ?>"
 		data-state="<?php echo esc_attr( $tc_state ); ?>">
 
 		<h2 style="margin:0 0 8px;font-size:15px;"><?php esc_html_e( 'Photos of deleted products', 'tcgiant-sync' ); ?></h2>
@@ -103,6 +156,18 @@ $base_url  = admin_url( 'admin.php?page=tcgiant-image-cleanup' );
 				?>
 				</strong>
 			</p>
+			<?php if ( ! empty( $tc_scan['copies'] ) ) : ?>
+				<p>
+					<?php
+					printf(
+						/* translators: 1: number of photos, 2: size such as "41.2 MB" */
+						esc_html__( 'Of these, %1$s are copies that came back from eBay of photos your products show, taking about %2$s: before TCGiant Sync 3.30.4, a sync downloaded each photo a push had put on eBay again as a new one. Your products show their own photos again, and no product, variation or post shows these copies.', 'tcgiant-sync' ),
+						esc_html( number_format_i18n( $tc_scan['copies'] ) ),
+						esc_html( $tc_scan['copy_size'] )
+					);
+					?>
+				</p>
+			<?php endif; ?>
 			<?php if ( $tc_scan['not_here'] > 0 ) : ?>
 				<p>
 					<?php
@@ -292,6 +357,7 @@ $base_url  = admin_url( 'admin.php?page=tcgiant-image-cleanup' );
 			checking: '<?php echo esc_js( __( 'Checking… %1$s of about %2$s downloaded photos looked at.', 'tcgiant-sync' ) ); ?>',
 			retry:    '<?php echo esc_js( __( 'The server did not answer. Trying again…', 'tcgiant-sync' ) ); ?>',
 			confirm:  '<?php echo esc_js( __( 'Permanently delete %s photos left over from deleted products? This cannot be undone.', 'tcgiant-sync' ) ); ?>',
+			copies:   '<?php echo esc_js( __( 'Permanently delete %1$s photos: %2$s left over from deleted products, and %3$s copies that came back from eBay of photos your products show, which no product shows any more? Your products keep their own photos. This cannot be undone.', 'tcgiant-sync' ) ); ?>',
 			removing: '<?php echo esc_js( __( 'Removing leftover photos in the background: %1$s removed so far (about %2$s freed), %3$s waiting. This carries on by itself; you can leave this page.', 'tcgiant-sync' ) ); ?>',
 			paused:   '<?php echo esc_js( __( 'Paused until %s; it carries on by itself.', 'tcgiant-sync' ) ); ?>',
 			queueing: '<?php echo esc_js( __( 'Getting %s photos ready for removal. Removal starts about 15 minutes after that; you can leave this page.', 'tcgiant-sync' ) ); ?>',
@@ -329,7 +395,9 @@ $base_url  = admin_url( 'admin.php?page=tcgiant-image-cleanup' );
 		$('#tc-photo-check').on('click', function(){ step(box.data('state') !== 'scanning', 0); });
 
 		$('#tc-photo-remove').on('click', function(){
-			if (!confirm(fmt(t.confirm, num(box.data('found'))))) { return; }
+			var found  = Number(box.data('found') || 0);
+			var copies = Number(box.data('copies') || 0);
+			if (!confirm(copies > 0 ? fmt(t.copies, num(found), num(found - copies), num(copies)) : fmt(t.confirm, num(found)))) { return; }
 			box.find('button').prop('disabled', true);
 			$.post(ajaxUrl, { action:'tcgiant_photo_remove', scan_id: box.data('scan-id'), _ajax_nonce: nonce }, function(r){
 				if (!r.success) { alert(r.data && r.data.message ? r.data.message : 'Error'); }

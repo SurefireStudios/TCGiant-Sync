@@ -40,6 +40,11 @@ if ( ! class_exists( 'TCGiant_Sync_Identifiers', false ) ) {
 	require_once __DIR__ . '/class-tcgiant-sync-identifiers.php';
 }
 
+// The eBay numbers the photos a push puts on eBay are known by (3.30.4).
+if ( ! class_exists( 'TCGiant_Sync_Own_Photos', false ) ) {
+	require_once __DIR__ . '/class-tcgiant-sync-own-photos.php';
+}
+
 /**
  * TCGiant_Sync_Exporter class
  */
@@ -172,6 +177,27 @@ class TCGiant_Sync_Exporter {
 	 * @var array
 	 */
 	private $last_identifiers = array();
+
+	/**
+	 * Why the item the last build_item_xml() made for a new listing may not
+	 * be sent for its photos (3.30.4): the product's main photo could not be
+	 * put on eBay, and the listing would show another first. Given by every
+	 * check after a build, as the price's is (description_too_long()).
+	 *
+	 * @var WP_Error|null
+	 */
+	private $main_photo_refused = null;
+
+	/**
+	 * The photos the last build_item_xml() put in its item's PictureDetails
+	 * (3.30.4): 'ids' and 'urls' in the order sent, and 'shown', the photos
+	 * the product showed. Null when it sent none. Recorded once eBay has
+	 * taken the item (record_listing_made(), TCGiant_Sync_Own_Photos::
+	 * record_push()).
+	 *
+	 * @var array|null
+	 */
+	private $photos_sent = null;
 
 	/**
 	 * The item specifics eBay defines for each category this push has read,
@@ -1015,6 +1041,8 @@ class TCGiant_Sync_Exporter {
 				$action  = $result['action']; // 'created', 'updated' or 'relisted'
 				// The prices the item eBay took was sent (3.29.0).
 				$result['prices'] = $this->prices_sent;
+				// And the photos, where it was sent any (3.30.4).
+				$result['photos'] = $this->photos_sent;
 
 				// eBay has made a listing that, until the save below, only this
 				// request knows the number of. If it dies now, the record of it
@@ -1118,6 +1146,15 @@ class TCGiant_Sync_Exporter {
 		// The prices eBay was sent, as eBay's own from now on (3.29.0): the
 		// import tells eBay's changes by them. None from an import's link.
 		TCGiant_Sync_Ebay_Price::record_sent( $product, (array) ( $result['prices'] ?? array() ) );
+
+		// And the photos it was sent, in their places (3.30.4): eBay's copies
+		// of photos sent from the website carry numbers of eBay's own, and
+		// the image batch knows them by these. A revise that kept the
+		// listing's own photos records that it did. None from an import's
+		// link.
+		if ( ! empty( $result['photos'] ) && is_array( $result['photos'] ) ) {
+			TCGiant_Sync_Own_Photos::record_push( $product_id, (string) $item_id, $result['photos'] );
+		}
 
 		// Record which build sent this. Without it there is no way to tell a
 		// listing carrying the right item specifics from one sent before a fix
@@ -2020,6 +2057,11 @@ class TCGiant_Sync_Exporter {
 					$product  = wc_get_product( $product->get_id() );
 					$item_xml = $this->build_item_xml( $product, $settings );
 
+					// Not yet a new listing: a relist made on eBay is followed
+					// below, and revised, where the main photo is not asked
+					// for. The new listing's own build decides (3.30.4).
+					$this->main_photo_refused = null;
+
 					// Every item built is measured before it can be sent
 					// (3.28.5), as the first was.
 					$too_long = $this->description_too_long();
@@ -2218,7 +2260,7 @@ class TCGiant_Sync_Exporter {
 				$product = wc_get_product( $product->get_id() );
 			}
 			$item_xml = $this->build_item_xml( $product, $settings );
-			if ( $held ) {
+			if ( $held && ! $this->main_photo_refused ) {
 				TCGiant_Sync_Logger::warning( self::left_out_warning( $product->get_id(), $held, $this->build_for ) );
 				$this->say_pictures_not_sent( $product->get_id() );
 			}
@@ -3391,6 +3433,9 @@ class TCGiant_Sync_Exporter {
 		$price               = TCGiant_Sync_Ebay_Price::for_product( $product );
 		// And why its identifiers may not go (3.30.3), decided below.
 		$this->identifier_refused = null;
+		// And its main photo, and the photos it sends (3.30.4).
+		$this->main_photo_refused = null;
+		$this->photos_sent        = null;
 		// How many to offer.
 		//
 		// When the shop tracks stock, that figure decides it, floored at 1 so
@@ -3443,6 +3488,33 @@ class TCGiant_Sync_Exporter {
 		$this->pictures_held = $revise && ! $photos_kept ? ( $this->pictures_for[ $product->get_id() ]['left_out'] ?? array() ) : array();
 		if ( $this->pictures_held ) {
 			$images = array();
+		}
+
+		// A new listing - and Verify, which checks one - never goes without
+		// the product's main photo (3.30.4). Left out because it could not be
+		// put on eBay beside the others, or with nothing to send, it made a
+		// gallery photo the listing's first, which eBay shows as its main
+		// photo; and the sync made that the product's main photo too, with
+		// "Overwrite Images" on. The push is refused before eBay instead, and
+		// the product can be pushed again once the photo can go. A revise
+		// keeps the listing's photos, as before.
+		if ( ! $revise ) {
+			$this->main_photo_refused = $this->main_photo_left_out( $product );
+		}
+
+		// What it sends of the product's photos, for the push's record.
+		if ( ! empty( $images ) ) {
+			$sent_urls         = array_values( array_slice( $images, 0, self::MAX_IMAGES ) );
+			$this->photos_sent = array(
+				'ids'   => array_slice( array_values( array_map( 'intval', (array) ( $this->pictures_for[ $product->get_id() ]['ids'] ?? array() ) ) ), 0, count( $sent_urls ) ),
+				'urls'  => $sent_urls,
+				'shown' => array_values( array_filter( array_merge( array( (int) $product->get_image_id() ), array_map( 'intval', (array) $product->get_gallery_image_ids() ) ) ) ),
+			);
+		} elseif ( $photos_kept ) {
+			// Or that it kept the listing's own photos, eBay's as the import
+			// found them: the product follows them as an imported one does
+			// (3.30.4, TCGiant_Sync_Own_Photos::record_push()).
+			$this->photos_sent = array( 'kept' => true );
 		}
 
 		// Build picture URLs XML. No photos, no PictureDetails at all: an empty
@@ -7054,6 +7126,10 @@ class TCGiant_Sync_Exporter {
 		if ( $this->identifier_refused ) {
 			return $this->identifier_refused;
 		}
+		// And a new listing's main photo (3.30.4).
+		if ( $this->main_photo_refused ) {
+			return $this->main_photo_refused;
+		}
 		$chars = (int) ( $this->last_render['chars'] ?? 0 );
 		if ( $chars <= 500000 || ! empty( $this->last_render['plain'] ) ) {
 			return null;
@@ -7339,13 +7415,16 @@ class TCGiant_Sync_Exporter {
 	 * 'past_cap', how many of the product's photos are not sent for want of
 	 * room; 'too_long', whether that room ran out by the addresses'
 	 * length together (MAX_PICTURE_CHARS) rather than by their number; and
-	 * 'no_address', the photos left out with nothing to send (3.28.5).
+	 * 'no_address', the photos left out with nothing to send (3.28.5);
+	 * 'ids', the photos 'urls' are, in the same order; and 'missing', why
+	 * each photo before the limit that is not among them was left out
+	 * (3.30.4).
 	 *
 	 * A relist builds its item twice in one push, and the second build sends
 	 * what the first decided: nothing is uploaded again, or said again.
 	 * Cleared at the start of every push, and of every build for Verify.
 	 *
-	 * @var array<int,array{urls:string[],left_out:array<int,string>,past_cap:int,too_long:bool,no_address:int[]}>
+	 * @var array<int,array{urls:string[],left_out:array<int,string>,past_cap:int,too_long:bool,no_address:int[],ids:int[],missing:array<int,string>}>
 	 */
 	private $pictures_for = array();
 
@@ -7407,7 +7486,16 @@ class TCGiant_Sync_Exporter {
 		$cached_at  = (int) get_post_meta( $attachment_id, '_tcgiant_eps_time', true );
 
 		if ( $cached && $cached_key === $stamp && ( time() - $cached_at ) < self::EPS_URL_TTL ) {
+			// Its number kept on the photo, for one cached before 3.30.4.
+			TCGiant_Sync_Own_Photos::remember( $attachment_id, (string) $cached );
 			return (string) $cached;
+		}
+
+		// A cached copy past its time, or of a file since replaced, is still a
+		// picture a listing may show: its number is kept on the photo before
+		// the cache is written over (3.30.4).
+		if ( $cached ) {
+			TCGiant_Sync_Own_Photos::remember( $attachment_id, (string) $cached );
 		}
 
 		// Offloaded to a CDN, or deleted: nothing here to upload.
@@ -7436,6 +7524,11 @@ class TCGiant_Sync_Exporter {
 		update_post_meta( $attachment_id, '_tcgiant_eps_url', $uploaded );
 		update_post_meta( $attachment_id, '_tcgiant_eps_key', $stamp );
 		update_post_meta( $attachment_id, '_tcgiant_eps_time', time() );
+
+		// And its number, kept beside any earlier one (3.30.4): the cache keeps
+		// the latest upload only, and a listing may still show an earlier one.
+		// The image batch knows the photo by every one of them.
+		TCGiant_Sync_Own_Photos::remember( $attachment_id, $uploaded );
 
 		return $uploaded;
 	}
@@ -7495,7 +7588,9 @@ class TCGiant_Sync_Exporter {
 		$left_out   = array();
 		$past_cap   = 0;
 		$no_address = array();
-		$urls       = $this->decide_product_image_urls( $product, $left_out, $past_cap, $no_address );
+		$sent_ids   = array();
+		$missing    = array();
+		$urls       = $this->decide_product_image_urls( $product, $left_out, $past_cap, $no_address, $sent_ids, $missing );
 
 		// The addresses' length together, as sent: the list stops before the
 		// first that would take it past MAX_PICTURE_CHARS, and the rest are not
@@ -7507,14 +7602,17 @@ class TCGiant_Sync_Exporter {
 			if ( $chars > self::MAX_PICTURE_CHARS ) {
 				$past_cap += count( $urls ) - $i;
 				$urls      = array_slice( $urls, 0, $i );
+				$sent_ids  = array_slice( $sent_ids, 0, $i );
 				$too_long  = true;
 				break;
 			}
 		}
 
-		$this->pictures_for[ $product_id ] = array( 'urls' => $urls, 'left_out' => $left_out, 'past_cap' => $past_cap, 'too_long' => $too_long, 'no_address' => $no_address );
+		$this->pictures_for[ $product_id ] = array( 'urls' => $urls, 'left_out' => $left_out, 'past_cap' => $past_cap, 'too_long' => $too_long, 'no_address' => $no_address, 'ids' => $sent_ids, 'missing' => $missing );
 
-		if ( ! $revise || ! $left_out ) {
+		// A new listing whose main photo is not among them is not sent at all
+		// (3.30.4): its refusal says why, and nothing more is said here.
+		if ( ( ! $revise || ! $left_out ) && ! ( ! $revise && $this->main_photo_left_out( $product ) ) ) {
 			if ( $left_out ) {
 				TCGiant_Sync_Logger::warning( self::left_out_warning( $product_id, $left_out, $this->build_for ) );
 			}
@@ -7522,6 +7620,44 @@ class TCGiant_Sync_Exporter {
 		}
 
 		return $urls;
+	}
+
+	/**
+	 * Why a new listing built from this push's decision would go without the
+	 * product's main photo (3.30.4), as the push's refusal: the main photo is
+	 * not the first photo decided. Null when it is there, or when the
+	 * product has no main photo of its own to go without.
+	 *
+	 * @param WC_Product $product The product.
+	 * @return WP_Error|null
+	 */
+	private function main_photo_left_out( WC_Product $product ) {
+		$main    = (int) $product->get_image_id();
+		$decided = $this->pictures_for[ $product->get_id() ] ?? null;
+
+		if ( $main < 1 || ! is_array( $decided ) || $main === (int) ( $decided['ids'][0] ?? 0 ) ) {
+			return null;
+		}
+
+		$why = (string) ( $decided['missing'][ $main ] ?? '' );
+		if ( '' === $why ) {
+			$why = __( 'it could not be sent', 'tcgiant-sync' );
+		}
+
+		$then = self::PICTURE_NOT_HERE === $why
+			? __( 'Push it again once the photo\'s file is back on this server, or choose another main photo.', 'tcgiant-sync' )
+			: __( 'Push it again once the photo can be put on eBay, or choose another main photo.', 'tcgiant-sync' );
+
+		return new WP_Error(
+			'main_photo_left_out',
+			sprintf(
+				/* translators: 1: attachment ID, 2: why, 3: what to do */
+				__( 'Cannot list on eBay: this product\'s main photo (#%1$d) could not be put on eBay (%2$s), and a new listing without it would show another photo first. Nothing was sent to eBay. %3$s', 'tcgiant-sync' ),
+				$main,
+				$why,
+				$then
+			)
+		);
 	}
 
 	/**
@@ -7584,9 +7720,14 @@ class TCGiant_Sync_Exporter {
 	 * @param int[]             $no_address Set to the photos within them left
 	 *                                    out with nothing to send: no address
 	 *                                    on the website, no copy on eBay.
+	 * @param int[]             $sent_ids Set to the photos the addresses
+	 *                                    returned are, in the same order.
+	 * @param array<int,string> $missing  Set to why each photo before the
+	 *                                    limit that is not among them was
+	 *                                    left out (3.30.4).
 	 * @return string[]
 	 */
-	private function decide_product_image_urls( WC_Product $product, &$left_out, &$past_cap, &$no_address = array() ) {
+	private function decide_product_image_urls( WC_Product $product, &$left_out, &$past_cap, &$no_address = array(), &$sent_ids = array(), &$missing = array() ) {
 		$ids = array();
 
 		// Featured image, then the gallery.
@@ -7601,7 +7742,11 @@ class TCGiant_Sync_Exporter {
 		// Each photo's own address, as 3.27.7 sent them with the setting off.
 		$site_past = 0;
 		$site_none = array();
-		$site      = $this->site_picture_urls( $ids, $site_past, $site_none );
+		$site_ids  = array();
+		$site      = $this->site_picture_urls( $ids, $site_past, $site_none, $site_ids );
+		$sent_ids  = array();
+		$missing   = array();
+		$no_site   = array_fill_keys( $site_none, __( 'it has no address on your website and no copy on eBay', 'tcgiant-sync' ) );
 
 		$on_ebay = false;
 		foreach ( $site as $url ) {
@@ -7615,6 +7760,8 @@ class TCGiant_Sync_Exporter {
 		if ( ! $on_ebay && empty( $settings['host_images_on_ebay'] ) ) {
 			$past_cap   = $site_past;
 			$no_address = $site_none;
+			$sent_ids   = $site_ids;
+			$missing    = $no_site;
 			return $site;
 		}
 
@@ -7634,13 +7781,15 @@ class TCGiant_Sync_Exporter {
 			}
 
 			if ( self::is_ebay_picture( $own ) ) {
-				$urls[] = $own;
+				$urls[]     = $own;
+				$sent_ids[] = $id;
 				continue;
 			}
 
 			$eps = $this->eps_picture_url( $id, $reason );
 			if ( '' !== $eps ) {
-				$urls[] = $eps;
+				$urls[]     = $eps;
+				$sent_ids[] = $id;
 				continue;
 			}
 
@@ -7656,8 +7805,10 @@ class TCGiant_Sync_Exporter {
 						$id,
 						$reason
 					) );
+					$missing[ $id ] = $reason;
 				} else {
-					$no_address[] = $id;
+					$no_address[]   = $id;
+					$missing[ $id ] = __( 'it has no address on your website and no copy on eBay', 'tcgiant-sync' );
 				}
 				continue;
 			}
@@ -7666,6 +7817,7 @@ class TCGiant_Sync_Exporter {
 			// cannot go as its own address beside them.
 			if ( $on_ebay ) {
 				$left_out[ $id ] = $reason;
+				$missing[ $id ]  = $reason;
 				continue;
 			}
 
@@ -7679,6 +7831,8 @@ class TCGiant_Sync_Exporter {
 
 			$past_cap   = $site_past;
 			$no_address = $site_none;
+			$sent_ids   = $site_ids;
+			$missing    = $no_site;
 			return $site;
 		}
 
@@ -7839,12 +7993,14 @@ class TCGiant_Sync_Exporter {
 	 * @param int   $past_cap Set to how many with an address come after the
 	 *                        first MAX_IMAGES, and so are not among them.
 	 * @param int[] $none     Set to those with no address, before that.
+	 * @param int[] $sent     Set to the photos the addresses are, in order (3.30.4).
 	 * @return string[]
 	 */
-	private function site_picture_urls( array $ids, &$past_cap = 0, &$none = array() ) {
+	private function site_picture_urls( array $ids, &$past_cap = 0, &$none = array(), &$sent = array() ) {
 		$urls     = array();
 		$past_cap = 0;
 		$none     = array();
+		$sent     = array();
 		foreach ( $ids as $id ) {
 			$src = wp_get_attachment_image_url( $id, 'full' );
 			if ( ! $src ) {
@@ -7858,6 +8014,7 @@ class TCGiant_Sync_Exporter {
 				continue;
 			}
 			$urls[] = $src;
+			$sent[] = (int) $id;
 		}
 		return $urls;
 	}

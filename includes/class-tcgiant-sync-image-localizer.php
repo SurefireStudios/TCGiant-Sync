@@ -15,6 +15,11 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+// The shop's own photos, as eBay sends them back (3.30.4).
+if ( ! class_exists( 'TCGiant_Sync_Own_Photos', false ) ) {
+	require_once __DIR__ . '/class-tcgiant-sync-own-photos.php';
+}
+
 /**
  * TCGiant_Sync_Image_Localizer class
  */
@@ -662,6 +667,11 @@ class TCGiant_Sync_Image_Localizer {
 		add_action( 'admin_init', array( __CLASS__, 'maybe_backfill_galleries' ) );
 		add_action( 'admin_init', array( __CLASS__, 'maybe_queue_gallery_heal' ) );
 		add_action( self::GALLERY_HEAL_HOOK, array( __CLASS__, 'run_gallery_heal' ) );
+
+		// The pass, once, over products showing copies of their own photos
+		// that came back from eBay (3.30.4). See TCGiant_Sync_Own_Photos.
+		add_action( 'admin_init', array( 'TCGiant_Sync_Own_Photos', 'maybe_queue_heal' ) );
+		add_action( TCGiant_Sync_Own_Photos::HEAL_HOOK, array( 'TCGiant_Sync_Own_Photos', 'run_heal' ) );
 	}
 
 	/**
@@ -1519,6 +1529,14 @@ class TCGiant_Sync_Image_Localizer {
 			return;
 		}
 
+		// The first read of the listing after a push that sent its photos
+		// learns the numbers eBay gave them, by their places, whatever else
+		// happens here (3.30.4). Only from eBay's answer: a re-run from what
+		// was stored before is no read of the listing.
+		if ( ! $force ) {
+			TCGiant_Sync_Own_Photos::learn_by_place( $product_id, $image_entries );
+		}
+
 		// Check if this product already has locally-downloaded images with matching hash.
 		// If so, skip — no need to overwrite local images with external URLs.
 		$plain_urls = array_merge( $main_urls, array_values( $variation_map ) );
@@ -2016,6 +2034,39 @@ class TCGiant_Sync_Image_Localizer {
 			return $result;
 		}
 
+		// A product pushed lately whose listing shows only pictures nothing
+		// here knows, no more of them than the photos it shows, from a push
+		// that taught nothing of them: copies eBay may have made of the
+		// product's own photos, sent from the website (3.30.4). Held - nothing
+		// downloaded, nothing changed, the pictures never downloaded for it
+		// afterwards - and named for the shop. A picture held before is known.
+		// See TCGiant_Sync_Own_Photos::may_hold().
+		$hold        = TCGiant_Sync_Own_Photos::may_hold( $product_id, array_values( $image_entries ) );
+		$held_before = TCGiant_Sync_Own_Photos::held_numbers( $product_id );
+		foreach ( $hold as $url ) {
+			if ( in_array( TCGiant_Sync_Own_Photos::number( $url ), $held_before, true )
+				|| $this->find_existing_local_attachment( $product_id, preg_replace( '/\?.*$/', '', $url ) ) ) {
+				$hold = array();
+				break;
+			}
+		}
+		if ( $hold ) {
+			TCGiant_Sync_Own_Photos::hold( $product_id, $hold );
+			update_post_meta( $product_id, '_tcgiant_images_localized', 1 );
+			delete_post_meta( $product_id, '_tcgiant_localize_inflight' );
+			delete_post_meta( $product_id, '_tcgiant_localize_progress' );
+			delete_post_meta( $product_id, '_tcgiant_localize_attempts' );
+			delete_post_meta( $product_id, '_tcgiant_localize_retry_after' );
+			delete_post_meta( $product_id, '_tcgiant_localize_pauses' );
+			TCGiant_Sync_Logger::log( sprintf(
+				'Image localizer: WC #%1$d - its eBay listing shows %2$d picture(s) TCGiant does not know, soon after a push: they may be eBay\'s copies of its own photos, or photos changed on eBay. None was downloaded, and its photos are as they were. Check the listing on eBay first. If they are photos you changed on eBay, run an images-only sync for its item to bring them in. Push it only if eBay shows the product\'s photos wrongly: a push replaces eBay\'s photos with the product\'s. Image Cleanup names it.',
+				$product_id,
+				count( $hold )
+			) );
+			$result['skipped'] = count( $hold );
+			return $result;
+		}
+
 		// Charge the attempt before doing anything, and take a lease on the
 		// product - see LEASE_SECONDS. The in-flight mark is cleared however
 		// the attempt ends, so finding it still set means the last one died.
@@ -2057,7 +2108,34 @@ class TCGiant_Sync_Image_Localizer {
 		update_post_meta( $product_id, '_tcgiant_localize_inflight', $progress + 1 );
 
 		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
-		$overwrite_images = ! empty( $settings['overwrite_images'] );
+
+		// A product the shop has pushed keeps its own photos where they are
+		// (3.30.4): what eBay shows of it is what the push sent, so eBay's
+		// order and eBay's first picture say nothing new - a new listing that
+		// went up without its main photo showed a gallery photo first, and
+		// "Overwrite Images" made that the main photo. Photos new on eBay
+		// still come in, added to the gallery as they are without it. One
+		// whose last push to this listing kept eBay's own photos follows them,
+		// as one never pushed does.
+		$overwrite_images = ! empty( $settings['overwrite_images'] ) && ( ! TCGiant_Sync_Own_Photos::pushed( $product_id ) || TCGiant_Sync_Own_Photos::follows_ebay( $product_id ) );
+
+		// eBay's first picture of the listing itself: the only one that may
+		// become the main photo of a product that has one of its own. One that
+		// comes after it never does, even when eBay's first could not be
+		// fetched (3.30.4). A product with no photo of its own as its main
+		// photo - none, or an eBay stand-in - takes the first it gets, as
+		// before.
+		$had_main     = self::has_local_thumbnail( $product_id );
+		$held_numbers = $held_before;
+		$first_main   = null;
+		foreach ( array_values( (array) $image_entries ) as $index => $entry ) {
+			$variation = is_array( $entry ) ? ( $entry[1] ?? false ) : false;
+			$url       = is_array( $entry ) ? ( $entry[0] ?? '' ) : $entry;
+			if ( ! empty( $url ) && ( ! $variation || '__retry' === $variation ) ) {
+				$first_main = $index;
+				break;
+			}
+		}
 
 		$gallery_ids = array();
 
@@ -2111,9 +2189,18 @@ class TCGiant_Sync_Image_Localizer {
 				continue;
 			}
 
-			// Check if this image is already downloaded (by source URL dedup).
+			// Check if this image is already downloaded (by source URL dedup),
+			// or is one of the product's own photos (3.30.4).
 			$clean_url = preg_replace( '/\?.*$/', '', $image_url );
 			$existing_attachment = $this->find_existing_local_attachment( $product_id, $clean_url );
+			$is_first            = ( $photo - 1 ) === $first_main || ! $had_main;
+
+			// A picture held for this product before - a copy eBay may have
+			// made of one of its photos - is never downloaded for it (3.30.4).
+			if ( ! $existing_attachment && $held_numbers && in_array( TCGiant_Sync_Own_Photos::number( $clean_url ), $held_numbers, true ) ) {
+				$result['skipped']++;
+				continue;
+			}
 
 			if ( $existing_attachment ) {
 				// Already have a local copy — ensure it's properly assigned.
@@ -2121,7 +2208,7 @@ class TCGiant_Sync_Image_Localizer {
 					if ( ! has_post_thumbnail( $variation_id ) ) {
 						set_post_thumbnail( $variation_id, $existing_attachment );
 					}
-				} elseif ( $needs_thumbnail ) {
+				} elseif ( $needs_thumbnail && $is_first ) {
 					set_post_thumbnail( $product_id, $existing_attachment );
 					$needs_thumbnail = false;
 				} elseif ( (int) $existing_attachment !== (int) get_post_thumbnail_id( $product_id ) ) {
@@ -2199,7 +2286,7 @@ class TCGiant_Sync_Image_Localizer {
 
 			if ( $variation_id ) {
 				set_post_thumbnail( $variation_id, $id );
-			} elseif ( $needs_thumbnail ) {
+			} elseif ( $needs_thumbnail && $is_first ) {
 				// Remove the external placeholder attachment if it exists.
 				$old_thumb_id = get_post_thumbnail_id( $product_id );
 				if ( $old_thumb_id ) {
@@ -2416,6 +2503,13 @@ class TCGiant_Sync_Image_Localizer {
 	 * @return int|false Attachment ID or false.
 	 */
 	private function find_existing_local_attachment( $product_id, $source_url ) {
+		// A photo of the shop's own that a push put on eBay, or one downloaded
+		// from it, whatever size or form eBay's address is in now (3.30.4):
+		// the product's own first, then any on the site. A listing a push made
+		// shows addresses no photo here was downloaded from, and each was
+		// downloaded again as a new photo. See TCGiant_Sync_Own_Photos.
+		$own = TCGiant_Sync_Own_Photos::own_photo( $product_id, $source_url );
+
 		// Placeholders carry _tcgiant_source_url too, so they must be excluded
 		// in the query rather than filtered out afterwards. With only one
 		// placeholder per product that distinction was academic; now that the
@@ -2451,7 +2545,7 @@ class TCGiant_Sync_Image_Localizer {
 		// deleted, but a photo attached to a product that exists is never
 		// removed while it does. Fetching it again here would only give this
 		// product a second copy of what it already has.
-		$attachments = get_posts( array(
+		$attachments = $own > 0 ? array( $own ) : get_posts( array(
 			'post_type'   => 'attachment',
 			'post_parent' => $product_id,
 			'meta_query'  => $real_only, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_query

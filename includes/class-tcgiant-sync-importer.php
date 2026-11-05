@@ -1608,6 +1608,13 @@ class TCGiant_Sync_Importer {
 				continue;
 			}
 
+			// Pictures held for the product, which may be photos the shop
+			// changed on eBay, are let go: asked for by item, they come in
+			// (3.30.4, TCGiant_Sync_Own_Photos::release()).
+			if ( class_exists( 'TCGiant_Sync_Own_Photos' ) && TCGiant_Sync_Own_Photos::release( (int) $product_id ) ) {
+				TCGiant_Sync_Logger::log( sprintf( 'Images-only sync: WC #%d\'s eBay pictures, held before, are let go and downloaded.', $product_id ) );
+			}
+
 			// Set external eBay image URLs — localized in background.
 			TCGiant_Sync_Image_Localizer::set_external_images( (int) $product_id, $all_images );
 

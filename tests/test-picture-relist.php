@@ -326,6 +326,18 @@ ended_and_relisted( 632, '110000000632', '110000000633' );
 list( $calls, $uploads, $warned ) = pushed( $p );
 check( 'thirty photos: both revises the first 24, said once', array( $calls[0][2], $calls[3][2], $warned ), array( sites( range( 401, 424 ) ), sites( range( 401, 424 ) ), array( 'Push: WC #632 has more photos than the 24 eBay takes in one listing, so the 6 after the first 24 were not sent.' ) ) );
 
+// The ended listing sold on eBay, so the item is built again, as a new
+// listing's, before the relist is followed (3.28.0): that build does not
+// refuse the push for its main photo (3.30.4). The live relist is revised,
+// where the main photo is not asked for, and keeps its photos.
+$p = photographed( 636, array( 309, 310 ) );
+offloaded( 309 );
+kept_on_ebay( 310 );
+ended_and_relisted( 636, '110000000636', '110000000637' );
+$API->items['110000000636']['SellingStatus']['QuantitySold'] = '1';
+list( $calls, $uploads, $warned, $result ) = pushed( $p );
+check( 'its sales on eBay taken in first, its main photo not one eBay can take: the live relist is revised, sent no PictureDetails (3.30.4)', array( route( $calls ), $calls[3][3] ?? null, is_array( $result ) ? $result['item_id'] : $result->get_error_message() ), array( array( array( 'ReviseFixedPriceItem', '110000000636' ), array( 'GetItem', '110000000636' ), array( 'GetItem', '110000000637' ), array( 'ReviseFixedPriceItem', '110000000637' ) ), 0, '110000000637' ) );
+
 // ─────────────────────────────────────────────────────────────────────────────
 echo "\nTHE RELIST HAS ENDED TOO: THE NEW LISTING HAS THE PHOTOS, BUT FOR THOSE EBAY CANNOT TAKE\n" . str_repeat( '=', 124 ) . "\n";
 

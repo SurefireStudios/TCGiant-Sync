@@ -26,7 +26,13 @@
  * - it is no longer attached to anything that exists: its parent is 0, which
  *   is where WordPress moves a deleted product's attachments, or names a post
  *   that is gone. A photo attached to a product that still exists - live,
- *   draft, private or in the Trash - is never deleted, whatever uses it;
+ *   draft, private or in the Trash - is never deleted, whatever uses it,
+ *   unless it is a copy the sync downloaded of a photo this site put on eBay
+ *   (3.30.4, TCGiant_Sync_Own_Photos::copies_among()): the photo it copies
+ *   is there - no eBay stand-in, not waiting to be removed or given up on -
+ *   and the product shows that photo, not the copy, since 3.30.4's pass. Only
+ *   through the check and the shop's button, or with its product, and only
+ *   once nothing uses it, as below;
  * - nothing uses it, as far as these places say - see in_use():
  *   - the featured image of a post of any type or status (variations keep
  *     theirs in _thumbnail_id);
@@ -106,6 +112,11 @@
 
 if ( ! defined( 'ABSPATH' ) ) {
 	exit;
+}
+
+// Which downloads are copies of the shop's own photos (3.30.4).
+if ( ! class_exists( 'TCGiant_Sync_Own_Photos', false ) ) {
+	require_once __DIR__ . '/class-tcgiant-sync-own-photos.php';
 }
 
 /**
@@ -511,6 +522,15 @@ class TCGiant_Sync_Photo_Cleanup {
 	private static $held = array();
 
 	/**
+	 * The copies of the shop's own photos the last verdicts() let go though
+	 * attached, copy => the photo it copies (3.30.4), for the check to count
+	 * apart.
+	 *
+	 * @var int[]
+	 */
+	private static $copies = array();
+
+	/**
 	 * What the run, or the step of the check, under way has read of where
 	 * photos are used - see open_uses() - or null outside one.
 	 *
@@ -794,7 +814,8 @@ class TCGiant_Sync_Photo_Cleanup {
 	 * @param int[] $ids Attachment IDs.
 	 * @return string[] ID => '' when it may be deleted, otherwise why not:
 	 *                  gone, not_ours, attached, in_use, shared_file, no_file,
-	 *                  failed.
+	 *                  failed. A copy of the shop's own photo is judged as an
+	 *                  unattached one (3.30.4), and noted in $copies.
 	 * @throws TCGiant_Sync_Photo_Read_Error When the database could not answer
 	 *                                       one of the reads. Nothing is judged.
 	 */
@@ -804,15 +825,19 @@ class TCGiant_Sync_Photo_Cleanup {
 			return array();
 		}
 
-		$out    = array_fill_keys( $ids, 'gone' );
-		$open   = array();
-		$failed = array();
+		$out          = array_fill_keys( $ids, 'gone' );
+		$open         = array();
+		$failed       = array();
+		$attached     = array();
+		self::$copies = array();
+		$rows         = self::attachment_rows( $ids );
 
-		foreach ( self::attachment_rows( $ids ) as $id => $row ) {
+		foreach ( $rows as $id => $row ) {
 			if ( ! $row['ours'] || 'inherit' !== $row['status'] ) {
 				$out[ $id ] = 'not_ours';
 			} elseif ( $row['parent'] > 0 && $row['parent_found'] ) {
 				$out[ $id ] = 'attached';
+				$attached[] = $id;
 			} else {
 				$out[ $id ] = '';
 				$open[]     = $id;
@@ -820,6 +845,28 @@ class TCGiant_Sync_Photo_Cleanup {
 					$failed[ $id ] = true;
 				}
 			}
+		}
+
+		// A copy the sync downloaded of a photo this site put on eBay goes as
+		// an unattached photo does (3.30.4): the photo it copies stays. Only
+		// through the check and the shop's button: one marked to go with a
+		// deleted product that showed it, and not by the button, stays
+		// attached as before.
+		if ( $attached ) {
+			$copies = TCGiant_Sync_Own_Photos::copies_among( $attached );
+			if ( null === $copies ) {
+				self::read_ok();
+				throw new TCGiant_Sync_Photo_Read_Error( 'the copies of the shop\'s own photos could not be read' );
+			}
+			$copies = array_diff_key( $copies, array_flip( self::marked_not_approved( array_keys( $copies ) ) ) );
+			foreach ( $copies as $id => $original ) {
+				$out[ $id ] = '';
+				$open[]     = $id;
+				if ( $rows[ $id ]['failed'] ) {
+					$failed[ $id ] = true;
+				}
+			}
+			self::$copies = $copies;
 		}
 
 		if ( empty( $open ) ) {
@@ -869,6 +916,44 @@ class TCGiant_Sync_Photo_Cleanup {
 		foreach ( self::ids( $keep ) as $id ) {
 			if ( isset( $out[ $id ] ) && '' === $out[ $id ] ) {
 				$out[ $id ] = 'in_use';
+			}
+		}
+
+		return $out;
+	}
+
+	/**
+	 * Which of these photos are waiting to be removed without the shop's
+	 * button having put them there: marked when a product that showed them
+	 * was deleted (3.30.4, for verdicts()'s copies).
+	 *
+	 * @param int[] $ids Attachment IDs.
+	 * @return int[]
+	 * @throws TCGiant_Sync_Photo_Read_Error When the database could not answer.
+	 */
+	private static function marked_not_approved( array $ids ) {
+		global $wpdb;
+
+		$out = array();
+		foreach ( array_chunk( self::ids( $ids ), 500 ) as $chunk ) {
+			$in = implode( ',', array_map( 'intval', $chunk ) );
+
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+			$rows = $wpdb->get_results( $wpdb->prepare(
+				"SELECT post_id, meta_key FROM {$wpdb->postmeta} WHERE post_id IN ( {$in} ) AND meta_key IN ( %s, %s )",
+				self::MARK_KEY,
+				self::APPROVED_KEY
+			) );
+			self::read_ok();
+
+			$marks = array();
+			foreach ( (array) $rows as $row ) {
+				$marks[ (int) $row->post_id ][ (string) $row->meta_key ] = true;
+			}
+			foreach ( $marks as $id => $keys ) {
+				if ( isset( $keys[ self::MARK_KEY ] ) && ! isset( $keys[ self::APPROVED_KEY ] ) ) {
+					$out[] = $id;
+				}
 			}
 		}
 
@@ -2979,6 +3064,15 @@ class TCGiant_Sync_Photo_Cleanup {
 			return array( 'outcome' => self::keep( $id, 'in_use', $marks ) );
 		}
 
+		// A copy of a photo this site put on eBay leaves the numbers it was
+		// put on eBay as with that photo (3.30.4): a listing still showing
+		// one of them then finds the photo, not a picture nothing here knows,
+		// downloaded again. Only adds rows to the photo it copies.
+		$root = TCGiant_Sync_Own_Photos::root_of( $id );
+		if ( $root !== (int) $id ) {
+			TCGiant_Sync_Own_Photos::carry_numbers( $id, $root );
+		}
+
 		// What is on this server, before anything is touched.
 		$records = self::file_records( array( $id ) );
 		$before  = self::files_here( $records[ $id ] ?? array() );
@@ -3534,6 +3628,11 @@ class TCGiant_Sync_Photo_Cleanup {
 			'bytes'       => 0,
 			'not_here'    => 0,
 
+			// Of what it found, the copies of the shop's own photos that came
+			// back from eBay (3.30.4), and the space they take.
+			'copies'      => 0,
+			'copy_bytes'  => 0,
+
 			// Not offered, and not in the count: photos already waiting to be
 			// removed - by an earlier press of the button, or with a product
 			// deleted since - and photos a removal gave up on, for the shop.
@@ -3626,6 +3725,7 @@ class TCGiant_Sync_Photo_Cleanup {
 			}
 
 			$verdicts = self::verdicts( $ids );
+			$copies   = self::$copies;
 			$waiting  = self::marked_among( self::still_open( $verdicts ) );
 			$records  = self::file_records( array_diff( self::still_open( $verdicts ), $waiting ) );
 			$waiting  = array_flip( $waiting );
@@ -3660,6 +3760,10 @@ class TCGiant_Sync_Photo_Cleanup {
 				$scan['bytes'] += $bytes;
 				if ( ! $here ) {
 					$scan['not_here']++;
+				}
+				if ( isset( $copies[ $id ] ) ) {
+					$scan['copies']     = (int) ( $scan['copies'] ?? 0 ) + 1;
+					$scan['copy_bytes'] = (int) ( $scan['copy_bytes'] ?? 0 ) + $bytes;
 				}
 				$finds[] = $id;
 			}
@@ -3726,12 +3830,14 @@ class TCGiant_Sync_Photo_Cleanup {
 	 * @return void
 	 */
 	private static function log_found( array $scan ) {
+		$copies = (int) ( $scan['copies'] ?? 0 );
 		TCGiant_Sync_Logger::log( sprintf(
-			'Photo cleanup: checked %d downloaded photo(s). %d are left over from deleted products, about %s on this server%s.%s%s',
+			'Photo cleanup: checked %d downloaded photo(s). %d are left over from deleted products, about %s on this server%s.%s%s%s',
 			$scan['examined'],
-			$scan['found'],
-			size_format( $scan['bytes'], 1 ),
+			$scan['found'] - $copies,
+			size_format( $scan['bytes'] - (int) ( $scan['copy_bytes'] ?? 0 ), 1 ),
 			$scan['not_here'] > 0 ? sprintf( ' (%d of them have no file here any more)', $scan['not_here'] ) : '',
+			$copies > 0 ? sprintf( ' %d more are copies that came back from eBay of photos your products show, which no product shows any more, about %s.', $copies, size_format( (int) ( $scan['copy_bytes'] ?? 0 ), 1 ) ) : '',
 			$scan['waiting'] > 0 ? sprintf( ' %d more are already waiting to be removed.', $scan['waiting'] ) : '',
 			$scan['failed'] > 0 ? sprintf( ' %d could not be removed before and have been left for you to delete by hand - the log has a line for each.', $scan['failed'] ) : ''
 		) );
@@ -3863,7 +3969,7 @@ class TCGiant_Sync_Photo_Cleanup {
 			(int) $scan['found'],
 			wp_date( 'j M Y, H:i', (int) $scan['finished_at'] ),
 			(int) ceil( self::QUARANTINE_SECONDS / 60 )
-		) );
+		) . ( ! empty( $scan['copies'] ) ? sprintf( ' %d of them are copies that came back from eBay of photos your products show (3.30.4).', (int) $scan['copies'] ) : '' ) );
 
 		return $scan;
 	}
@@ -4234,6 +4340,8 @@ class TCGiant_Sync_Photo_Cleanup {
 				'bytes'       => (int) ( $scan['bytes'] ?? 0 ),
 				'size'        => size_format( (int) ( $scan['bytes'] ?? 0 ), 1 ),
 				'not_here'    => (int) ( $scan['not_here'] ?? 0 ),
+				'copies'      => (int) ( $scan['copies'] ?? 0 ),
+				'copy_size'   => size_format( (int) ( $scan['copy_bytes'] ?? 0 ), 1 ),
 				'waiting'     => (int) ( $scan['waiting'] ?? 0 ),
 				'failed'      => (int) ( $scan['failed'] ?? 0 ),
 				'finished_at' => (int) ( $scan['finished_at'] ?? 0 ),

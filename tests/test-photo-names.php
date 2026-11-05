@@ -491,8 +491,10 @@ echo "\nA NAME WHOSE FILE IS GONE FROM THE FOLDER, BUT NOT FROM THE LIBRARY, IS 
 
 // The one case where two photos start out with the same name: the same eBay
 // picture fetched twice for one product, from two addresses. eBay's photo
-// set for the listing changes to the same picture on another of its hosts,
-// so the copy already made is not recognised (the address is the key).
+// set for the listing changes to the same picture on another of its hosts.
+// Since 3.30.4 the copy the product shows is recognised by eBay's number for
+// the picture, whatever the address (test-own-photos.php); one taken off the
+// product, still attached to it, is not, and the picture is fetched again.
 fresh_site();
 $OFFLOADER = true;
 $p     = product( 'Honda Civic Front Brake Caliper', array( ebay( 'CALIPERxAAOSw' ) ) );
@@ -504,6 +506,10 @@ check( '  but the Media Library still has it', get_post_meta( $first, '_wp_attac
 
 $moved = 'https://i.ebayimg.com/thumbs/images/g/CALIPERxAAOSw/s-l1600.jpg';
 check( 'the second address makes the same name to start with', name_of( $p, $moved ), basename( $name ) );
+TCGiant_Sync_Image_Localizer::set_external_images( $p, array( $moved ), true );
+localize( $p );
+check( '  while the product shows the first copy, that is the picture: nothing fetched (3.30.4)', array( attachments_for( $moved ), get_post_thumbnail_id( $p ) ), array( array(), $first ) );
+delete_post_meta( $p, '_thumbnail_id' );
 TCGiant_Sync_Image_Localizer::set_external_images( $p, array( $moved ), true );
 localize( $p );
 $second = attachments_for( $moved )[0] ?? 0;

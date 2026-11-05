@@ -638,7 +638,19 @@ function use_ebay( $api ) {
 
 if ( in_array( $MODE, array( 'kill', 'oom', 'exit' ), true ) ) {
 	// WordPress registers its shutdown action before any plugin code runs.
-	register_shutdown_function( function () { do_action( 'shutdown' ); } );
+	//
+	// After an out-of-memory error PHP gives a shutdown function no room of
+	// its own, and this harness's do_action() can need a fresh 64 KB page of
+	// PHP's call stack before it reaches the plugin's make_room() - whether
+	// it does depends only on where the code before it happened to leave
+	// the stack (3.30.4's larger photo class tipped PHP 7.4 over it). That
+	// page is the harness's cost, not the plugin's, so the harness keeps its
+	// own room for it, given back first.
+	$GLOBALS['HARNESS_SHUTDOWN_ROOM'] = str_repeat( ' ', 262144 );
+	register_shutdown_function( function () {
+		$GLOBALS['HARNESS_SHUTDOWN_ROOM'] = null;
+		do_action( 'shutdown' );
+	} );
 	world_load();
 	( new Harness_Fatal_Error_Monitor() )->attach();
 	use_ebay( new Harness_eBay() );
