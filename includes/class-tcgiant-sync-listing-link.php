@@ -87,8 +87,10 @@ class TCGiant_Sync_Listing_Link {
 			// still on that one, so a copy, or a product unlinked, must not
 			// carry it.
 			'_ebay_relist_parent_id',
-			// eBay's SKU for a variation of that listing (3.28.0).
+			// eBay's SKU for a variation of that listing (3.28.0), and what
+			// it calls the variation (3.32.0).
 			'_ebay_variation_sku',
+			'_ebay_variation_specifics',
 			// Stock changes still on their way to that listing (3.28.0).
 			'_ebay_push_pending',
 			// eBay's sales of that listing the stock has taken off, and the
@@ -226,12 +228,15 @@ class TCGiant_Sync_Listing_Link {
 
 		// eBay's price as last sent or read is the listing's, and a variable
 		// product's variations each hold their own (3.29.0): a listing linked
-		// later must not be judged by the old one's.
+		// later must not be judged by the old one's. So is what the old
+		// listing called each variation (3.32.0): a listing linked later, or
+		// made by a push, is matched by what its variations hold.
 		$product = function_exists( 'wc_get_product' ) ? wc_get_product( $product_id ) : null;
 		if ( $product instanceof WC_Product_Variable ) {
 			foreach ( (array) $product->get_children() as $child_id ) {
 				delete_post_meta( (int) $child_id, '_ebay_price_seen' );
 				delete_post_meta( (int) $child_id, '_ebay_price_marked' );
+				delete_post_meta( (int) $child_id, '_ebay_variation_specifics' );
 			}
 		}
 

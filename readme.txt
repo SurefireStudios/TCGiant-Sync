@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.31.1
+Stable tag: 3.32.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -148,6 +148,12 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.32.0 - 2026-11-05 =
+* FIX: A product whose variations use one of your global attributes (Products > Attributes) - a Color you gave a product yourself and pushed to eBay, say - no longer has its variations made again at every sync. The sync looked for each variation by WooCommerce's own name for the attribute rather than its label, never found it, and made a new one, which your website showed as "Any Color", while yours were set to private and out of stock. One it found by its SKU lost its color the same way. Each variation now keeps its value in your global attribute and is found again. At its next sync, a product this already happened to gets its own variations back with eBay's stock, and the ones the sync made are set to private and out of stock.
+* FIX: The attributes a listing's variations are made of, such as Color or Size, are now kept in step with eBay whatever "Overwrite Attributes" says. At No, the default, a value eBay added - a new size, say - never reached the product, so your website could not offer that variation. Each value eBay's variations sell is now added to the product's attribute of that name, so a value you take off a product here comes back at its next sync while its eBay listing still sells it. "Overwrite Attributes" still decides the item specifics, as before.
+* NEW: "Add eBay's new variation values to global attributes?" in Settings (Import Settings, Data Mapping), No unless you choose Yes. When eBay sells a variation with a value your global attribute does not have, Yes adds the value to the attribute. At No your global attributes stay as they are: the variation is kept up to date, but your website does not offer it until you add the value yourself, and the log says which. A value the attribute already has is used either way. No global attribute or value is ever renamed, changed or removed, and products new from eBay keep eBay's values in attributes of their own, as before.
+* Variations are now found by label and value whatever the case or spacing, and by what eBay called them at their last sync. A variation keeps your global attribute's value when you have renamed it (Red to Crimson, say) or eBay spells it otherwise ("X Large" for X-Large), and the log says so once; it is never given eBay's text instead, which your website could not offer, and no second value is added beside yours. A value changed on eBay is followed, and two of eBay's values never share one of yours. "Rosé" and "Rose" are different values. The stock checks find variations the same way.
 
 = 3.31.1 - 2026-11-05 =
 * Your site's own daily allowance of eBay calls is now kept by TCGiant Sync itself, between renewals of its eBay token. Until now only the TCGiant connection service held a site to it, when the token was next renewed, up to two hours later, and a site near its allowance could make thousands more calls in that time, out of the allowance every TCGiant Sync shop shares. Once your site's own calls for the day (UTC) reach the allowance the service last gave it, its syncs, scans, look-ups and relists wait until 00:00 UTC, and the log says it is your site's own allowance. A sale on your website still reaches eBay, as before: its stock update goes, and so do a push you start, anything going to 0, and marking an eBay order shipped. And a sale on eBay still reaches your website: the order import and the ordinary sync's read of eBay's changes go on past the allowance, by up to 200 calls more that day (a tenth of a larger allowance), while the allowance every shop shares has room. A change on eBay that needs its listing looked up on its own waits until 00:00 UTC. Where the service gives no allowance, nothing changes.
@@ -1653,6 +1659,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.32.0 =
+Products whose variations use a global attribute (Products > Attributes) get their own variations back at their next sync, and the copies earlier syncs made of them, shown as "Any", are set to private and out of stock. The values eBay's variations sell are now added to each product's attributes whatever "Overwrite Attributes" says, including any you took off it while its eBay listing still sells it. New values are added to your global attributes only if you turn on "Add eBay's new variation values to global attributes?".
 
 = 3.31.1 =
 A shop on eBay UK, Germany, France, Italy, Spain or Australia whose prices are entered without tax may see a notice offering "eBay Prices Include Tax" on Auto: choosing it raises your eBay prices by your VAT rate at each listing's next push, update or relist. A fixed-price relist now sends the eBay price when it changed here since eBay last had it. A site that has used its own daily allowance of eBay calls waits until 00:00 UTC, but its sales still go both ways: a website sale's stock update reaches eBay, and eBay's orders and sales reach the website.

@@ -3880,7 +3880,7 @@ class TCGiant_Sync_Exporter {
 				foreach ( $child_attrs as $key => $val ) {
 					$attr_name = str_replace( 'attribute_', '', $key );
 					$label = wc_attribute_label( $attr_name );
-					$term = get_term_by( 'slug', $val, $attr_name );
+					$term = self::variation_value_term( $val, $attr_name );
 					$val_name = $term ? $term->name : $val;
 					
 					$xml .= "\t\t\t<NameValueList>\n";
@@ -6136,12 +6136,38 @@ class TCGiant_Sync_Exporter {
 			$label  = wc_attribute_label( $attr_name );
 			$values = array();
 			foreach ( $options as $opt ) {
-				$term     = get_term_by( 'slug', $opt, $attr_name );
+				$term     = self::variation_value_term( $opt, $attr_name );
 				$values[] = $term ? $term->name : $opt;
 			}
 			$set[] = array( $label, $values );
 		}
 		return $set;
+	}
+
+	/**
+	 * The term a variation's value under a global attribute is (3.32.0 fix
+	 * round 1): the one whose slug it is, or whose name it is, case aside.
+	 * get_term_by( 'slug' ) runs sanitize_title() on the value first, so a
+	 * value an import kept as eBay's - the attribute has no term for it,
+	 * "1/2" say - was read as the term whose slug it gives, "1-2", and sent as it. A value
+	 * that is a term's slug, as WooCommerce keeps them, is that term, as
+	 * before.
+	 *
+	 * @param string $value    A variation's value.
+	 * @param string $taxonomy The attribute's name (a taxonomy, or not).
+	 * @return object|false The term, or false.
+	 */
+	private static function variation_value_term( $value, $taxonomy ) {
+		$term = get_term_by( 'slug', $value, $taxonomy );
+		if ( ! is_object( $term ) ) {
+			return false;
+		}
+
+		$fields = (array) $term;
+		$slug   = (string) ( $fields['slug'] ?? '' );
+		$name   = strtolower( html_entity_decode( (string) ( $fields['name'] ?? '' ), ENT_QUOTES, 'UTF-8' ) );
+
+		return $slug === (string) $value || $name === strtolower( trim( (string) $value ) ) ? $term : false;
 	}
 
 	/**

@@ -68,6 +68,8 @@ class TCGiant_Sync_Admin {
 			'auto_end_zero_stock', 'disable_image_localization', 'remove_sold_products', 'auto_relist_enabled',
 			'overwrite_title', 'overwrite_desc', 'overwrite_price', 'overwrite_images', 'overwrite_taxonomy',
 			'overwrite_attributes', 'overwrite_weight_dims', 'delete_data_on_uninstall',
+			// A variation's new value added to a global attribute (3.32.0).
+			'add_variation_terms',
 		),
 		'export' => array(
 			'export_category_id', 'export_category_name', 'export_category_typed', 'export_condition_type', 'export_grader_id', 'export_grade_value',

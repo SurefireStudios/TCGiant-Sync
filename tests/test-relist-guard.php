@@ -576,7 +576,7 @@ require $ROOT . '/includes/class-tcgiant-sync-listing-link.php';
 require $ROOT . '/includes/class-tcgiant-sync-mapper.php';
 // How eBay's variations are paired with a variable product's, for the settle
 // and the relist alike.
-require $ROOT . '/includes/class-tcgiant-sync-variations.php';
+require_once $ROOT . '/includes/class-tcgiant-sync-variations.php';
 require $ROOT . '/includes/class-tcgiant-sync-sites.php';
 // A push is watched, so a death names it (3.27.4).
 require $ROOT . '/includes/class-tcgiant-sync-runtime.php';

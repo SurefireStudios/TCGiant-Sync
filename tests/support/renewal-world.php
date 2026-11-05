@@ -364,6 +364,11 @@ class WC_Product_Attribute {
 	public function get_name() { return $this->d['name']; }
 	public function get_position() { return $this->d['position']; }
 	public function is_taxonomy() { return false; }
+	// Read by the import's variation attributes (3.32.0).
+	public function get_id() { return $this->d['id']; }
+	public function get_options() { return $this->d['options']; }
+	public function get_visible() { return $this->d['visible']; }
+	public function get_variation() { return $this->d['variation']; }
 }
 function wc_get_product( $id ) {
 	$id = (int) $id;

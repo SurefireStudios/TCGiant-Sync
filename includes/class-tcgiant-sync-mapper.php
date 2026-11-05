@@ -23,6 +23,12 @@ if ( ! class_exists( 'TCGiant_Sync_Ebay_Live', false ) ) {
 	require_once __DIR__ . '/class-tcgiant-sync-ebay-live.php';
 }
 
+// A variation told by its label and value, whatever WooCommerce keeps it
+// under, as the stock checks tell it (3.32.0).
+if ( ! class_exists( 'TCGiant_Sync_Variations', false ) ) {
+	require_once __DIR__ . '/class-tcgiant-sync-variations.php';
+}
+
 /**
  * TCGiant_Sync_Mapper class
  */
@@ -130,6 +136,20 @@ class TCGiant_Sync_Mapper {
 	const ATTR_CONDITION = 'Condition';
 
 	/**
+	 * The Import Settings choice (Yes '1', or No) that lets an import add a
+	 * value eBay's variations sell to a global attribute of the product's
+	 * that does not have it (3.32.0, keep_variation_attributes()). No unless
+	 * the shop chose Yes: no import before 3.32.0 added one.
+	 */
+	const VARIATION_TERMS_SETTING = 'add_variation_terms';
+
+	/**
+	 * The values of eBay's variations that a product's global attributes did
+	 * not have, as last said in the log, so that it is said once (3.32.0).
+	 */
+	const VARIATION_UNPLACED_META = '_ebay_variation_values_unplaced';
+
+	/**
 	 * What the last full read of a listing saw of the fields eBay's list of
 	 * changes carries (event_signature()), with its end time, when it was
 	 * read and under which import settings (3.28.6). Written by every full
@@ -146,7 +166,9 @@ class TCGiant_Sync_Mapper {
 	 * linked to its listing: this class's and the image localiser's. A change
 	 * to any of them sends every listing down the full path once, at its
 	 * next change, so that the change reaches it. import_status is not here:
-	 * it is for new products only, and the light path makes none.
+	 * it is for new products only, and the light path makes none. Nor is
+	 * VARIATION_TERMS_SETTING (3.32.0): it is for listings with variations
+	 * only, which never take the light path.
 	 */
 	const IMPORT_SETTING_KEYS = array(
 		'bake_shipping_into_price',
@@ -2185,6 +2207,7 @@ class TCGiant_Sync_Mapper {
 		// relationship and leave two rows meaning the same thing. A custom
 		// attribute is replaced only where eBay actually supplies one of the
 		// same name, and anything eBay says nothing about is left alone.
+		// (What the variations are made of is kept below, in its own way.)
 		$merged = $existing_attributes;
 		$claimed = array();
 
@@ -2230,6 +2253,20 @@ class TCGiant_Sync_Mapper {
 		} elseif ( ! $is_new ) {
 			$sync_decisions[] = 'Attributes skipped (WooCommerce won)';
 		}
+
+		// Except the ones the variations are made of (3.32.0, audit item E3).
+		//
+		// They say which variation is which, not what the product is like: a
+		// variation whose attribute the product does not use for variations,
+		// or whose value it does not hold, is one the website cannot offer,
+		// or shows as "Any". Overwrite Attributes held them back like any
+		// item specific, and the merge above dropped them beside a global
+		// attribute of the same label - so a product whose variations were
+		// under the shop's global Colour had them all made again, as "Any
+		// Colour", at each import. They are kept in step with eBay's
+		// variations whatever the setting says, under the product's own
+		// attribute of the same label, global or not.
+		$variation_dims = $is_variable ? $this->keep_variation_attributes( $product, $parent_attr_values, $product_data['variations'], (string) $item_id, $settings, $sync_decisions ) : array();
 
 		// A push of this product that did not finish sent its SKU to eBay, and
 		// this may well be the listing it made: linked to it now, as Link
@@ -2336,7 +2373,9 @@ class TCGiant_Sync_Mapper {
 				$pool_ebay = null !== $pool_hold ? self::ebay_variations( $product_data['variations'] ) : array();
 
 				TCGiant_Sync_Runtime::stage( 'saving its variations' );
-				$this->save_variations( $saved_id, $product_data['variations'] );
+				$said = array();
+				$this->save_variations( $saved_id, $product_data['variations'], $variation_dims, $said );
+				self::say_variation_values( (int) $saved_id, (string) $item_id, $variation_dims, $said );
 
 				if ( null !== $pool_hold ) {
 					TCGiant_Sync_Inventory::settle_pool( $saved_id, $pool_ebay, (string) $item_id, $pool_hold );
@@ -3814,37 +3853,561 @@ class TCGiant_Sync_Mapper {
 	}
 
 	/**
-	 * Build a stable identifier for a variation from its attribute values.
+	 * A label as the import compares it with another (3.32.0): what
+	 * WooCommerce keys a custom attribute by (sanitize_title()), after
+	 * value_key(), so case and spacing do not count.
 	 *
-	 * @param array $attributes Attribute name => value.
-	 * @return string Empty when the variation has no usable attributes.
+	 * @param string $label An attribute's label, or eBay's name.
+	 * @return string '' for a label that names nothing.
 	 */
-	private static function variation_signature( $attributes ) {
-		$normalised = array();
-
-		foreach ( (array) $attributes as $name => $value ) {
-			$key = sanitize_title( (string) $name );
-			if ( '' === $key ) {
-				continue;
-			}
-			$normalised[ $key ] = strtolower( trim( (string) $value ) );
-		}
-
-		if ( empty( $normalised ) ) {
-			return '';
-		}
-
-		ksort( $normalised );
-
-		$parts = array();
-		foreach ( $normalised as $key => $value ) {
-			$parts[] = $key . '=' . $value;
-		}
-
-		return implode( '|', $parts );
+	private static function label_key( $label ) {
+		return sanitize_title( self::value_key( $label ) );
 	}
 
-	private function save_variations( $parent_id, &$variations_data ) {
+	/**
+	 * A value as the import compares it with another (3.32.0): HTML entities
+	 * decoded, as WordPress keeps "&" in a term's name as "&amp;"; runs of
+	 * spaces made one; trimmed; lower case.
+	 *
+	 * @param string $value A value.
+	 * @return string
+	 */
+	private static function value_key( $value ) {
+		$value     = html_entity_decode( (string) $value, ENT_QUOTES, 'UTF-8' );
+		$collapsed = preg_replace( '/\s+/u', ' ', $value );
+		$value     = trim( null !== $collapsed ? $collapsed : (string) preg_replace( '/\s+/', ' ', $value ) );
+
+		return function_exists( 'mb_strtolower' ) ? mb_strtolower( $value, 'UTF-8' ) : strtolower( $value );
+	}
+
+	/**
+	 * A value as the import compares a term's name with eBay's value when
+	 * the term was found by its slug (3.32.0 fix round 1): value_key(), with
+	 * hyphens and underscores between two other characters as spaces -
+	 * "X-Large" is "X Large" - and nothing else loosened. One before or
+	 * after the value is kept (fix round 2): "-1.5" is not "1.5", nor "5-"
+	 * "5". Nor is "1/2" "1-2", nor "Rosé" "Rose".
+	 *
+	 * @param string $value A value.
+	 * @return string
+	 */
+	private static function loose_key( $value ) {
+		$value = self::value_key( $value );
+		$loose = preg_replace( '/(?<=[^\s\-_])[\s\-_]+(?=[^\s\-_])/u', ' ', $value );
+
+		return trim( null !== $loose ? $loose : (string) preg_replace( '/(?<=[^\s\-_])[\s\-_]+(?=[^\s\-_])/', ' ', $value ) );
+	}
+
+	/**
+	 * A global attribute's own value (term) for one of eBay's (3.32.0).
+	 *
+	 * - By name: only a term whose name is the value, case and spacing aside
+	 *   (fix round 1). WordPress finds a name as the database compares it -
+	 *   blind to accents as well as case - and takes the first, so "Rosé"
+	 *   can find "Rose"; every term of that name is then looked through, as
+	 *   wp_insert_term() does before it judges a name taken.
+	 * - By the slug the value gives: only if the term's name is the value
+	 *   give or take case, spacing, hyphens and underscores (loose_key()).
+	 *   "X Large" is "X-Large"; "1/2" gives the slug of "1-2" and is not it,
+	 *   nor "-1.5" "1.5", which share a slug.
+	 *
+	 * @param string $taxonomy The attribute's taxonomy, pa_*.
+	 * @param string $value    eBay's value.
+	 * @param string $how      Set to 'name' or 'slug': how it was found.
+	 * @return WP_Term|null The term, or null for none.
+	 */
+	private static function variation_term( $taxonomy, $value, &$how = '' ) {
+		$how   = '';
+		$value = trim( (string) $value );
+		if ( '' === $value || '' === (string) $taxonomy || ! taxonomy_exists( $taxonomy ) ) {
+			return null;
+		}
+
+		$want = self::value_key( $value );
+		$term = get_term_by( 'name', $value, $taxonomy );
+		if ( is_object( $term ) && self::value_key( (string) $term->name ) !== $want ) {
+			$term  = null;
+			$named = get_terms( array( 'taxonomy' => $taxonomy, 'name' => $value, 'hide_empty' => false ) );
+			foreach ( is_array( $named ) ? $named : array() as $candidate ) {
+				if ( is_object( $candidate ) && self::value_key( (string) $candidate->name ) === $want ) {
+					$term = $candidate;
+					break;
+				}
+			}
+		}
+
+		$how = is_object( $term ) ? 'name' : '';
+		if ( ! is_object( $term ) ) {
+			$term = get_term_by( 'slug', sanitize_title( $value ), $taxonomy );
+			if ( is_object( $term ) && self::loose_key( (string) $term->name ) !== self::loose_key( $value ) ) {
+				$term = null;
+			}
+			$how = is_object( $term ) ? 'slug' : '';
+		}
+
+		return is_object( $term ) ? $term : null;
+	}
+
+	/**
+	 * Add one of eBay's values to a global attribute as a new term (3.32.0),
+	 * with "Add eBay's new variation values to global attributes?" at Yes:
+	 * by wp_insert_term(), which never changes a term already there. One
+	 * added meanwhile under the same name is taken instead.
+	 *
+	 * @param string $taxonomy The attribute's taxonomy, pa_*.
+	 * @param string $value    eBay's value.
+	 * @param bool   $added    Set to true when this call added it.
+	 * @return WP_Term|null The term, or null for none.
+	 */
+	private static function add_variation_term( $taxonomy, $value, &$added ) {
+		$added = false;
+		$made  = wp_insert_term( trim( (string) $value ), $taxonomy );
+		if ( is_wp_error( $made ) ) {
+			// Added meanwhile, by another import of the same values.
+			$id = (int) $made->get_error_data( 'term_exists' );
+		} else {
+			$id    = (int) $made['term_id'];
+			$added = $id > 0;
+		}
+
+		$term = $id > 0 ? get_term( $id, $taxonomy ) : null;
+
+		return is_object( $term ) && ! is_wp_error( $term ) ? $term : null;
+	}
+
+	/**
+	 * A product's terms in a global attribute, slug => name (3.32.0 fix
+	 * round 1), from the term IDs its attribute holds.
+	 *
+	 * @param string $taxonomy The attribute's taxonomy.
+	 * @param array  $ids      Its term IDs.
+	 * @return string[]
+	 */
+	private static function term_slugs( $taxonomy, array $ids ) {
+		$out = array();
+		foreach ( $ids as $id ) {
+			$term = get_term( (int) $id, $taxonomy );
+			if ( is_object( $term ) && ! is_wp_error( $term ) ) {
+				$out[ (string) $term->slug ] = html_entity_decode( (string) $term->name, ENT_QUOTES, 'UTF-8' );
+			}
+		}
+
+		return $out;
+	}
+
+	/**
+	 * What a variation's record (TCGiant_Sync_Variations::SPECIFICS_META)
+	 * says eBay called it under one label, as value_key() (3.32.0 fix round
+	 * 2), or null for no record of that label.
+	 *
+	 * @param mixed  $record The record.
+	 * @param string $label  The label (label_key()).
+	 * @return string|null
+	 */
+	private static function recorded_value( $record, $label ) {
+		foreach ( is_array( $record ) ? $record : array() as $name => $value ) {
+			if ( self::label_key( (string) $name ) === $label ) {
+				return self::value_key( (string) $value );
+			}
+		}
+
+		return null;
+	}
+
+	/**
+	 * Which of the product's terms its variations hold for eBay's values of
+	 * one global attribute (3.32.0 fix round 1, review M1): value_key() of
+	 * eBay's value => the term's slug.
+	 *
+	 * Learnt from the variations the website sells (fix round 2: a retired
+	 * one's SKU and record are history) that hold one of the product's
+	 * terms: one eBay recorded as that value at its last import, or the one
+	 * with the SKU of eBay's variation with that value - unless its record
+	 * names another value, which is eBay having changed the value since,
+	 * not spelt it otherwise (fix round 2). So a term the shop renamed after
+	 * its push (Red to Crimson, its slug still red), or one eBay spells
+	 * otherwise ("Wi-Fi + Cellular" for "Wi-Fi & Cellular"), stays the
+	 * variations' value, and no second term is added beside it. A value
+	 * whose variations hold different terms is none of them.
+	 *
+	 * @param WC_Product $product    The variable product.
+	 * @param string     $taxonomy   The attribute's taxonomy.
+	 * @param string     $label      Its label (label_key()).
+	 * @param array      $variations eBay's, as map_ebay_to_woo() gives them.
+	 * @param string[]   $slugs      The product's terms (term_slugs()).
+	 * @return string[]
+	 */
+	private static function held_terms( $product, $taxonomy, $label, array $variations, array $slugs ) {
+		$found  = array();
+		$by_sku = array();
+		foreach ( (array) $product->get_children() as $child_id ) {
+			$child_id = (int) $child_id;
+			$held     = (string) get_post_meta( $child_id, 'attribute_' . $taxonomy, true );
+			if ( '' === $held || ! isset( $slugs[ $held ] ) || 'publish' !== get_post_status( $child_id ) ) {
+				continue;
+			}
+
+			$was = self::recorded_value( get_post_meta( $child_id, TCGiant_Sync_Variations::SPECIFICS_META, true ), $label );
+			if ( null !== $was ) {
+				$found[ $was ][ $held ] = true;
+			}
+
+			foreach ( array( '_ebay_variation_sku', '_sku' ) as $sku_key ) {
+				$sku = (string) get_post_meta( $child_id, $sku_key, true );
+				if ( '' !== $sku ) {
+					$by_sku[ $sku ][] = array( $held, $was );
+				}
+			}
+		}
+
+		foreach ( $variations as $variation ) {
+			$sku = is_scalar( $variation['sku'] ?? '' ) ? (string) ( $variation['sku'] ?? '' ) : '';
+			if ( '' === $sku || ! isset( $by_sku[ $sku ] ) ) {
+				continue;
+			}
+			foreach ( (array) ( $variation['attributes'] ?? array() ) as $name => $value ) {
+				if ( self::label_key( (string) $name ) !== $label ) {
+					continue;
+				}
+				$key = self::value_key( (string) $value );
+				foreach ( $by_sku[ $sku ] as $entry ) {
+					if ( null === $entry[1] || $entry[1] === $key ) {
+						$found[ $key ][ $entry[0] ] = true;
+					}
+				}
+			}
+		}
+
+		$out = array();
+		foreach ( $found as $value => $held ) {
+			if ( 1 === count( $held ) ) {
+				$out[ (string) $value ] = (string) key( $held );
+			}
+		}
+
+		return $out;
+	}
+
+	/**
+	 * Keep a variable product's attributes in step with eBay's variations
+	 * (3.32.0, audit item E3): each name eBay's variations have is an
+	 * attribute of the product's used for variations, holding every value
+	 * they sell.
+	 *
+	 * The attribute is the product's own with eBay's label, case and spacing
+	 * aside: one it already uses for variations before one it does not, a
+	 * global one before a custom one; or a new custom one, as an import has
+	 * always made. Then each value:
+	 *
+	 * - on a custom attribute, its own value of that name, or eBay's added;
+	 * - on a global attribute, the attribute's own value (term) of that name
+	 *   (variation_term()), given to the product if it did not have it; or,
+	 *   where it has none of that name, the product's term its variations
+	 *   hold for that value (held_terms(), fix round 1). Where the attribute
+	 *   has no such value at all, it is added as a new one only with "Add
+	 *   eBay's new variation values to global attributes?"
+	 *   (VARIATION_TERMS_SETTING) at Yes. At No - the default, as no import
+	 *   before 3.32.0 added one - it is "unplaced": a variation already here
+	 *   that holds one of the product's terms keeps it, and any other holds
+	 *   eBay's value, which none of the attribute's matches, so the website
+	 *   does not offer it until the shop adds the value
+	 *   (save_variations(), say_variation_values()).
+	 *
+	 * Nothing is taken away. No attribute of the product's, nor any value it
+	 * holds, is removed, renamed or moved, and no global attribute or value
+	 * is renamed, changed or deleted: an attribute only gains values and is
+	 * marked as used for variations. A product this import makes has eBay's
+	 * own as custom attributes already, as before.
+	 *
+	 * @param WC_Product $product    The variable product, before its save.
+	 * @param array      $dims       eBay's names => their values, as the
+	 *                               variations have them.
+	 * @param array      $variations eBay's variations (map_ebay_to_woo()).
+	 * @param string     $item_id    The listing.
+	 * @param array      $settings   The shop's settings.
+	 * @param string[]   $decisions  The import's decisions, added to.
+	 * @return array Per label (label_key()): 'key', what the variations'
+	 *               attribute is under; 'label', the attribute's; 'values',
+	 *               eBay's value => what they hold (a term's slug, a custom
+	 *               attribute's own value, or eBay's where no term has it);
+	 *               'unplaced', eBay's values no term has; 'named', eBay's
+	 *               value => the name of the product's term its variations
+	 *               hold for it; 'slugs', the product's terms where any
+	 *               value is unplaced.
+	 */
+	private function keep_variation_attributes( $product, array $dims, array $variations, $item_id, array $settings, array &$decisions ) {
+		$attributes = array();
+		$position   = 0;
+		// As stored, not as a filter may show them: what is handed back is
+		// saved, and an attribute left out of it deleted (fix round 1).
+		foreach ( (array) $product->get_attributes( 'edit' ) as $key => $attribute ) {
+			if ( $attribute instanceof WC_Product_Attribute ) {
+				$attributes[ $key ] = $attribute;
+				$position           = max( $position, (int) $attribute->get_position() + 1 );
+			}
+		}
+
+		$by_label = array();
+		foreach ( $attributes as $key => $attribute ) {
+			$label = self::label_key( $attribute->is_taxonomy() ? (string) wc_attribute_label( (string) $attribute->get_name() ) : (string) $attribute->get_name() );
+			$rank  = ( $attribute->get_variation() ? 2 : 0 ) + ( $attribute->is_taxonomy() ? 1 : 0 );
+			if ( '' !== $label && ( ! isset( $by_label[ $label ] ) || $rank > $by_label[ $label ][1] ) ) {
+				$by_label[ $label ] = array( $key, $rank );
+			}
+		}
+
+		$add     = '1' === (string) ( $settings[ self::VARIATION_TERMS_SETTING ] ?? '0' );
+		$map     = array();
+		$changed = array();
+
+		foreach ( $dims as $name => $values ) {
+			$name  = (string) $name;
+			$label = self::label_key( $name );
+			if ( '' === $label || isset( $map[ $label ] ) ) {
+				continue;
+			}
+
+			if ( isset( $by_label[ $label ] ) ) {
+				$key = $by_label[ $label ][0];
+				// A copy: WooCommerce saves the attributes only when the set
+				// handed to it is not the very one it read, objects and all.
+				$attribute = clone $attributes[ $key ];
+				$touched   = ! $attribute->get_variation();
+			} else {
+				$key       = sanitize_title( $name );
+				$attribute = new WC_Product_Attribute();
+				$attribute->set_id( 0 ); // 0 = custom (non-taxonomy) attribute
+				$attribute->set_name( $name );
+				$attribute->set_options( array() );
+				$attribute->set_position( $position++ );
+				$attribute->set_visible( true );
+				$touched = true;
+			}
+			$attribute->set_variation( true );
+
+			$taxonomy = $attribute->is_taxonomy() ? (string) $attribute->get_name() : '';
+			$options  = array_values( (array) $attribute->get_options() );
+			$held     = array();
+			$unplaced = array();
+			$named    = array();
+
+			$values = array_values( array_unique( array_map( 'strval', (array) $values ) ) );
+			$taken  = array();
+
+			// A global attribute: each of eBay's values its term - by name,
+			// then by slug, then the one the product's variations hold for
+			// it (held_terms()) - and a term to one of eBay's values only
+			// (fix round 2): two on one term are two variations the website
+			// takes for one. A term two values claim alike, or one a value
+			// has already, goes to none of them; such a value is added as a
+			// term of its own at Yes, or left unplaced and said.
+			if ( '' !== $taxonomy ) {
+				$claims = array(
+					'name' => array(),
+					'slug' => array(),
+					'held' => array(),
+				);
+				$terms    = array();
+				$named_by = array();
+				foreach ( $values as $value ) {
+					$how  = '';
+					$term = self::variation_term( $taxonomy, $value, $how );
+					if ( $term ) {
+						$terms[ (string) $term->slug ]            = $term;
+						$claims[ $how ][ (string) $term->slug ][] = $value;
+						$named_by[ $value ]                       = true;
+					}
+				}
+				$learnt = null;
+				foreach ( $values as $value ) {
+					if ( isset( $named_by[ $value ] ) ) {
+						continue;
+					}
+					// The product's own term its variations hold for it,
+					// before any is added (fix round 1, review M1).
+					$learnt = null !== $learnt ? $learnt : self::held_terms( $product, $taxonomy, $label, $variations, self::term_slugs( $taxonomy, $options ) );
+					$slug   = $learnt[ self::value_key( $value ) ] ?? null;
+					if ( null !== $slug ) {
+						$claims['held'][ (string) $slug ][] = $value;
+					}
+				}
+
+				foreach ( $claims as $how => $by_slug ) {
+					foreach ( $by_slug as $slug => $claimants ) {
+						$slug = (string) $slug;
+						if ( 1 !== count( $claimants ) || isset( $taken[ $slug ] ) ) {
+							continue;
+						}
+						$value          = $claimants[0];
+						$taken[ $slug ] = $value;
+						$held[ $value ] = $slug;
+						if ( 'held' === $how ) {
+							$named[ $value ] = true;
+						} elseif ( ! in_array( (int) $terms[ $slug ]->term_id, array_map( 'intval', $options ), true ) ) {
+							$options[] = (int) $terms[ $slug ]->term_id;
+							$touched   = true;
+						}
+					}
+				}
+
+				foreach ( $values as $value ) {
+					if ( isset( $held[ $value ] ) ) {
+						continue;
+					}
+					$made = false;
+					$term = $add ? self::add_variation_term( $taxonomy, $value, $made ) : null;
+					if ( ! $term || isset( $taken[ (string) $term->slug ] ) ) {
+						$unplaced[ $value ] = true;
+						$held[ $value ]     = $value;
+						continue;
+					}
+					if ( $made ) {
+						TCGiant_Sync_Logger::log( sprintf(
+							'Added "%1$s" to your global attribute "%2$s", for the variations of eBay listing %3$s ("Add eBay\'s new variation values to global attributes?" is Yes).',
+							$value,
+							wc_attribute_label( $taxonomy ),
+							$item_id
+						) );
+					}
+					$taken[ (string) $term->slug ] = $value;
+					$held[ $value ]                = (string) $term->slug;
+					if ( ! in_array( (int) $term->term_id, array_map( 'intval', $options ), true ) ) {
+						$options[] = (int) $term->term_id;
+						$touched   = true;
+					}
+				}
+			}
+
+			foreach ( '' === $taxonomy ? $values : array() as $value ) {
+				$own = in_array( $value, $options, true ) ? $value : null;
+				foreach ( null === $own ? $options : array() as $option ) {
+					if ( self::value_key( (string) $option ) === self::value_key( $value ) ) {
+						$own = (string) $option;
+						break;
+					}
+				}
+				if ( null === $own ) {
+					$options[] = $value;
+					$own       = $value;
+					$touched   = true;
+				}
+				$held[ $value ] = $own;
+			}
+
+			if ( $touched ) {
+				$attribute->set_options( $options );
+				$attributes[ $key ] = $attribute;
+				$changed[]          = '' !== $taxonomy ? (string) wc_attribute_label( $taxonomy ) : $name;
+			}
+
+			// The names of the product's terms its variations keep for eBay's
+			// values (fix round 1), for the log.
+			$slugs = '' !== $taxonomy && ( $unplaced || $named ) ? self::term_slugs( $taxonomy, $options ) : array();
+			foreach ( array_keys( $named ) as $value ) {
+				$named[ $value ] = $slugs[ $held[ $value ] ] ?? $held[ $value ];
+			}
+
+			// What WooCommerce keeps a variation's value under: the taxonomy,
+			// or the custom attribute's name as a key.
+			$var_key       = '' !== $taxonomy ? $taxonomy : sanitize_title( (string) $attribute->get_name() );
+			$map[ $label ] = array(
+				'key'      => '' !== $var_key ? $var_key : sanitize_title( $name ),
+				'label'    => '' !== $taxonomy ? (string) wc_attribute_label( $taxonomy ) : $name,
+				'values'   => $held,
+				'unplaced' => $unplaced,
+				'named'    => $named,
+				'taken'    => $taken,
+				'slugs'    => $unplaced ? $slugs : array(),
+			);
+		}
+
+		if ( $changed ) {
+			$product->set_attributes( array_values( $attributes ) );
+			$decisions[] = 'Attributes used for variations brought in line with eBay\'s variations: ' . implode( ', ', $changed );
+		}
+
+		return $map;
+	}
+
+	/**
+	 * Say in the log what the variations' global attributes could not take
+	 * from eBay (3.32.0; fix round 1), once, until it changes
+	 * (VARIATION_UNPLACED_META on the product):
+	 *
+	 * - a value eBay calls otherwise than the product's term its variations
+	 *   keep - a term renamed here, or spelt otherwise on eBay;
+	 * - a value no term has, held as eBay's by a variation, which the website
+	 *   does not offer: only a value some variation was left holding as
+	 *   eBay's, never one every variation of which kept one of the
+	 *   product's terms.
+	 *
+	 * @param int    $product_id The variable product.
+	 * @param string $item_id    The listing.
+	 * @param array  $dims       keep_variation_attributes()' map.
+	 * @param array  $said       save_variations()' account: 'kept' and
+	 *                           'raw', label => eBay's value => the name or
+	 *                           true.
+	 */
+	private static function say_variation_values( $product_id, $item_id, array $dims, array $said ) {
+		$named = (array) ( $said['kept'] ?? array() );
+		foreach ( $dims as $dim ) {
+			foreach ( (array) ( $dim['named'] ?? array() ) as $value => $term_name ) {
+				$named[ (string) $dim['label'] ][ (string) $value ] = (string) $term_name;
+			}
+		}
+		$raw = (array) ( $said['raw'] ?? array() );
+
+		$memo = $named || $raw ? md5( (string) wp_json_encode( array( $named, $raw ) ) ) : '';
+		if ( $memo === (string) get_post_meta( $product_id, self::VARIATION_UNPLACED_META, true ) ) {
+			return;
+		}
+
+		foreach ( $named as $label => $values ) {
+			foreach ( $values as $value => $term_name ) {
+				TCGiant_Sync_Logger::log( sprintf(
+					'eBay listing %1$s calls a value of %2$s "%3$s", which WC #%4$d\'s variations hold as your "%5$s": they keep "%5$s".',
+					$item_id,
+					$label,
+					$value,
+					$product_id,
+					$term_name
+				) );
+			}
+		}
+
+		foreach ( $raw as $label => $values ) {
+			$values = array_map( 'strval', array_keys( $values ) );
+			TCGiant_Sync_Logger::warning( sprintf(
+				'eBay listing %1$s has variations with %2$s %3$s, which your global attribute "%2$s" does not have: WC #%4$d keeps them up to date, but your website does not offer them until you add %5$s to "%2$s" in Products > Attributes, or set "Add eBay\'s new variation values to global attributes?" to Yes in Settings. Until then WooCommerce\'s variation editor shows them as "Any %2$s": saved there, they would match any choice.',
+				$item_id,
+				$label,
+				'"' . implode( '", "', $values ) . '"',
+				$product_id,
+				1 === count( $values ) ? 'it' : 'them'
+			) );
+		}
+
+		if ( '' !== $memo ) {
+			update_post_meta( $product_id, self::VARIATION_UNPLACED_META, $memo );
+		} else {
+			delete_post_meta( $product_id, self::VARIATION_UNPLACED_META );
+		}
+	}
+
+	/**
+	 * Save a variable product's variations from eBay's.
+	 *
+	 * @param int   $parent_id       The variable product.
+	 * @param array $variations_data eBay's variations (map_ebay_to_woo()), by reference.
+	 * @param array $dims            keep_variation_attributes()' map (3.32.0).
+	 * @param array $said            Filled with what say_variation_values()
+	 *                               says (3.32.0 fix round 1): 'kept', label
+	 *                               => eBay's value => the name of the
+	 *                               product's term a variation kept for it;
+	 *                               'raw', label => eBay's value => true, for
+	 *                               a value a variation holds as eBay's.
+	 */
+	private function save_variations( $parent_id, &$variations_data, array $dims = array(), array &$said = array() ) {
 		$product = wc_get_product( $parent_id );
 		$existing_variations = $product->get_children();
 		$processed_ids = array();
@@ -3862,28 +4425,63 @@ class TCGiant_Sync_Mapper {
 		//
 		// The attribute combination is what actually identifies a variation
 		// within a listing, so it is the right thing to match on.
+		//
+		// By label and value, as the stock checks match (3.32.0,
+		// TCGiant_Sync_Variations::signature()): a variation under the shop's
+		// global Colour is pa_colour=black here and Colour: Black on eBay, and
+		// was matched by the first, so it was never found and was made again
+		// at each import. First by what eBay called it at its last import,
+		// recorded on it below, which no term's name or slug can upset; then
+		// by what it holds now, for one imported before 3.32.0 or since
+		// changed here and pushed. A variation answers for one of eBay's at
+		// most, and a published one before one the import retired, as the
+		// stock checks prefer it (TCGiant_Sync_Variations::match()): a copy
+		// 3.30 made that the shop has since put right by hand is kept, and
+		// the one it stood in for stays retired (fix round 1).
 		$settings        = TCGiant_Sync_OAuth::instance()->get_settings();
 		$overwrite_price = isset( $settings['overwrite_price'] ) ? $settings['overwrite_price'] : '1';
 
-		$by_signature = array();
+		$loaded = array();
 		foreach ( $existing_variations as $existing_id ) {
 			$existing = wc_get_product( $existing_id );
-			if ( ! $existing ) {
-				continue;
+			if ( $existing ) {
+				$loaded[ (int) $existing_id ] = $existing;
 			}
-			$sig = self::variation_signature( $existing->get_attributes() );
+		}
+		$published = array_filter( $loaded, function ( $existing ) {
+			return 'publish' === $existing->get_status();
+		} );
+
+		$by_signature = array();
+		$by_own       = array();
+		foreach ( $published + $loaded as $existing_id => $existing ) {
+			$sig = TCGiant_Sync_Variations::signature( TCGiant_Sync_Variations::wc_specifics( $existing ) );
 			if ( '' !== $sig && ! isset( $by_signature[ $sig ] ) ) {
 				$by_signature[ $sig ] = (int) $existing_id;
 			}
+			$own = TCGiant_Sync_Variations::signature( TCGiant_Sync_Variations::wc_specifics( $existing, false ) );
+			if ( '' !== $own && $own !== $sig && ! isset( $by_own[ $own ] ) ) {
+				$by_own[ $own ] = (int) $existing_id;
+			}
 		}
-		
+		$taken    = array();
+		$kept_for = array();
+
 		foreach ( $variations_data as &$var_data ) {
 			$variation_id = 0;
 
-			// WC needs taxonomy slugs or lowercase attribute names as keys.
+			// WC needs taxonomy slugs or lowercase attribute names as keys:
+			// under the product's own attribute for each of eBay's names, as
+			// keep_variation_attributes() found it - a global one's taxonomy,
+			// with its value's slug (3.32.0). A name it did not, as before.
 			$var_attrs = array();
 			foreach ( $var_data['attributes'] as $name => $val ) {
-				$var_attrs[ sanitize_title( $name ) ] = $val;
+				$dim = $dims[ self::label_key( (string) $name ) ] ?? null;
+				if ( null !== $dim ) {
+					$var_attrs[ $dim['key'] ] = $dim['values'][ (string) $val ] ?? $val;
+				} else {
+					$var_attrs[ sanitize_title( $name ) ] = $val;
+				}
 			}
 
 			// eBay's own SKU for the variation, before any suffix below. A stock
@@ -3906,12 +4504,48 @@ class TCGiant_Sync_Mapper {
 
 			// No SKU, or one that belonged to something else: fall back to the
 			// attribute combination, which is stable for the life of the listing.
+			// eBay's own, by label (3.32.0).
 			if ( ! $variation_id ) {
-				$signature = self::variation_signature( $var_attrs );
-				if ( '' !== $signature && isset( $by_signature[ $signature ] ) ) {
-					$variation_id = $by_signature[ $signature ];
-					// Claim it so two incoming variations cannot take the same one.
-					unset( $by_signature[ $signature ] );
+				$signature = TCGiant_Sync_Variations::signature( (array) $var_data['attributes'] );
+				foreach ( '' !== $signature ? array( $by_signature, $by_own ) : array() as $index ) {
+					// Claimed, so two incoming variations cannot take the same one.
+					if ( isset( $index[ $signature ] ) && ! isset( $taken[ $index[ $signature ] ] ) ) {
+						$variation_id = $index[ $signature ];
+						break;
+					}
+				}
+			}
+			if ( $variation_id ) {
+				$taken[ (int) $variation_id ] = true;
+			}
+
+			// A value no term of the global attribute has (unplaced): a
+			// variation found here that holds one of the product's terms
+			// keeps it, and is never given eBay's text, which the website
+			// could not offer (fix round 1, review M1). Not a term another of
+			// eBay's values has, nor one kept for another unplaced value in
+			// this import - two variations the website would take for one -
+			// and not where its record names another value, which is eBay
+			// having changed it since (fix round 2). Any other holds eBay's
+			// value, and the log says so.
+			foreach ( $var_data['attributes'] as $name => $val ) {
+				$label_key = self::label_key( (string) $name );
+				$dim       = $dims[ $label_key ] ?? null;
+				if ( null === $dim || empty( $dim['unplaced'][ (string) $val ] ) ) {
+					continue;
+				}
+				$now  = $variation_id ? (string) get_post_meta( (int) $variation_id, 'attribute_' . $dim['key'], true ) : '';
+				$was  = $variation_id ? self::recorded_value( get_post_meta( (int) $variation_id, TCGiant_Sync_Variations::SPECIFICS_META, true ), $label_key ) : null;
+				$ebay = self::value_key( (string) $val );
+				$pin  = $label_key . '|' . $now;
+				if ( '' !== $now && isset( $dim['slugs'][ $now ] ) && ! isset( $dim['taken'][ $now ] )
+					&& ( null === $was || $was === $ebay )
+					&& ( ! isset( $kept_for[ $pin ] ) || $kept_for[ $pin ] === $ebay ) ) {
+					$kept_for[ $pin ]                               = $ebay;
+					$var_attrs[ $dim['key'] ]                       = $now;
+					$said['kept'][ $dim['label'] ][ (string) $val ] = $dim['slugs'][ $now ];
+				} else {
+					$said['raw'][ $dim['label'] ][ (string) $val ] = true;
 				}
 			}
 
@@ -4043,6 +4677,13 @@ class TCGiant_Sync_Mapper {
 					update_post_meta( $saved_var_id, '_ebay_variation_sku', $ebay_var_sku );
 				} else {
 					delete_post_meta( $saved_var_id, '_ebay_variation_sku' );
+				}
+
+				// What eBay calls it, which the next import and the stock
+				// checks find it by first, whatever it is under here
+				// (3.32.0, TCGiant_Sync_Variations::wc_specifics()).
+				if ( ! empty( $var_data['attributes'] ) ) {
+					update_post_meta( $saved_var_id, TCGiant_Sync_Variations::SPECIFICS_META, (array) $var_data['attributes'] );
 				}
 
 				// Lowered by the units of a sale of it eBay never heard of: eBay

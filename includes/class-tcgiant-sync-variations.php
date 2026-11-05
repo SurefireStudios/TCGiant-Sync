@@ -23,6 +23,12 @@ if ( ! defined( 'ABSPATH' ) ) {
 class TCGiant_Sync_Variations {
 
 	/**
+	 * What eBay called a variation at its last import, Name => Value, as
+	 * TCGiant_Sync_Mapper::save_variations() records it (3.32.0).
+	 */
+	const SPECIFICS_META = '_ebay_variation_specifics';
+
+	/**
 	 * eBay's variations, from GetItem's Item.
 	 *
 	 * eBay's Variation.Quantity is the variation's total - what is left plus
@@ -88,8 +94,9 @@ class TCGiant_Sync_Variations {
 
 	/**
 	 * Name/value pairs as a key both sides can make: by label, never by meta
-	 * key, so 'pa_colour' and 'Colour' compare alike. The same normalising as
-	 * the import's own variation matching.
+	 * key, so 'pa_colour' and 'Colour' compare alike; a value without regard
+	 * to case or to runs of spaces in it (3.32.0: "Navy  Blue" is the term
+	 * Navy Blue). The import's own variation matching uses it too (3.32.0).
 	 *
 	 * @param array $specifics Label => value.
 	 * @return string '' when it identifies nothing - an "Any ..." value.
@@ -98,7 +105,7 @@ class TCGiant_Sync_Variations {
 		$n = array();
 		foreach ( $specifics as $name => $value ) {
 			$key = sanitize_title( (string) $name );
-			$val = strtolower( trim( (string) $value ) );
+			$val = strtolower( trim( (string) preg_replace( '/\s+/', ' ', (string) $value ) ) );
 			if ( '' === $key || '' === $val ) {
 				return '';
 			}
@@ -122,17 +129,20 @@ class TCGiant_Sync_Variations {
 	/**
 	 * A WooCommerce variation's attributes, as label => value.
 	 *
-	 * What eBay called them when this variation was imported, if recorded;
-	 * otherwise read from the variation, a global attribute by its label and
-	 * term name rather than its pa_ slug.
+	 * What eBay called them when this variation was imported, if recorded
+	 * (SPECIFICS_META, from 3.32.0) and $recorded; otherwise read from the
+	 * variation, a global attribute by its label and term name rather than
+	 * its pa_ slug - the name as eBay has it, without the "&amp;" WordPress
+	 * keeps for "&" (3.32.0).
 	 *
 	 * @param WC_Product $variation Variation.
+	 * @param bool       $recorded  Whether what eBay called it comes first.
 	 * @return array
 	 */
-	public static function wc_specifics( $variation ) {
-		$recorded = $variation->get_meta( '_ebay_variation_specifics' );
-		if ( is_array( $recorded ) && $recorded ) {
-			return $recorded;
+	public static function wc_specifics( $variation, $recorded = true ) {
+		$specifics = $recorded ? $variation->get_meta( self::SPECIFICS_META ) : null;
+		if ( is_array( $specifics ) && $specifics ) {
+			return $specifics;
 		}
 
 		$out = array();
@@ -140,7 +150,15 @@ class TCGiant_Sync_Variations {
 			$key = (string) $key;
 			if ( 0 === strpos( $key, 'pa_' ) && taxonomy_exists( $key ) ) {
 				$term = '' !== (string) $value ? get_term_by( 'slug', $value, $key ) : false;
-				$out[ wc_attribute_label( $key ) ] = $term ? $term->name : (string) $value;
+				$name = $term ? html_entity_decode( (string) $term->name, ENT_QUOTES, 'UTF-8' ) : '';
+				// The term only if the value is its slug, or its name, case
+				// aside (3.32.0 fix round 1): get_term_by() runs
+				// sanitize_title() first, which reads a value the import kept
+				// as eBay's - "1/2", with no such term - as the term "1-2".
+				if ( $term && (string) ( ( (array) $term )['slug'] ?? '' ) !== (string) $value && strtolower( $name ) !== strtolower( trim( (string) $value ) ) ) {
+					$term = false;
+				}
+				$out[ wc_attribute_label( $key ) ] = $term ? $name : (string) $value;
 			} else {
 				$out[ $key ] = (string) $value;
 			}
@@ -154,9 +172,12 @@ class TCGiant_Sync_Variations {
 	 *
 	 * In order: the eBay SKU recorded at import, the variation's own SKU, that
 	 * SKU as the import makes it unique (SKU-parentID), then the attribute
-	 * combination by label. Each WooCommerce variation answers for one eBay
-	 * variation at most. A published variation is preferred to one the import
-	 * retired; published duplicates of one combination all answer for it.
+	 * combination by label - what eBay called it at import, or, with none
+	 * answering to that, what it holds now (3.32.0: since changed here and
+	 * pushed, say, before the import that records it again). Each
+	 * WooCommerce variation answers for one eBay variation at most. A
+	 * published variation is preferred to one the import retired; published
+	 * duplicates of one combination all answer for it.
 	 *
 	 * @param WC_Product $parent Variable product.
 	 * @param array[]    $ebay   From from_item().
@@ -166,6 +187,7 @@ class TCGiant_Sync_Variations {
 		$by_ebay_sku = array();
 		$by_wc_sku   = array();
 		$by_sig      = array();
+		$by_own      = array();
 		$live        = array();
 
 		foreach ( (array) $parent->get_children() as $id ) {
@@ -191,6 +213,13 @@ class TCGiant_Sync_Variations {
 			if ( '' !== $sig ) {
 				$by_sig[ $sig ][] = $id;
 			}
+
+			// Only where it differs from what was recorded: a variation
+			// with no record answers by its attributes above, as before.
+			$now = self::signature( self::wc_specifics( $child, false ) );
+			if ( '' !== $now && $now !== $sig ) {
+				$by_own[ $now ][] = $id;
+			}
 		}
 
 		$claimed   = array();
@@ -207,6 +236,9 @@ class TCGiant_Sync_Variations {
 			}
 			$sig  = self::signature( $ev['specifics'] );
 			$same = '' !== $sig ? ( $by_sig[ $sig ] ?? array() ) : array();
+			if ( '' !== $sig && ! array_diff( $same, $claimed ) ) {
+				$same = $by_own[ $sig ] ?? array();
+			}
 			if ( ! $ids ) {
 				$ids = $same;
 			} elseif ( ! array_filter( array_diff( $ids, $claimed ), function ( $id ) use ( $live ) {

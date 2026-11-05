@@ -682,7 +682,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 				<div class="tc-section">
 					<h3 class="tc-section-title"><?php esc_html_e( 'Data Mapping (Re-imports)', 'tcgiant-sync' ); ?></h3>
 					<p class="tc-hint" style="margin-bottom:12px;"><?php esc_html_e( 'When an existing product is re-synced, which platform wins? Stock is always updated from eBay.', 'tcgiant-sync' ); ?></p>
-					<p class="tc-hint" style="margin-bottom:12px;"><?php esc_html_e( 'Global attributes you have set in WooCommerce are never overwritten, whatever these are set to. Overwrite Attributes only governs the plain text ones eBay sends as item specifics.', 'tcgiant-sync' ); ?></p>
+					<p class="tc-hint" style="margin-bottom:12px;"><?php esc_html_e( 'Global attributes you have set in WooCommerce are never overwritten, whatever these are set to: a listing\'s variations can only add their values to a product\'s attributes and mark them as used for variations (see Overwrite Attributes). Overwrite Attributes only governs the plain text ones eBay sends as item specifics.', 'tcgiant-sync' ); ?></p>
 					<?php
 					$mapping_fields = array(
 						'overwrite_title'       => array( 'label' => __( 'Overwrite Title', 'tcgiant-sync' ), 'default' => '0' ),
@@ -707,8 +707,19 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						<?php if ( 'overwrite_desc' === $field_key ) : ?>
 							<p class="tc-hint"><?php esc_html_e( 'A listing sent with a TCGiant listing template brings back only its description, not the template around it, and only what the template\'s cleaning kept of it: no videos, no links off eBay, no pictures not served over https, and its shortcodes as what they showed. So while the listing still holds what TCGiant sent it, the product\'s own description is left as it is.', 'tcgiant-sync' ); ?></p>
 						<?php endif; ?>
+						<?php if ( 'overwrite_attributes' === $field_key ) : ?>
+							<p class="tc-hint"><?php esc_html_e( 'The attributes a listing\'s variations are made of, such as Color or Size, are always kept in step with eBay, whatever this is set to: each value eBay\'s variations sell is added to the product\'s attribute of that name, a global one included, so your website can offer it. So a value you take off a product here comes back at its next sync while its eBay listing still sells it. A variation that holds one of your global attribute\'s values keeps it, though you have renamed it or eBay spells it otherwise.', 'tcgiant-sync' ); ?></p>
+						<?php endif; ?>
 					</div>
 					<?php endforeach; ?>
+					<div class="tc-field">
+						<label class="tc-label"><?php esc_html_e( 'Add eBay\'s new variation values to global attributes?', 'tcgiant-sync' ); ?></label>
+						<div class="tc-radio-group">
+							<label><input type="radio" name="tcgiant_sync_ebay_settings[add_variation_terms]" value="1" <?php checked( $settings['add_variation_terms'] ?? '0', '1' ); ?>> Yes</label>
+							<label><input type="radio" name="tcgiant_sync_ebay_settings[add_variation_terms]" value="0" <?php checked( $settings['add_variation_terms'] ?? '0', '0' ); ?>> No</label>
+						</div>
+						<p class="tc-hint"><?php esc_html_e( 'For a product whose variations use one of your global attributes (Products > Attributes). When eBay sells a variation with a value that attribute does not have yet, Yes adds the value to the attribute, so your website can offer the variation. No leaves your global attributes as they are: the variation is kept up to date, but your website does not offer it until you add the value yourself, and the log says which. Either way, no global attribute or value is ever renamed, changed or removed, and products new from eBay keep eBay\'s values in attributes of their own, as before.', 'tcgiant-sync' ); ?></p>
+					</div>
 				</div>
 
 				<!-- On Uninstall -->
