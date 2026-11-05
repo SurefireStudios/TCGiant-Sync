@@ -642,7 +642,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 							<label><input type="radio" name="tcgiant_sync_ebay_settings[enable_order_import]" value="1" <?php checked( $settings['enable_order_import'] ?? '0', '1' ); ?>> Yes</label>
 							<label><input type="radio" name="tcgiant_sync_ebay_settings[enable_order_import]" value="0" <?php checked( $settings['enable_order_import'] ?? '0', '0' ); ?>> No</label>
 						</div>
-						<p class="tc-hint"><?php esc_html_e( 'When enabled, eBay orders are imported as WooCommerce orders every 15 minutes. Tracking numbers are pushed back to eBay when orders are marked "Completed".', 'tcgiant-sync' ); ?></p>
+						<p class="tc-hint"><?php esc_html_e( 'When enabled, eBay orders are imported as WooCommerce orders every 15 minutes: one the buyer has not paid for yet as Pending payment, a paid one as Processing. Each follows eBay when it is paid or cancelled, unless you have changed its status yourself. Tracking numbers are pushed back to eBay when orders are marked "Completed".', 'tcgiant-sync' ); ?></p>
 					</div>
 					<div class="tc-field">
 						<label class="tc-label"><?php esc_html_e( 'Auto-end listing when stock reaches 0?', 'tcgiant-sync' ); ?></label>

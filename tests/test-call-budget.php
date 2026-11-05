@@ -277,10 +277,35 @@ function set_transient( $transient, $value, $expiration = 0 ) {
 
 // ─── eBay and the relay ───────────────────────────────────────────────────────
 
-/** eBay: every Trading call answered Success, in its own envelope. */
+/**
+ * eBay: every Trading call answered Success, in its own envelope - unless
+ * $ANSWERS holds the next answer (3.31.0): 503, 429, 'transport' (nothing
+ * came back) or 'token' (eBay refusing an expired token). A REST call is
+ * answered in JSON. $DURING runs while a request is out.
+ */
+$ANSWERS = array();
+$DURING  = null;
 function wp_remote_request( $url, $args ) {
 	$call             = $args['headers']['X-EBAY-API-CALL-NAME'] ?? '';
-	$GLOBALS['EBAY'][] = $call;
+	$GLOBALS['EBAY'][] = '' !== $call ? $call : strtoupper( (string) ( $args['method'] ?? 'GET' ) ) . ' ' . preg_replace( '#^https://api\.ebay\.com/#', '', (string) strtok( $url, '?' ) );
+	if ( is_callable( $GLOBALS['DURING'] ) ) {
+		$during = $GLOBALS['DURING'];
+		$during();
+	}
+	$answer = array_shift( $GLOBALS['ANSWERS'] );
+	if ( 'transport' === $answer ) {
+		return new WP_Error( 'http_request_failed', 'cURL error 28: Operation timed out after 45001 milliseconds' );
+	}
+	if ( 503 === $answer || 429 === $answer ) {
+		return array( 'body' => '', 'response' => array( 'code' => $answer ), 'headers' => array() );
+	}
+	if ( '' === $call ) {
+		$get = 'GET' === strtoupper( (string) ( $args['method'] ?? 'GET' ) );
+		return array( 'body' => $get ? '{"sku":"SKU-1"}' : '', 'response' => array( 'code' => $get ? 200 : 204 ), 'headers' => array() );
+	}
+	if ( 'token' === $answer ) {
+		return array( 'body' => '<?xml version="1.0" encoding="UTF-8"?><' . $call . 'Response xmlns="urn:ebay:apis:eBLBaseComponents"><Ack>Failure</Ack><Errors><ShortMessage>Expired IAF token.</ShortMessage><LongMessage>IAF token supplied is expired.</LongMessage><ErrorCode>21917053</ErrorCode></Errors></' . $call . 'Response>', 'response' => array( 'code' => 200 ), 'headers' => array() );
+	}
 	$body = '<?xml version="1.0" encoding="UTF-8"?><' . $call . 'Response xmlns="urn:ebay:apis:eBLBaseComponents"><Timestamp>' . ( $GLOBALS['EBAY_TS'] ?? '2026-10-25T10:00:00.000Z' ) . '</Timestamp><Ack>Success</Ack>'
 		. ( 'GetItem' === $call ? '<Item><ItemID>110000000001</ItemID><Quantity>3</Quantity></Item>' : '' )
 		. '</' . $call . 'Response>';
@@ -299,6 +324,9 @@ function wp_remote_retrieve_response_code( $response ) { return $response['respo
 function wp_remote_retrieve_body( $response ) { return $response['body']; }
 function wp_remote_retrieve_header( $response, $header ) { return ''; }
 function wp_remote_retrieve_headers( $response ) { return $response['headers']; }
+function wp_generate_password( $length = 12, $special = true ) { return str_repeat( 'x', $length ); }
+function esc_xml( $text ) { return htmlspecialchars( (string) $text, ENT_XML1 ); }
+function add_query_arg( $args, $url ) { return $url . '?' . http_build_query( $args ); }
 
 class TCGiant_Sync_Logger {
 	public static function log( $message, $level = 'info' ) { $GLOBALS['LOG'][] = array( $level, $message ); }
@@ -375,6 +403,20 @@ function logged( $needle ) {
 		}
 	}
 	return false;
+}
+
+// One of several PHP processes counting into the same database at once, as a
+// host's cron, Action Scheduler and web requests do (3.31.0). Run by the
+// concurrency check below, never on its own.
+if ( isset( $argv[1] ) && 'worker' === $argv[1] ) {
+	$wpdb = new Harness_Wpdb( $WORLD . '/site.sqlite' );
+	$EXT  = true;
+	$api  = TCGiant_Sync_API::instance();
+	for ( $i = 0; $i < (int) $argv[2]; $i++ ) {
+		$api->get_item( '110000000001' );
+	}
+	echo '@@SENT@@' . count( $EBAY );
+	exit( 0 );
 }
 
 foreach ( array( 'Redis, Memcached, LiteSpeed, WordPress.com' => true, 'no persistent object cache' => false ) as $host => $ext ) {
@@ -627,6 +669,145 @@ set_transient( 'tcgiant_relay_budget_' . gmdate( 'Y-m-d' ), array( 'remaining' =
 $LOG = array();
 check( 'a relay limit of 45,000, the fleet at its 36,000: refused, the log giving 36000/45000', array( blocked( $api->get_item( '110000000001' ) ), logged( 'eBay daily API budget reached (36000/45000 calls used today by every shop together, 80% ceiling).' ) ), array( true, true ) );
 
+echo "\n3.31.0: EVERY CALL THAT REACHES EBAY IS COUNTED ONCE, ON THE DAY IT WAS SENT\n" . str_repeat( '=', 124 ) . "\n";
+
+$GLOBALS['RELAY_TAKES'] = 0;
+foreach ( array( 'Redis, Memcached, LiteSpeed, WordPress.com' => true, 'no persistent object cache' => false ) as $host => $ext ) {
+	echo "  -- $host\n";
+	fresh_site( $ext );
+	$api = TCGiant_Sync_API::instance();
+
+	// What eBay is meant to count against the 50,000: Trading calls, each
+	// time one is sent.
+	new_request();
+	$ANSWERS = array( 503 );
+	$api->get_item( '110000000001' );
+	check( "[$host] a GetItem answered 503 and sent again: two requests reached eBay, two counted", array( count( $EBAY ), $api->get_daily_call_count() ), array( 2, 2 ) );
+	$ANSWERS = array( 503, 503, 503 );
+	$api->get_item( '110000000001' );
+	check( '  answered 503 three times: three sent, three counted', array( count( $EBAY ), $api->get_daily_call_count() ), array( 5, 5 ) );
+	$ANSWERS = array( 'transport' );
+	$api->get_item( '110000000001' );
+	check( '  a request that timed out, then went through: both counted - eBay may have had the first', array( count( $EBAY ), $api->get_daily_call_count() ), array( 7, 7 ) );
+	$ANSWERS = array( 429 );
+	$api->get_item( '110000000001' );
+	check( '  turned away with 429: one sent, one counted', array( count( $EBAY ), $api->get_daily_call_count() ), array( 8, 8 ) );
+
+	// An expired token: eBay refuses the call, the relay renews the token,
+	// and the call goes again. Two calls reached eBay; the refresh itself
+	// went to the relay.
+	$RELAY   = array();
+	$ANSWERS = array( 'token' );
+	$api->get_item( '110000000001' );
+	check( '  a call eBay refused for an expired token, the token renewed, the call sent again: 2 more', array( count( $EBAY ), $api->get_daily_call_count(), count( $RELAY ) ), array( 10, 10, 1 ) );
+	check( '    and the renewal reported the count as it stood when it was sent', $RELAY[0]['api_calls_today'] ?? null, 9 );
+
+	// A picture upload is a Trading call too.
+	$picture = $WORLD . '/picture.jpg';
+	file_put_contents( $picture, 'not really a jpeg' );
+	$api->upload_picture( $picture );
+	check( '  UploadSiteHostedPictures: counted once', array( end( $EBAY ), $api->get_daily_call_count() ), array( 'UploadSiteHostedPictures', 11 ) );
+	$ANSWERS = array( 503 );
+	$api->upload_picture( $picture );
+	check( '    sent twice after a 503: counted twice', $api->get_daily_call_count(), 13 );
+	@unlink( $picture );
+
+	// What eBay does not count against it: the REST APIs, which have limits
+	// of their own, and the token refresh, which goes to the relay.
+	$sent = count( $EBAY );
+	$api->get_inventory_item( 'SKU-1' );
+	$api->request( 'sell/inventory/v1/inventory_item/SKU-1', 'PUT', array( 'availability' => array() ) );
+	check( '  a REST GET and a REST PUT reach eBay and are not counted', array( count( $EBAY ) - $sent, $api->get_daily_call_count() ), array( 2, 13 ) );
+	$RELAY = array();
+	refresh();
+	check( '  nor is a token refresh, sent to the relay and never to eBay', array( count( $RELAY ), count( $EBAY ) - $sent, $api->get_daily_call_count() ), array( 1, 2, 13 ) );
+	check( '    which reports the count itself', array( $RELAY[0]['api_calls_today'] ?? null, $RELAY[0]['api_calls_date'] ?? null ), array( 13, gmdate( 'Y-m-d' ) ) );
+
+	// A stale copy of the row in the object cache - the options cache holds
+	// what get_option() last saw, a persistent one across requests - is
+	// never what is read or reported.
+	$GLOBALS['CACHE']['options'][ 'tcgiant_sync_api_calls_' . gmdate( 'Y-m-d' ) ] = '3';
+	$GLOBALS['CACHE']['options']['notoptions'] = array( 'tcgiant_sync_api_calls_' . gmdate( 'Y-m-d' ) => true );
+	new_request();
+	$RELAY = array();
+	refresh();
+	check( '  a stale 3 cached for the row: the count read, and reported, is the table\'s 13', array( $api->get_daily_call_count(), $RELAY[0]['api_calls_today'] ?? null ), array( 13, 13 ) );
+}
+
+// The UTC day boundary.
+fresh_site( true );
+$api     = TCGiant_Sync_API::instance();
+$day     = gmmktime( 0, 0, 0, (int) gmdate( 'n' ), (int) gmdate( 'j' ), (int) gmdate( 'Y' ) );
+$before  = gmdate( 'Y-m-d', $day - 1 );
+$API_NOW = $day - 1; // 23:59:59
+$DURING  = function () { $GLOBALS['API_NOW'] += 2; }; // answered after midnight
+$api->get_item( '110000000001' );
+$DURING  = null;
+check( 'a call sent at 23:59:59 and answered after midnight is counted on the day it was sent', array( counter_row( $before ), counter_row( gmdate( 'Y-m-d', $day ) ) ), array( '1', null ) );
+$API_NOW = null;
+
+// A refresh whose count is read at 23:59:59 and whose date at 00:00:00 sent
+// the old day's whole count as the new day's - the relay held the site to
+// it, against its allowance, until the next refresh.
+fresh_site( true );
+set_counter_row( 1200, 'tcgiant_sync_api_calls_' . $before );
+set_counter_row( 3, 'tcgiant_sync_api_calls_' . gmdate( 'Y-m-d', $day ) );
+$API_NOW   = $day - 1;
+$OAUTH_NOW = $day;
+$RELAY     = array();
+refresh();
+check( 'a refresh across midnight sends the count of the day it names: 3 for the new day, not yesterday\'s 1,200', array( $RELAY[0]['api_calls_today'] ?? null, $RELAY[0]['api_calls_date'] ?? null ), array( 3, gmdate( 'Y-m-d', $day ) ) );
+$API_NOW   = null;
+$OAUTH_NOW = null;
+
+// Several PHP processes counting at once - cron, Action Scheduler, web
+// requests - each with its own persistent object cache.
+fresh_site( true );
+$workers = 4;
+$each    = 150;
+$procs   = array();
+$pipes   = array();
+for ( $w = 0; $w < $workers; $w++ ) {
+	$procs[ $w ] = proc_open( array( PHP_BINARY, __FILE__, 'worker', (string) $each ), array( 1 => array( 'pipe', 'w' ), 2 => array( 'pipe', 'w' ) ), $pipes[ $w ] );
+}
+$sent = 0;
+foreach ( $procs as $w => $proc ) {
+	$out = stream_get_contents( $pipes[ $w ][1] );
+	stream_get_contents( $pipes[ $w ][2] );
+	fclose( $pipes[ $w ][1] );
+	fclose( $pipes[ $w ][2] );
+	proc_close( $proc );
+	$sent += preg_match( '/@@SENT@@(\d+)/', (string) $out, $m ) ? (int) $m[1] : 0;
+}
+check( sprintf( '%d processes making %d calls each, all at once: %d sent, %d counted', $workers, $each, $workers * $each, $workers * $each ), array( $sent, $api->get_daily_call_count() ), array( $workers * $each, $workers * $each ) );
+
+echo "\nTHE RELAY SAYS THIS SITE HAS USED ITS OWN ALLOWANCE (FIX ROUND 1)\n" . str_repeat( '=', 124 ) . "\n";
+
+// The relay holds each site to its own daily allowance (1,000 calls free,
+// 10,000 paid). Past it, a refresh says the fleet's budget is spent, and
+// says why: site_daily_cap and site_capped.
+fresh_site( true );
+$api = TCGiant_Sync_API::instance();
+set_counter_row( 1004 );
+$REPLY = array( 'access_token' => 'fresh-token', 'expires_in' => 7200, 'remaining_budget' => 0, 'global_api_calls' => 50000, 'daily_limit' => 50000, 'site_daily_cap' => 1000, 'site_capped' => true );
+refresh();
+check( 'a refresh that says this site is capped: kept with the relay\'s figures', array( snapshot()['site_cap'] ?? null, snapshot()['site_capped'] ?? null ), array( 1000, true ) );
+$LOG  = array();
+$sent = count( $EBAY );
+check( '  an ordinary GetItem is refused, unsent', array( blocked( $api->get_item( '110000000001' ) ), count( $EBAY ) - $sent ), array( true, 0 ) );
+check( '  and the log says it is this site\'s own allowance, until 00:00 UTC', logged( 'eBay daily API budget reached: this site has used its own daily allowance of 1000 eBay calls (1004 calls today). Blocking GetItem until 00:00 UTC.' ), true );
+check( '  not that every shop together has used theirs', logged( 'by every shop together' ), false );
+check( '  a sale\'s stock push still goes', is_wp_error( $api->with_stock_priority( function () use ( $api ) { return $api->get_item( '110000000001' ); } ) ), false );
+
+// Not capped, or a relay that does not say: the message as it was.
+fresh_site( true );
+$api = TCGiant_Sync_API::instance();
+$REPLY = array( 'access_token' => 'fresh-token', 'expires_in' => 7200, 'remaining_budget' => 9000, 'global_api_calls' => 41000, 'daily_limit' => 50000, 'site_daily_cap' => 10000, 'site_capped' => false );
+refresh();
+$LOG = array();
+$api->get_item( '110000000001' );
+check( 'the fleet past its ceiling, this site within its allowance: every shop together, as before', array( snapshot()['site_capped'] ?? null, logged( 'used today by every shop together, 80% ceiling). Blocking GetItem' ), logged( 'its own daily allowance' ) ), array( false, true, false ) );
+
 echo "\nWHAT READS THE COUNTER, AND WHAT IS LEFT OF IT\n" . str_repeat( '=', 124 ) . "\n";
 
 $src = '';
@@ -648,7 +829,9 @@ $api->with_stock_priority( function () use ( $api ) { return $api->get_item( '11
 check( 'F1 eBay\'s Timestamp on an answer is kept, the latest in the request: an earlier one never moves it back', array( $tcg_first, $tcg_earlier, $api->ebay_time() ), array( gmmktime( 10, 0, 0, 10, 25, 2026 ), gmmktime( 10, 0, 0, 10, 25, 2026 ), gmmktime( 11, 30, 0, 10, 25, 2026 ) ) );
 unset( $GLOBALS['EBAY_TS'] );
 
-check( 'the counter is named once, and read and written by that name', array( substr_count( $src, "'tcgiant_sync_api_calls_'" ), substr_count( $api_src, 'self::CALL_COUNT_PREFIX . gmdate( \'Y-m-d\' )' ), substr_count( $api_src, 'self::CALL_COUNT_PREFIX . $date' ) ), array( 1, 1, 2 ) );
+// Read for a day it is given since 3.31.0 - the token refresh names the day it
+// reports - so every use goes by $date.
+check( 'the counter is named once, and read and written by that name', array( substr_count( $src, "'tcgiant_sync_api_calls_'" ), substr_count( $api_src, 'self::CALL_COUNT_PREFIX . gmdate( \'Y-m-d\' )' ), substr_count( $api_src, 'self::CALL_COUNT_PREFIX . $date' ) ), array( 1, 0, 3 ) );
 // The daily summary and the REST status read a setting nothing ever wrote,
 // and said 0 (3.28.0).
 check( 'the daily summary and GET /sync/status give the day\'s count itself', array( substr_count( $src, "settings['api_calls_today']" ), substr_count( (string) file_get_contents( dirname( __DIR__ ) . '/includes/class-tcgiant-sync-cron.php' ), '$api_calls = TCGiant_Sync_API::instance()->get_daily_call_count();' ), substr_count( (string) file_get_contents( dirname( __DIR__ ) . '/includes/class-tcgiant-sync-rest.php' ), "'api_calls_today' => TCGiant_Sync_API::instance()->get_daily_call_count()," ) ), array( 0, 1, 1 ) );

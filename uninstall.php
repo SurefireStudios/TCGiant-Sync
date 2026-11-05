@@ -208,6 +208,8 @@ $tcgiant_options = array(
 	'tcgiant_sync_weekly_retry_since', // The weekly full sync's first refusal, 3.30.1.
 	'tcgiant_sync_env_verdict',        // Staging check as last recorded, 3.28.0.
 	'tcgiant_sync_live_confirmed',     // "This is my live shop", 3.28.0.
+	'tcgiant_sync_bound_address',      // The addresses the eBay connection belongs to, 3.31.0.
+	'tcgiant_sync_orders_follow',      // Open eBay orders followed by their OrderID, 3.31.0.
 	'tcgiant_sync_push_failures',      // Stock pushes eBay never took, 3.28.0.
 	'tcgiant_sync_push_switch',        // What the 3.28.0 upgrade did about stock pushes, and its notice.
 	'tcgiant_sync_disconnected_at',    // When the eBay connection was last taken away, 3.28.0.
@@ -263,8 +265,9 @@ foreach ( $tcgiant_options as $tcgiant_option ) {
 // Per-job item lists, cached eBay business policies, the leftover-photo
 // check's findings and its holds, the large-copy removal's holds, the
 // day's eBay call counts (3.28.0's, and the transients 3.27 kept them in),
-// when each stock check waiting to try again was last joined (3.28.0), and
-// the listings' categories the delta remembers (3.28.4) use dynamic names.
+// when each stock check waiting to try again was last joined (3.28.0), the
+// listings' categories the delta remembers (3.28.4), and the moved
+// addresses the administrator was emailed about (3.31.0) use dynamic names.
 // phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 $wpdb->query(
 	"DELETE FROM {$wpdb->options}
@@ -274,6 +277,7 @@ $wpdb->query(
 	    OR option_name LIKE 'tcgiant_sync_photo_cleanup_lock_%'
 	    OR option_name LIKE 'tcgiant_sync_size_trim_lock_%'
 	    OR option_name LIKE 'tcgiant_sync_api_calls_%'
+	    OR option_name LIKE 'tcgiant_sync_move_mailed_%'
 	    OR option_name LIKE 'tcgiant_sync_settle_joined_%'
 	    OR option_name LIKE 'tcgiant_sync_category_memory_%'
 	    OR option_name LIKE '_transient_tcgiant_api_calls_%'

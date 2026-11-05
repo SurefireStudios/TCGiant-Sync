@@ -24,6 +24,13 @@
  * only reads from eBay carries on as normal: a copy still imports, and still
  * takes sold items off.
  *
+ * Since 3.31.0 the eBay connection is also bound to the address it was made
+ * at. A copy whose address no pattern recognises - a backup restored under
+ * another domain, a host's temporary address - is still somewhere else than
+ * the shop it was copied from, and sends nothing until an administrator says
+ * it is the live shop (moved()). It cannot protect a copy made before the
+ * update: that copy binds itself to its own address at its first request.
+ *
  * It is required directly from tcgiant-sync.php, before the autoloader exists,
  * so it uses nothing that is not already loaded when plugins are.
  *
@@ -58,6 +65,69 @@ final class TCGiant_Sync_Environment {
 	 * would then confirm itself.
 	 */
 	const CONFIRMED_OPTION = 'tcgiant_sync_live_confirmed';
+
+	/**
+	 * The addresses the eBay connection belongs to (3.31.0).
+	 *
+	 * Recorded when an account is connected, when "This is my live shop" is
+	 * pressed, and - for a shop already connected when it updates to 3.31.0 -
+	 * at its first request after the update. A copy of the shop carries this
+	 * with its database, and its own address is not on it, so it sends
+	 * nothing to eBay until an administrator says it is the live shop: a
+	 * copy at an address none of the patterns above recognise, such as a
+	 * backup restored under another domain, included.
+	 *
+	 * Each address is kept as a hash, to compare, and base64-encoded, to name
+	 * it in the notice. A migration tool's search-and-replace rewrites the old
+	 * domain wherever it finds it written out, and a plain address here would
+	 * become the copy's own - binding the copy to itself. Neither form has a
+	 * dot in it for the search to find.
+	 *
+	 * Autoloaded: boot() reads it on every request.
+	 */
+	const BOUND_OPTION = 'tcgiant_sync_bound_address';
+
+	/**
+	 * Addresses kept on that list, the most recent first. A shop that moves
+	 * keeps its earlier addresses, so moving back needs no second press.
+	 */
+	const BOUND_KEEP = 10;
+
+	/**
+	 * Hosts' temporary and staging domains (3.31.0, fix round 1): addresses a
+	 * shop's staging copy lives at, which no pattern recognises. A copy there
+	 * that updates to 3.31.0 before the live shop binds itself to its own
+	 * address, and a push of its database to live carries that list over -
+	 * see rebind_after_staging_push().
+	 */
+	const TEMPORARY_HOSTS = array(
+		'cloudwaysapps.com',    // Cloudways
+		'flywheelstaging.com',  // Flywheel
+		'flywheelsites.com',    // Flywheel
+		'mystagingwebsite.com', // Pressable
+		'myftpupload.com',      // GoDaddy
+		'instawp.xyz',          // InstaWP
+		'wpcomstaging.com',     // WordPress.com
+		'pantheonsite.io',      // Pantheon
+		'kinsta.cloud',         // Kinsta
+		'wpengine.com',         // WP Engine
+		'wpenginepowered.com',  // WP Engine
+	);
+
+	/**
+	 * An address the administrator has been emailed about: one row each,
+	 * named this and the address's hash, never autoloaded (3.31.0, fix round
+	 * 2). The row is the lock - see mail_move().
+	 */
+	const MOVE_MAILED_PREFIX = 'tcgiant_sync_move_mailed_';
+
+	/**
+	 * What a staging-push rebind replaced in this request, for the log line
+	 * written once the logger has loaded (fix round 2): array( was, now ).
+	 *
+	 * @var array|null
+	 */
+	private static $rebound = null;
 
 	/**
 	 * How many changes were held back in the last day, for the notice.
@@ -141,6 +211,33 @@ final class TCGiant_Sync_Environment {
 		}
 
 		self::$reason = self::copy_reason();
+
+		// The live shop, with the list a staging copy recorded for itself at
+		// the update and then pushed here with its database (fix round 1):
+		// bound to this address instead, and live.
+		if ( 'address:moved' === self::$reason && self::rebind_after_staging_push() ) {
+			self::$reason = self::copy_reason();
+
+			// The logger loads with the plugin's autoloader, after this file:
+			// the line is written on init (fix round 2).
+			if ( function_exists( 'add_action' ) ) {
+				add_action( 'init', array( __CLASS__, 'log_rebind' ) );
+			}
+		}
+
+		// A site no longer at the address its connection was made at: its
+		// administrator is told by email too, once an address (fix round 1).
+		if ( 'address:moved' === self::$reason && function_exists( 'add_action' ) ) {
+			add_action( 'init', array( __CLASS__, 'mail_move' ) );
+		}
+
+		// A shop already connected when it updated to 3.31.0 has no address
+		// on record: it is bound to the one it has now - only when nothing
+		// else says it is a copy, so a copy is never bound to itself.
+		if ( '' === self::$reason ) {
+			self::bind_if_unbound();
+		}
+
 		define( 'TCGIANT_SYNC_IS_STAGING', '' !== self::$reason );
 	}
 
@@ -199,7 +296,7 @@ final class TCGiant_Sync_Environment {
 		$host = preg_replace( '/^www\./', '', $parts['host'] );
 		$port = ( $parts['port'] && ! in_array( $parts['port'], array( 80, 443 ), true ) ) ? ':' . $parts['port'] : '';
 
-		return $host . $port . strtolower( rtrim( $parts['path'], '/' ) );
+		return $host . $port . self::lower( rtrim( $parts['path'], '/' ) );
 	}
 
 	/**
@@ -277,7 +374,7 @@ final class TCGiant_Sync_Environment {
 		}
 
 		$segments = explode( '/', trim( $parts['path'], '/' ) );
-		$first    = strtolower( $segments[0] );
+		$first    = self::lower( $segments[0] );
 		if ( '' !== $first && preg_match( '/^(' . self::COPY_WORDS . ')\d*$/', $first, $m ) ) {
 			return 'path:' . $m[1];
 		}
@@ -289,13 +386,30 @@ final class TCGiant_Sync_Environment {
 	 * Why this site should not send changes to eBay, worked out afresh.
 	 *
 	 * In order: wp-config.php; WordPress's own environment type, which only an
-	 * edit to wp-config.php or the host's settings can change; and then the
-	 * address, which an administrator can overrule for this one address with
-	 * the "This is my live shop" button.
+	 * edit to wp-config.php or the host's settings can change; the address,
+	 * which an administrator can overrule for this one address with the "This
+	 * is my live shop" button; and last, whether the site is still at an
+	 * address its eBay connection was made or confirmed at (3.31.0), which
+	 * the same button answers.
 	 *
 	 * @return string '' when the site is live, otherwise the reason it is not.
 	 */
 	public static function copy_reason() {
+		$reason = self::reason_before_binding();
+		if ( '' !== $reason ) {
+			return $reason;
+		}
+
+		return self::moved() ? 'address:moved' : '';
+	}
+
+	/**
+	 * copy_reason() without the address binding: wp-config.php, the
+	 * environment type and the address patterns.
+	 *
+	 * @return string '' when none of them says this is a copy.
+	 */
+	private static function reason_before_binding() {
 		if ( null !== self::$explicit ) {
 			return self::$explicit ? 'wp-config' : '';
 		}
@@ -315,10 +429,13 @@ final class TCGiant_Sync_Environment {
 		// copy's read as live. Such a run goes by what the last admin page
 		// load decided, from the shop's real address - and is live when none
 		// has yet, as every command-line run was before 3.28.0.
+		//
+		// Not the binding's verdict, though: that is worked out afresh from the
+		// stored address, which such a run reads like any other (copy_reason()).
 		if ( self::home_from_request( $url ) ) {
 			$stored = function_exists( 'get_option' ) ? get_option( self::VERDICT_OPTION, null ) : null;
 			$was    = is_array( $stored ) && ! empty( $stored['copy'] ) ? (string) ( $stored['reason'] ?? '' ) : '';
-			return self::is_address_reason( $was ) ? $was : '';
+			return self::is_address_reason( $was ) && 'address:moved' !== $was ? $was : '';
 		}
 
 		$rule = self::copy_rule( $url );
@@ -465,6 +582,8 @@ final class TCGiant_Sync_Environment {
 			case 'path':
 				/* translators: %s: a word such as staging or dev */
 				return sprintf( __( 'its address is in a "/%s" folder', 'tcgiant-sync' ), $word );
+			case 'moved':
+				return __( 'its address is not one its eBay connection was made or confirmed at', 'tcgiant-sync' );
 		}
 
 		return __( 'its address', 'tcgiant-sync' );
@@ -531,26 +650,42 @@ final class TCGiant_Sync_Environment {
 	 * hash of this one is kept. It cannot overrule WP_ENVIRONMENT_TYPE or the
 	 * wp-config.php constant: whoever set those meant them.
 	 *
+	 * It also puts the address on the list the eBay connection is bound to
+	 * (3.31.0), which is all it does for a site that has only moved.
+	 *
 	 * @param int $user_id Who confirmed it.
 	 * @return string The address confirmed, or '' when nothing was recorded.
 	 */
 	public static function confirm_live( $user_id ) {
-		if ( ! self::is_address_reason( self::copy_reason() ) ) {
-			return '';
-		}
-
-		$address = self::address( self::current_url() );
-		if ( '' === $address ) {
-			return '';
-		}
-
 		$was = self::copy_reason();
+		if ( ! self::is_address_reason( $was ) ) {
+			return '';
+		}
 
-		update_option( self::CONFIRMED_OPTION, array(
-			'hash' => self::confirm_hash( $address ),
-			'user' => (int) $user_id,
-			'at'   => time(),
-		), true );
+		$moved   = 'address:moved' === $was;
+		$address = self::address( self::current_url() );
+
+		if ( ! $moved ) {
+			if ( '' === $address ) {
+				return '';
+			}
+
+			update_option( self::CONFIRMED_OPTION, array(
+				'hash' => self::confirm_hash( $address ),
+				'user' => (int) $user_id,
+				'at'   => time(),
+			), true );
+		}
+
+		// Bound here too, so a site at a copy's address that has also moved
+		// needs one press, not two.
+		$bound = self::bind( 'confirm', $user_id );
+		if ( $moved ) {
+			if ( '' === $bound ) {
+				return '';
+			}
+			$address = $bound;
+		}
 
 		// Nothing refused before this press is sent now. Say so once, as for
 		// a shop 3.27 kept off eBay, rather than let the notice just vanish.
@@ -591,6 +726,488 @@ final class TCGiant_Sync_Environment {
 	 */
 	private static function confirm_hash( $address ) {
 		return hash( 'sha256', 'tcgiant-sync-live|' . $address );
+	}
+
+	/**
+	 * The site's address as the database stores it, for the binding: the
+	 * 'home' row, read straight out of the options (3.31.0).
+	 *
+	 * Never WP_HOME, and never the request's host name. A wp-config.php can
+	 * build WP_HOME from the host name a request arrived with - Bitnami's
+	 * does - so a request on another name, a bare IP address or whatever a
+	 * bot puts in its Host header would read as a move, and a stock push
+	 * made in it would be refused for good. The stored row changes only when
+	 * someone changes it: in Settings > General, by a host's move, or by a
+	 * migration tool making a copy.
+	 *
+	 * @return string address() of it; '' when there is none.
+	 */
+	public static function stored_address() {
+		if ( function_exists( 'wp_load_alloptions' ) ) {
+			$all = wp_load_alloptions();
+			if ( is_array( $all ) && ! empty( $all['home'] ) && is_string( $all['home'] ) ) {
+				return self::address( $all['home'] );
+			}
+		}
+
+		return '';
+	}
+
+	/**
+	 * Whether the eBay connection is bound to addresses and the site is not
+	 * at any of them (3.31.0).
+	 *
+	 * Decided only when there is something to decide on: an eBay account
+	 * connected, a list recorded, and a stored address to compare. Without
+	 * any of them the answer is no, as it was before 3.31.0.
+	 *
+	 * @return bool
+	 */
+	public static function moved() {
+		// The connection first: the settings are read on every request
+		// anyway, while asking for a list a shop never connected has none of
+		// would cost a query on every page.
+		if ( ! function_exists( 'get_option' ) || ! self::connected() ) {
+			return false;
+		}
+
+		$bound = self::bound();
+		if ( null === $bound ) {
+			return false;
+		}
+
+		$address = self::stored_address();
+
+		return '' !== $address && ! isset( $bound[ self::bound_hash( $address ) ] );
+	}
+
+	/**
+	 * The addresses the connection is bound to, the most recent first, for
+	 * the notice.
+	 *
+	 * @return string[]
+	 */
+	public static function bound_addresses() {
+		$out = array();
+		foreach ( (array) self::bound() as $entry ) {
+			$shown = is_array( $entry ) && isset( $entry['shown'] ) ? base64_decode( (string) $entry['shown'], true ) : false;
+			if ( is_string( $shown ) && '' !== $shown ) {
+				$out[] = $shown;
+			}
+		}
+		return $out;
+	}
+
+	/**
+	 * Put the site's stored address on the list the connection is bound to.
+	 *
+	 * Never on a site anything else judges a copy - wp-config.php, the
+	 * environment type or an address pattern not confirmed - so a copy is
+	 * not bound to itself, and a database pushed from a copy to the live
+	 * shop carries nothing that would hold the live shop back.
+	 *
+	 * @param string $how     'connect', 'confirm' or 'update', kept for support.
+	 * @param int    $user_id Who did it; 0 for the update.
+	 * @return string The address bound, or '' when nothing was recorded.
+	 */
+	public static function bind( $how, $user_id = 0 ) {
+		if ( ! function_exists( 'get_option' ) || ! function_exists( 'update_option' ) || '' !== self::reason_before_binding() ) {
+			return '';
+		}
+
+		$address = self::stored_address();
+		if ( '' === $address ) {
+			return '';
+		}
+
+		$record = get_option( self::BOUND_OPTION );
+		$list   = is_array( $record ) && isset( $record['addresses'] ) && is_array( $record['addresses'] ) ? $record['addresses'] : array();
+		$hash   = self::bound_hash( $address );
+
+		unset( $list[ $hash ] );
+		$list = array( $hash => array(
+			'shown'  => base64_encode( $address ),
+			'how'    => (string) $how,
+			'user'   => (int) $user_id,
+			'at'     => time(),
+			// The database's table prefix: wpstg0_ and on are WP Staging's
+			// copies (rebind_after_staging_push(), fix round 2).
+			'tables' => isset( $GLOBALS['wpdb'] ) && is_object( $GLOBALS['wpdb'] ) && isset( $GLOBALS['wpdb']->prefix ) ? (string) $GLOBALS['wpdb']->prefix : '',
+		) ) + $list;
+
+		update_option( self::BOUND_OPTION, array( 'addresses' => array_slice( $list, 0, self::BOUND_KEEP, true ) ), true );
+
+		return $address;
+	}
+
+	/**
+	 * The live shop, holding the list a staging copy left it (3.31.0, fix
+	 * round 1).
+	 *
+	 * A staging copy at a host's temporary address that updates to 3.31.0
+	 * before the live shop binds itself to that address at its first
+	 * request. Pushed to live, its database replaces the live shop's list, and
+	 * the live shop - whose own address the host has put back - is judged
+	 * moved: every stock push for a website sale refused, for good.
+	 *
+	 * So when every address on the list was bound at the update (never by a
+	 * connection or a press) and is either on a host's temporary domain, or
+	 * a folder under this site's own address that a WP Staging copy recorded
+	 * (its tables are wpstg0_ and on), the list is replaced with this
+	 * address - unless this site is itself on a host's temporary domain,
+	 * where a staging copy cloned again would be let through (fix round 2).
+	 * Replaced, not added to: a copy made later at the old staging address is
+	 * still a copy. A copy of the live shop is still caught - its list holds
+	 * the live shop's own address - and so is a copy of a shop in a folder
+	 * made at the root of its domain, or a real move out of a folder, which
+	 * both need the button (fix round 2: until then any folder counted).
+	 *
+	 * What this cannot tell from the live shop: a copy, at a domain of its
+	 * own, of a staging copy at a temporary address that updated first - the
+	 * two databases are the same. Nor a staging copy on a domain of the
+	 * shop's own, pushed to live: that still needs the button. And a shop
+	 * that lives on a host's temporary domain is not protected by the
+	 * binding.
+	 *
+	 * @return bool Whether the list was replaced.
+	 */
+	private static function rebind_after_staging_push() {
+		$bound = self::bound();
+		$here  = self::stored_address();
+		if ( null === $bound || '' === $here || self::on_temporary_host( $here ) ) {
+			return false;
+		}
+
+		$was = array();
+		foreach ( $bound as $entry ) {
+			$shown = is_array( $entry ) && isset( $entry['shown'] ) ? base64_decode( (string) $entry['shown'], true ) : false;
+			if ( ! is_string( $shown ) || '' === $shown || 'update' !== ( $entry['how'] ?? '' ) ) {
+				return false;
+			}
+			$wp_staging = 0 === strpos( $shown, $here . '/' ) && 0 === strpos( (string) ( $entry['tables'] ?? '' ), 'wpstg' );
+			if ( ! $wp_staging && ! self::on_temporary_host( $shown ) ) {
+				return false;
+			}
+			$was[] = $shown;
+		}
+
+		update_option( self::BOUND_OPTION, array( 'addresses' => array() ), true );
+		if ( '' === self::bind( 'staging-push' ) ) {
+			return false;
+		}
+
+		self::$rebound = array( implode( ', ', $was ), $here );
+
+		return true;
+	}
+
+	/**
+	 * Log a staging-push rebind made as the plugin loaded (fix round 2: it
+	 * was logged then, before the logger existed, so never). Hooked on init.
+	 *
+	 * @return void
+	 */
+	public static function log_rebind() {
+		if ( null === self::$rebound || ! class_exists( 'TCGiant_Sync_Logger' ) ) {
+			return;
+		}
+
+		TCGiant_Sync_Logger::log( sprintf(
+			'Staging check: this site\'s eBay connection was bound only to %s, which a staging copy recorded for itself when it was updated before this shop, and its database was then copied here. It is now bound to %s, this site\'s address, and changes are sent to eBay from it.',
+			self::$rebound[0],
+			self::$rebound[1]
+		), 'warning' );
+
+		self::$rebound = null;
+	}
+
+	/**
+	 * Whether an address is on one of TEMPORARY_HOSTS.
+	 *
+	 * @param string $address From address().
+	 * @return bool
+	 */
+	private static function on_temporary_host( $address ) {
+		$host = preg_replace( '/[:\/].*$/s', '', (string) $address );
+		foreach ( self::TEMPORARY_HOSTS as $domain ) {
+			$tail = '.' . $domain;
+			if ( $host === $domain || substr( $host, -strlen( $tail ) ) === $tail ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Tell the administrator, by email, that this site sends nothing to eBay
+	 * because it is not at the address its connection was made at (3.31.0,
+	 * fix round 1). Once an address, from any request - cron and WP-CLI
+	 * included - so a shop that has moved hears of it without opening
+	 * wp-admin. A staging copy sends one too.
+	 *
+	 * Hooked on init by boot(), once wp_mail() exists. To stop the emails,
+	 * remove that hook; nothing else depends on them.
+	 *
+	 * @return bool Whether an email was sent.
+	 */
+	public static function mail_move() {
+		if ( 'address:moved' !== self::reason() || ! function_exists( 'wp_mail' ) || ! function_exists( 'update_option' ) ) {
+			return false;
+		}
+
+		$now = self::stored_address();
+		if ( '' === $now ) {
+			return false;
+		}
+
+		// The address's row, inserted only if it is not there: the one request
+		// that inserts it sends the email, whoever else runs at the same
+		// moment (fix round 2). Not add_option(), which checks the cache and
+		// then writes INSERT ... ON DUPLICATE KEY UPDATE, so two requests can
+		// both succeed. A database that cannot write it sends nothing, rather
+		// than an email every request.
+		//
+		// Looked for first (fix round 3): a copy whose options table lost its
+		// UNIQUE key on option_name - some migration tools drop indexes -
+		// takes the INSERT every time, and sent an email on every request.
+		// Now one row, once there, ends it: at most the requests that run in
+		// the same moment as the first send one each. It also spares a moved
+		// site a write on every request.
+		global $wpdb;
+		if ( ! isset( $wpdb ) || ! is_object( $wpdb ) ) {
+			return false;
+		}
+		$row = self::MOVE_MAILED_PREFIX . substr( self::bound_hash( $now ), 0, 32 );
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$seen = $wpdb->get_var( $wpdb->prepare(
+			"SELECT COUNT(*) FROM {$wpdb->options} WHERE option_name = %s",
+			$row
+		) );
+		if ( null === $seen || 0 !== (int) $seen ) {
+			return false;
+		}
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$claimed = $wpdb->query( $wpdb->prepare(
+			"INSERT IGNORE INTO {$wpdb->options} ( option_name, option_value, autoload ) VALUES ( %s, %s, 'no' )",
+			$row,
+			(string) time()
+		) );
+		if ( 1 !== (int) $claimed ) {
+			return false;
+		}
+
+		$to = (string) get_option( 'admin_email' );
+		if ( '' === $to ) {
+			return false;
+		}
+
+		$then  = array_slice( self::bound_addresses(), 0, 3 );
+		$then  = $then ? implode( ', ', $then ) : __( 'another address', 'tcgiant-sync' );
+		$admin = function_exists( 'admin_url' ) ? admin_url( 'admin.php?page=tcgiant-sync' ) : '';
+
+		$subject = sprintf(
+			/* translators: %s: the site's address */
+			__( 'TCGiant Sync is not sending changes to eBay from %s', 'tcgiant-sync' ),
+			$now
+		);
+
+		$body = implode( "\n\n", array(
+			sprintf(
+				/* translators: 1: the address or addresses the eBay connection was made at, 2: the site's address now */
+				__( 'TCGiant Sync on %2$s is sending nothing to eBay: its eBay connection was made at %1$s, and this site is now at %2$s. No stock, listing, relist or tracking changes go to eBay from it. It still reads from eBay.', 'tcgiant-sync' ),
+				$then,
+				$now
+			),
+			__( 'If this is your live shop - you moved it to this address, or copied a staging site over it - log in and press "This is my live shop" in the TCGiant Sync notice. Until you do, sales on your website are not sent to eBay, and they are not sent afterwards either: check them against your eBay listings.', 'tcgiant-sync' ) . ( '' !== $admin ? ' ' . $admin : '' ),
+			__( 'If this site is a copy of your shop - a staging or test site, or a backup restored somewhere else - nothing needs doing. Your live shop is not affected. This site sends this email once for each address it finds itself at; a copy made again from your live shop may send it again.', 'tcgiant-sync' ),
+		) );
+
+		return (bool) wp_mail( $to, $subject, $body );
+	}
+
+	/**
+	 * Bind a connected shop that has no list yet: one connected before
+	 * 3.31.0, at its first request after the update.
+	 *
+	 * @return void
+	 */
+	private static function bind_if_unbound() {
+		if ( ! function_exists( 'get_option' ) || ! self::connected() || null !== self::bound() ) {
+			return;
+		}
+
+		self::bind( 'update' );
+	}
+
+	/**
+	 * The list as stored, keyed by bound_hash(); null when there is none.
+	 *
+	 * @return array|null
+	 */
+	private static function bound() {
+		$record = function_exists( 'get_option' ) ? get_option( self::BOUND_OPTION ) : false;
+		if ( ! is_array( $record ) || empty( $record['addresses'] ) || ! is_array( $record['addresses'] ) ) {
+			return null;
+		}
+
+		return $record['addresses'];
+	}
+
+	/**
+	 * The stored form of a bound address, to compare.
+	 *
+	 * @param string $address From address().
+	 * @return string
+	 */
+	private static function bound_hash( $address ) {
+		return hash( 'sha256', 'tcgiant-sync-bound|' . self::ascii_host( $address ) );
+	}
+
+	/**
+	 * An address with an international domain name written as its ASCII
+	 * (punycode) form, as the binding compares it: a home saved as bücher.de
+	 * and later as xn--bcher-kva.de is one address.
+	 *
+	 * Encoded here, by RFC 3492, never by PHP's intl extension (fix round 2):
+	 * with intl one process, without it another, the same home bound under
+	 * one was "moved" under the other - every write refused, an email sent.
+	 * Each label with a letter beyond ASCII becomes "xn--" and its punycode,
+	 * as intl gives for any label in lower case; letters are not case-folded
+	 * beyond ASCII, which a home written by WordPress or a browser never
+	 * needs. An ASCII address comes back as it is.
+	 *
+	 * @param string $address From address().
+	 * @return string
+	 */
+	private static function ascii_host( $address ) {
+		$address = (string) $address;
+		if ( ! preg_match( '/^([^\/:]+)(.*)$/s', $address, $m ) || ! preg_match( '/[^\x00-\x7f]/', $m[1] ) ) {
+			return $address;
+		}
+
+		$labels = explode( '.', $m[1] );
+		foreach ( $labels as $i => $label ) {
+			if ( ! preg_match( '/[^\x00-\x7f]/', $label ) ) {
+				continue;
+			}
+			$code = self::punycode( $label );
+			if ( null === $code ) {
+				return $address;
+			}
+			$labels[ $i ] = 'xn--' . $code;
+		}
+
+		return implode( '.', $labels ) . $m[2];
+	}
+
+	/**
+	 * RFC 3492's encoding of one label, or null when it is not valid UTF-8.
+	 *
+	 * @param string $label A label of a host name, UTF-8.
+	 * @return string|null
+	 */
+	private static function punycode( $label ) {
+		$chars = preg_split( '//u', (string) $label, -1, PREG_SPLIT_NO_EMPTY );
+		if ( ! is_array( $chars ) ) {
+			return null;
+		}
+
+		$points = array();
+		foreach ( $chars as $char ) {
+			$b = array_values( (array) unpack( 'C*', $char ) );
+			switch ( count( $b ) ) {
+				case 1:
+					$points[] = $b[0];
+					break;
+				case 2:
+					$points[] = ( ( $b[0] & 0x1F ) << 6 ) | ( $b[1] & 0x3F );
+					break;
+				case 3:
+					$points[] = ( ( $b[0] & 0x0F ) << 12 ) | ( ( $b[1] & 0x3F ) << 6 ) | ( $b[2] & 0x3F );
+					break;
+				case 4:
+					$points[] = ( ( $b[0] & 0x07 ) << 18 ) | ( ( $b[1] & 0x3F ) << 12 ) | ( ( $b[2] & 0x3F ) << 6 ) | ( $b[3] & 0x3F );
+					break;
+				default:
+					return null;
+			}
+		}
+
+		$base   = 36;
+		$tmin   = 1;
+		$tmax   = 26;
+		$output = '';
+		foreach ( $points as $point ) {
+			if ( $point < 0x80 ) {
+				$output .= chr( $point );
+			}
+		}
+		$basic = strlen( $output );
+		$done  = $basic;
+		if ( $basic > 0 ) {
+			$output .= '-';
+		}
+
+		$n     = 0x80;
+		$delta = 0;
+		$bias  = 72;
+		$total = count( $points );
+
+		while ( $done < $total ) {
+			$next = PHP_INT_MAX;
+			foreach ( $points as $point ) {
+				if ( $point >= $n && $point < $next ) {
+					$next = $point;
+				}
+			}
+			$delta += ( $next - $n ) * ( $done + 1 );
+			$n      = $next;
+
+			foreach ( $points as $point ) {
+				if ( $point < $n ) {
+					$delta++;
+				}
+				if ( $point !== $n ) {
+					continue;
+				}
+				$q = $delta;
+				for ( $k = $base; ; $k += $base ) {
+					$t = $k <= $bias ? $tmin : ( $k >= $bias + $tmax ? $tmax : $k - $bias );
+					if ( $q < $t ) {
+						break;
+					}
+					$output .= self::punycode_digit( $t + ( $q - $t ) % ( $base - $t ) );
+					$q       = intdiv( $q - $t, $base - $t );
+				}
+				$output .= self::punycode_digit( $q );
+
+				// The bias adapts to the deltas so far (RFC 3492, 6.1).
+				$delta  = $done === $basic ? intdiv( $delta, 700 ) : intdiv( $delta, 2 );
+				$delta += intdiv( $delta, $done + 1 );
+				$k      = 0;
+				while ( $delta > ( ( $base - $tmin ) * $tmax ) >> 1 ) {
+					$delta = intdiv( $delta, $base - $tmin );
+					$k    += $base;
+				}
+				$bias  = $k + intdiv( ( $base - $tmin + 1 ) * $delta, $delta + 38 );
+				$delta = 0;
+				$done++;
+			}
+			$delta++;
+			$n++;
+		}
+
+		return $output;
+	}
+
+	/**
+	 * A punycode digit: 0-25 are a-z, 26-35 are 0-9.
+	 *
+	 * @param int $d 0 to 35.
+	 * @return string
+	 */
+	private static function punycode_digit( $d ) {
+		return $d < 26 ? chr( 97 + $d ) : chr( 22 + $d );
 	}
 
 	/**
@@ -735,6 +1352,16 @@ final class TCGiant_Sync_Environment {
 	/**
 	 * A URL's host, port and path, lower-cased where case does not matter.
 	 *
+	 * A URL with bytes beyond ASCII - an international domain name such as
+	 * сайт.рф - is parsed with those bytes, and every '%' with them,
+	 * percent-encoded, and its host and path decoded again after (3.31.0,
+	 * fix round 3). parse_url() rewrites the bytes 0x80-0x9F as '_' under a
+	 * single-byte locale (cp1252, ISO-8859-x, which PHP 7.4 takes from its
+	 * environment): one home came out one way in a page load and another in
+	 * a WP-CLI or cron run, and was "moved" in one of them. Decoding gives
+	 * back exactly what was encoded, since the only '%' left are the ones
+	 * added. An ASCII URL is parsed as it always was.
+	 *
 	 * @param string $url A URL, with or without its scheme.
 	 * @return array{host: string, port: int, path: string}
 	 */
@@ -744,6 +1371,17 @@ final class TCGiant_Sync_Environment {
 			$url = 'http://' . ltrim( $url, '/' );
 		}
 
+		$wide = (bool) preg_match( '/[\x80-\xff]/', $url );
+		if ( $wide ) {
+			$url = (string) preg_replace_callback(
+				'/[%\x80-\xff]/',
+				function ( $byte ) {
+					return rawurlencode( $byte[0] );
+				},
+				$url
+			);
+		}
+
 		$parts = false;
 		if ( '' !== $url ) {
 			$parts = function_exists( 'wp_parse_url' ) ? wp_parse_url( $url ) : parse_url( $url ); // phpcs:ignore WordPress.WP.AlternativeFunctions.parse_url_parse_url -- only before WordPress has loaded http.php.
@@ -751,12 +1389,36 @@ final class TCGiant_Sync_Environment {
 		if ( ! is_array( $parts ) ) {
 			$parts = array();
 		}
+		if ( $wide ) {
+			foreach ( array( 'host', 'path' ) as $key ) {
+				if ( isset( $parts[ $key ] ) ) {
+					$parts[ $key ] = rawurldecode( (string) $parts[ $key ] );
+				}
+			}
+		}
 
 		return array(
-			'host' => strtolower( rtrim( (string) ( $parts['host'] ?? '' ), '.' ) ),
+			'host' => self::lower( rtrim( (string) ( $parts['host'] ?? '' ), '.' ) ),
 			'port' => (int) ( $parts['port'] ?? 0 ),
 			'path' => (string) ( $parts['path'] ?? '' ),
 		);
+	}
+
+	/**
+	 * Lower case, by the ASCII letters only (3.31.0, fix round 1).
+	 *
+	 * strtolower() before PHP 8.2 follows the locale, and before PHP 8.0 a
+	 * request inherits the locale of whatever started it: under a Latin-1
+	 * locale it rewrites the bytes of a UTF-8 address such as bucher.de's
+	 * u-umlaut, so one address hashed one way in a page load and another in
+	 * a WP-CLI run. PHP 8.2's strtolower() works this way everywhere. An
+	 * ASCII address comes out exactly as strtolower() made it.
+	 *
+	 * @param string $text Text.
+	 * @return string
+	 */
+	private static function lower( $text ) {
+		return strtr( (string) $text, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz' );
 	}
 
 	/**

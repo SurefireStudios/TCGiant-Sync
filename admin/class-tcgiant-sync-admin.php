@@ -1258,6 +1258,9 @@ class TCGiant_Sync_Admin {
 
 		if ( $oauth->save_tokens_from_relay( $data ) ) {
 			TCGiant_Sync_Logger::log( 'eBay account connected successfully.', 'success' );
+			// The connection belongs to this address (3.31.0): a copy of the
+			// shop made at any other sends nothing until it is confirmed.
+			TCGiant_Sync_Environment::bind( 'connect', get_current_user_id() );
 			TCGiant_Sync_Importer::after_reconnect();
 			wp_safe_redirect( admin_url( 'admin.php?page=tcgiant-sync&auth=success' ) );
 			exit;
@@ -3330,6 +3333,10 @@ class TCGiant_Sync_Admin {
 	 * shop that was sending changes before 3.28.0 and has now stopped sees it
 	 * on every admin screen until someone answers it: if that shop is in fact
 	 * the live one, every sale from now on is a quantity eBay never hears of.
+	 *
+	 * So does a site that is no longer at the address its eBay connection
+	 * was made at (3.31.0), for the same reason: it may be the live shop,
+	 * moved, and stays off eBay until someone says so.
 	 */
 	public function staging_admin_notice() {
 		if ( ! TCGiant_Sync_Environment::write_block() ) {
@@ -3338,6 +3345,11 @@ class TCGiant_Sync_Admin {
 
 		$can_answer = current_user_can( 'manage_options' );
 		$was_live   = $can_answer && 'now_copy' === TCGiant_Sync_Environment::pending_notice();
+
+		if ( $can_answer && 'address:moved' === TCGiant_Sync_Environment::reason() ) {
+			$this->moved_notice();
+			return;
+		}
 
 		if ( ! $was_live ) {
 			$screen = get_current_screen();
@@ -3408,6 +3420,63 @@ class TCGiant_Sync_Admin {
 	}
 
 	/**
+	 * The notice for a site that is not at the address its eBay connection
+	 * was made or confirmed at (3.31.0), with its one-click answer.
+	 *
+	 * Shown to administrators on every admin screen. Pressing the button is
+	 * "This is my live shop" - the same handler, the same record - so the
+	 * address is bound, and changes go to eBay from the next request.
+	 *
+	 * @return void
+	 */
+	private function moved_notice() {
+		$then = array_slice( TCGiant_Sync_Environment::bound_addresses(), 0, 3 );
+		$now  = TCGiant_Sync_Environment::stored_address();
+		$held = TCGiant_Sync_Environment::blocked_count();
+		?>
+		<div class="notice notice-warning">
+			<p>
+				<strong><?php esc_html_e( 'TCGiant Sync - this site is not at the address it was connected to eBay at', 'tcgiant-sync' ); ?></strong><br>
+				<?php
+				printf(
+					/* translators: 1: the address or addresses the eBay connection was made at, 2: the site's address now */
+					esc_html__( 'Its eBay connection was made at %1$s, and this site is now at %2$s. Until an administrator confirms this is the live shop, nothing is sent to eBay from here: no stock, listing, relist or tracking changes.', 'tcgiant-sync' ),
+					esc_html( $then ? implode( ', ', $then ) : __( 'another address', 'tcgiant-sync' ) ),
+					esc_html( $now )
+				);
+				?>
+				<?php if ( $held > 0 ) : ?>
+					<?php
+					printf(
+						/* translators: %d: number of changes */
+						esc_html( _n( '%d change was not sent in the last day.', '%d changes were not sent in the last day.', $held, 'tcgiant-sync' ) ),
+						(int) $held
+					);
+					?>
+				<?php endif; ?>
+				<?php esc_html_e( 'Reading from eBay carries on as normal.', 'tcgiant-sync' ); ?>
+			</p>
+			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+				<input type="hidden" name="action" value="tcgiant_confirm_live">
+				<?php wp_nonce_field( 'tcgiant_confirm_live' ); ?>
+				<p>
+					<button type="submit" class="button button-primary">
+						<?php
+						printf(
+							/* translators: %s: the site's address, e.g. shop.example.com */
+							esc_html__( 'This is my live shop - send changes to eBay from %s', 'tcgiant-sync' ),
+							esc_html( $now )
+						);
+						?>
+					</button>
+					<?php esc_html_e( 'If you moved your shop to this address, press it. If this site is a copy - a staging or test site, or a backup restored somewhere else - leave this alone: your live shop is not affected.', 'tcgiant-sync' ); ?>
+				</p>
+			</form>
+		</div>
+		<?php
+	}
+
+	/**
 	 * Tell a shop that was wrongly kept off eBay that it no longer is.
 	 *
 	 * Before 3.28.0 a live shop whose address merely contained 'dev-', '.local'
@@ -3443,9 +3512,10 @@ class TCGiant_Sync_Admin {
 	/**
 	 * "This is my live shop": overrule an address rule for this address.
 	 *
-	 * Only an address rule. A WP_ENVIRONMENT_TYPE that is not production, or
-	 * TCGIANT_SYNC_IS_STAGING in wp-config.php, was set by someone on purpose
-	 * and is changed where it was set.
+	 * Only an address rule - since 3.31.0 that includes a site no longer at
+	 * the address its eBay connection was made at. A WP_ENVIRONMENT_TYPE that
+	 * is not production, or TCGIANT_SYNC_IS_STAGING in wp-config.php, was set
+	 * by someone on purpose and is changed where it was set.
 	 */
 	public function handle_confirm_live() {
 		check_admin_referer( 'tcgiant_confirm_live' );

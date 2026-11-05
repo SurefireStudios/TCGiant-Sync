@@ -1226,8 +1226,13 @@ class TCGiant_Sync_OAuth {
 		// it are added to the relay's figure until the next refresh. With the
 		// UTC day it is for, which names the relay's answer too: a refresh
 		// sent at 23:59:59 and answered after midnight is yesterday's.
-		$calls_sent = $api->get_daily_call_count();
+		//
+		// The day first, and the count read for that day (3.31.0): the two
+		// were read a moment apart, and a refresh that straddled midnight
+		// sent the old day's whole count as the new day's - which the relay
+		// held the site to, against its allowance, until the next refresh.
 		$calls_date = gmdate( 'Y-m-d' );
+		$calls_sent = $api->get_daily_call_count( $calls_date );
 
 		// The renewal needs this every bit as much as the first connection:
 		// a site that got connected while the filter was quiet would otherwise
@@ -1285,6 +1290,12 @@ class TCGiant_Sync_OAuth {
 					// This site's own count in global_calls - see
 					// TCGiant_Sync_API::fleet_calls_now().
 					'local_calls'  => (int) $calls_sent,
+					// This site's own daily allowance, and whether the
+					// count sent has reached it (the relay, 2026-11-03):
+					// so the log can say which limit stopped a call.
+					// A relay that does not send them leaves 0 and false.
+					'site_cap'     => (int) ( $body['site_daily_cap'] ?? 0 ),
+					'site_capped'  => ! empty( $body['site_capped'] ),
 				), DAY_IN_SECONDS );
 			}
 

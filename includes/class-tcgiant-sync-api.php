@@ -292,6 +292,19 @@ class TCGiant_Sync_API {
 			// The figure that stopped it: every shop's, when the relay's is
 			// in use, or this site's own.
 			$relay = $this->get_relay_budget();
+
+			// The relay said this site has used its own daily allowance: say
+			// that, not that every shop together has (fix round 1).
+			if ( false !== $relay && ! empty( $relay['site_capped'] ) && (int) ( $relay['site_cap'] ?? 0 ) > 0 ) {
+				TCGiant_Sync_Logger::log( sprintf(
+					'eBay daily API budget reached: this site has used its own daily allowance of %d eBay calls (%d calls today). Blocking %s until 00:00 UTC.',
+					(int) $relay['site_cap'],
+					$this->get_daily_call_count(),
+					$call_name
+				), 'warning' );
+				return new WP_Error( 'rate_limited', 'Daily API call budget exhausted. Will resume tomorrow.', array( 'daily_budget' => true ) );
+			}
+
 			TCGiant_Sync_Logger::log( sprintf(
 				'eBay daily API budget reached (%d/%d calls used today %s, %d%% ceiling). Blocking %s to preserve remaining quota.',
 				false !== $relay ? $this->fleet_calls_now( $relay ) : $this->get_daily_call_count(),
@@ -339,10 +352,9 @@ class TCGiant_Sync_API {
 
 		$this->last_body_bytes = 0;
 
+		// Counted by request_with_retry(), once for each time it is sent
+		// (3.31.0).
 		$response = $this->request_with_retry( $url, $args );
-
-		// Track the call regardless of outcome — eBay counts it either way.
-		$this->increment_daily_call_count();
 
 		// request_with_retry() surfaces HTTP 429 as a rate_limited error so the
 		// importer's existing backoff handling picks it up.
@@ -737,15 +749,29 @@ class TCGiant_Sync_API {
 	 * their own 80% ceiling never came into play. The day is the UTC day, as
 	 * the increment's.
 	 *
-	 * @return int Number of calls made today.
+	 * Only Trading API calls are counted: they are what the 50,000 a day the
+	 * fleet shares, and the relay's allowance for each site, are measured in
+	 * (DAILY_CALL_LIMIT). A REST call - the Inventory, Account, Fulfillment
+	 * and Taxonomy APIs - is not, and nor is the token refresh, which this
+	 * site sends to the relay rather than to eBay.
+	 *
+	 * @param string $date The UTC day, Y-m-d; today when not given. The token
+	 *                     refresh names the day it reports, so the count it
+	 *                     sends and the day it sends it for are one day, even
+	 *                     at midnight (3.31.0).
+	 * @return int Number of calls made that day.
 	 */
-	public function get_daily_call_count() {
+	public function get_daily_call_count( $date = '' ) {
 		global $wpdb;
+
+		if ( ! is_string( $date ) || 1 !== preg_match( '/^\d{4}-\d{2}-\d{2}$/D', $date ) ) {
+			$date = gmdate( 'Y-m-d' );
+		}
 
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		return (int) $wpdb->get_var( $wpdb->prepare(
 			"SELECT option_value FROM {$wpdb->options} WHERE option_name = %s LIMIT 1",
-			self::CALL_COUNT_PREFIX . gmdate( 'Y-m-d' )
+			self::CALL_COUNT_PREFIX . $date
 		) );
 	}
 
@@ -758,6 +784,9 @@ class TCGiant_Sync_API {
 	 * under it can stop it counting. The first call of the day used to try an
 	 * UPDATE and then add_option(), and two workers there at once each wrote
 	 * 1, losing a call.
+	 *
+	 * Called by request_with_retry() just before each Trading request goes
+	 * out, so the day is the UTC day the request was sent on (3.31.0).
 	 */
 	private function increment_daily_call_count() {
 		global $wpdb;
@@ -836,6 +865,15 @@ class TCGiant_Sync_API {
 	 * because the caller returned immediately on is_wp_error(). eBay's 429
 	 * responses were not recognised at all.
 	 *
+	 * Every Trading API request is counted against the day here, once each
+	 * time it is sent, just before it goes (3.31.0). Until then it was
+	 * counted once by its caller after the last attempt: a call retried after
+	 * a 5xx reached eBay up to three times and was counted once, a request
+	 * killed while it waited for eBay was not counted at all, and a call sent
+	 * at 23:59:59 and answered after midnight was put on the new day. Each
+	 * site's count is what the relay holds it to (1,000 calls a day free,
+	 * 10,000 paid), so a count that is low lets one shop spend the others'.
+	 *
 	 * @param string $url  Request URL.
 	 * @param array  $args wp_remote_request() arguments.
 	 * @return array|WP_Error Response array, or WP_Error after the final attempt.
@@ -851,10 +889,18 @@ class TCGiant_Sync_API {
 			}
 		}
 
+		// A Trading call names itself in this header, reads and writes alike;
+		// a REST call never does.
+		$counted = isset( $args['headers']['X-EBAY-API-CALL-NAME'] );
+
 		$max_attempts = 3;
 		$response     = null;
 
 		for ( $attempt = 1; $attempt <= $max_attempts; $attempt++ ) {
+			if ( $counted ) {
+				$this->increment_daily_call_count();
+			}
+
 			$response = wp_remote_request( $url, $args );
 
 			if ( ! is_wp_error( $response ) ) {
@@ -2183,8 +2229,6 @@ class TCGiant_Sync_API {
 			'body'    => $body,
 			'timeout' => 60,
 		) );
-
-		$this->increment_daily_call_count();
 
 		if ( is_wp_error( $response ) ) {
 			return $response;

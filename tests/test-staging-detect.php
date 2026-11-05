@@ -67,6 +67,7 @@ function wp_parse_url( $url, $component = -1 ) { return parse_url( $url, $compon
 function wp_get_environment_type() { return $GLOBALS['ENV_TYPE']; }
 function wp_load_alloptions() { return array( 'home' => $GLOBALS['HOME_URL'], 'siteurl' => $GLOBALS['HOME_URL'] ); }
 function get_option( $name, $default = false ) { return array_key_exists( $name, $GLOBALS['OPTIONS'] ) ? $GLOBALS['OPTIONS'][ $name ] : $default; }
+function update_option( $name, $value, $autoload = null ) { $GLOBALS['OPTIONS'][ $name ] = $value; $GLOBALS['AUTOLOAD'][ $name ] = $autoload; return true; }
 
 require $ROOT . '/includes/class-tcgiant-sync-environment.php';
 
@@ -313,6 +314,7 @@ $S = json_decode( (string) file_get_contents( $argv[1] ), true );
 
 if ( isset( $S['http_host'] ) ) { $_SERVER['HTTP_HOST'] = $S['http_host']; } else { unset( $_SERVER['HTTP_HOST'] ); }
 if ( array_key_exists( 'defined', $S ) ) { define( 'TCGIANT_SYNC_IS_STAGING', (bool) $S['defined'] ); }
+if ( isset( $S['wp_home'] ) ) { define( 'WP_HOME', $S['wp_home'] ); }
 
 $OPTIONS    = $S['options'] ?? array();
 $META       = $S['meta'] ?? array();
@@ -342,8 +344,11 @@ function esc_html_e( $t ) { echo esc_html( $t ); }
 function admin_url( $p = '' ) { return 'https://site.invalid/wp-admin/' . $p; }
 function wp_nonce_field( $a ) { echo '<input type="hidden" name="_wpnonce" value="nonce-' . $a . '">'; }
 function wp_nonce_url( $u, $a ) { return $u . '&_wpnonce=nonce-' . $a; }
-function add_action() {}
+function add_action( $hook = '', $cb = null ) { $GLOBALS['HOOKS'][] = array( $hook, is_array( $cb ) ? implode( '::', array_map( function ( $x ) { return is_object( $x ) ? get_class( $x ) : (string) $x; }, $cb ) ) : (string) $cb ); $GLOBALS['HOOK_CBS'][ $hook ][] = $cb; }
+/** What WordPress does at that hook: run what was added to it. */
+function run_hook( $hook ) { foreach ( $GLOBALS['HOOK_CBS'][ $hook ] ?? array() as $cb ) { if ( is_callable( $cb ) ) { call_user_func( $cb ); } } }
 function add_filter() {}
+function wp_mail( $to, $subject, $body ) { $GLOBALS['MAILS'][] = array( 'to' => $to, 'subject' => $subject, 'body' => $body ); return true; }
 function wp_get_environment_type() { return $GLOBALS['S']['env'] ?? 'production'; }
 function wp_load_alloptions() { return array( 'home' => $GLOBALS['S']['home'], 'siteurl' => $GLOBALS['S']['home'] ); }
 function wp_parse_url( $u, $c = -1 ) { return parse_url( $u, $c ); }
@@ -389,16 +394,30 @@ function wc_get_order( $id ) { return $GLOBALS['ORDERS'][ (int) $id ] ?? false; 
 
 class Harness_Wpdb {
 	public $options = 'wp_options'; public $postmeta = 'wp_postmeta'; public $posts = 'wp_posts';
+	public $prefix = 'wp_';
+	public function __construct() { $this->prefix = $GLOBALS['S']['prefix'] ?? 'wp_'; }
 	public function prepare( $q, ...$a ) { return vsprintf( str_replace( '%s', "'%s'", $q ), $a ); }
 	public function query( $q ) {
 		$GLOBALS['QUERIES'][] = $q;
 		if ( false !== strpos( $q, 'option_value + 1' ) ) { $GLOBALS['INCREMENTS']++; return 1; }
+		// A row inserted only if it is not there, as MySQL's INSERT IGNORE.
+		if ( preg_match( "/^INSERT IGNORE INTO wp_options \\( option_name, option_value, autoload \\) VALUES \\( '([^']+)', '([^']*)', 'no' \\)$/", trim( $q ), $m ) ) {
+			if ( ! empty( $GLOBALS['S']['db_fails'] ) ) { return false; }
+			// A table that lost its UNIQUE key on option_name takes every insert.
+			if ( array_key_exists( $m[1], $GLOBALS['OPTIONS'] ) && empty( $GLOBALS['S']['no_unique'] ) ) { return 0; }
+			$GLOBALS['OPTIONS'][ $m[1] ] = $m[2];
+			return 1;
+		}
 		return 0;
 	}
 	public function get_var( $q ) {
 		$GLOBALS['QUERIES'][] = $q;
 		// The day's call count, read from the row it is counted in (3.28.0).
 		if ( false !== strpos( $q, "'tcgiant_sync_api_calls_" ) ) { return (string) $GLOBALS['INCREMENTS']; }
+		// Whether an option's row is there (fix round 3: the email's row).
+		if ( preg_match( "/^SELECT COUNT\(\*\) FROM wp_options WHERE option_name = '([^']+)'$/", trim( $q ), $m ) ) {
+			return ! empty( $GLOBALS['S']['db_read_fails'] ) ? null : ( array_key_exists( $m[1], $GLOBALS['OPTIONS'] ) ? '1' : '0' );
+		}
 		foreach ( $GLOBALS['S']['skus'] ?? array() as $sku => $id ) {
 			if ( false !== strpos( $q, "'" . $sku . "'" ) ) { return (string) $id; }
 		}
@@ -413,11 +432,6 @@ class Harness_Wpdb {
 }
 $wpdb = new Harness_Wpdb();
 
-class TCGiant_Sync_Logger {
-	public static function log( $m, $level = 'info' ) { $GLOBALS['LOG'][] = array( $level, $m ); }
-	public static function error( $m ) { self::log( $m, 'error' ); }
-	public static function warning( $m ) { self::log( $m, 'warning' ); }
-}
 class TCGiant_Sync_OAuth {
 	public static function instance() { static $i; return $i ? $i : ( $i = new self() ); }
 	public function get_settings() { return array( 'marketplace' => 'EBAY_US' ); }
@@ -467,6 +481,19 @@ require '__ROOT__/admin/class-tcgiant-sync-admin.php';
 
 // As tcgiant-sync.php does when the plugin loads.
 TCGiant_Sync_Environment::boot();
+
+// The logger comes with the plugin's autoloader, on plugins_loaded - after
+// boot() (fix round 2: until then this harness loaded it first, so a line
+// boot() wrote passed here and was lost on a real site). Declared inside a
+// condition, so PHP cannot bind it early.
+$LOGGER_AT_BOOT = class_exists( 'TCGiant_Sync_Logger', false );
+if ( ! class_exists( 'TCGiant_Sync_Logger', false ) ) {
+	class TCGiant_Sync_Logger {
+		public static function log( $m, $level = 'info' ) { $GLOBALS['LOG'][] = array( $level, $m ); }
+		public static function error( $m ) { self::log( $m, 'error' ); }
+		public static function warning( $m ) { self::log( $m, 'warning' ); }
+	}
+}
 
 /** An eBay that refuses the stock calls with a given error, sending nothing. */
 class Refusing_eBay extends TCGiant_Sync_API {
@@ -689,6 +716,55 @@ switch ( $S['act'] ) {
 		$R['notes']    = $order->notes;
 		$R['warnings'] = warnings();
 		$R['errors']   = errors();
+		break;
+
+	// A request of a site whose eBay connection is bound to an address
+	// (3.31.0): its verdict, the list as it is after, and what reaches eBay.
+	case 'binding':
+		$calls = array(
+			'EndItem'               => function () use ( $api ) { return $api->end_item( '110000000501' ); },
+			'ReviseInventoryStatus' => function () use ( $api ) { return $api->update_trading_api_stock( '110000000501', 3 ); },
+			'CompleteSale'          => function () use ( $api ) { return $api->trading_api_request( 'CompleteSale', '<OrderID>12-34567-89012</OrderID>' ); },
+			'REST PUT'              => function () use ( $api ) { return $api->request( 'sell/inventory/v1/inventory_item/SKU-1', 'PUT', array( 'a' => 1 ) ); },
+			'GetItem'               => function () use ( $api ) { return $api->get_item( '110000000501' ); },
+			'GetOrders'             => function () use ( $api ) { return $api->trading_api_request( 'GetOrders', '<NumberOfDays>1</NumberOfDays>' ); },
+			'GET inventory item'    => function () use ( $api ) { return $api->get_inventory_item( 'SKU-1' ); },
+		);
+		foreach ( $calls as $name => $fn ) {
+			$GLOBALS['WIRE'] = array();
+			$r = $fn();
+			$R['calls'][ $name ] = array( 'outcome' => outcome( $r ), 'wire' => count( $GLOBALS['WIRE'] ) );
+		}
+		$R['bound']   = $GLOBALS['OPTIONS'][ TCGiant_Sync_Environment::BOUND_OPTION ] ?? null;
+		$R['shown']   = TCGiant_Sync_Environment::bound_addresses();
+		$R['options'] = $GLOBALS['OPTIONS'];
+		$R['message'] = ( $b = TCGiant_Sync_Environment::write_block() ) ? $b->get_error_message() : '';
+		$R['logger_at_boot'] = $GLOBALS['LOGGER_AT_BOOT'];
+		$R['log_before_init'] = $GLOBALS['LOG'];
+		run_hook( 'init' );
+		$R['log']     = $GLOBALS['LOG'];
+		$R['hooks']   = $GLOBALS['HOOKS'] ?? array();
+		$R['options'] = $GLOBALS['OPTIONS'];
+		break;
+
+	// The administrator's email about a move (fix round 1), as init runs it
+	// - twice, as two requests would.
+	case 'mail':
+		$R['hooks']   = $GLOBALS['HOOKS'] ?? array();
+		$R['first']   = TCGiant_Sync_Environment::mail_move();
+		$R['second']  = TCGiant_Sync_Environment::mail_move();
+		$R['mails']   = $GLOBALS['MAILS'] ?? array();
+		$R['options'] = $GLOBALS['OPTIONS'];
+		$R['inserts'] = count( preg_grep( '/^\s*INSERT/', $GLOBALS['QUERIES'] ?? array() ) );
+		break;
+
+	// The eBay account connected at this address, as the OAuth callback
+	// records it once the tokens are saved.
+	case 'connect':
+		$GLOBALS['OPTIONS']['tcgiant_sync_ebay_settings'] = array( 'refresh_token' => 'v^1.1#i^1#r^NEW' );
+		$R['bound_to'] = TCGiant_Sync_Environment::bind( 'connect', 7 );
+		$R['options']  = $GLOBALS['OPTIONS'];
+		$R['after']    = TCGiant_Sync_Environment::copy_reason();
 		break;
 
 	// "This is my live shop", pressed.
@@ -1120,13 +1196,385 @@ check( 'a later change of verdict is logged, once', count( $later['log'] ?? arra
 check( '  saying what it was and what it is', false !== strpos( (string) ( $later['log'][0][1] ?? '' ), 'was judged the live shop and is now judged a staging copy' ), true );
 check( '  and stored', array( $later['stored']['copy'] ?? null, $later['stored']['reason'] ?? null ), array( true, 'address:label:dev' ) );
 
+echo "\nTHE EBAY CONNECTION IS BOUND TO ITS ADDRESS (3.31.0)\n" . str_repeat( '=', 132 ) . "\n";
+
+// A copy of the shop whose address no pattern recognises - a backup restored
+// under another domain, a host's temporary address - was judged live by
+// 3.28.0's check, and sent the live shop's stock changes, ends and tracking to
+// its eBay account. Since 3.31.0 the connection belongs to the address it was
+// made or confirmed at.
+$connected = array( 'tcgiant_sync_ebay_settings' => array( 'refresh_token' => 'v^1.1#i^1#r^LIVE' ) );
+
+$live = site( 'binding', array( 'home' => 'https://numismax.com', 'options' => $connected ) );
+$list = $live['bound']['addresses'] ?? array();
+$one  = $list ? reset( $list ) : array();
+check( 'a shop connected before 3.31.0: live, and bound to its address at its first request', array( $live['reason'] ?? null, $live['shown'] ?? null, $one['how'] ?? null ), array( '', array( 'numismax.com' ), 'update' ) );
+check( '  every change still reaches eBay', array( $live['calls']['EndItem']['wire'] ?? null, $live['calls']['REST PUT']['wire'] ?? null ), array( 1, 1 ) );
+check( '  the record holds no address a search-and-replace could find', false === strpos( serialize( $live['bound'] ?? array() ), 'numismax' ), true );
+$again = site( 'binding', array( 'home' => 'https://www.numismax.com/', 'options' => $live['options'] ?? array() ) );
+check( '  www and a trailing slash are the same address: live, nothing added', array( $again['reason'] ?? null, count( $again['bound']['addresses'] ?? array() ) ), array( '', 1 ) );
+
+// The live shop's database, at another address.
+$copy = site( 'binding', array( 'home' => 'https://numismax-copy.com', 'options' => $live['options'] ?? array() ) );
+check( 'its database at numismax-copy.com, which no pattern catches: kept off eBay', array( $copy['staging'] ?? null, $copy['reason'] ?? null ), array( true, 'address:moved' ) );
+foreach ( array( 'EndItem', 'ReviseInventoryStatus', 'CompleteSale', 'REST PUT' ) as $name ) {
+	check( '  ' . $name . ' is refused, and nothing is sent', $copy['calls'][ $name ] ?? null, array( 'outcome' => 'staging_blocked', 'wire' => 0 ) );
+}
+foreach ( array( 'GetItem', 'GetOrders', 'GET inventory item' ) as $name ) {
+	check( '  ' . $name . ' still reaches eBay', $copy['calls'][ $name ] ?? null, array( 'outcome' => 'sent', 'wire' => 1 ) );
+}
+check( '  the copy is not bound to itself', count( $copy['bound']['addresses'] ?? array() ), 1 );
+check( '  the refusal says why, in words with nothing a stock push reads as "ended"', $copy['message'] ?? null, 'Not sent to eBay: this site looks like a staging or development copy (its address is not one its eBay connection was made or confirmed at).' );
+
+// Every other write the plugin has, through the same harness as a copy's.
+$all = site( 'writes', array( 'home' => 'https://numismax-copy.com', 'options' => $live['options'] ?? array(), 'skus' => array( 'SKU-1' => 501 ) ) );
+$sent_any = array();
+foreach ( (array) ( $all['calls'] ?? array() ) as $name => $c ) {
+	if ( 'staging_blocked' !== $c['outcome'] ) {
+		$sent_any[] = $name;
+	}
+}
+check( '  every one of the plugin\'s writes is refused there, Trading and REST alike', array( count( $all['calls'] ?? array() ), $sent_any ), array( 17, array() ) );
+check( '  the Inventory API quantity update after its read (admin-ui_12)', $all['calls']['Inventory API quantity update (PUT)']['wire'] ?? null, array( 'GET sell/inventory/v1/inventory_item/SKU-1' ) );
+
+// A migration tool rewrites the old domain wherever it finds it written out.
+$migrated = unserialize( str_replace( 'numismax.com', 'numismax-copy.com', serialize( $live['options'] ?? array() ) ) );
+$copy2    = site( 'binding', array( 'home' => 'https://numismax-copy.com', 'options' => $migrated ) );
+check( 'after a search-and-replace of the domain through the database: still kept off eBay', $copy2['reason'] ?? null, 'address:moved' );
+
+// The notice, and its one-click answer.
+$notice = site( 'notices', array( 'home' => 'https://numismax-copy.com', 'options' => $live['options'] ?? array(), 'screen' => 'dashboard' ) );
+$html   = (string) ( $notice['staging'] ?? '' );
+check( 'the notice is shown on every admin screen, not only the plugin\'s', '' !== $html, true );
+check( '  it says where the connection was made and where the site is now', false !== strpos( $html, 'Its eBay connection was made at numismax.com, and this site is now at numismax-copy.com.' ), true );
+check( '  and what that means', false !== strpos( $html, 'Until an administrator confirms this is the live shop, nothing is sent to eBay from here' ), true );
+check( '  with the button, naming the new address, posting to the same handler as 3.28.0\'s', array( false !== strpos( $html, 'This is my live shop - send changes to eBay from numismax-copy.com' ), false !== strpos( $html, 'value="tcgiant_confirm_live"' ), false !== strpos( $html, 'nonce-tcgiant_confirm_live' ) ), array( true, true, true ) );
+check( '  and says to leave it alone on a copy', false !== strpos( $html, 'If this site is a copy - a staging or test site, or a backup restored somewhere else - leave this alone' ), true );
+$staff = site( 'notices', array( 'home' => 'https://numismax-copy.com', 'options' => $live['options'] ?? array(), 'can' => false ) );
+check( 'someone who cannot answer it sees the plain notice on the plugin\'s screens, with no button', array( false !== strpos( (string) ( $staff['staging'] ?? '' ), 'its address is not one its eBay connection was made or confirmed at' ), false === strpos( (string) ( $staff['staging'] ?? '' ), 'tcgiant_confirm_live' ) ), array( true, true ) );
+$staff = site( 'notices', array( 'home' => 'https://numismax-copy.com', 'options' => $live['options'] ?? array(), 'can' => false, 'screen' => 'dashboard' ) );
+check( '  and nothing elsewhere', $staff['staging'] ?? null, '' );
+
+$moved = site( 'confirm', array( 'home' => 'https://numismax-copy.com', 'options' => $live['options'] ?? array() ) );
+check( 'the shop really moved: one press, and the new address is live', $moved['after'] ?? null, '' );
+check( '  the log names who and where', false !== strpos( json_encode( $moved['log'] ?? array() ), 'coinshop-admin (user #7) confirmed that numismax-copy.com is the live shop. It had looked like a staging copy (its address is not one its eBay connection was made or confirmed at)' ), true );
+check( '  no pattern was overruled, so 3.28.0\'s record is not touched', array_key_exists( TCGiant_Sync_Environment::CONFIRMED_OPTION, $moved['options'] ?? array() ), false );
+check( '  and the shop is told nothing went to eBay meanwhile', $moved['options'][ TCGiant_Sync_Environment::VERDICT_OPTION ]['notice'] ?? null, 'now_live' );
+$after = site( 'binding', array( 'home' => 'https://numismax-copy.com', 'options' => $moved['options'] ?? array() ) );
+check( '  the next request: EndItem reaches eBay', array( $after['reason'] ?? null, $after['calls']['EndItem']['wire'] ?? null ), array( '', 1 ) );
+check( '  the list: both addresses, the newest first', $after['shown'] ?? null, array( 'numismax-copy.com', 'numismax.com' ) );
+$both = site( 'binding', array( 'home' => 'https://numismax.com', 'options' => $moved['options'] ?? array() ) );
+check( '  a shop served at both addresses is live at the old one too', $both['reason'] ?? null, '' );
+
+// Moved to an address a pattern also catches: one press answers both.
+$dev = site( 'confirm', array( 'home' => 'https://shop-dev.example.com', 'options' => $live['options'] ?? array() ) );
+check( 'moved to shop-dev.example.com, which a pattern also catches: one press, live', array( $dev['after'] ?? null, isset( $dev['options'][ TCGiant_Sync_Environment::CONFIRMED_OPTION ] ), count( $dev['options'][ TCGiant_Sync_Environment::BOUND_OPTION ]['addresses'] ?? array() ) ), array( '', true, 2 ) );
+
+// Connecting the account again at an address binds it.
+$reconnect = site( 'connect', array( 'home' => 'https://numismax-copy.com', 'options' => $live['options'] ?? array() ) );
+check( 'connecting eBay at numismax-copy.com binds it there', array( $reconnect['bound_to'] ?? null, $reconnect['after'] ?? null ), array( 'numismax-copy.com', '' ) );
+// A fresh shop set up and connected on its staging copy at an address a
+// pattern catches, then pushed to live: had the copy bound its own address,
+// the live shop would be "moved" at once.
+$fresh_copy = site( 'connect', array( 'home' => 'https://staging.numismax.com' ) );
+check( '  but connecting eBay on a copy a pattern catches binds nothing', array( $fresh_copy['bound_to'] ?? null, isset( $fresh_copy['options'][ TCGiant_Sync_Environment::BOUND_OPTION ] ), $fresh_copy['after'] ?? null ), array( '', false, 'address:label:staging' ) );
+$pushed = site( 'binding', array( 'home' => 'https://numismax.com', 'options' => $fresh_copy['options'] ?? array() ) );
+check( '  so its database pushed to the live shop is live there, and bound to the live address', array( $pushed['reason'] ?? null, $pushed['shown'] ?? null ), array( '', array( 'numismax.com' ) ) );
+$admin_src = (string) file_get_contents( $ROOT . '/admin/class-tcgiant-sync-admin.php' );
+$saved_at  = strpos( $admin_src, 'if ( $oauth->save_tokens_from_relay( $data ) ) {' );
+$bind_at   = strpos( $admin_src, "TCGiant_Sync_Environment::bind( 'connect', get_current_user_id() );" );
+check( '  which the OAuth callback does once the tokens are saved, and only then', false !== $saved_at && false !== $bind_at && $bind_at > $saved_at && $bind_at - $saved_at < 400, true );
+
+// What the binding never does.
+$none = site( 'binding', array( 'home' => 'https://numismax-copy.com', 'options' => array( TCGiant_Sync_Environment::BOUND_OPTION => $live['bound'] ?? array() ) ) );
+check( 'no eBay account connected: nothing to hold back, nothing decided', array( $none['reason'] ?? null, $none['calls']['EndItem']['outcome'] ?? null ), array( '', 'sent' ) );
+$fresh = site( 'binding', array( 'home' => 'https://numismax.com' ) );
+check( '  and nothing recorded', $fresh['bound'] ?? 'nothing', 'nothing' );
+$pattern = site( 'binding', array( 'home' => 'https://staging.numismax.com', 'options' => $connected ) );
+check( 'a copy a pattern catches is never bound to itself at the update', array( $pattern['reason'] ?? null, $pattern['bound'] ?? 'nothing' ), array( 'address:label:staging', 'nothing' ) );
+$envcopy = site( 'binding', array( 'home' => 'https://numismax.com', 'env' => 'staging', 'options' => $connected ) );
+check( '  nor one whose WP_ENVIRONMENT_TYPE is staging', array( $envcopy['reason'] ?? null, $envcopy['bound'] ?? 'nothing' ), array( 'environment:staging', 'nothing' ) );
+$envmoved = site( 'binding', array( 'home' => 'https://numismax-copy.com', 'env' => 'staging', 'options' => $live['options'] ?? array() ) );
+check( 'WP_ENVIRONMENT_TYPE still comes first', $envmoved['reason'] ?? null, 'environment:staging' );
+$cfg = site( 'confirm', array( 'home' => 'https://numismax-copy.com', 'env' => 'staging', 'options' => $live['options'] ?? array() ) );
+check( '  and the button cannot be pressed against it', array( $cfg['after'] ?? null, count( $cfg['options'][ TCGiant_Sync_Environment::BOUND_OPTION ]['addresses'] ?? array() ) ), array( 'environment:staging', 1 ) );
+$v = plugin( array( 'home' => 'https://numismax-copy.com', 'defined' => false, 'options' => $live['options'] ?? array() ) );
+check( 'TCGIANT_SYNC_IS_STAGING false in wp-config.php still lets a moved site send', array( $v['staging'] ?? null, $v['reason'] ?? null ), array( false, '' ) );
+
+// The address it goes by is the stored one: never WP_HOME, never the
+// request's host name. A wp-config.php that builds WP_HOME from the host a
+// request arrived on would otherwise have every request on an IP address, or
+// on whatever a bot put in its Host header, refuse a sale's stock push.
+$v = plugin( array( 'home' => 'https://numismax.com', 'wp_home' => 'http://203.0.113.9', 'http_host' => '203.0.113.9', 'options' => $live['options'] ?? array() ) );
+check( 'a request on the server\'s IP address, WP_HOME built from it: live', array( $v['staging'] ?? null, $v['reason'] ?? null ), array( false, '' ) );
+$v = plugin( array( 'home' => 'https://numismax.com', 'wp_home' => 'https://evil.example.net', 'http_host' => 'evil.example.net', 'options' => $live['options'] ?? array() ) );
+check( '  on a made-up Host header: live', $v['staging'] ?? null, false );
+// Bitnami's web request: WP_HOME built from the shop's own host name, the
+// stored home only the install's placeholder - and that is what is bound.
+$bitnami_bound = site( 'binding', array( 'home' => 'http://127.0.0.1', 'wp_home' => 'https://numismax.com', 'http_host' => 'numismax.com', 'options' => $connected ) );
+check( 'Bitnami: its web request is live, and binds the stored placeholder', array( $bitnami_bound['reason'] ?? null, $bitnami_bound['shown'] ?? null ), array( '', array( '127.0.0.1' ) ) );
+$v = plugin( array( 'home' => 'http://127.0.0.1', 'wp_home' => 'http://127.0.0.1/', 'http_host' => '127.0.0.1', 'options' => ( $bitnami_bound['options'] ?? array() ) + array( 'tcgiant_sync_env_verdict' => array( 'copy' => true, 'reason' => 'address:moved' ) ) ) );
+check( 'Bitnami from WP-CLI, its stored home the install\'s placeholder: bound to it, so live, whatever the last page load said', array( $v['staging'] ?? null, $v['reason'] ?? null ), array( false, '' ) );
+$v = plugin( array( 'home' => 'https://numismax-copy.com', 'wp_home' => 'http://127.0.0.1/', 'http_host' => '127.0.0.1', 'options' => $live['options'] ?? array() ) );
+check( 'a copy run from WP-CLI with a made-up WP_HOME: kept off eBay, by its stored address', array( $v['staging'] ?? null, $v['reason'] ?? null ), array( true, 'address:moved' ) );
+
+echo "\nA STAGING COPY UPDATED FIRST, THEN PUSHED TO LIVE (FIX ROUND 1, H1)\n" . str_repeat( '=', 132 ) . "\n";
+
+// A staging copy at a host's temporary address updates to 3.31.0 before the
+// live shop and binds itself there; its database pushed to live carried that
+// list over, and the live shop was "moved": every stock push refused, for
+// good. Now a list holding only such addresses, bound at the update, is
+// replaced with the live shop's.
+$stagings = array(
+	'Cloudways'            => 'https://wordpress-123456-789012.cloudwaysapps.com',
+	'Flywheel'             => 'https://numismax.flywheelstaging.com',
+	'Pressable'            => 'https://numismax.mystagingwebsite.com',
+	'GoDaddy'              => 'https://abc.myftpupload.com',
+	'WP Staging (folder)'  => 'https://numismax.com/mystage',
+);
+foreach ( $stagings as $host_name => $staging_url ) {
+	// WP Staging's copy lives in the live shop's database under tables of its
+	// own, wpstg0_ and on.
+	$stg  = site( 'binding', array( 'home' => $staging_url, 'options' => $connected, 'prefix' => 0 === strpos( $host_name, 'WP Staging' ) ? 'wpstg0_' : 'wp_' ) );
+	$live2 = site( 'binding', array( 'home' => 'https://numismax.com', 'options' => $stg['options'] ?? array() ) );
+	$entry = $live2['bound']['addresses'] ?? array();
+	$entry = $entry ? reset( $entry ) : array();
+	check( sprintf( '%s: the copy, updated first, binds itself (as before)', $host_name ), array( $stg['reason'] ?? null, count( $stg['shown'] ?? array() ) ), array( '', 1 ) );
+	check( '  pushed to live: live, bound to the live address only, and every write goes', array( $live2['reason'] ?? null, $live2['shown'] ?? null, $entry['how'] ?? null, $live2['calls']['EndItem']['wire'] ?? null, $live2['calls']['REST PUT']['wire'] ?? null ), array( '', array( 'numismax.com' ), 'staging-push', 1, 1 ) );
+	check( '  the log says what happened - on init, once the logger has loaded (fix round 2)', array( $live2['logger_at_boot'] ?? null, false !== strpos( json_encode( $live2['log_before_init'] ?? array() ), 'which a staging copy recorded' ), false !== strpos( json_encode( $live2['log'] ?? array() ), 'which a staging copy recorded for itself when it was updated before this shop' ) ), array( false, false, true ) );
+	check( '  and no email about a move', in_array( array( 'init', 'TCGiant_Sync_Environment::mail_move' ), $live2['hooks'] ?? array(), true ), false );
+}
+
+// What is still caught.
+$after_push = site( 'binding', array( 'home' => 'https://numismax.com', 'options' => site( 'binding', array( 'home' => $stagings['Cloudways'], 'options' => $connected ) )['options'] ?? array() ) );
+$again      = site( 'binding', array( 'home' => $stagings['Cloudways'], 'options' => $after_push['options'] ?? array() ) );
+check( 'after that push, a copy made again at the old staging address: kept off eBay', $again['reason'] ?? null, 'address:moved' );
+foreach ( array( $stagings['Cloudways'], 'https://numismax-restore.com', 'https://numismax.com/mystage' ) as $later ) {
+	$c = site( 'binding', array( 'home' => $later, 'options' => $live['options'] ?? array() ) );
+	check( 'the live shop updated first, a copy made after at ' . $later . ': kept off eBay', $c['reason'] ?? null, 'address:moved' );
+}
+$own_domain = site( 'binding', array( 'home' => 'https://numismax.com', 'options' => site( 'binding', array( 'home' => 'https://numismax-staging-copy.com', 'options' => $connected ) )['options'] ?? array() ) );
+check( 'what cannot be told from a copy: a staging copy on a domain of the shop\'s own, updated first and pushed - moved, the button needed', $own_domain['reason'] ?? null, 'address:moved' );
+$launched = site( 'binding', array( 'home' => 'https://numismax.com', 'options' => site( 'connect', array( 'home' => $stagings['Cloudways'] ) )['options'] ?? array() ) );
+check( 'a shop connected to eBay on its temporary address, then given its own domain: a real move, the button needed', $launched['reason'] ?? null, 'address:moved' );
+$mixed = $connected;
+$mixed[ TCGiant_Sync_Environment::BOUND_OPTION ] = array( 'addresses' => array_merge( ( site( 'binding', array( 'home' => $stagings['Flywheel'], 'options' => $connected ) )['bound']['addresses'] ?? array() ), ( $live['bound']['addresses'] ?? array() ) ) );
+$m = site( 'binding', array( 'home' => 'https://numismax-copy.com', 'options' => $mixed ) );
+check( 'a list holding a temporary address and the live shop\'s own: a copy elsewhere is still caught', array( $m['reason'] ?? null, count( $m['bound']['addresses'] ?? array() ) ), array( 'address:moved', 2 ) );
+
+echo "\nTHE STAGING-PUSH RULE, NARROWED (FIX ROUND 2)\n" . str_repeat( '=', 132 ) . "\n";
+
+// A shop that lives in a folder, bound at the update; its copy at the root of
+// the domain. Until fix round 2 any folder of this address counted as a
+// staging copy's, and this copy was let through - as was a real move out of
+// a folder, put right without a word. Now only WP Staging's own copy counts.
+$folder_shop = site( 'binding', array( 'home' => 'https://numismax.com/shop', 'options' => $connected ) );
+$root_copy   = site( 'binding', array( 'home' => 'https://numismax.com', 'options' => $folder_shop['options'] ?? array() ) );
+check( 'a shop in a folder, a copy at the root of its domain: kept off eBay', $root_copy['reason'] ?? null, 'address:moved' );
+$wp_folder = site( 'binding', array( 'home' => 'https://numismax.com/wp', 'options' => $connected ) );
+$moved_out = site( 'binding', array( 'home' => 'https://numismax.com', 'options' => $wp_folder['options'] ?? array() ) );
+check( 'a real move out of a folder: the button, not put right silently', $moved_out['reason'] ?? null, 'address:moved' );
+// A staging copy cloned again to another temporary address.
+$first_stg   = site( 'binding', array( 'home' => $stagings['Cloudways'], 'options' => $connected ) );
+$second_temp = site( 'binding', array( 'home' => 'https://numismax-two.flywheelsites.com', 'options' => $first_stg['options'] ?? array() ) );
+check( 'a staging copy cloned again to another temporary address: kept off eBay', $second_temp['reason'] ?? null, 'address:moved' );
+// What the database cannot tell: the same staging database copied to a
+// domain of its own is the live shop's push, as far as anything here shows.
+$second_real = site( 'binding', array( 'home' => 'https://numismax-dev-box.com', 'options' => $first_stg['options'] ?? array() ) );
+check( 'what cannot be told from the live shop: that staging database copied to a domain of its own - live (said in the readme)', $second_real['reason'] ?? null, '' );
+// Look-alikes (the spot check's survivors).
+$lookalike = site( 'binding', array( 'home' => 'https://numismax.mykinsta.cloud', 'options' => $connected ) );
+$after_la  = site( 'binding', array( 'home' => 'https://numismax.com', 'options' => $lookalike['options'] ?? array() ) );
+check( 'mykinsta.cloud is not Kinsta\'s kinsta.cloud: its staging list is not put right', $after_la['reason'] ?? null, 'address:moved' );
+$au_stg  = site( 'binding', array( 'home' => 'https://numismax.com.au', 'options' => $connected, 'prefix' => 'wpstg0_' ) );
+$after_au = site( 'binding', array( 'home' => 'https://numismax.com', 'options' => $au_stg['options'] ?? array() ) );
+check( 'numismax.com.au is not a folder of numismax.com, even with WP Staging\'s tables', $after_au['reason'] ?? null, 'address:moved' );
+$wp_prefix = site( 'binding', array( 'home' => 'https://numismax.com/mystage', 'options' => $connected ) );
+$after_wpp = site( 'binding', array( 'home' => 'https://numismax.com', 'options' => $wp_prefix['options'] ?? array() ) );
+check( 'a folder bound with the shop\'s own tables, not WP Staging\'s: the button', $after_wpp['reason'] ?? null, 'address:moved' );
+// Tables whose prefix holds "wpstg" without starting with it are not WP
+// Staging's (the spot check's survivor K14, fix round 3).
+$in_prefix = site( 'binding', array( 'home' => 'https://numismax.com/mystage', 'options' => $connected, 'prefix' => 'shop_wpstg0_' ) );
+$after_in  = site( 'binding', array( 'home' => 'https://numismax.com', 'options' => $in_prefix['options'] ?? array() ) );
+check( 'a folder bound with tables whose prefix only holds "wpstg": not WP Staging\'s, the button (fix round 3)', $after_in['reason'] ?? null, 'address:moved' );
+// A live shop that itself lives on a host's temporary address, a staging copy
+// at another pushed over it: not put right by itself - the button, as the
+// readme now says (fix round 3, LOW-2; the readme said it was put right).
+$tmp_live = site( 'binding', array( 'home' => 'https://numismax-live.flywheelsites.com', 'options' => site( 'binding', array( 'home' => $stagings['Flywheel'], 'options' => $connected ) )['options'] ?? array() ) );
+check( 'a live shop on a temporary address, a staging copy pushed over it: the button, said in the readme (fix round 3)', $tmp_live['reason'] ?? null, 'address:moved' );
+// And a copy of such a shop at a domain of its own: let through when the shop
+// was bound by the update (connected before 3.31.0), caught when it connected
+// after - both said in the readme (W8).
+$tmp_shop = site( 'binding', array( 'home' => $stagings['Flywheel'], 'options' => $connected ) );
+$tmp_copy = site( 'binding', array( 'home' => 'https://numismax-dev-box.com', 'options' => $tmp_shop['options'] ?? array() ) );
+$tmp_conn = site( 'binding', array( 'home' => 'https://numismax-dev-box.com', 'options' => site( 'connect', array( 'home' => $stagings['Flywheel'] ) )['options'] ?? array() ) );
+check( '  a copy of it at a domain of its own: live if the shop was bound by the update, kept off eBay if it connected after (readme)', array( $tmp_copy['reason'] ?? null, $tmp_conn['reason'] ?? null ), array( '', 'address:moved' ) );
+
+echo "\nTHE ADMINISTRATOR IS EMAILED ABOUT A MOVE (FIX ROUND 1, OWNER Q5)\n" . str_repeat( '=', 132 ) . "\n";
+
+$mail_opts                = $live['options'] ?? array();
+$mail_opts['admin_email'] = 'owner@numismax.example';
+$mail = site( 'mail', array( 'home' => 'https://numismax-copy.com', 'options' => $mail_opts ) );
+$one  = $mail['mails'][0] ?? array();
+check( 'a moved site hooks the email on init, as the plugin loads', in_array( array( 'init', 'TCGiant_Sync_Environment::mail_move' ), $mail['hooks'] ?? array(), true ), true );
+check( '  one email, to the site\'s admin address, however many requests', array( count( $mail['mails'] ?? array() ), $one['to'] ?? null, $mail['first'] ?? null, $mail['second'] ?? null ), array( 1, 'owner@numismax.example', true, false ) );
+check( '  naming the new address', $one['subject'] ?? null, 'TCGiant Sync is not sending changes to eBay from numismax-copy.com' );
+check( '  saying where the connection was made, what to press, and that a copy needs nothing', array( false !== strpos( $one['body'] ?? '', 'its eBay connection was made at numismax.com, and this site is now at numismax-copy.com' ), false !== strpos( $one['body'] ?? '', 'press "This is my live shop"' ), false !== strpos( $one['body'] ?? '', 'nothing needs doing. Your live shop is not affected.' ), false !== strpos( $one['body'] ?? '', 'https://site.invalid/wp-admin/admin.php?page=tcgiant-sync' ) ), array( true, true, true, true ) );
+$tcg_rows = array_values( array_filter( array_keys( $mail['options'] ?? array() ), function ( $k ) { return 0 === strpos( $k, TCGiant_Sync_Environment::MOVE_MAILED_PREFIX ); } ) );
+check( '  remembered by a row of its own, named by a hash of the address (fix round 2)', array( count( $tcg_rows ), false === strpos( implode( ',', $tcg_rows ), 'numismax' ) ), array( 1, true ) );
+$tcg_src = (string) file_get_contents( $ROOT . '/includes/class-tcgiant-sync-environment.php' );
+check( '  inserted only if it is not there - INSERT IGNORE, the one request that inserts it sends', array( false !== strpos( $tcg_src, 'INSERT IGNORE INTO {$wpdb->options} ( option_name, option_value, autoload )' ), false !== strpos( $tcg_src, 'if ( 1 !== (int) $claimed ) {' ) ), array( true, true ) );
+$tcg_lost = site( 'mail', array( 'home' => 'https://numismax-copy.com', 'options' => $mail_opts, 'db_fails' => true ) );
+check( 'a database that cannot write the row: no email, request after request - not one every request', array( count( $tcg_lost['mails'] ?? array() ), $tcg_lost['first'] ?? null, $tcg_lost['second'] ?? null ), array( 0, false, false ) );
+check( '  and the email no longer says "once for each address" of a database copied again', array( false !== strpos( $one['body'] ?? '', 'once for each address it finds itself at; a copy made again from your live shop may send it again' ), false === strpos( $one['body'] ?? '', 'This email is sent once for each address.' ) ), array( true, true ) );
+$next = site( 'mail', array( 'home' => 'https://numismax-copy.com', 'options' => $mail['options'] ?? array() ) );
+check( 'the next request at that address: none', count( $next['mails'] ?? array() ), 0 );
+check( '  and no write: the row is looked for first (fix round 3)', $next['inserts'] ?? null, 0 );
+// An options table without its UNIQUE key on option_name - some migration
+// tools drop indexes, and copies are made by exactly those tools - takes the
+// INSERT every time: fix round 2 sent an email on every request (LOW-3).
+$tcg_nokey = site( 'mail', array( 'home' => 'https://numismax-copy.com', 'options' => $mail_opts, 'no_unique' => true ) );
+check( 'an options table that lost its UNIQUE key: still one email, not one every request (fix round 3)', array( count( $tcg_nokey['mails'] ?? array() ), $tcg_nokey['first'] ?? null, $tcg_nokey['second'] ?? null, $tcg_nokey['inserts'] ?? null ), array( 1, true, false, 1 ) );
+$tcg_noread = site( 'mail', array( 'home' => 'https://numismax-copy.com', 'options' => $mail_opts, 'db_read_fails' => true ) );
+check( '  a database that cannot say whether the row is there: no email, and no write', array( count( $tcg_noread['mails'] ?? array() ), $tcg_noread['inserts'] ?? null ), array( 0, 0 ) );
+$other = site( 'mail', array( 'home' => 'https://numismax-second.com', 'options' => $mail['options'] ?? array() ) );
+check( 'a copy at another address: one more', count( $other['mails'] ?? array() ), 1 );
+$quiet = site( 'mail', array( 'home' => 'https://numismax.com', 'options' => $mail_opts ) );
+check( 'the live shop at its own address: no hook, no email', array( in_array( 'init', array_column( $quiet['hooks'] ?? array(), 0 ), true ), count( $quiet['mails'] ?? array() ) ), array( false, 0 ) );
+$patt = site( 'mail', array( 'home' => 'https://staging.numismax.com', 'options' => $mail_opts ) );
+check( 'a copy a pattern catches, not a move: none', count( $patt['mails'] ?? array() ), 0 );
+$env_src_now = (string) file_get_contents( $ROOT . '/includes/class-tcgiant-sync-environment.php' );
+check( 'one hook to take out to stop them', substr_count( $env_src_now, "add_action( 'init', array( __CLASS__, 'mail_move' ) );" ), 1 );
+
+echo "\nONE ADDRESS, HOWEVER IT IS WRITTEN (FIX ROUND 1, L2)\n" . str_repeat( '=', 132 ) . "\n";
+
+// strtolower() before PHP 8.2 follows the locale: under a Latin-1 one it
+// rewrote a UTF-8 address's bytes, so one address hashed two ways.
+$tcg_locale = false;
+foreach ( array( 'de_DE.ISO8859-1', 'de_DE.ISO-8859-1', 'de_DE', 'German_Germany.1252', 'German' ) as $tcg_try ) {
+	if ( false !== setlocale( LC_CTYPE, $tcg_try ) ) {
+		$tcg_locale = $tcg_try;
+		break;
+	}
+}
+$latin = TCGiant_Sync_Environment::address( "https://B\u{00FC}CHER.de/Shop" );
+setlocale( LC_CTYPE, 'C' );
+$plain = TCGiant_Sync_Environment::address( "https://B\u{00FC}CHER.de/Shop" );
+check( 'an address with a non-ASCII letter: the same in a Latin-1 locale (' . ( $tcg_locale ? $tcg_locale : 'none available' ) . ') and in C', array( $latin, $plain ), array( "b\u{00FC}cher.de/shop", "b\u{00FC}cher.de/shop" ) );
+
+// parse_url() under a single-byte locale (cp1252, ISO-8859-x; PHP 7.4 takes
+// it from its environment) rewrites the bytes 0x80-0x9F as '_', which most
+// non-Latin names hold: a Cyrillic home bound in one process was "moved" in
+// the next (fix round 3, LOW-1). The host is now parsed with those bytes
+// percent-encoded, and decoded after.
+$tcg_cp = false;
+foreach ( array( 'English_United States.1252', 'German_Germany.1252', 'en_US.ISO8859-1', 'en_US.ISO-8859-1', 'de_DE.ISO8859-1', 'de_DE.ISO-8859-1', 'de_DE' ) as $tcg_try ) {
+	if ( false !== setlocale( LC_CTYPE, $tcg_try ) ) {
+		$tcg_cp = $tcg_try;
+		break;
+	}
+}
+$tcg_ru     = "\u{0441}\u{0430}\u{0439}\u{0442}.\u{0440}\u{0444}";
+$tcg_raw    = parse_url( 'https://' . $tcg_ru . '/' );
+$tcg_single = array( TCGiant_Sync_Environment::address( 'https://' . $tcg_ru . '/Shop' ), TCGiant_Sync_Environment::address( 'https://www.' . $tcg_ru . ':8443/%D0%BC%41x/' ), TCGiant_Sync_Environment::address( "https://\u{1F600}smile.com" ) );
+setlocale( LC_CTYPE, 'C' );
+$tcg_c      = array( TCGiant_Sync_Environment::address( 'https://' . $tcg_ru . '/Shop' ), TCGiant_Sync_Environment::address( 'https://www.' . $tcg_ru . ':8443/%D0%BC%41x/' ), TCGiant_Sync_Environment::address( "https://\u{1F600}smile.com" ) );
+$tcg_want   = array( $tcg_ru . '/shop', $tcg_ru . ':8443/%d0%bc%41x', "\u{1F600}smile.com" );
+if ( $tcg_cp ) {
+	check( 'in a single-byte locale (' . $tcg_cp . ') parse_url() itself rewrites the Cyrillic name: the fault', ( $tcg_raw['host'] ?? '' ) !== $tcg_ru, true );
+} else {
+	echo "  (no single-byte locale here to show parse_url()'s fault in; the checks below run in C)\n";
+}
+check( '  a Cyrillic name, with a port and an escaped folder, and an emoji name: the same there and in C (fix round 3)', array( $tcg_single, $tcg_c ), array( $tcg_want, $tcg_want ) );
+$tcg_pa = new ReflectionMethod( 'TCGiant_Sync_Environment', 'parse' );
+if ( PHP_VERSION_ID < 80100 ) {
+	$tcg_pa->setAccessible( true );
+}
+$tcg_pp = $tcg_pa->invoke( null, 'https://' . $tcg_ru . '/a%2Fb%25c' );
+check( '  a \'%\' already in such a URL comes back as it was, not decoded', $tcg_pp['path'], '/a%2Fb%25c' );
+check( '  and an ASCII URL is parsed exactly as before', $tcg_pa->invoke( null, 'https://Shop.Example.com:8080/a%2Fb' ), array( 'host' => 'shop.example.com', 'port' => 8080, 'path' => '/a%2Fb' ) );
+$bh = new ReflectionMethod( 'TCGiant_Sync_Environment', 'bound_hash' );
+if ( PHP_VERSION_ID < 80100 ) {
+	$bh->setAccessible( true );
+}
+// One form, computed by the plugin itself, the same in every process: intl
+// or not (fix round 2 - fix round 1 used intl, so a home bound where intl
+// was loaded was "moved" where it was not).
+check( 'bücher.de and xn--bcher-kva.de bind as one address, in this PHP (intl ' . ( extension_loaded( 'intl' ) ? 'loaded' : 'not loaded' ) . ')', $bh->invoke( null, "b\u{00FC}cher.de" ), $bh->invoke( null, 'xn--bcher-kva.de' ) );
+check( '  so do bücher-münzen.de and xn--bcher-mnzen-thbg.de, with a port and a folder', $bh->invoke( null, "b\u{00FC}cher-m\u{00FC}nzen.de:8443/shop" ), $bh->invoke( null, 'xn--bcher-mnzen-thbg.de:8443/shop' ) );
+check( '  the environment class never asks intl', false === strpos( (string) file_get_contents( $ROOT . '/includes/class-tcgiant-sync-environment.php' ), 'idn_to_ascii(' ), true );
+// And the form is intl's own, where a PHP that loads intl can say.
+$tcg_idn = $WORLD . '/idn.php';
+file_put_contents( $tcg_idn, '<?php define( "ABSPATH", __DIR__ . "/" ); function __( $t ) { return $t; } require ' . var_export( $ROOT . '/includes/class-tcgiant-sync-environment.php', true ) . '; $m = new ReflectionMethod( "TCGiant_Sync_Environment", "ascii_host" ); if ( PHP_VERSION_ID < 80100 ) { $m->setAccessible( true ); } $out = array(); foreach ( array( "b\\u{00FC}cher.de", "m\\u{00FC}nchen.de", "espa\\u{00F1}a.com", "\\u{4F8B}\\u{3048}.jp", "\\u{0441}\\u{0430}\\u{0439}\\u{0442}.\\u{0440}\\u{0444}", "stra\\u{00DF}e.de", "\\u{1F600}smile.com" ) as $h ) { $out[] = $m->invoke( null, $h ) === idn_to_ascii( $h, IDNA_NONTRANSITIONAL_TO_ASCII, INTL_IDNA_VARIANT_UTS46 ); } echo json_encode( $out );' );
+$tcg_out = json_decode( (string) shell_exec( escapeshellarg( PHP_BINARY ) . ' -d extension=intl ' . escapeshellarg( $tcg_idn ) . ' 2>' . ( '\\' === DIRECTORY_SEPARATOR ? 'NUL' : '/dev/null' ) ), true );
+@unlink( $tcg_idn );
+if ( is_array( $tcg_out ) ) {
+	check( '  and it is the form intl gives, for seven names in five scripts (intl loaded in a PHP of its own)', $tcg_out, array_fill( 0, 7, true ) );
+} else {
+	echo "  (PHP's intl extension cannot be loaded here to compare with: the form is RFC 3492's)\n";
+}
+check( 'an ASCII address hashes exactly as before fix round 1', $bh->invoke( null, 'numismax.com/shop' ), hash( 'sha256', 'tcgiant-sync-bound|numismax.com/shop' ) );
+
+// RFC 3492's own samples (section 7.1; (S) is all ASCII, which is never
+// encoded; the Russian without the RFC's optional case annotation), plus a
+// 4-byte emoji. Long labels reach the bias adaptation a short name never
+// does: the spot check broke it and every check above still passed (fix
+// round 3, LOW-4).
+$tcg_puny = new ReflectionMethod( 'TCGiant_Sync_Environment', 'punycode' );
+if ( PHP_VERSION_ID < 80100 ) {
+	$tcg_puny->setAccessible( true );
+}
+$tcg_rfc = array(
+	'A Arabic (Egyptian)' => array( "\u{0644}\u{064A}\u{0647}\u{0645}\u{0627}\u{0628}\u{062A}\u{0643}\u{0644}\u{0645}\u{0648}\u{0634}\u{0639}\u{0631}\u{0628}\u{064A}\u{061F}", 'egbpdaj6bu4bxfgehfvwxn' ),
+	'B Chinese (simplified)' => array( "\u{4ED6}\u{4EEC}\u{4E3A}\u{4EC0}\u{4E48}\u{4E0D}\u{8BF4}\u{4E2D}\u{6587}", 'ihqwcrb4cv8a8dqg056pqjye' ),
+	'C Chinese (traditional)' => array( "\u{4ED6}\u{5011}\u{7232}\u{4EC0}\u{9EBD}\u{4E0D}\u{8AAA}\u{4E2D}\u{6587}", 'ihqwctvzc91f659drss3x8bo0yb' ),
+	'D Czech' => array( "Pro\u{010D}prost\u{011B}nemluv\u{00ED}\u{010D}esky", 'Proprostnemluvesky-uyb24dma41a' ),
+	'E Hebrew' => array( "\u{05DC}\u{05DE}\u{05D4}\u{05D4}\u{05DD}\u{05E4}\u{05E9}\u{05D5}\u{05D8}\u{05DC}\u{05D0}\u{05DE}\u{05D3}\u{05D1}\u{05E8}\u{05D9}\u{05DD}\u{05E2}\u{05D1}\u{05E8}\u{05D9}\u{05EA}", '4dbcagdahymbxekheh6e0a7fei0b' ),
+	'F Hindi' => array( "\u{092F}\u{0939}\u{0932}\u{094B}\u{0917}\u{0939}\u{093F}\u{0928}\u{094D}\u{0926}\u{0940}\u{0915}\u{094D}\u{092F}\u{094B}\u{0902}\u{0928}\u{0939}\u{0940}\u{0902}\u{092C}\u{094B}\u{0932}\u{0938}\u{0915}\u{0924}\u{0947}\u{0939}\u{0948}\u{0902}", 'i1baa7eci9glrd9b2ae1bj0hfcgg6iyaf8o0a1dig0cd' ),
+	'G Japanese' => array( "\u{306A}\u{305C}\u{307F}\u{3093}\u{306A}\u{65E5}\u{672C}\u{8A9E}\u{3092}\u{8A71}\u{3057}\u{3066}\u{304F}\u{308C}\u{306A}\u{3044}\u{306E}\u{304B}", 'n8jok5ay5dzabd5bym9f0cm5685rrjetr6pdxa' ),
+	'H Korean' => array( "\u{C138}\u{ACC4}\u{C758}\u{BAA8}\u{B4E0}\u{C0AC}\u{B78C}\u{B4E4}\u{C774}\u{D55C}\u{AD6D}\u{C5B4}\u{B97C}\u{C774}\u{D574}\u{D55C}\u{B2E4}\u{BA74}\u{C5BC}\u{B9C8}\u{B098}\u{C88B}\u{C744}\u{AE4C}", '989aomsvi5e83db1d2a355cv1e0vak1dwrv93d5xbh15a0dt30a5jpsd879ccm6fea98c' ),
+	'I Russian' => array( "\u{043F}\u{043E}\u{0447}\u{0435}\u{043C}\u{0443}\u{0436}\u{0435}\u{043E}\u{043D}\u{0438}\u{043D}\u{0435}\u{0433}\u{043E}\u{0432}\u{043E}\u{0440}\u{044F}\u{0442}\u{043F}\u{043E}\u{0440}\u{0443}\u{0441}\u{0441}\u{043A}\u{0438}", 'b1abfaaepdrnnbgefbadotcwatmq2g4l' ),
+	'J Spanish' => array( "Porqu\u{00E9}nopuedensimplementehablarenEspa\u{00F1}ol", 'PorqunopuedensimplementehablarenEspaol-fmd56a' ),
+	'K Vietnamese' => array( "T\u{1EA1}isaoh\u{1ECD}kh\u{00F4}ngth\u{1EC3}ch\u{1EC9}n\u{00F3}iti\u{1EBF}ngVi\u{1EC7}t", 'TisaohkhngthchnitingVit-kjcr8268qyxafd2f1b9g' ),
+	'L' => array( "3\u{5E74}B\u{7D44}\u{91D1}\u{516B}\u{5148}\u{751F}", '3B-ww4c5e180e575a65lsy2b' ),
+	'M' => array( "\u{5B89}\u{5BA4}\u{5948}\u{7F8E}\u{6075}-with-SUPER-MONKEYS", '-with-SUPER-MONKEYS-pc58ag80a8qai00g7n9n' ),
+	'N' => array( "Hello-Another-Way-\u{305D}\u{308C}\u{305E}\u{308C}\u{306E}\u{5834}\u{6240}", 'Hello-Another-Way--fc4qua05auwb3674vfr0b' ),
+	'O' => array( "\u{3072}\u{3068}\u{3064}\u{5C4B}\u{6839}\u{306E}\u{4E0B}2", '2-u9tlzr9756bt3uc0v' ),
+	'P' => array( "Maji\u{3067}Koi\u{3059}\u{308B}5\u{79D2}\u{524D}", 'MajiKoi5-783gue6qz075azm5e' ),
+	'Q' => array( "\u{30D1}\u{30D5}\u{30A3}\u{30FC}de\u{30EB}\u{30F3}\u{30D0}", 'de-jg4avhby1noc0d' ),
+	'R' => array( "\u{305D}\u{306E}\u{30B9}\u{30D4}\u{30FC}\u{30C9}\u{3067}", 'd9juau41awczczp' ),
+	'an emoji (4 bytes)' => array( "\u{1F600}", 'e28h' ),
+);
+$tcg_bad = array();
+foreach ( $tcg_rfc as $tcg_k => $tcg_pair ) {
+	$tcg_got = $tcg_puny->invoke( null, $tcg_pair[0] );
+	if ( $tcg_got !== $tcg_pair[1] ) {
+		$tcg_bad[ $tcg_k ] = $tcg_got;
+	}
+}
+check( 'punycode() gives RFC 3492\'s 18 samples (A-R) and an emoji exactly, none wrong (fix round 3)', array( count( $tcg_rfc ), $tcg_bad ), array( 19, array() ) );
+check( '  and refuses a label that is not UTF-8, so the address is compared as it is', $tcg_puny->invoke( null, "\xC3\x28" ), null );
+
+// Ten addresses at most, the most recent first.
+$GLOBALS['OPTIONS'] = $connected;
+$GLOBALS['ENV_TYPE'] = 'production';
+for ( $tcg_i = 1; $tcg_i <= 12; $tcg_i++ ) {
+	$GLOBALS['HOME_URL'] = 'https://shop' . $tcg_i . '.example.org';
+	TCGiant_Sync_Environment::bind( 'confirm', 7 );
+}
+$GLOBALS['HOME_URL'] = 'https://numismax.com';
+check( 'the list keeps the ten most recent addresses, the newest first', TCGiant_Sync_Environment::bound_addresses(), array( 'shop12.example.org', 'shop11.example.org', 'shop10.example.org', 'shop9.example.org', 'shop8.example.org', 'shop7.example.org', 'shop6.example.org', 'shop5.example.org', 'shop4.example.org', 'shop3.example.org' ) );
+check( '  autoloaded, as it is read on every request', $GLOBALS['AUTOLOAD'][ TCGiant_Sync_Environment::BOUND_OPTION ] ?? null, true );
+$GLOBALS['OPTIONS'] = array();
+
 echo "\nUNINSTALL KNOWS WHAT THIS STORES\n" . str_repeat( '=', 132 ) . "\n";
 
 $env_src   = (string) file_get_contents( $ROOT . '/includes/class-tcgiant-sync-environment.php' );
 $uninstall = (string) file_get_contents( $ROOT . '/uninstall.php' );
 preg_match( '/\$tcgiant_options\s*=\s*array\((.*?)\);/s', $uninstall, $list );
 preg_match_all( "/const\s+\w+_OPTION\s*=\s*'([a-z_]+)'/", $env_src, $opts );
-check( 'the class stores two options', $opts[1], array( 'tcgiant_sync_env_verdict', 'tcgiant_sync_live_confirmed' ) );
+check( 'the class stores three options', $opts[1], array( 'tcgiant_sync_env_verdict', 'tcgiant_sync_live_confirmed', 'tcgiant_sync_bound_address' ) );
+check( '  and a row for each address emailed about, which uninstall\'s sweep removes', false !== strpos( $uninstall, "OR option_name LIKE 'tcgiant_sync_move_mailed_%'" ), true );
 $missing = array();
 foreach ( $opts[1] as $name ) {
 	if ( false === strpos( $list[1] ?? '', "'" . $name . "'" ) ) {

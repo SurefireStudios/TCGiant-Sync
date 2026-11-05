@@ -11,6 +11,8 @@ This file exists so the repository has a changelog where people look for one. It
 
 | Version | Date | Headline |
 |---|---|---|
+| [3.31.0](https://github.com/SurefireStudios/TCGiant-Sync/releases/tag/v3.31.0) | 2026-11-05 | Unpaid eBay orders arrive as Pending payment; a copy of the shop sends nothing to eBay |
+| [3.30.4](https://github.com/SurefireStudios/TCGiant-Sync/releases/tag/v3.30.4) | 2026-11-05 | Your own photos no longer come back from eBay as duplicates |
 | [3.30.3](https://github.com/SurefireStudios/TCGiant-Sync/releases/tag/v3.30.3) | 2026-11-04 | UPC, EAN and ISBN reach eBay, with eBay's own "Does not apply" |
 | [3.30.2](https://github.com/SurefireStudios/TCGiant-Sync/releases/tag/v3.30.2) | 2026-11-04 | New listings no longer cost an extra call each sync; the weekly full sync retries after a stalled one |
 | [3.30.1](https://github.com/SurefireStudios/TCGiant-Sync/releases/tag/v3.30.1) | 2026-11-04 | Far fewer eBay calls for shops that import only some categories |
