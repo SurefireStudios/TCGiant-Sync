@@ -95,7 +95,18 @@ check( '{{title}} is the title the item sends, a "{{sku}}" in it kept as text', 
 $quoted = new WC_Product( 24, array( 'name' => 'Ash" class="evil', 'description' => 'x' ) );
 update_post_meta( 24, TCGiant_Sync_Templates::OVERRIDE_META, (string) make_template( array( 'html' => '<p title="{{{title}}}">x</p>' ) ) );
 $q = described( $quoted );
-check( '{{{title}}} is escaped all the same: a quote in the title adds no attribute', 0 === strpos( $q['html'], '<p title=\'Ash" class="evil\'>x</p>' ), true );
+// Read back, not compared as text: libxml writes the same attribute as
+// title='Ash" class="evil' or, from 2.13, as title="Ash&quot; class=&quot;evil".
+$qdoc = new DOMDocument();
+@$qdoc->loadHTML( '<?xml encoding="UTF-8"><html><body>' . $q['html'] . '</body></html>', LIBXML_NONET | LIBXML_HTML_NODEFDTD );
+$qp     = $qdoc->getElementsByTagName( 'p' )->item( 0 );
+$qattrs = array();
+if ( $qp ) {
+	foreach ( $qp->attributes as $qattr ) {
+		$qattrs[ $qattr->name ] = $qattr->value;
+	}
+}
+check( '{{{title}}} is escaped all the same: a quote in the title adds no attribute', $qattrs, array( 'title' => 'Ash" class="evil' ) );
 check( '{{attr.x}} gives term names, by slug and without its pa_', false !== strpos( $html, 'CHZ-4 Base Set / Wizards of the Coast' ), true );
 check( '{{meta.x}}: only what is allowlisted - a "_" key and a plain one refused', false !== strpos( $html, '[][1999][]' ), true );
 check( '  each refusal says so', count( array_filter( $sent['warnings'], function ( $w ) { return false !== strpos( $w, 'not on the allowlist' ); } ) ), 2 );
