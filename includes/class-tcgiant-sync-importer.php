@@ -23,6 +23,11 @@ if ( ! class_exists( 'TCGiant_Sync_Catalog', false ) ) {
 	require_once __DIR__ . '/class-tcgiant-sync-catalog.php';
 }
 
+// The eBay shop's categories, which the filter reads by name (3.33.0).
+if ( ! class_exists( 'TCGiant_Sync_Shop_Categories', false ) ) {
+	require_once __DIR__ . '/class-tcgiant-sync-shop-categories.php';
+}
+
 /**
  * TCGiant_Sync_Importer class
  */
@@ -1245,9 +1250,7 @@ class TCGiant_Sync_Importer {
 		$filter_name = ! empty( $settings['category_ids'] ) ? $settings['category_ids'] : 'All Categories';
 
 		// Clear cached category ID transient so we get fresh resolution.
-		if ( ! empty( $settings['category_ids'] ) ) {
-			delete_transient( 'tcgiant_sync_cats_' . md5( $settings['category_ids'] ) );
-		}
+		self::refresh_category_filter( $settings );
 
 		// Where the delta picks up once this finishes - see full_sync_position().
 		// It is also what this scan is known by: a batch queued for another
@@ -7569,35 +7572,52 @@ class TCGiant_Sync_Importer {
 			}
 		}
 
-		// Download Store Category Tree.
-		$api = TCGiant_Sync_API::instance();
-		$store_response = $api->get_store();
-		if ( ! is_wp_error( $store_response ) && isset( $store_response['Store']['CustomCategories']['CustomCategory'] ) ) {
-			$categories = $store_response['Store']['CustomCategories']['CustomCategory'];
-			if ( isset( $categories['CategoryID'] ) ) {
-				$categories = array( $categories );
+		// Every entry a number: a failed read loses no id, so no minute's retry
+		// (below). The tree is still read: the Settings screen stores names, and
+		// a number can be one, a year, say.
+		$numbers = count( $valid_ids ) === count( $allowed_strings );
+
+		// The shop's categories, from the one cached read of them (3.33.0).
+		$tree = TCGiant_Sync_Shop_Categories::tree();
+		foreach ( $tree['categories'] as $row ) {
+			$name = strtolower( trim( $row['name'] ) );
+			if ( $name && in_array( $name, $allowed_strings, true ) ) {
+				$valid_ids[] = (string) $row['id'];
 			}
-			
-			$flatten = function( $cats ) use ( &$flatten, &$valid_ids, $allowed_strings ) {
-				if ( ! is_array( $cats ) ) return;
-				foreach ( $cats as $cat ) {
-					$name = strtolower( trim( $cat['Name'] ?? '' ) );
-					$id = $cat['CategoryID'] ?? '';
-					if ( $name && $id && in_array( $name, $allowed_strings, true ) ) {
-						$valid_ids[] = (string) $id;
-					}
-					if ( isset( $cat['ChildCategory'] ) ) {
-						$children = isset( $cat['ChildCategory']['CategoryID'] ) ? array( $cat['ChildCategory'] ) : $cat['ChildCategory'];
-						$flatten( $children );
-					}
-				}
-			};
-			$flatten( $categories );
 		}
 
 		$valid_ids = array_unique( $valid_ids );
-		set_transient( $transient_key, $valid_ids, 3600 );
+
+		// Only briefly when the names could not be read: it is an allow-list,
+		// and a read that failed would otherwise hold back listings the shop
+		// wants for an hour. An hour for a filter of numbers (fix round 2), or
+		// an account with no Store would ask GetStore on every sync run.
+		set_transient( $transient_key, $valid_ids, $numbers || TCGiant_Sync_Shop_Categories::usable( $tree ) ? 3600 : 60 );
 		return $valid_ids;
+	}
+
+	/**
+	 * What a Full Sync's start does for the filter by shop category: the ids it
+	 * resolved are dropped, and, when it names categories, eBay is read afresh
+	 * (3.33.0 fix round 1), as a Full Sync always did: the tree may be an hour
+	 * old, and a category just added on eBay would be missing from it.
+	 *
+	 * @param array $settings The shop's settings.
+	 */
+	public static function refresh_category_filter( array $settings ) {
+		$filter = (string) ( $settings['category_ids'] ?? '' );
+		if ( '' === $filter ) {
+			return;
+		}
+
+		delete_transient( 'tcgiant_sync_cats_' . md5( $filter ) );
+
+		foreach ( explode( ',', $filter ) as $entry ) {
+			if ( ! is_numeric( trim( $entry ) ) ) {
+				TCGiant_Sync_Shop_Categories::tree( true );
+				return;
+			}
+		}
 	}
 
 	/**

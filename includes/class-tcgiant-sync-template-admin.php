@@ -624,8 +624,12 @@ class TCGiant_Sync_Template_Admin {
 			wp_send_json_error( array( 'message' => $message, 'left' => self::checks_left() ) );
 		}
 
+		// With eBay's Warning about the shop category, if it gave one (3.33.0
+		// fix round 1).
+		$warned = TCGiant_Sync_Shop_Categories::verify_warning( $result );
+
 		wp_send_json_success( array(
-			'message' => __( 'eBay accepts this listing, description included. Nothing was listed.', 'tcgiant-sync' ),
+			'message' => __( 'eBay accepts this listing, description included. Nothing was listed.', 'tcgiant-sync' ) . ( '' !== $warned ? ' ' . $warned : '' ),
 			'left'    => self::checks_left(),
 		) );
 	}

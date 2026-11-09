@@ -45,6 +45,11 @@ if ( ! class_exists( 'TCGiant_Sync_Own_Photos', false ) ) {
 	require_once __DIR__ . '/class-tcgiant-sync-own-photos.php';
 }
 
+// The eBay shop category a push sends a listing to (3.33.0).
+if ( ! class_exists( 'TCGiant_Sync_Shop_Categories', false ) ) {
+	require_once __DIR__ . '/class-tcgiant-sync-shop-categories.php';
+}
+
 /**
  * TCGiant_Sync_Exporter class
  */
@@ -198,6 +203,16 @@ class TCGiant_Sync_Exporter {
 	 * @var array|null
 	 */
 	private $photos_sent = null;
+
+	/**
+	 * What the last build_item_xml() decided of the listing's eBay shop
+	 * categories (3.33.0), TCGiant_Sync_Shop_Categories::plan(): the ids its
+	 * Storefront carried, for the line said once eBay has taken the item
+	 * (say_shop_categories()). Null when it sent none.
+	 *
+	 * @var array|null
+	 */
+	private $shop_categories_sent = null;
 
 	/**
 	 * The item specifics eBay defines for each category this push has read,
@@ -1969,9 +1984,13 @@ class TCGiant_Sync_Exporter {
 				if ( TCGiant_Sync_Motors::revised_as_before( $sent_settings ) ) {
 					TCGiant_Sync_Logger::log( sprintf( 'Push: eBay listing %1$s of WC #%2$d is on eBay Motors and is %3$s, so its Update goes as before 3.28.9, with the shop\'s own site. TCGiant Sync lists only eBay Motors Parts & Accessories and does not otherwise support vehicles.', $ebay_item_id, $product->get_id(), TCGiant_Sync_Motors::BRANCH_VEHICLES === (string) ( $sent_settings['_listing_branch'] ?? '' ) ? 'a vehicle listing' : 'not known to be Parts & Accessories' ) );
 				}
-				$response = self::on_listing_site( $sent_settings, function () use ( $api, $fixed_price, $full_xml ) {
-					return $fixed_price ? $api->revise_fixed_price_item( $full_xml ) : $api->revise_item( $full_xml );
-				}, 'revise', sprintf( 'eBay listing %1$s of WC #%2$d', $ebay_item_id, $product->get_id() ), $product->get_id() );
+				$revise   = function ( $xml ) use ( $api, $fixed_price, $sent_settings, $ebay_item_id, $product ) {
+					return self::on_listing_site( $sent_settings, function () use ( $api, $fixed_price, $xml ) {
+						return $fixed_price ? $api->revise_fixed_price_item( $xml ) : $api->revise_item( $xml );
+					}, 'revise', sprintf( 'eBay listing %1$s of WC #%2$d', $ebay_item_id, $product->get_id() ), $product->get_id() );
+				};
+				$resends  = $this->storefront_resends();
+				$response = $this->storefront_retried( $product, $revise( $full_xml ), $full_xml, $revise, $resends );
 			}
 
 			// The photos this revise was not sent, said once eBay has answered -
@@ -1984,6 +2003,7 @@ class TCGiant_Sync_Exporter {
 			if ( ! is_wp_error( $response ) ) {
 				// ReviseItem returns ItemID in the response.
 				$returned_item_id = $response['ItemID'] ?? $ebay_item_id;
+				$this->say_shop_categories( $product->get_id(), (string) $returned_item_id, $response );
 				$this->say_category_kept( $product->get_id(), $kept_settings, (string) $ebay_item_id );
 				self::say_policies_ignored( $product->get_id(), $settings, (string) $ebay_item_id );
 				$this->say_read_missed( $product->get_id(), (string) $ebay_item_id );
@@ -2131,9 +2151,13 @@ class TCGiant_Sync_Exporter {
 
 				if ( $relist_live ) {
 					$full_xml = '<Item>' . "\n" . '<ItemID>' . esc_attr( $ebay_item_id ) . '</ItemID>' . "\n" . $item_xml . "\n" . '</Item>';
-					$response = self::on_listing_site( $kept_settings, function () use ( $api, $fixed_price, $full_xml ) {
-						return $fixed_price ? $api->revise_fixed_price_item( $full_xml ) : $api->revise_item( $full_xml );
-					}, 'revise', sprintf( 'eBay listing %1$s of WC #%2$d', $ebay_item_id, $product->get_id() ), $product->get_id() );
+					$revise   = function ( $xml ) use ( $api, $fixed_price, $kept_settings, $ebay_item_id, $product ) {
+						return self::on_listing_site( $kept_settings, function () use ( $api, $fixed_price, $xml ) {
+							return $fixed_price ? $api->revise_fixed_price_item( $xml ) : $api->revise_item( $xml );
+						}, 'revise', sprintf( 'eBay listing %1$s of WC #%2$d', $ebay_item_id, $product->get_id() ), $product->get_id() );
+					};
+					$resends  = $this->storefront_resends();
+					$response = $this->storefront_retried( $product, $revise( $full_xml ), $full_xml, $revise, $resends );
 
 					// Said once eBay has answered, as for the first revise.
 					if ( $held && ! self::is_ended_listing_error( $response ) ) {
@@ -2144,6 +2168,7 @@ class TCGiant_Sync_Exporter {
 						return $response;
 					}
 
+					$this->say_shop_categories( $product->get_id(), (string) ( $response['ItemID'] ?? $ebay_item_id ), $response );
 					$this->say_category_kept( $product->get_id(), $kept_settings, (string) $ebay_item_id );
 
 					// With the description it sent, as any revise eBay accepts:
@@ -2194,7 +2219,12 @@ class TCGiant_Sync_Exporter {
 				// are still the product's, never a mix, none when one would be
 				// left out. Its format, duration, opening bid and quantity
 				// stay the auction's, as RelistItem keeps what it is not sent.
-				$this->build_item_xml( $product, self::keep_listing_category( $this->get_export_settings( $product->get_id() ) ), true );
+				// And the eBay shop category it maps to (3.33.0), as any new
+				// listing in place of an ended one is sent: an Update of this
+				// listing, live, would leave it where it is on eBay.
+				$relist_settings = self::keep_listing_category( $this->get_export_settings( $product->get_id() ) );
+				$relist_settings['_source']['shop_category'] = 'override';
+				$this->build_item_xml( $product, $relist_settings, true );
 				$too_long = $this->description_too_long();
 				if ( is_wp_error( $too_long ) ) {
 					return $too_long;
@@ -2323,6 +2353,7 @@ class TCGiant_Sync_Exporter {
 			$full_xml = '<Item>' . "\n" . '<UUID>' . $uuid . '</UUID>' . "\n"
 				. ( '' !== $mark ? '<ApplicationData>' . $mark . '</ApplicationData>' . "\n" : '' )
 				. $item_xml . "\n" . '</Item>';
+			$resends  = $this->storefront_resends();
 			$response = self::on_listing_site( $settings, function () use ( $api, $fixed_price, $full_xml ) {
 				return $fixed_price ? $api->add_fixed_price_item( $full_xml ) : $api->add_item( $full_xml );
 			} );
@@ -2344,6 +2375,15 @@ class TCGiant_Sync_Exporter {
 				} );
 			}
 
+			// eBay refused it for its shop category alone (fix round 1): with a
+			// UUID of its own, the first having made nothing.
+			$response = $this->storefront_retried( $product, $response, $full_xml, function ( $xml ) use ( $api, $fixed_price, $settings ) {
+				$fresh = (string) preg_replace( '#<UUID>[^<]*</UUID>#', '<UUID>' . TCGiant_Sync_API::generate_ebay_uuid() . '</UUID>', $xml, 1 );
+				return self::on_listing_site( $settings, function () use ( $api, $fixed_price, $fresh ) {
+					return $fixed_price ? $api->add_fixed_price_item( $fresh ) : $api->add_item( $fresh );
+				} );
+			}, $resends );
+
 			// eBay listed nothing, so the product stays on its ended listing,
 			// and keeps that listing's site from the answer read above, as
 			// Relist keeps it. Not kept, every push after eBay refused one - a
@@ -2362,6 +2402,8 @@ class TCGiant_Sync_Exporter {
 			if ( empty( $response['ItemID'] ) ) {
 				return new WP_Error( 'no_item_id', __( 'eBay did not return an Item ID after AddItem. Listing may have been created — check your eBay account.', 'tcgiant-sync' ) );
 			}
+
+			$this->say_shop_categories( $product->get_id(), (string) $response['ItemID'], $response );
 
 			$made = array(
 				'item_id'          => $response['ItemID'],
@@ -3218,12 +3260,25 @@ class TCGiant_Sync_Exporter {
 
 		// A push's relist of an auction carries the shop's edits (3.28.8).
 		$changes = $from_push && ! $fixed ? (string) $changes : '';
-		$relist  = function () use ( $api, $fixed, $ebay_item_id, $quantity, $variations_xml, $changes, $start_price, $photos_xml ) {
+		$relist  = function () use ( $api, $fixed, $ebay_item_id, $quantity, $variations_xml, &$changes, $start_price, $photos_xml ) {
 			return $fixed
 				? $api->relist_fixed_price_item( $ebay_item_id, $quantity, $variations_xml, $start_price, $photos_xml )
 				: $api->relist_item( $ebay_item_id, $quantity, '' !== $changes ? $changes : $photos_xml );
 		};
-		$result  = $motors_site ? TCGiant_Sync_Motors::listing_call( 'relist', $relist, sprintf( 'eBay listing %1$s of WC #%2$d', $ebay_item_id, $product_id ), $product_id, TCGiant_Sync_API::scalar_value( $item['PrimaryCategory']['CategoryID'] ?? '' ) ) : $relist();
+		$send    = function () use ( $motors_site, $relist, $ebay_item_id, $product_id, $item ) {
+			return $motors_site ? TCGiant_Sync_Motors::listing_call( 'relist', $relist, sprintf( 'eBay listing %1$s of WC #%2$d', $ebay_item_id, $product_id ), $product_id, TCGiant_Sync_API::scalar_value( $item['PrimaryCategory']['CategoryID'] ?? '' ) ) : $relist();
+		};
+		$sent_again = $this->storefront_resends();
+		$result     = $send();
+
+		// A push's relist refused for its shop category alone goes once more
+		// without it (fix round 1): refused, the auction would stay ended.
+		if ( $from_push ) {
+			$result = $this->storefront_retried( $product, $result, $changes, function ( $xml ) use ( &$changes, $send ) {
+				$changes = $xml;
+				return $send();
+			}, $sent_again );
+		}
 
 		if ( is_wp_error( $result ) ) {
 			if ( null !== $photos_before && $api->resends() === $resends && self::relist_not_made( $result ) ) {
@@ -3344,6 +3399,11 @@ class TCGiant_Sync_Exporter {
 			self::relist_prices_said( $relist_prices, $start_price ),
 			is_array( $photos ) ? ', with the product\'s photos, changed here since the listing had them' : ''
 		), 'success' );
+
+		// And a push's relist, the shop category it was sent (3.33.0).
+		if ( $from_push ) {
+			$this->say_shop_categories( $product_id, (string) $new_id, $result );
+		}
 
 		return array(
 			'item_id'          => $new_id,
@@ -3592,6 +3652,153 @@ class TCGiant_Sync_Exporter {
 	}
 
 	/**
+	 * The Storefront of a product's item (3.33.0), kept for the line said once
+	 * eBay has taken it. What was left out is said here, once a push: every
+	 * build of the push decides the same, and a push may build several times.
+	 *
+	 * Verify asks eBay about an id even while it is held back: it sends
+	 * nothing, and showing eBay's answer is what it is for.
+	 *
+	 * @param WC_Product $product The product.
+	 * @param bool       $revise  Whether the item changes a listing eBay has.
+	 * @return string
+	 */
+	private function storefront_xml( WC_Product $product, $revise ) {
+		$plan = TCGiant_Sync_Shop_Categories::plan( $product, 'Verify' === $this->build_for );
+		$xml  = TCGiant_Sync_Shop_Categories::storefront_xml( $plan['ids'], $revise );
+
+		$this->shop_categories_sent = $plan['ids'] ? array_merge( $plan, array( 'xml' => $xml ) ) : null;
+
+		$warning = TCGiant_Sync_Shop_Categories::left_out_warning( $this->build_for, $product->get_id(), $plan );
+		if ( '' !== $warning && empty( $this->card_said[ 'shop_category:' . $product->get_id() ] ) ) {
+			$this->card_said[ 'shop_category:' . $product->get_id() ] = true;
+			TCGiant_Sync_Logger::warning( $warning );
+		}
+
+		return $xml;
+	}
+
+	/**
+	 * How many requests have gone out again so far, read just before an item
+	 * goes, for storefront_retried(). Only for an item with a Storefront: a
+	 * shop with no map asks nothing new.
+	 *
+	 * @return int
+	 */
+	private function storefront_resends() {
+		return null === $this->shop_categories_sent ? 0 : TCGiant_Sync_API::instance()->resends();
+	}
+
+	/**
+	 * Whether what eBay answered an item makes it safe to send it again without
+	 * what it refused (fix round 2): refused for its shop category alone, and
+	 * the item went once. One sent again after a timeout or a 5xx may have been
+	 * made by eBay, whatever it answered last (TCGiant_Sync_API::resends()).
+	 *
+	 * @param mixed $response eBay's answer.
+	 * @param int   $resends  storefront_resends() from just before it went.
+	 * @return bool
+	 */
+	private static function storefront_refused( $response, $resends ) {
+		return TCGiant_Sync_Shop_Categories::refused_for( $response ) && TCGiant_Sync_API::instance()->resends() === $resends;
+	}
+
+	/**
+	 * eBay's answer to an item, or to the same item sent once more without its
+	 * Storefront, when eBay refused it for that alone (3.33.0 fix round 1): the
+	 * listing, its price, its stock and an ended auction's relist matter more
+	 * than where it sits in the shop. What eBay refused is held back for an
+	 * hour, so a bulk push pays once. No line for a category that did not go.
+	 *
+	 * A refusal of the 0 of a revise is not a refusal of the category (fix
+	 * round 2): the item goes once more without the 0 alone, no id is held, and
+	 * no revise sends the 0 for the hour. If eBay still refuses it for the shop
+	 * category it goes without its Storefront: three calls at most.
+	 *
+	 * Only for Add, Revise and a push's relist. Verify and Check with eBay
+	 * never come here: they show eBay's answer.
+	 *
+	 * @param WC_Product $product  The product.
+	 * @param mixed      $response eBay's answer to the item.
+	 * @param string     $xml      What was sent.
+	 * @param callable   $send     Sends it again, given what to send.
+	 * @param int        $resends  storefront_resends() from just before it went.
+	 * @return mixed eBay's last answer.
+	 */
+	private function storefront_retried( WC_Product $product, $response, $xml, callable $send, $resends ) {
+		$sent = $this->shop_categories_sent;
+		if ( null === $sent || ! self::storefront_refused( $response, $resends ) ) {
+			return $response;
+		}
+
+		$kept = TCGiant_Sync_Shop_Categories::storefront_xml( $sent['ids'] );
+		if ( $kept !== $sent['xml'] && TCGiant_Sync_Shop_Categories::refused_second( $response ) ) {
+			TCGiant_Sync_Shop_Categories::stop_zero();
+
+			TCGiant_Sync_Logger::warning( sprintf(
+				'Push: eBay would not take the 0 sent with WC #%1$d to clear a listing\'s second shop category. Its shop category %2$s is not in question: the item was sent once more without the 0, and Updates go without it for an hour, so a second category already on a listing stays there. eBay said: %3$s',
+				$product->get_id(),
+				TCGiant_Sync_Shop_Categories::said( $sent['ids'], $sent ),
+				$response->get_error_message()
+			) );
+
+			$xml         = TCGiant_Sync_Shop_Categories::without_storefront( $xml, $sent['xml'], $kept );
+			$sent['xml'] = $kept;
+			$response    = $send( $xml );
+			if ( ! self::storefront_refused( $response, $resends ) ) {
+				return $response;
+			}
+		}
+
+		TCGiant_Sync_Shop_Categories::hold( $sent['ids'] );
+		$this->shop_categories_sent = null;
+
+		TCGiant_Sync_Logger::warning( sprintf(
+			'Push: eBay refused WC #%1$d for its shop %2$s %3$s, so it was sent once more without it, and that goes unsent for an hour. eBay said: %4$s',
+			$product->get_id(),
+			1 === count( $sent['ids'] ) ? 'category' : 'categories',
+			TCGiant_Sync_Shop_Categories::said( $sent['ids'], $sent ),
+			$response->get_error_message()
+		) );
+
+		return $send( TCGiant_Sync_Shop_Categories::without_storefront( $xml, $sent['xml'] ) );
+	}
+
+	/**
+	 * What became of the Storefront eBay has just taken (3.33.0): one line
+	 * for the push, and what eBay warned of it. eBay answers a category it
+	 * will not take with a Warning, not a refusal, and puts the listing in
+	 * Other: the listing is made all the same, and nothing else changes.
+	 *
+	 * @param int    $product_id The product.
+	 * @param string $item_id    The listing.
+	 * @param mixed  $answer     eBay's answer.
+	 */
+	private function say_shop_categories( $product_id, $item_id, $answer ) {
+		$plan = $this->shop_categories_sent;
+		if ( null === $plan ) {
+			return;
+		}
+
+		TCGiant_Sync_Logger::log( sprintf(
+			'Push: eBay listing %1$s of WC #%2$d was sent to eBay shop %3$s %4$s.',
+			$item_id,
+			(int) $product_id,
+			1 === count( $plan['ids'] ) ? 'category' : 'categories',
+			TCGiant_Sync_Shop_Categories::said( $plan['ids'], $plan )
+		) );
+
+		foreach ( TCGiant_Sync_Shop_Categories::warnings_in( $answer ) as $said ) {
+			TCGiant_Sync_Logger::warning( sprintf(
+				'Push: eBay took listing %1$s of WC #%2$d but warned about its shop category, so check it is not in Other in your eBay shop. eBay said: %3$s',
+				$item_id,
+				(int) $product_id,
+				$said
+			) );
+		}
+	}
+
+	/**
 	 * Build the inner <Item> XML content (without the outer <Item> tags).
 	 *
 	 * @param WC_Product $product  The WooCommerce product.
@@ -3618,6 +3825,8 @@ class TCGiant_Sync_Exporter {
 		// And its main photo, and the photos it sends (3.30.4).
 		$this->main_photo_refused = null;
 		$this->photos_sent        = null;
+		// And its eBay shop categories (3.33.0), decided below.
+		$this->shop_categories_sent = null;
 		// How many to offer.
 		//
 		// When the shop tracks stock, that figure decides it, floored at 1 so
@@ -3726,7 +3935,13 @@ class TCGiant_Sync_Exporter {
 		// sequence (common in code snippets) either breaks the request or
 		// injects raw XML into the AddItem payload.
 		$xml .= '<Description><![CDATA[' . str_replace( ']]>', ']]]]><![CDATA[>', $description ) . ']]></Description>' . "\n";
-		$this->own_content_xml = $xml . ( '' !== $picture_xml ? $picture_xml . "\n" : '' );
+
+		// The eBay shop categories the product maps to (3.33.0): none for an
+		// imported listing that keeps eBay's values, and none for a product
+		// that maps to nothing, on a new listing or an Update.
+		$storefront_xml = self::sends( $settings, 'shop_category', $revise ) ? $this->storefront_xml( $product, $revise ) : '';
+
+		$this->own_content_xml = $xml . ( '' !== $picture_xml ? $picture_xml . "\n" : '' ) . $storefront_xml;
 		// The category, unless this is an imported listing's revise and the
 		// product sets none of its own: the listing stays where it is on eBay
 		// (3.28.8).
@@ -3734,6 +3949,7 @@ class TCGiant_Sync_Exporter {
 		if ( $send_category ) {
 			$xml .= '<PrimaryCategory><CategoryID>' . esc_attr( $settings['category_id'] ) . '</CategoryID></PrimaryCategory>' . "\n";
 		}
+		$xml .= $storefront_xml;
 
 		// Sent to the category a retired ID was meant to be: said once a push
 		// (get_export_settings()).
@@ -4699,7 +4915,10 @@ class TCGiant_Sync_Exporter {
 	 * policies, location or handling time the listing has, nor its format.
 	 *
 	 * @param array  $settings get_export_settings().
-	 * @param string $group    category, condition, policies, location or format.
+	 * @param string $group    category, condition, policies, location, format
+	 *                         or shop_category (3.33.0), which no product
+	 *                         overrides: only a push's relist of an imported
+	 *                         auction sets it.
 	 * @param bool   $revise   Whether the item goes to a Revise call.
 	 * @return bool
 	 */
@@ -8327,12 +8546,13 @@ class TCGiant_Sync_Exporter {
 	 * (TCGiant_Sync_API::request_with_retry()) comes back as. Asked only of a
 	 * request that went once (fix round 2): one sent again may have been
 	 * made by eBay whatever its last answer says (TCGiant_Sync_API::
-	 * resends()).
+	 * resends()). Also what TCGiant_Sync_Shop_Categories::refused_for() asks
+	 * of any item (3.33.0 fix round 2).
 	 *
 	 * @param WP_Error $error The relist call's error.
 	 * @return bool
 	 */
-	private static function relist_not_made( WP_Error $error ) {
+	public static function relist_not_made( WP_Error $error ) {
 		$code = (string) $error->get_error_code();
 		if ( in_array( $code, array( 'staging_blocked', 'rate_limited', 'no_token' ), true ) ) {
 			return true;

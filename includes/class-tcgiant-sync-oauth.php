@@ -204,6 +204,13 @@ class TCGiant_Sync_OAuth {
 			// that is when the relay issues a real key.
 
 			TCGiant_Sync_Inventory::save_settings_keys( $settings );
+
+			// The shop categories read for the account before: this one may
+			// have another Store (3.33.0 fix round 1).
+			if ( class_exists( 'TCGiant_Sync_Shop_Categories' ) ) {
+				TCGiant_Sync_Shop_Categories::forget_tree();
+			}
+
 			return true;
 		}
 

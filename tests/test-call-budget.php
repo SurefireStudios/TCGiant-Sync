@@ -288,6 +288,7 @@ $ANSWERS = array();
 $DURING  = null;
 function wp_remote_request( $url, $args ) {
 	$call             = $args['headers']['X-EBAY-API-CALL-NAME'] ?? '';
+	$GLOBALS['TIMEOUTS'][ $call ] = $args['timeout'] ?? null;
 	$GLOBALS['EBAY'][] = '' !== $call ? $call : strtoupper( (string) ( $args['method'] ?? 'GET' ) ) . ' ' . preg_replace( '#^https://api\.ebay\.com/#', '', (string) strtok( $url, '?' ) );
 	if ( is_callable( $GLOBALS['DURING'] ) ) {
 		$during = $GLOBALS['DURING'];
@@ -1198,6 +1199,13 @@ foreach ( array(
 check( 'upload_picture(), eBay\'s refusals: its call limit (518) and daily limit (10007) rate_limited, a token it will not take (931, expired) no_token, a failure on its side (all SystemError) upload_unavailable, the picture itself (a RequestError) upload_failed - each in the first error\'s words', $tcg_said, $tcg_want );
 check( '  eBay out of reach: three 503s, invalid_xml; three timeouts, http_request_failed - neither upload_failed', array( $tcg_upload( array( 503, 503, 503 ) )[0], $tcg_upload( array( 'transport', 'transport', 'transport' ) )[0] ), array( 'invalid_xml', 'http_request_failed' ) );
 @unlink( $tcg_picture );
+
+// A push waits on GetStore for a shop category it can go without (3.33.0).
+$ANSWERS  = array();
+$TIMEOUTS = array();
+TCGiant_Sync_API::instance()->get_store();
+TCGiant_Sync_API::instance()->trading_api_request( 'GetItem', '<ItemID>110000000001</ItemID>' );
+check( 'GetStore gives up after 15 seconds; every other call waits as before', array( $TIMEOUTS['GetStore'] ?? null, $TIMEOUTS['GetItem'] ?? null ), array( 15, 45 ) );
 
 $wpdb->db->close();
 foreach ( array( '', '-wal', '-shm' ) as $tail ) {

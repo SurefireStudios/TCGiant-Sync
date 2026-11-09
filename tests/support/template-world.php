@@ -336,7 +336,10 @@ function wp_allowed_protocols() { return array( 'http', 'https', 'mailto' ); }
 function wp_upload_dir() { return array( 'basedir' => sys_get_temp_dir() . '/tcg-template-uploads', 'baseurl' => $GLOBALS['W']['home'] . '/wp-content/uploads' ); }
 function _deprecated_argument( ...$args ) {}
 function _doing_it_wrong( ...$args ) {}
-function term_exists( $term, $taxonomy = '' ) { return isset( $GLOBALS['W']['terms'][ (int) $term ] ) ? array( 'term_id' => (int) $term ) : null; }
+// A world that plays terms by name as well (support/shop-categories-world.php, 3.33.0) has its own.
+if ( ! function_exists( 'term_exists' ) ) {
+	function term_exists( $term, $taxonomy = '' ) { return isset( $GLOBALS['W']['terms'][ (int) $term ] ) ? array( 'term_id' => (int) $term ) : null; }
+}
 function get_ancestors( $id, $object_type = '', $resource_type = '' ) {
 	$out = array();
 	$at  = (int) $id;
@@ -359,9 +362,11 @@ class WC_Product_Attribute {
 	public $options;
 	public $taxonomy;
 	public $variation;
-	public function __construct( $name, array $options, $taxonomy = false, $variation = false ) {
+	public function __construct( $name = '', array $options = array(), $taxonomy = false, $variation = false ) {
 		$this->name = $name; $this->options = $options; $this->taxonomy = $taxonomy; $this->variation = $variation;
 	}
+	/** The import's set_id() and the rest, for a world that runs one (3.33.0). */
+	public function __call( $method, $args ) { return null; }
 	public function get_name() { return $this->name; }
 	public function get_options() { return $this->options; }
 	public function is_taxonomy() { return $this->taxonomy; }

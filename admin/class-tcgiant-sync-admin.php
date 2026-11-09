@@ -242,6 +242,9 @@ class TCGiant_Sync_Admin {
 			TCGiant_Sync_Template_Admin::instance();
 		}
 
+		// The Shop Categories screen's Save and Refresh from eBay (3.33.0).
+		TCGiant_Sync_Shop_Categories::register_admin();
+
 		// Ended-listing detection lives in TCGiant_Sync_Cron. Registering it
 		// here meant the callback only existed on admin requests, while the
 		// event fires from wp-cron.php — which is not is_admin() — so it never
@@ -265,6 +268,7 @@ class TCGiant_Sync_Admin {
 			'tcgiant-sync_page_tcgiant-listings',
 			'tcgiant-sync_page_tcgiant-stock-review',
 			'tcgiant-sync_page_tcgiant-image-cleanup',
+			'tcgiant-sync_page_tcgiant-shop-categories',
 			'tcgiant-sync_page_tcgiant-templates',
 		);
 		if ( ! in_array( $hook, $tc_pages, true ) ) {
@@ -639,6 +643,9 @@ class TCGiant_Sync_Admin {
 		delete_transient( 'tcgiant_connect_started_at' );
 		delete_transient( 'tcgiant_connect_error' );
 
+		// And the shop categories it read: the next account has another Store.
+		TCGiant_Sync_Shop_Categories::forget_tree();
+
 		TCGiant_Sync_Logger::log( 'eBay connection cleared by user, including any handshake still in progress.', 'warning' );
 
 		wp_safe_redirect( admin_url( 'admin.php?page=tcgiant-settings&disconnected=1' ) );
@@ -715,6 +722,15 @@ class TCGiant_Sync_Admin {
 
 		add_submenu_page(
 			'tcgiant-sync',
+			__( 'Shop Categories', 'tcgiant-sync' ),
+			__( 'Shop Categories', 'tcgiant-sync' ),
+			'manage_options',
+			'tcgiant-shop-categories',
+			array( $this, 'render_shop_categories_page' )
+		);
+
+		add_submenu_page(
+			'tcgiant-sync',
 			__( 'Listing Templates', 'tcgiant-sync' ),
 			__( 'Listing Templates', 'tcgiant-sync' ),
 			'manage_options',
@@ -767,6 +783,7 @@ class TCGiant_Sync_Admin {
 			'stock_review'  => array( 'title' => __( 'Stock Review', 'tcgiant-sync' ), 'icon' => 'dashicons-clipboard', 'page' => 'tcgiant-stock-review' ),
 			'image_cleanup' => array( 'title' => __( 'Image Cleanup', 'tcgiant-sync' ), 'icon' => 'dashicons-images-alt2', 'page' => 'tcgiant-image-cleanup' ),
 			'export'        => array( 'title' => __( 'Push to eBay', 'tcgiant-sync' ), 'icon' => 'dashicons-upload', 'page' => 'tcgiant-export' ),
+			'shop_categories' => array( 'title' => __( 'Shop Categories', 'tcgiant-sync' ), 'icon' => 'dashicons-category', 'page' => 'tcgiant-shop-categories' ),
 			'templates'     => array( 'title' => __( 'Listing Templates', 'tcgiant-sync' ), 'icon' => 'dashicons-layout', 'page' => 'tcgiant-templates' ),
 			'settings'      => array( 'title' => __( 'Settings', 'tcgiant-sync' ), 'icon' => 'dashicons-admin-settings', 'page' => 'tcgiant-settings' ),
 			'logs'          => array( 'title' => __( 'Logs', 'tcgiant-sync' ), 'icon' => 'dashicons-list-view', 'page' => 'tcgiant-logs' ),
@@ -917,6 +934,13 @@ class TCGiant_Sync_Admin {
 	 */
 	public function render_export_page() {
 		include_once TCGIANT_SYNC_PATH . 'admin/views/export.php';
+	}
+
+	/**
+	 * Render the Shop Categories page (3.33.0).
+	 */
+	public function render_shop_categories_page() {
+		include_once TCGIANT_SYNC_PATH . 'admin/views/shop-categories.php';
 	}
 
 	/**
@@ -1562,36 +1586,22 @@ class TCGiant_Sync_Admin {
 			wp_send_json_error( array( 'message' => 'Not connected to eBay.' ) );
 		}
 
-		$api = TCGiant_Sync_API::instance();
-		$store_response = $api->get_store();
+		// Read afresh, as a person pressing the button means it, into the one
+		// tree of the shop's categories (3.33.0).
+		$tree   = TCGiant_Sync_Shop_Categories::tree( true );
+		$failed = (string) ( $tree['refresh_error'] ?? $tree['error'] );
 
-		if ( is_wp_error( $store_response ) ) {
-			wp_send_json_error( array( 'message' => $store_response->get_error_message() ) );
+		if ( '' !== $failed ) {
+			wp_send_json_error( array( 'message' => $failed ) );
 		}
 
 		$categories = array();
-		if ( isset( $store_response['Store']['CustomCategories']['CustomCategory'] ) ) {
-			$raw = $store_response['Store']['CustomCategories']['CustomCategory'];
-			if ( isset( $raw['CategoryID'] ) ) {
-				$raw = array( $raw );
-			}
-
-			$flatten = function( $cats, $depth = 0 ) use ( &$flatten, &$categories ) {
-				if ( ! is_array( $cats ) ) return;
-				foreach ( $cats as $cat ) {
-					$prefix = str_repeat( '- ', $depth );
-					$categories[] = array(
-						'id'   => $cat['CategoryID'] ?? '',
-						'name' => $prefix . ( $cat['Name'] ?? '' ),
-						'raw'  => $cat['Name'] ?? '',
-					);
-					if ( isset( $cat['ChildCategory'] ) ) {
-						$children = isset( $cat['ChildCategory']['CategoryID'] ) ? array( $cat['ChildCategory'] ) : $cat['ChildCategory'];
-						$flatten( $children, $depth + 1 );
-					}
-				}
-			};
-			$flatten( $raw );
+		foreach ( $tree['categories'] as $row ) {
+			$categories[] = array(
+				'id'   => $row['id'],
+				'name' => str_repeat( '- ', count( $row['levels'] ) - 1 ) . $row['name'],
+				'raw'  => $row['name'],
+			);
 		}
 
 		wp_send_json_success( array( 'categories' => $categories ) );
@@ -6031,7 +6041,11 @@ class TCGiant_Sync_Admin {
 			}
 		}
 
-		$msg = __( '✅ Listing verified! No errors.', 'tcgiant-sync' );
+		// eBay's Warning about the shop category, which otherwise reads as "No
+		// errors" for a listing eBay would put in Other (3.33.0 fix round 1).
+		$warned = TCGiant_Sync_Shop_Categories::verify_warning( $result );
+
+		$msg = '' === $warned ? __( '✅ Listing verified! No errors.', 'tcgiant-sync' ) : '⚠️ ' . $warned;
 		if ( ! empty( $fees ) ) {
 			$msg .= "\n" . __( 'Estimated fees: ', 'tcgiant-sync' ) . implode( ', ', $fees );
 		}

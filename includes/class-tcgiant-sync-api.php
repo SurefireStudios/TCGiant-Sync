@@ -408,7 +408,9 @@ class TCGiant_Sync_API {
 				'Content-Type'                   => 'text/xml',
 			),
 			'body'    => $xml_envelope,
-			'timeout' => 45,
+			// A push waits on GetStore, inside its build, for a category it can
+			// go without; every other call as before.
+			'timeout' => 'GetStore' === $call_name ? 15 : 45,
 		);
 
 		// Stop keeping the answer once it passes the ceiling, rather than hold

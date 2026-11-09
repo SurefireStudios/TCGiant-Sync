@@ -137,6 +137,17 @@ $export_state = TCGiant_Sync_Exporter::get_export_state();
 			</div>
 
 			<div class="tc-section">
+				<h3 class="tc-section-title"><?php esc_html_e( 'eBay Shop Categories', 'tcgiant-sync' ); ?></h3>
+				<p class="tc-section-desc">
+					<?php esc_html_e( 'Choose which category of your eBay shop each WooCommerce category goes in. Without a choice, a new listing goes in Other in your eBay shop.', 'tcgiant-sync' ); ?>
+				</p>
+				<a href="<?php echo esc_url( TCGiant_Sync_Shop_Categories::url() ); ?>" class="tc-button secondary full-width">
+					<span class="dashicons dashicons-category" style="font-size:16px;"></span>
+					<?php esc_html_e( 'Shop Categories', 'tcgiant-sync' ); ?>
+				</a>
+			</div>
+
+			<div class="tc-section">
 				<h3 class="tc-section-title"><?php esc_html_e( 'Smart Update Detection', 'tcgiant-sync' ); ?></h3>
 				<p class="tc-section-desc">
 					<?php esc_html_e( 'If a product already has an eBay Item ID saved (from a previous push or import), the plugin automatically uses ReviseItem to update the listing instead of creating a duplicate.', 'tcgiant-sync' ); ?>

@@ -1321,3 +1321,15 @@
         flex: 1 1 auto;
     }
 }
+
+/* Shop Categories: a row for each WooCommerce category. */
+.wrap.tc-dashboard-wrap .tc-shop-cat-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin: 14px 0;
+}
+.wrap.tc-dashboard-wrap .tc-shop-cat-table select { width: 100%; max-width: 520px; }
+.wrap.tc-dashboard-wrap .tc-shop-cat-problem { color: var(--tc-danger); }
+.wrap.tc-dashboard-wrap .tc-shop-cat-stop { margin-top: 16px; }

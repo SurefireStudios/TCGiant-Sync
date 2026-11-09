@@ -29,6 +29,11 @@ if ( ! class_exists( 'TCGiant_Sync_Variations', false ) ) {
 	require_once __DIR__ . '/class-tcgiant-sync-variations.php';
 }
 
+// The eBay shop's categories, and which term each goes with (3.33.0).
+if ( ! class_exists( 'TCGiant_Sync_Shop_Categories', false ) ) {
+	require_once __DIR__ . '/class-tcgiant-sync-shop-categories.php';
+}
+
 /**
  * TCGiant_Sync_Mapper class
  */
@@ -168,7 +173,13 @@ class TCGiant_Sync_Mapper {
 	 * next change, so that the change reaches it. import_status is not here:
 	 * it is for new products only, and the light path makes none. Nor is
 	 * VARIATION_TERMS_SETTING (3.32.0): it is for listings with variations
-	 * only, which never take the light path.
+	 * only, which never take the light path. Nor is the map of the Shop
+	 * Categories screen (3.33.0), which is not in the settings: it is for a
+	 * push, which reads it itself. All a full read could do with it is put
+	 * an unchanged listing's product in another term, with "Overwrite
+	 * Categories & Tags" on, and every Save of the map would cost a GetItem
+	 * for each listing's next renewal, out of calls every shop shares. A
+	 * listing's next real change reads it.
 	 */
 	const IMPORT_SETTING_KEYS = array(
 		'bake_shipping_into_price',
@@ -2103,10 +2114,31 @@ class TCGiant_Sync_Mapper {
 		
 		$overwrite_taxonomy = ! empty( $settings['overwrite_taxonomy'] );
 
-		// Set WooCommerce categories from eBay Store Categories.
-		if ( $is_new || $overwrite_taxonomy ) {
+		// Set WooCommerce categories from eBay Store Categories - unless the
+		// website leads them (3.33.0): the product's next Update sends its
+		// listing a shop category, so what the listing says now is on its way
+		// out, and a product moved on the website must not be moved back by
+		// the sync before that Update. Or, for a listing that keeps eBay's
+		// values, unless the shop categories the product maps to cover every
+		// one it is in: replacing its categories would drop the product's other
+		// website categories, and flip it between two terms that map to one
+		// shop category. Only for a product that already exists, only with a
+		// map, and only the categories: the tags below go on as before.
+		$website_leads   = ! $is_new && $overwrite_taxonomy && TCGiant_Sync_Shop_Categories::website_leads( $product );
+		$categories_kept = ! $website_leads && ! $is_new && $overwrite_taxonomy && ! empty( $product_data['store_categories'] )
+			&& TCGiant_Sync_Shop_Categories::covers( $product, $product_data['store_categories'] );
+
+		if ( $website_leads ) {
+			$sync_decisions[] = 'Categories kept: the website leads, as this product\'s next Update sends its eBay shop category';
+			$sync_decisions[] = 'Tags updated (eBay won)';
+		} elseif ( $categories_kept ) {
+			$sync_decisions[] = TCGiant_Sync_Shop_Categories::only_in_other( $product_data['store_categories'] )
+				? 'Categories kept: the listing is in Other in the eBay shop, and this product maps to a shop category'
+				: 'Categories kept: the listing is in the eBay shop categories this product maps to';
+			$sync_decisions[] = 'Tags updated (eBay won)';
+		} elseif ( $is_new || $overwrite_taxonomy ) {
 			if ( ! empty( $product_data['store_categories'] ) ) {
-				$cat_ids = $this->resolve_and_create_categories( $product_data['store_categories'] );
+				$cat_ids = $this->resolve_and_create_categories( $product_data['store_categories'], (array) $product->get_category_ids(), $is_new );
 				if ( ! empty( $cat_ids ) ) {
 					$product->set_category_ids( $cat_ids );
 				}
@@ -4854,22 +4886,139 @@ class TCGiant_Sync_Mapper {
 	}
 
 	/**
-	 * Map eBay Store Category IDs to WooCommerce Categories, creating if they don't exist.
+	 * Map eBay Store Category IDs to WooCommerce Categories, creating if they
+	 * don't exist.
+	 *
+	 * A shop with no map gets exactly what 3.32.1 gave it: by name alone.
+	 *
+	 * With a map (3.33.0), for each id, in this order: the map, reversed; the
+	 * whole path of the shop category, each level a child of the last; for a
+	 * new product, and a name more than one shop category has, each level
+	 * found or made under its parent; and otherwise by name alone. Matched by
+	 * name alone, two shop categories of one name under different parents
+	 * landed in one term. An existing product never makes a term here: a sync
+	 * must not move a shop's products to categories made for the purpose.
+	 *
+	 * The map comes before the skips: a shop's own "Pokemon > Other", mapped,
+	 * has a term, though one nobody mapped is left out by its name, as ever.
+	 *
+	 * With no tree to hand only the map can tell. An existing product then
+	 * keeps what it has unless every id was told: an answer in part would
+	 * replace everything.
+	 *
+	 * @param array $store_cat_ids The listing's store category ids.
+	 * @param array $has           The term ids the product already has.
+	 * @param bool  $is_new        Whether the product is new.
+	 * @return int[]
 	 */
-	private function resolve_and_create_categories( $store_cat_ids ) {
-		$names = $this->get_store_category_names( $store_cat_ids );
+	private function resolve_and_create_categories( $store_cat_ids, array $has = array(), $is_new = true ) {
+		$names       = $this->get_store_category_names( $store_cat_ids );
+		$mapped      = (bool) TCGiant_Sync_Shop_Categories::map();
+		$untold      = false;
 		$woo_cat_ids = array();
-		foreach ( $names as $cat_name ) {
-			if ( empty( trim( $cat_name ) ) || 'Other' === $cat_name ) continue;
-			$term = term_exists( $cat_name, 'product_cat' );
-			if ( ! $term ) {
-				$term = wp_insert_term( $cat_name, 'product_cat' );
+		foreach ( $store_cat_ids as $store_cat_id ) {
+			$store_cat_id = TCGiant_Sync_API::scalar_value( $store_cat_id );
+			$cat_name     = $names[ $store_cat_id ] ?? null;
+
+			$term_id = TCGiant_Sync_Shop_Categories::term_for( $store_cat_id, $has );
+			if ( ! $term_id ) {
+				if ( null === $cat_name ) {
+					$untold = $untold || TCGiant_Sync_Shop_Categories::OTHER_ID !== $store_cat_id;
+					continue;
+				}
+				if ( empty( trim( $cat_name ) ) || 'Other' === $cat_name ) continue;
+				$term_id = $this->term_of_store_category( $store_cat_id, $cat_name, $mapped, $is_new );
 			}
-			if ( ! is_wp_error( $term ) ) {
-				$woo_cat_ids[] = (int) $term['term_id'];
+			if ( $term_id ) {
+				$woo_cat_ids[] = $term_id;
 			}
 		}
+
+		if ( $untold && ! $is_new && ! TCGiant_Sync_Shop_Categories::usable( TCGiant_Sync_Shop_Categories::tree() ) ) {
+			return array();
+		}
+
 		return $woo_cat_ids;
+	}
+
+	/**
+	 * The term of a shop category the map says nothing of.
+	 *
+	 * Each level is asked of term_exists() with its parent, never read from a
+	 * list kept for the batch: a term made for the listing before this one
+	 * must be found, and WordPress clears its own cache of them when one is
+	 * made. term_exists() tries the slug first, then the name, under that
+	 * parent alone (0 is the top level; no parent at all would be anywhere),
+	 * so it finds the second of two same-named terms, whose slug is not the
+	 * name's.
+	 *
+	 * @param string $store_cat_id The shop category.
+	 * @param string $cat_name     Its name.
+	 * @param bool   $mapped       Whether the shop has a map.
+	 * @param bool   $is_new       Whether the product is new.
+	 * @return int 0 when WordPress would not make one.
+	 */
+	private function term_of_store_category( $store_cat_id, $cat_name, $mapped, $is_new ) {
+		if ( $mapped ) {
+			$tree   = TCGiant_Sync_Shop_Categories::tree();
+			$levels = (array) ( TCGiant_Sync_Shop_Categories::find( $store_cat_id, $tree )['levels'] ?? array() );
+
+			$term_id = 0;
+			foreach ( $levels as $level ) {
+				$term    = term_exists( $level, 'product_cat', $term_id );
+				$term_id = is_array( $term ) ? (int) $term['term_id'] : 0;
+				if ( ! $term_id ) {
+					break;
+				}
+			}
+			if ( $term_id ) {
+				return $term_id;
+			}
+
+			// The only new terms made under a parent.
+			if ( $is_new && TCGiant_Sync_Shop_Categories::name_is_duplicated( $cat_name, $tree ) ) {
+				return $this->make_term_path( $levels );
+			}
+		}
+
+		$term = term_exists( $cat_name, 'product_cat' );
+		if ( ! $term ) {
+			$term = wp_insert_term( $cat_name, 'product_cat' );
+		}
+		return is_wp_error( $term ) ? 0 : (int) $term['term_id'];
+	}
+
+	/**
+	 * Find or make each level of a path under the one before it.
+	 *
+	 * @param array $levels The names from the top down.
+	 * @return int The last level's term, or 0.
+	 */
+	private function make_term_path( array $levels ) {
+		$parent = 0;
+		$path   = array();
+		foreach ( $levels as $level ) {
+			$term = term_exists( $level, 'product_cat', $parent );
+			$made = false;
+			if ( ! $term ) {
+				$term = wp_insert_term( $level, 'product_cat', array( 'parent' => $parent ) );
+				$made = ! is_wp_error( $term );
+			}
+			// Made by another request since it was asked for: WordPress
+			// names the term that stood in the way.
+			if ( is_wp_error( $term ) ) {
+				if ( 'term_exists' !== $term->get_error_code() || ! is_numeric( $term->get_error_data() ) ) {
+					return 0;
+				}
+				$term = array( 'term_id' => $term->get_error_data() );
+			}
+			$parent = (int) $term['term_id'];
+			$path[] = $level;
+			if ( $made ) {
+				TCGiant_Sync_Logger::log( sprintf( 'Import: WooCommerce category %s was made, for a name your eBay shop uses twice.', implode( ' > ', $path ) ) );
+			}
+		}
+		return $parent;
 	}
 
 	/**
@@ -4891,43 +5040,19 @@ class TCGiant_Sync_Mapper {
 	}
 
 	/**
-	 * Translate numeric eBay Store Category IDs into their textual names.
+	 * Translate numeric eBay Store Category IDs into their textual names, by
+	 * the shop's tree (3.33.0).
+	 *
+	 * @param array $search_ids Store category ids.
+	 * @return array id => name, for those the tree has.
 	 */
 	private function get_store_category_names( $search_ids ) {
-		$map = get_transient( 'tcgiant_sync_store_cat_map' );
-		if ( false === $map ) {
-			$map = array();
-			$api = TCGiant_Sync_API::instance();
-			$store_response = $api->get_store();
-			if ( ! is_wp_error( $store_response ) && isset( $store_response['Store']['CustomCategories']['CustomCategory'] ) ) {
-				$categories = $store_response['Store']['CustomCategories']['CustomCategory'];
-				if ( isset( $categories['CategoryID'] ) ) {
-					$categories = array( $categories );
-				}
-				$flatten = function( $cats ) use ( &$flatten, &$map ) {
-					if ( ! is_array( $cats ) ) return;
-					foreach ( $cats as $cat ) {
-						if ( isset( $cat['CategoryID'] ) && isset( $cat['Name'] ) ) {
-							$map[ (string) $cat['CategoryID'] ] = $cat['Name'];
-						}
-						if ( isset( $cat['ChildCategory'] ) ) {
-							$children = isset( $cat['ChildCategory']['CategoryID'] ) ? array( $cat['ChildCategory'] ) : $cat['ChildCategory'];
-							$flatten( $children );
-						}
-					}
-				};
-				$flatten( $categories );
-			}
-			// Cache a failed/empty lookup only briefly. Storing an empty map for
-			// a full hour meant every product imported in that window silently
-			// lost its categories.
-			set_transient( 'tcgiant_sync_store_cat_map', $map, empty( $map ) ? 60 : 3600 );
-		}
-
+		$tree  = TCGiant_Sync_Shop_Categories::tree();
 		$names = array();
 		foreach ( $search_ids as $id ) {
-			if ( isset( $map[ (string) $id ] ) ) {
-				$names[] = $map[ (string) $id ];
+			$row = TCGiant_Sync_Shop_Categories::find( $id, $tree );
+			if ( null !== $row ) {
+				$names[ $row['id'] ] = $row['name'];
 			}
 		}
 		return $names;

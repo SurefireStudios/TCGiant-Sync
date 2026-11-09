@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.32.1
+Stable tag: 3.33.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -148,6 +148,13 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.33.0 - 2026-11-09 =
+* NEW: Shop Categories, a new screen under TCGiant Sync. Choose which category of your eBay shop each WooCommerce category goes in, and a push puts each product there. Until now every pushed listing went in Other in your eBay shop. A choice covers the categories inside it, unless one of them has a choice of its own, and a product in several goes in two at most, the deepest first. Match by name fills the empty rows where a category's full path, or a name found only once on each side, says which it is, and saves nothing until you press Save. A category with subcategories cannot be chosen: eBay would put the listing in Other. If eBay ever refuses a listing for its shop category and nothing else, and plainly made nothing, the listing goes once more without it, and that category is left out for an hour, or until you Save or press Refresh from eBay, and its row says so. If your eBay account has no Store, the page says so, nothing is sent, and a button clears your choices.
+* NEW: A new listing, Verify, Check with eBay and an Update of a listing you pushed now say which shop category the listing goes in. So an Update moves a pushed listing to its chosen category, even if you moved it on eBay by hand. An imported listing that keeps eBay's values stays where it is. Listings already on eBay move at their next Update: to move them all, select them and choose Push to eBay. A Push that makes a new listing in place of an ended one, or relists an ended imported auction, puts it in the chosen category too. Relist on the Listings screen and Auto-Relist are unchanged: they keep the category the listing has. If eBay accepts a listing but warns about its shop category, the log, Verify and Check with eBay now say so in eBay's own words.
+* FIX: Once you have a choice on Shop Categories, an import tells apart two shop categories of the same name under different parents. It looks first at your choices, then for a WooCommerce category at the same full path, and for a new product, where your eBay shop uses a name twice, it finds or makes each level under its parent, and logs each category it makes. An existing product is never moved to a category made for it. Before, both landed in one WooCommerce category. A shop with no choices imports exactly as before.
+* FIX: With "Overwrite Categories & Tags" on and a choice on Shop Categories, a sync no longer changes the categories of a product whose next Update sends it a shop category: the website leads, so a product you moved on your website is not moved back. An imported listing that keeps eBay's values keeps its product's categories when the listing is already in the shop categories that product maps to. Before, a sync dropped your other website categories, and could swap a product between two categories that share a shop category. Tags are updated as before.
+* FIX: A Full Sync reads your eBay shop's categories afresh when "eBay Custom Store Categories to Import" names them, and when they cannot be read, what it found is kept for a minute, not an hour. Load eBay Categories on Settings reads eBay each time you press it.
 
 = 3.32.1 - 2026-11-05 =
 * FIX: A product you reuse for a new item - new photos, a new price - now goes back on eBay with its new photos when it is relisted, by Relist on the Listings screen or by Auto-Relist. Until now a relist sent eBay no photos, so the listing went back up showing the item that sold, and the next sync brought that item's photos, still in your Media Library, back onto the product: in place of the new ones with "Overwrite Images" on, behind them with it off. A relist now sends the product's photos whenever they are not the photos its listing had, in the same order, the same way a push sends them, and the next sync knows them and downloads nothing. A photo you edited in WordPress counts as a new photo, and so does one put on eBay by upload whose file was replaced since; a file replaced in place on any other photo is not noticed. When they are the same, the relist is sent as before, with no extra eBay call. With "Host listing images on eBay?" on, a photo not yet on eBay is uploaded, as for a push.
@@ -1667,6 +1674,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.33.0 =
+New screen: Shop Categories, under TCGiant Sync. Nothing changes until you make a choice there: a shop with no choices sends eBay and imports exactly as before. Once you do, a push and an Update of a listing you pushed put the listing in the chosen category of your eBay shop, even if you moved it on eBay by hand. An import then also tells apart two shop categories of the same name, placing new products under their parents, and with "Overwrite Categories & Tags" on your website's categories lead for the products you push.
 
 = 3.32.1 =
 A relist now sends a product's photos when they are not the photos its listing had, so a product reused for a new item goes back on eBay with its new photos, and the old item's photos no longer come back from eBay. With "Host listing images on eBay?" on, those photos are uploaded as for a push. A product whose photos cannot all go, or that shows copies of its own photos, is not relisted, and the log says why and what to do.

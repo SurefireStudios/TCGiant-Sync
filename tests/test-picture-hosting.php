@@ -982,7 +982,7 @@ foreach ( array_merge( glob( dirname( __DIR__ ) . '/includes/*.php' ), glob( dir
 }
 // 3.28.0: two of each in do_push() - the listing the push began with, and a
 // live relist of it the push follows - each built for a revise.
-check( 'every ReviseItem and ReviseFixedPriceItem of an item is do_push()\'s, two of each', array( $revise_sites, substr_count( $exp_src, '? $api->revise_fixed_price_item( $full_xml )' ), substr_count( $exp_src, ': $api->revise_item( $full_xml );' ) ), array( array( 'class-tcgiant-sync-exporter.php' => 4 ), 2, 2 ) );
+check( 'every ReviseItem and ReviseFixedPriceItem of an item is do_push()\'s, two of each', array( $revise_sites, substr_count( $exp_src, '? $api->revise_fixed_price_item( $xml )' ), substr_count( $exp_src, ': $api->revise_item( $xml );' ) ), array( array( 'class-tcgiant-sync-exporter.php' => 4 ), 2, 2 ) );
 // 3.28.1: with the settings a revise sends, which keep a live listing's category.
 check( '  and the item each sends is built for a revise', array( substr_count( $exp_src, '$item_xml = $this->build_item_xml( $product, $sent_settings, ! empty( $ebay_item_id ) );' ), substr_count( $exp_src, '$item_xml = $this->build_item_xml( $product, $relist_live ? $kept_settings : $settings, $relist_live );' ) ), array( 1, 1 ) );
 

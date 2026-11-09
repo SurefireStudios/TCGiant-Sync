@@ -72,6 +72,7 @@ Names in **bold** are the names the plugin's own screens use.
 | Single push, bulk push from the Products list or the **Listings** screen, and background processing via Action Scheduler | ✅ |
 | **Verify**: tests the listing with eBay without creating it, and shows the estimated fees | ✅ |
 | Smart update detection — revises an existing listing rather than creating a duplicate; **Link to this listing** joins a product to a listing you made on eBay | ✅ |
+| **Shop Categories**: choose which category of your eBay shop each WooCommerce category goes in, and a push puts the listing there. **Match by name** fills the rows it can tell. With a choice made, an import tells apart two shop categories of the same name under different parents | ✅ |
 | An Update of a listing imported from eBay keeps eBay's own category, condition, business policies, location and handling time. Tick **Send my shop defaults** on a product to send yours instead | ✅ |
 | Category auto-suggestion from the product title, plus an interactive category browser | ✅ |
 | **eBay Motors Parts & Accessories** categories, for shops on eBay United States | ✅ |

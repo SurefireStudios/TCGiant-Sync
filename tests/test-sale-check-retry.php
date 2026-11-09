@@ -404,10 +404,11 @@ require $ROOT . '/includes/class-tcgiant-sync-runtime.php';
 require $ROOT . '/includes/class-tcgiant-sync-variations.php';
 require $ROOT . '/includes/class-tcgiant-sync-inventory.php';
 require $ROOT . '/includes/class-tcgiant-sync-sites.php';
-// Which the importer loads from beside itself (3.28.4, and the catalog
-// 3.28.5), and its copy has no such neighbour.
+// Which the importer loads from beside itself (3.28.4, the catalog 3.28.5,
+// and the shop's categories 3.33.0), and its copy has no such neighbour.
 require $ROOT . '/includes/class-tcgiant-sync-category-memory.php';
 require $ROOT . '/includes/class-tcgiant-sync-catalog.php';
+require $ROOT . '/includes/class-tcgiant-sync-shop-categories.php';
 
 // The real importer, its clock the harness's: time() and one-argument gmdate()
 // rewritten to read $NOW, as the 3.28.0 review's simulator loads it.

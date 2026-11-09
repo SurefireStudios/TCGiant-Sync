@@ -239,6 +239,7 @@ $tcgiant_options = array(
 	'tcgiant_sync_size_trim_pause',
 	'tcgiant_sync_last_crash_large_photo_copies',
 	'tcgiant_sync_last_crash_large_photo_copies_check',
+	'tcgiant_sync_shop_category_map',  // Which eBay shop category each product category goes in, 3.33.0.
 	'tcgiant_sync_template_settings',  // Listing templates' settings, 3.27.8.
 	'tcgiant_sync_template_starters',  // Which starter templates were installed.
 	'tcgiant_sync_bulk_push_cap',      // The daily cap on bulk pushes.

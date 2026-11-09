@@ -87,6 +87,7 @@ class TCGiant_Sync_Exporter {
 }
 
 require $ROOT . '/includes/class-tcgiant-sync-api.php';
+require $ROOT . '/includes/class-tcgiant-sync-shop-categories.php';
 require $ROOT . '/admin/class-tcgiant-sync-admin.php';
 
 /** eBay's VerifyAddItem answer, as the API class hands it on: fee name => amount. */
