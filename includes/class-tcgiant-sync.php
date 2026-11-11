@@ -172,6 +172,12 @@ final class TCGiant_Sync {
 		// Initialize Order Import.
 		TCGiant_Sync_Orders::instance();
 
+		// Feedback for eBay buyers, and eBay's refunds recorded on the orders
+		// imported from it (3.37.0). On every request: Action Scheduler runs
+		// them, and an order is completed from the admin, the REST API and
+		// other plugins.
+		TCGiant_Sync_Order_Followthrough::register();
+
 		// Initialize Job Queue.
 		TCGiant_Sync_Jobs::instance();
 

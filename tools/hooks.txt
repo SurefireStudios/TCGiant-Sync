@@ -116,10 +116,12 @@ add_action   tcgiant_sync_check_ended_listings => sweep_origins
 add_action   tcgiant_sync_check_ended_listings => upgrade_auction_import
 add_action   tcgiant_sync_daily_maintenance => auto_relist_ended_items
 add_action   tcgiant_sync_daily_maintenance => daily_maintenance
+add_action   tcgiant_sync_feedback_run => run_feedback
 add_action   tcgiant_sync_fetch_delta_events => fetch_delta_events
 add_action   tcgiant_sync_filterable_count => run_count
 add_action   tcgiant_sync_filterable_run => run_batch
 add_action   tcgiant_sync_gallery_heal => run_gallery_heal
+add_action   tcgiant_sync_import_orders => ensure_sweep
 add_action   tcgiant_sync_import_orders => import_recent_orders
 add_action   tcgiant_sync_license_check => run_check
 add_action   tcgiant_sync_limit_replay => replay
@@ -135,6 +137,7 @@ add_action   tcgiant_sync_push_stock => process_stock_push
 add_action   tcgiant_sync_reconcile_continue => continue_reconciliation
 add_action   tcgiant_sync_reconcile_inventory => reconcile_inventory
 add_action   tcgiant_sync_reconcile_stall => reconcile_stall_check
+add_action   tcgiant_sync_refund_sweep => run_sweep
 add_action   tcgiant_sync_scan_all_pages => scan_all_pages
 add_action   tcgiant_sync_scan_resume => scan_all_pages
 add_action   tcgiant_sync_settle_item => settle_queued
@@ -147,6 +150,8 @@ add_action   tcgiant_sync_weekly_full_retry => run_weekly_full_retry
 add_action   update_option_tcgiant_sync_ebay_settings => auctions_setting_saved
 add_action   update_option_tcgiant_sync_ebay_settings => connection_saved
 add_action   updated_post_meta => mirror_meta_to_row
+add_action   woocommerce_create_refund => mark_refund
+add_action   woocommerce_order_status_completed => completed_here
 add_action   woocommerce_order_status_completed => push_tracking_to_ebay
 add_action   woocommerce_process_product_meta => save_bin_location_field
 add_action   woocommerce_process_product_meta => save_product_export_meta
@@ -216,6 +221,8 @@ add_filter   pre_wp_cache_get => on_cache_read
 add_filter   woocommerce_can_reduce_order_stock => block_double_reduction
 add_filter   woocommerce_can_reduce_order_stock => note_order_reduction
 add_filter   woocommerce_duplicate_product_exclude_meta => duplicate_exclude_meta
+add_filter   woocommerce_email_enabled_customer_partially_refunded_order => no_refund_email
+add_filter   woocommerce_email_enabled_customer_refunded_order => no_refund_email
 add_filter   woocommerce_get_price_html => filter_price_html
 add_filter   woocommerce_is_purchasable => filter_purchasable
 add_filter   woocommerce_order_needs_payment => not_paid_here
@@ -234,6 +241,7 @@ add_filter   {$hook} => {$callback['function']}
 schedule     tcgiant_export_push_product
 schedule     tcgiant_sync_check_ended_listings
 schedule     tcgiant_sync_daily_maintenance
+schedule     tcgiant_sync_feedback_run
 schedule     tcgiant_sync_fetch_delta_events
 schedule     tcgiant_sync_filterable_count
 schedule     tcgiant_sync_filterable_run
@@ -251,6 +259,7 @@ schedule     tcgiant_sync_push_stock
 schedule     tcgiant_sync_reconcile_continue
 schedule     tcgiant_sync_reconcile_inventory
 schedule     tcgiant_sync_reconcile_stall
+schedule     tcgiant_sync_refund_sweep
 schedule     tcgiant_sync_scan_all_pages
 schedule     tcgiant_sync_scan_resume
 schedule     tcgiant_sync_settle_item

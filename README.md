@@ -64,6 +64,7 @@ Names in **bold** are the names the plugin's own screens use.
 | Map eBay SKU to a Bin Location field | ✅ |
 | **Remove products when their eBay listing sells out?**, with **Preserve Categories (Do Not Trash)**. Products you pushed to eBay yourself are never removed | ✅ |
 | **Import eBay orders into WooCommerce?** — at every **Auto-Sync Interval** (hourly by default, every 15 minutes at the shortest); an unpaid order arrives as Pending payment and follows eBay for 30 days (paid, cancelled, cancel requested); tracking numbers go back to eBay when an order is marked Completed | ✅ |
+| **Leave positive feedback for eBay buyers** — when eBay says the order is paid, or when you mark it Completed: once for each item, with your comment, never for an unpaid, cancelled or refunded order. **Record eBay refunds on WooCommerce orders** — every six hours, refunds made on eBay are recorded on the orders imported from them, sending nothing to eBay or the buyer | ✅ |
 
 ### Push — WooCommerce → eBay
 

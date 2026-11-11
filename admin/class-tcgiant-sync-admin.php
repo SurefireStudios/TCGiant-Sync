@@ -70,6 +70,9 @@ class TCGiant_Sync_Admin {
 			'overwrite_attributes', 'overwrite_weight_dims', 'delete_data_on_uninstall',
 			// A variation's new value added to a global attribute (3.32.0).
 			'add_variation_terms',
+			// Feedback for eBay buyers, and eBay's refunds recorded on their
+			// orders (3.37.0, TCGiant_Sync_Order_Followthrough).
+			'feedback_buyers', 'feedback_comment', 'record_ebay_refunds',
 		),
 		'export' => array(
 			'export_category_id', 'export_category_name', 'export_category_typed', 'export_condition_type', 'export_grader_id', 'export_grade_value',
@@ -306,6 +309,12 @@ class TCGiant_Sync_Admin {
 			wp_die( esc_html__( 'Unauthorized.', 'tcgiant-sync' ) );
 		}
 
+		// The shop starting the sync again lets feedback for eBay buyers go
+		// after an Emergency Stop (3.37.0).
+		if ( class_exists( 'TCGiant_Sync_Order_Followthrough' ) ) {
+			TCGiant_Sync_Order_Followthrough::resume( 'Fetch Inventory was pressed' );
+		}
+
 		// Report what actually happened. A sync already holding the lock makes
 		// this a no-op, and the old unconditional "sync queued" message meant
 		// the button looked like it worked while doing nothing.
@@ -435,6 +444,10 @@ class TCGiant_Sync_Admin {
 		}
 
 		TCGiant_Sync_Importer::instance()->resume_sync();
+		// And feedback for eBay buyers, held since an Emergency Stop (3.37.0).
+		if ( class_exists( 'TCGiant_Sync_Order_Followthrough' ) ) {
+			TCGiant_Sync_Order_Followthrough::resume( 'Resume Import was pressed' );
+		}
 		wp_safe_redirect( admin_url( 'admin.php?page=tcgiant-import&sync_resumed=1' ) );
 		exit;
 	}
@@ -574,6 +587,11 @@ class TCGiant_Sync_Admin {
 		// through reads this before each listing, and ends there.
 		if ( class_exists( 'TCGiant_Sync_Template_Resend' ) ) {
 			TCGiant_Sync_Template_Resend::stop( 'emergency' );
+		}
+		// And feedback for eBay buyers and the eBay refund sweep (3.37.0):
+		// held for six hours, a run under way stopped before its next call.
+		if ( class_exists( 'TCGiant_Sync_Order_Followthrough' ) ) {
+			TCGiant_Sync_Order_Followthrough::stop();
 		}
 		TCGiant_Sync_Logger::log( 'Emergency Stop: All sync jobs cleared.', 'warning' );
 
@@ -1387,6 +1405,11 @@ class TCGiant_Sync_Admin {
 				// saved it as it wants it.
 				if ( 'import' === $form ) {
 					TCGiant_Sync_Inventory::dismiss_push_notice();
+					// The order settings saved: feedback for eBay buyers,
+					// held since an Emergency Stop, goes again (3.37.0).
+					if ( class_exists( 'TCGiant_Sync_Order_Followthrough' ) ) {
+						TCGiant_Sync_Order_Followthrough::resume( 'the order settings were saved' );
+					}
 				}
 
 				// The eBay price rule's figures: a markup it can read, or the

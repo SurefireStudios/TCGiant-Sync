@@ -112,6 +112,9 @@ $progress_pct = $tc_screen['queued_pct'];
 	<?php endif; ?>
 	<?php // phpcs:enable WordPress.Security.NonceVerification.Recommended ?>
 
+	<?php // Feedback for eBay buyers held since Emergency Stop, and how to let it go (3.37.0). ?>
+	<?php include TCGIANT_SYNC_PATH . 'admin/views/feedback-held.php'; ?>
+
 	<?php if ( ! $is_authenticated ) : ?>
 		<div class="tc-card" style="text-align:center;padding:40px 20px;">
 			<span class="dashicons dashicons-lock" style="font-size:48px;color:var(--tc-warning);width:48px;height:48px;margin-bottom:16px;display:block;margin-left:auto;margin-right:auto;"></span>

@@ -806,6 +806,35 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						</div>
 						<p class="tc-hint"><?php esc_html_e( 'When enabled, eBay orders are imported as WooCommerce orders every 15 minutes: one the buyer has not paid for yet as Pending payment, a paid one as Processing. Each follows eBay when it is paid or cancelled, unless you have changed its status yourself. Tracking numbers are pushed back to eBay when orders are marked "Completed".', 'tcgiant-sync' ); ?></p>
 					</div>
+					<?php // Feedback for eBay buyers, and eBay's refunds (3.37.0): the values TCGiant_Sync_Order_Followthrough reads (TRIGGERS, COMMENT_MAX, DEFAULT_COMMENT). ?>
+					<?php $tc_feedback = in_array( (string) ( $settings['feedback_buyers'] ?? '' ), array( 'paid', 'completed' ), true ) ? (string) $settings['feedback_buyers'] : 'off'; ?>
+					<?php $tc_comment = trim( (string) ( $settings['feedback_comment'] ?? '' ) ); ?>
+					<div class="tc-field">
+						<label class="tc-label" for="ebay_feedback_buyers"><?php esc_html_e( 'Leave positive feedback for eBay buyers', 'tcgiant-sync' ); ?></label>
+						<select name="tcgiant_sync_ebay_settings[feedback_buyers]" id="ebay_feedback_buyers" class="tc-select">
+							<option value="off" <?php selected( $tc_feedback, 'off' ); ?>><?php esc_html_e( 'Off', 'tcgiant-sync' ); ?></option>
+							<option value="paid" <?php selected( $tc_feedback, 'paid' ); ?>><?php esc_html_e( 'When eBay says the order is paid', 'tcgiant-sync' ); ?></option>
+							<option value="completed" <?php selected( $tc_feedback, 'completed' ); ?>><?php esc_html_e( 'When the order is marked Completed here', 'tcgiant-sync' ); ?></option>
+						</select>
+						<?php $tc_feedback_held = (int) get_option( 'tcgiant_sync_feedback_held', 0 ); ?>
+						<?php if ( $tc_feedback_held > 0 ) : ?>
+							<p class="tc-hint"><strong><?php echo esc_html( sprintf( /* translators: %s: when Emergency Stop was pressed, UTC */ __( 'Held since Emergency Stop (%s UTC): no feedback is sent until you save these settings, or press Resume Import or Fetch Inventory.', 'tcgiant-sync' ), gmdate( 'Y-m-d H:i', $tc_feedback_held ) ) ); ?></strong></p>
+						<?php endif; ?>
+						<p class="tc-hint"><?php esc_html_e( 'Leaves positive feedback on eBay for the buyer of each imported eBay order, once for each item of the order, with the comment below - in the background, a call to eBay for each item, waiting while eBay calls are short. Never for an order eBay says is unpaid, cancelled or refunded, or that is cancelled, refunded or failed here, and never after eBay\'s 60 days. Feedback left by hand in Seller Hub is left alone. Only orders that are paid, or marked Completed, after you choose this get feedback: nothing is sent for older ones - but turning on order import at the same time imports the last 24 hours of orders, and with "When eBay says the order is paid" those already paid get feedback. A staging or development copy sends none, and queues none. After Emergency Stop, feedback waits until you save these settings or press Resume Import or Fetch Inventory. Feedback cannot be taken back once it is left. Needs "Import eBay orders into WooCommerce?" on.', 'tcgiant-sync' ); ?></p>
+					</div>
+					<div class="tc-field">
+						<label class="tc-label" for="ebay_feedback_comment"><?php esc_html_e( 'Feedback comment', 'tcgiant-sync' ); ?></label>
+						<input type="text" class="tc-input" id="ebay_feedback_comment" name="tcgiant_sync_ebay_settings[feedback_comment]" maxlength="80" value="<?php echo esc_attr( '' !== $tc_comment ? $tc_comment : 'Great buyer, thank you!' ); ?>">
+						<p class="tc-hint"><?php esc_html_e( 'Up to 80 characters, as eBay\'s own feedback form takes. Left empty, "Great buyer, thank you!" is sent.', 'tcgiant-sync' ); ?></p>
+					</div>
+					<div class="tc-field">
+						<label class="tc-label"><?php esc_html_e( 'Record eBay refunds on WooCommerce orders?', 'tcgiant-sync' ); ?></label>
+						<div class="tc-radio-group">
+							<label><input type="radio" name="tcgiant_sync_ebay_settings[record_ebay_refunds]" value="1" <?php checked( $settings['record_ebay_refunds'] ?? '1', '1' ); ?>> Yes</label>
+							<label><input type="radio" name="tcgiant_sync_ebay_settings[record_ebay_refunds]" value="0" <?php checked( $settings['record_ebay_refunds'] ?? '1', '0' ); ?>> No</label>
+						</div>
+						<p class="tc-hint"><?php esc_html_e( 'Every six hours, asks eBay which orders changed and records each refund you made on eBay on the WooCommerce order imported from it - eBay\'s amount, once, with an order note - so your WooCommerce totals match. A full refund sets the order to Refunded. Nothing is sent to eBay or the buyer, no stock changes, and no order is ever created. The first check reads the last two days. Needs "Import eBay orders into WooCommerce?" on.', 'tcgiant-sync' ); ?></p>
+					</div>
 					<div class="tc-field">
 						<label class="tc-label"><?php esc_html_e( 'Auto-end listing when stock reaches 0?', 'tcgiant-sync' ); ?></label>
 						<div class="tc-radio-group">

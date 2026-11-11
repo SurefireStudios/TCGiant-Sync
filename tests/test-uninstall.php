@@ -378,7 +378,20 @@ check( '  and its holds by their prefix; each product\'s record of what it conve
 ), array( true, '_tcgiant_filterable', false ) );
 check( '  never a term, an attribute or a brand', count( array_filter( $QUERIES, function ( $q ) { return false !== stripos( $q, 'term' ) || false !== stripos( $q, 'woocommerce_attribute' ); } ) ), 0 );
 
+// Order follow-through (3.37.0): its four options and its holds' prefix,
+// read from its class; the feedback and refunds it recorded on orders are
+// the shop's order data, and no query names them. Its two hooks are
+// cancelled whatever was answered (below).
+$tcg_ft = (string) file_get_contents( __DIR__ . '/../includes/class-tcgiant-sync-order-followthrough.php' );
+preg_match_all( "/const \w+_OPTION\s*= '(tcgiant_[a-z_]+)'/", $tcg_ft, $tcg_ft_opts );
+check( 'answered Yes: follow-through\'s options are deleted', array( count( $tcg_ft_opts[1] ), array_values( array_diff( $tcg_ft_opts[1], $DELETED ) ) ), array( 4, array() ) );
+preg_match( "/const LOCK_PREFIX\s*= '(tcgiant_[a-z_]+)'/", $tcg_ft, $tcg_ft_lock );
+check( '  and its holds, by their prefix', count( array_filter( $QUERIES, function ( $q ) use ( $tcg_ft_lock ) { return false !== strpos( $q, "option_name LIKE '" . ( $tcg_ft_lock[1] ?? 'none' ) . "%'" ); } ) ), 1 );
+preg_match_all( "/const \w+_META\s*= '(_tcgiant_[a-z_]+)'/", $tcg_ft, $tcg_ft_meta );
+check( '  and the feedback and refunds on orders kept: no query names them', array( count( $tcg_ft_meta[1] ), array_values( array_filter( $tcg_ft_meta[1], function ( $k ) { return (bool) array_filter( $GLOBALS['QUERIES'], function ( $q ) use ( $k ) { return false !== strpos( $q, $k ); } ); } ) ) ), array( 3, array() ) );
+
 run( array(), false );
+check( 'answered No: follow-through\'s hooks are cancelled all the same, and its options kept', array( array_values( array_diff( array( 'tcgiant_sync_feedback_run', 'tcgiant_sync_refund_sweep' ), $UNSCHEDULED ) ), array_values( array_intersect( $tcg_ft_opts[1], $DELETED ) ) ), array( array(), array() ) );
 check( 'answered No: Re-send to eBay\'s hooks are cancelled all the same, and its options kept', array( array_values( array_diff( array( 'tcgiant_sync_tpl_resend_scan', 'tcgiant_sync_tpl_resend_run' ), $UNSCHEDULED ) ), array_values( array_intersect( $tcg_rs_opts[1], $DELETED ) ) ), array( array(), array() ) );
 check( 'answered No: Filterable item specifics\' hooks are cancelled all the same, and its options and records kept', array( array_values( array_diff( array( 'tcgiant_sync_filterable_run', 'tcgiant_sync_filterable_count' ), $UNSCHEDULED ) ), array_values( array_intersect( $tcg_fs_opts[1], $DELETED ) ), count( array_filter( $QUERIES, function ( $q ) { return false !== strpos( $q, '_tcgiant_filterable' ); } ) ) ), array( array(), array(), 0 ) );
 check( 'answered No: no template, block or product template key is touched', count( array_filter( $QUERIES, function ( $q ) { return false !== strpos( $q, 'tcgiant_tpl' ); } ) ), 0 );

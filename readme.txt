@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.36.0
+Stable tag: 3.37.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -148,6 +148,11 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.37.0 - 2026-11-11 =
+* NEW: Leave positive feedback for eBay buyers, with the order settings: Off (the default), When eBay says the order is paid, or When the order is marked Completed here. Each imported eBay order that reaches the moment you choose gets positive feedback on eBay for its buyer, once for each item of the order, with your comment (Feedback comment, up to 80 characters; "Great buyer, thank you!" when left empty). It goes in the background, one eBay call for each item and one to read the order from eBay first, and the order gets a note. Nothing is sent for an order eBay says is unpaid, cancelled or refunded, for one that is cancelled, refunded or failed here, or past eBay's 60 days for feedback. A staging or development copy sends none and queues none, so a copy later made the live shop sends nothing for the orders completed on it. Only orders paid, or marked Completed, after you choose it get feedback: nothing goes for older ones. Feedback cannot be taken back once it is left.
+* NEW: Feedback you already left by hand in Seller Hub is left as it is: eBay's "already left" answer counts as done. If eBay refuses feedback for any other reason, the log says why, and it is tried again on two later runs at most, then left with one more line. Feedback waits while eBay calls are short - when this site has used half of its own for the day, when all shops together have less than a quarter left, or when today's figure is not known - and never goes before a stock update. After Emergency Stop, feedback waits until you let it go again: save the order settings, or press Resume Import or Fetch Inventory. The Import from eBay page and Settings say so while it waits.
+* NEW: Record eBay refunds on WooCommerce orders, with the order settings, on by default. Every six hours the plugin asks eBay which orders changed, and records each refund you made on eBay on the WooCommerce order imported from it: eBay's amount, never more than is left to refund, once each, with an order note. A full refund sets the order to Refunded. Nothing is sent to eBay or the buyer - WooCommerce's "Refunded order" email is not sent for an eBay order - no stock changes, and no order is ever created. A refund eBay has not completed yet is recorded once it has. The first check reads the last two days, so turning it on records no old refunds, and a check never reads more than 29 days back. It costs one eBay call each time for most shops, waits while eBay calls are short, and if eBay refuses it, tries again less and less often - every 6 hours at most - saying so once.
 
 = 3.36.0 - 2026-11-11 =
 * FIX: A Pro licence no longer drops to the free tier because Lemon Squeezy, which sells and checks the licences, gave an unclear answer, nor because a check of a previous key finished just after a new key was activated, or a check finished just after a Re-check had found the licence valid. Until now any reply but "valid" - a busy signal, a server error, an error page, an empty reply - marked the licence expired at its next check, so one bad minute at Lemon Squeezy put a paying shop on the free tier. Now only a clear answer that the key is not valid does that. Anything else changes nothing, and the check is tried again in an hour, then less often, up to every 6 hours. A shop an unclear answer put on the free tier before this version gets Pro back at its first check after updating.
@@ -1695,6 +1700,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.37.0 =
+New, with the order settings: Leave positive feedback for eBay buyers (Off unless you choose it), and Record eBay refunds on WooCommerce orders (on): refunds you make on eBay are recorded on the WooCommerce orders imported from them, from the last two days on, sending nothing to eBay or the buyer. Both need "Import eBay orders into WooCommerce?" on.
 
 = 3.36.0 =
 A Pro licence now stays on when Lemon Squeezy cannot be reached or answers unclearly: only a clear "not valid" ends it, and a passed renewal date holds Pro for up to 14 days while it is checked. The check runs in the background, so no admin page waits on Lemon Squeezy. New eBay listings the free limit held back are imported when a shop moves to Pro. A shop an unclear answer put on the free tier gets Pro back at its first check after updating.

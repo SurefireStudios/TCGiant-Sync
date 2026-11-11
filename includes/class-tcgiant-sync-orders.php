@@ -1169,6 +1169,12 @@ class TCGiant_Sync_Orders {
 			// OrderID until eBay says paid or cancelled (3.31.0).
 			$this->follow_set( $order_id, $wc_order, $status, $ebay_order );
 
+			// Paid as it arrives: feedback for the buyer, when the shop
+			// leaves it "When eBay says the order is paid" (3.37.0).
+			if ( 'completed' === strtolower( (string) $status ) && class_exists( 'TCGiant_Sync_Order_Followthrough' ) ) {
+				TCGiant_Sync_Order_Followthrough::ebay_paid( $wc_order );
+			}
+
 			return $wc_order;
 
 		} catch ( \Throwable $e ) {
@@ -1357,6 +1363,12 @@ class TCGiant_Sync_Orders {
 		$seen = (string) $order->get_meta( '_ebay_order_status' );
 		if ( $seen === $status ) {
 			return false;
+		}
+
+		// Paid now, where eBay said otherwise before: feedback for the
+		// buyer, when the shop leaves it then (3.37.0).
+		if ( 'completed' === strtolower( $status ) && class_exists( 'TCGiant_Sync_Order_Followthrough' ) ) {
+			TCGiant_Sync_Order_Followthrough::ebay_paid( $order );
 		}
 
 		$now  = (string) $order->get_status();
