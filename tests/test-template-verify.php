@@ -142,7 +142,7 @@ preg_match( '#<Description><!\[CDATA\[(.*)\]\]></Description>#s', $xml, $d );
 $m = $sent_meta( 84 );
 check( 'a push eBay accepted records the template and its version', array( $m['_tcgiant_tpl_id'] ?? null, $m['_tcgiant_tpl_ver'] ?? null ), array( (string) $tpl, '1' ) );
 check( '  the hash of exactly the bytes sent', $m['_tcgiant_desc_hash'] ?? null, sha1( str_replace( ']]]]><![CDATA[>', ']]>', $d[1] ?? '' ) ) );
-check( '  the template and content hashes, and when', array( strlen( (string) ( $m['_tcgiant_tpl_hash_sent'] ?? '' ) ), strlen( (string) ( $m['_tcgiant_content_hash'] ?? '' ) ), ( $m['_tcgiant_desc_sent_at'] ?? 0 ) > 0 ), array( 40, 40, true ) );
+check( '  the template and content hashes, and when (the content hash marked "3:" since 3.34.0)', array( strlen( (string) ( $m['_tcgiant_tpl_hash_sent'] ?? '' ) ), strlen( (string) ( $m['_tcgiant_content_hash'] ?? '' ) ), substr( (string) ( $m['_tcgiant_content_hash'] ?? '' ), 0, 2 ), ( $m['_tcgiant_desc_sent_at'] ?? 0 ) > 0 ), array( 40, 42, '3:', true ) );
 check( '  and the hash of its content region, as a re-import reads it back', $m['_tcgiant_region_hash'] ?? null, sha1( TCGiant_Sync_Templates::content_region( str_replace( ']]]]><![CDATA[>', ']]>', $d[1] ?? '' ), true ) ) );
 check( '  and the listing it went to', $m['_tcgiant_tpl_item'] ?? null, (string) get_post_meta( 84, '_ebay_item_id', true ) );
 

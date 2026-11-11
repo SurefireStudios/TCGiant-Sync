@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.33.0
+Stable tag: 3.34.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -148,6 +148,13 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.34.0 - 2026-11-11 =
+* NEW: Re-send to eBay, on the Listing Templates screen. Until now a listing already on eBay kept its old description after you picked or changed a template, until its next push, which sends the title, price, item specifics and photos again too. Re-send to eBay counts the listings whose description would change, by template, and sends them the new description and nothing else: one eBay call a listing. Press Test on 5 first: it sends five and shows each with its link on eBay and what eBay said. Once all five come back OK, Re-send all sends the rest in the background, a batch at a time, and the box shows how far it has got. Saving the template again locks Re-send all until you test again. Listings whose template you took away go back to the plain description the same way.
+* NEW: The box counts what is left out, and why: listings ended on eBay, variation listings and auctions (they get the template at their next push), on another eBay site or on eBay Motors, whose site is not known yet, claimed by two products, refused by eBay today, sent a description in the last 24 hours, over eBay's 500,000 characters, already holding a design of their own, coming out differently each time, whose description cannot be made, whose category's item specifics this site does not have just now, that a push would refuse, and those held for a push: never pushed from this site, a title that is not the one the listing has on eBay, or a product saved since its listing was last sent. It says how many are held only because they were saved since, which a push or a bulk push puts right, sending the template too. Products not on eBay are listed at the end. Listings at quantity 0 that eBay keeps alive are sent last. Counting asks eBay nothing; Count again does it now. Once a template is published, one has been sent, or you have pressed Count again, it also happens by itself after any template change. Before any of these, nothing is counted or logged.
+* NEW: Re-sends count against your daily bulk-push limit (Template settings), one a listing, and go at most a twelfth of it in any two hours. They wait while eBay calls are short - when this site has used half of its own for the day, when all shops together have less than a quarter left, or when today's figure is not known - and carry on the next day. Stop ends a Re-send all, and so does Emergency Stop. If eBay refuses a listing's new description, it keeps its old one and is tried again on up to 3 later days, then marked as needing attention until a push of it goes through. eBay's warnings on a description it took are in the log and beside Test on 5's OK.
+* FIX: What a listing was last sent with a template now records a hash of the product's own facts that reach eBay outside the description - its title, item specifics, condition, photos and price - which Re-send to eBay compares, so a product changed since its last push is held for a push. What 3.27.8 to 3.33.0 recorded came out different every time, and nothing used it. For those listings, and for listings last sent the plain description, the product counts as unchanged only when it has not been saved since its last push - a sale or a sync saves it too - so at first most are held for a push. A listing only ever imported, never pushed from this site, is always held: push it once, and it can be re-sent after that.
+* FIX: With "Import listings from: All eBay sites", the default, a sync now records which eBay site a linked listing is on even when the import's category filter leaves it out, as it already did with "only my Primary eBay Marketplace". A listing pushed before 3.27.5 had no site recorded, and Re-send to eBay leaves such a listing out: the next full sync (weekly, or Fetch Inventory now) records it. A linked listing found this way to be another eBay site's copy is then pushed with the plain description, as the shop's other listings on other eBay sites already are; nothing else changes for the shop.
 
 = 3.33.0 - 2026-11-09 =
 * NEW: Shop Categories, a new screen under TCGiant Sync. Choose which category of your eBay shop each WooCommerce category goes in, and a push puts each product there. Until now every pushed listing went in Other in your eBay shop. A choice covers the categories inside it, unless one of them has a choice of its own, and a product in several goes in two at most, the deepest first. Match by name fills the empty rows where a category's full path, or a name found only once on each side, says which it is, and saves nothing until you press Save. A category with subcategories cannot be chosen: eBay would put the listing in Other. If eBay ever refuses a listing for its shop category and nothing else, and plainly made nothing, the listing goes once more without it, and that category is left out for an hour, or until you Save or press Refresh from eBay, and its row says so. If your eBay account has no Store, the page says so, nothing is sent, and a button clears your choices.
@@ -1674,6 +1681,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.34.0 =
+New: Re-send to eBay, on the Listing Templates screen, sends a changed template to the listings already on eBay - their description and nothing else, one eBay call each - after a Test on 5. Nothing is sent until you press it: a template change still sends nothing by itself. Re-sends count against your daily bulk-push limit. Variation listings, and listings never pushed from this site, wait for their next push.
 
 = 3.33.0 =
 New screen: Shop Categories, under TCGiant Sync. Nothing changes until you make a choice there: a shop with no choices sends eBay and imports exactly as before. Once you do, a push and an Update of a listing you pushed put the listing in the chosen category of your eBay shop, even if you moved it on eBay by hand. An import then also tells apart two shop categories of the same name, placing new products under their parents, and with "Overwrite Categories & Tags" on your website's categories lead for the products you push.

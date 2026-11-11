@@ -74,6 +74,7 @@ add_action   admin_post_tcgiant_tpl_action => handle_action
 add_action   admin_post_tcgiant_tpl_block => handle_block
 add_action   admin_post_tcgiant_tpl_convert => handle_convert
 add_action   admin_post_tcgiant_tpl_import => handle_import
+add_action   admin_post_tcgiant_tpl_resend => handle_resend
 add_action   admin_post_tcgiant_tpl_save => handle_save
 add_action   admin_post_tcgiant_tpl_settings => handle_settings
 add_action   admin_post_tcgiant_wizard_save_import => handle_wizard_save_import
@@ -130,6 +131,8 @@ add_action   tcgiant_sync_scan_all_pages => scan_all_pages
 add_action   tcgiant_sync_scan_resume => scan_all_pages
 add_action   tcgiant_sync_settle_item => settle_queued
 add_action   tcgiant_sync_size_trim => process_run
+add_action   tcgiant_sync_tpl_resend_run => run_batch
+add_action   tcgiant_sync_tpl_resend_scan => run_scan
 add_action   tcgiant_sync_update_ebay_stock => process_ebay_stock_update
 add_action   tcgiant_sync_weekly_full => run_weekly_full_sync
 add_action   tcgiant_sync_weekly_full_retry => run_weekly_full_retry
@@ -240,5 +243,7 @@ schedule     tcgiant_sync_scan_all_pages
 schedule     tcgiant_sync_scan_resume
 schedule     tcgiant_sync_settle_item
 schedule     tcgiant_sync_size_trim
+schedule     tcgiant_sync_tpl_resend_run
+schedule     tcgiant_sync_tpl_resend_scan
 schedule     tcgiant_sync_weekly_full
 schedule     tcgiant_sync_weekly_full_retry

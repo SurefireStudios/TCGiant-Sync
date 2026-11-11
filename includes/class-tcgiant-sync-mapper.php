@@ -2718,6 +2718,9 @@ class TCGiant_Sync_Mapper {
 			'desc'             => TCGiant_Sync_Exporter::description_record_from( $product, (string) ( $product_data['ebay_description'] ?? '' ) ),
 			// A listing the push made on eBay Motors stays recorded there (3.28.9).
 			'site'             => 'eBayMotors' === TCGiant_Sync_API::scalar_value( $meta['_ebay_site'] ?? '' ) ? 'eBayMotors' : '',
+			// The push's date is the link's (3.34.0): Re-send to eBay reads
+			// it as no push (TCGiant_Sync_Listing_Link::LINK_DATED_META).
+			'link_dated'       => true,
 		) );
 
 		// eBay shows another figure than the stock now holds: it is told, as

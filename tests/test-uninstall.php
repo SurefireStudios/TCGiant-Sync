@@ -343,7 +343,23 @@ foreach ( $QUERIES as $tcg_q ) {
 check( '  and every key a product holds of them', array( count( $tcg_keys ), array_values( array_filter( $tcg_keys, function ( $k ) use ( $tcg_gone ) { return false === strpos( $tcg_gone, "'" . $k . "'" ); } ) ) ), array( 10, array() ) );
 check( '  and the WP-Lister notice\'s dismissal', count( array_filter( $QUERIES, function ( $q ) { return false !== strpos( $q, "DELETE FROM wp_usermeta WHERE meta_key = 'tcgiant_wplister_notice_dismissed'" ); } ) ), 1 );
 
+// Re-send to eBay (3.34.0): its five options, read from its class; its three
+// families of rows - the counted listings, the queue and the holds - by their
+// prefixes; and a refused re-send's record on a product, read from the
+// exporter. Its two hooks are cancelled whatever was answered (below).
+$tcg_rs = (string) file_get_contents( __DIR__ . '/../includes/class-tcgiant-sync-template-resend.php' );
+preg_match_all( "/const \w+_OPTION = '(tcgiant_[a-z_]+)'/", $tcg_rs, $tcg_rs_opts );
+check( 'answered Yes: Re-send to eBay\'s options are deleted', array( count( $tcg_rs_opts[1] ), array_values( array_diff( $tcg_rs_opts[1], $DELETED ) ) ), array( 5, array() ) );
+preg_match_all( "/const \w+_PREFIX = '(tcgiant_[a-z_]+)'/", $tcg_rs, $tcg_rs_pre );
+$tcg_rs_left = array_values( array_filter( $tcg_rs_pre[1], function ( $prefix ) {
+	return ! array_filter( $GLOBALS['QUERIES'], function ( $q ) use ( $prefix ) { return false !== strpos( $q, "option_name LIKE '" . $prefix . "%'" ); } );
+} ) );
+check( '  and its rows, by their prefixes', array( count( $tcg_rs_pre[1] ), $tcg_rs_left ), array( 3, array() ) );
+preg_match( "/const RESEND_FAILED_META = '(_tcgiant_[a-z_]+)'/", $tcg_exp, $tcg_rs_meta );
+check( '  and a refused re-send\'s record on each product', array( $tcg_rs_meta[1] ?? '', false !== strpos( $tcg_gone, "'" . ( $tcg_rs_meta[1] ?? 'none' ) . "'" ) ), array( '_tcgiant_resend_failed', true ) );
+
 run( array(), false );
+check( 'answered No: Re-send to eBay\'s hooks are cancelled all the same, and its options kept', array( array_values( array_diff( array( 'tcgiant_sync_tpl_resend_scan', 'tcgiant_sync_tpl_resend_run' ), $UNSCHEDULED ) ), array_values( array_intersect( $tcg_rs_opts[1], $DELETED ) ) ), array( array(), array() ) );
 check( 'answered No: no template, block or product template key is touched', count( array_filter( $QUERIES, function ( $q ) { return false !== strpos( $q, 'tcgiant_tpl' ); } ) ), 0 );
 
 echo "\n  " . str_repeat( '-', 88 ) . "\n";

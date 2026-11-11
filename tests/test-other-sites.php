@@ -1623,7 +1623,7 @@ check( 'the delta records it as well, and asks eBay nothing', array( meta( 663, 
 fresh_shop( array( 'marketplace' => 'EBAY_US', 'import_standard_category_ids' => array( '111' ) ) );
 linked_product( 664, '516000000004', null );
 scan_page( array( listing( '516000000004', 'US', array( 'PrimaryCategory' => array( 'CategoryID' => '222' ) ) ) ) );
-check( 'all eBay sites: nothing written to a product the filter skips, as before', writes_to( 664 ), array() );
+check( 'all eBay sites: its site recorded (3.34.0), and nothing else written to a product the filter skips', writes_to( 664 ), array( array( 664, '_ebay_site' ) ) );
 
 echo "\nA DELTA ROW WITHOUT A SITE IS ASKED ABOUT ONCE, NOT EVERY TIME IT CHANGES (FAILS ON THE FIRST 3.27.5 BUILD)\n" . str_repeat( '=', 142 ) . "\n";
 
@@ -1661,6 +1661,50 @@ ebay_has( '517000000004', listing( '517000000004', 'UK' ) );
 delta( array( event( '517000000004', null ) ) );
 check( '  a brief one is asked about for its details, as before', $EBAY['get_items'], array( '517000000004' ) );
 check( '  and nothing is remembered either way', array( array_key_exists( TCGiant_Sync_Sites::SITE_TRANSIENT . '517000000001', $TRANSIENTS ), array_key_exists( TCGiant_Sync_Sites::SITE_TRANSIENT . '517000000004', $TRANSIENTS ) ), array( false, false ) );
+
+echo "\nWITH ALL EBAY SITES, EVERY SCAN RECORDS A LINKED PRODUCT'S SITE (3.34.0; FAILS ON 0DC75DF)\n" . str_repeat( '=', 142 ) . "\n";
+
+// A shop on All eBay sites, the default. A listing a push made before 3.27.5
+// has no site recorded, and Re-send to eBay leaves a listing with none out.
+// The scans read Item.Site anyway: each records it for a linked product,
+// whatever the setting - and nothing else changes for the shop.
+$ALL = array( 'import_sites' => 'all', 'marketplace' => 'EBAY_US' );
+fresh_shop( array_merge( $ALL, array( 'import_standard_category_ids' => array( '111' ) ) ) );
+linked_product( 671, '518000000001', null, array( '_ebay_origin' => 'push' ) );
+linked_product( 672, '518000000002', null );
+scan_page( array(
+	listing( '518000000001', 'US', array( 'PrimaryCategory' => array( 'CategoryID' => '222' ), 'Quantity' => '7' ) ),
+	listing( '518000000002', 'UK', array( 'PrimaryCategory' => array( 'CategoryID' => '222' ), 'Quantity' => '7' ) ),
+) );
+check( 'the full sync, both outside the category filter: each records its site', array( meta( 671, '_ebay_site' ), meta( 672, '_ebay_site' ) ), array( 'US', 'UK' ) );
+check( '  and writes nothing else: neither saved, nothing made, eBay asked nothing', array( writes_to( 671 ), writes_to( 672 ), stock( 671 ), stock( 672 ), $CREATED, $EBAY['get_items'] ), array( array( array( 671, '_ebay_site' ) ), array( array( 672, '_ebay_site' ) ), 1, 1, array(), array() ) );
+check( '  an eBay.co.uk copy is no other site\'s product to the shop: nothing offered for removal, nothing left out', array( TCGiant_Sync_Sites::find_other_site_products(), TCGiant_Sync_Sites::leaves_out( 'UK' ), TCGiant_Sync_Sites::is_other_site_product( 672 ) ), array( array(), false, false ) );
+fresh_shop( $ALL );
+linked_product( 673, '518000000003', null, array( '_ebay_origin' => 'push' ) );
+scan_page( array( listing( '518000000003', 'US', array( 'Quantity' => '7' ) ) ) );
+check( 'inside the filter it is saved, as before, and its site recorded', array( meta( 673, '_ebay_site' ), stock( 673 ) ), array( 'US', 7 ) );
+check( '  and the scan tallies no site, as before: its tallies are for "only my Primary eBay Marketplace"', (int) ( state()['site_primary_seen'] ?? 0 ), 0 );
+fresh_shop( array_merge( $ALL, array( 'import_standard_category_ids' => array( '111' ) ) ) );
+linked_product( 674, '518000000004', null, array( '_ebay_origin' => 'push' ) );
+delta( array( event( '518000000004', 'US', 'Active', array( 'PrimaryCategory' => array( 'CategoryID' => '222' ) ) ) ) );
+check( 'the delta, a row with its site: recorded, eBay asked nothing', array( meta( 674, '_ebay_site' ), $EBAY['get_items'] ), array( 'US', array() ) );
+fresh_shop( array_merge( $ALL, array( 'import_standard_category_ids' => array( '999' ) ) ) );
+linked_product( 675, '518000000005', null, array( '_ebay_origin' => 'push' ) );
+ebay_has( '518000000005', listing( '518000000005', 'US', array( 'PrimaryCategory' => array( 'CategoryID' => '222' ) ) ) );
+delta( array( event( '518000000005', null ) ) );
+check( 'the delta, a brief row asked about only for the category filter: no site recorded from that answer, as the remembered category asks nothing (test-category-memory)', array( $EBAY['get_items'], meta( 675, '_ebay_site' ), stock( 675 ) ), array( array( '518000000005' ), null, 1 ) );
+scan_page( array( listing( '518000000005', 'US', array( 'PrimaryCategory' => array( 'CategoryID' => '222' ) ) ) ) );
+check( '  the next full sync records it, outside the filter too', array( meta( 675, '_ebay_site' ), stock( 675 ) ), array( 'US', 1 ) );
+check( '  and nothing remembered by item, as before with All eBay sites', array_key_exists( TCGiant_Sync_Sites::SITE_TRANSIENT . '518000000005', $TRANSIENTS ), false );
+fresh_shop( $ALL );
+linked_product( 677, '518000000007', null, array( '_ebay_origin' => 'push' ) );
+ebay_has( '518000000007', listing( '518000000007', 'US', array( 'Quantity' => '6' ) ) );
+delta( array( event( '518000000007', null ) ) );
+check( 'the delta, a brief row with no filter: asked about for its details, saved, and its site recorded by that save', array( $EBAY['get_items'], meta( 677, '_ebay_site' ), stock( 677 ) ), array( array( '518000000007' ), 'US', 6 ) );
+fresh_shop( array_merge( $ALL, array( 'import_standard_category_ids' => array( '111' ) ) ) );
+linked_product( 676, '518000000006', 'US' );
+scan_page( array( listing( '518000000006', 'US', array( 'PrimaryCategory' => array( 'CategoryID' => '222' ) ) ) ) );
+check( 'a site already recorded is not written again', count( array_filter( writes_to( 676 ), function ( $w ) { return '_ebay_site' === $w[1]; } ) ), 0 );
 
 echo "\nWHAT THE TRASH CAN REFUSE, AND HOW MANY GO AT ONCE\n" . str_repeat( '=', 142 ) . "\n";
 

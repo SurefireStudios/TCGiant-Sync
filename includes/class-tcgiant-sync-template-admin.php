@@ -70,6 +70,8 @@ class TCGiant_Sync_Template_Admin {
 		add_action( 'admin_post_tcgiant_tpl_import', array( $this, 'handle_import' ) );
 		add_action( 'admin_post_tcgiant_tpl_settings', array( $this, 'handle_settings' ) );
 		add_action( 'admin_post_tcgiant_tpl_block', array( $this, 'handle_block' ) );
+		// Re-send to eBay's buttons (3.34.0).
+		add_action( 'admin_post_tcgiant_tpl_resend', array( $this, 'handle_resend' ) );
 
 		add_action( 'wp_ajax_tcgiant_tpl_preview', array( $this, 'ajax_preview' ) );
 		add_action( 'wp_ajax_tcgiant_tpl_check_ebay', array( $this, 'ajax_check_ebay' ) );
@@ -203,9 +205,14 @@ class TCGiant_Sync_Template_Admin {
 			self::back( self::url( 'edit', $id ? array( 'id' => $id ) : array() ) );
 		}
 
+		self::recount( 'template saved' );
+
 		$tpl = TCGiant_Sync_Templates::get( $saved );
 		/* translators: 1: template name, 2: version */
 		$said = sprintf( __( 'Saved %1$s as version %2$d.', 'tcgiant-sync' ), $tpl['name'], $tpl['version'] );
+		if ( 'publish' === $tpl['status'] ) {
+			$said .= self::pointer();
+		}
 		$warn = false;
 		if ( 'draft' === $data['status'] && 'publish' === $tpl['status'] ) {
 			// TCGiant_Sync_Templates::save() kept it published.
@@ -273,12 +280,16 @@ class TCGiant_Sync_Template_Admin {
 					self::notice( 'error', $copy->get_error_message() );
 					self::back( self::url() );
 				}
+				self::recount( 'template copied' );
 				self::notice( 'success', __( 'Copied, as a draft.', 'tcgiant-sync' ) );
 				self::back( self::url( 'edit', array( 'id' => $copy ) ) );
 				break;
 
 			case 'delete':
 				$gone = TCGiant_Sync_Templates::delete( $id );
+				if ( ! is_wp_error( $gone ) ) {
+					self::recount( 'template deleted' );
+				}
 				self::notice( is_wp_error( $gone ) ? 'error' : 'success', is_wp_error( $gone ) ? $gone->get_error_message() : __( 'Template deleted.', 'tcgiant-sync' ) );
 				self::back( self::url() );
 				break;
@@ -291,7 +302,8 @@ class TCGiant_Sync_Template_Admin {
 				}
 				$settings['default_template_id'] = $id;
 				update_option( TCGiant_Sync_Templates::SETTINGS_OPTION, TCGiant_Sync_Templates::sanitize_settings( $settings ), false );
-				self::notice( 'success', $id ? __( 'Default template set. Listings that follow the rules and have no category rule use it from their next push; nothing is sent to eBay now.', 'tcgiant-sync' ) : __( 'The default is None again: the plain WooCommerce description.', 'tcgiant-sync' ) );
+				self::recount( 'default template set' );
+				self::notice( 'success', ( $id ? __( 'Default template set. Listings that follow the rules and have no category rule use it from their next push; nothing is sent to eBay now.', 'tcgiant-sync' ) : __( 'The default is None again: the plain WooCommerce description.', 'tcgiant-sync' ) ) . self::pointer() );
 				self::back( self::url() );
 				break;
 
@@ -301,8 +313,9 @@ class TCGiant_Sync_Template_Admin {
 				if ( is_wp_error( $restored ) ) {
 					self::notice( 'error', $restored->get_error_message() );
 				} else {
+					self::recount( 'template version restored' );
 					/* translators: 1: old version, 2: new version */
-					self::notice( 'success', sprintf( __( 'Version %1$d restored, as version %2$d.', 'tcgiant-sync' ), $version, TCGiant_Sync_Templates::get( $id )['version'] ) );
+					self::notice( 'success', sprintf( __( 'Version %1$d restored, as version %2$d.', 'tcgiant-sync' ), $version, TCGiant_Sync_Templates::get( $id )['version'] ) . self::pointer() );
 				}
 				self::back( self::url( 'edit', array( 'id' => $id ) ) );
 				break;
@@ -362,9 +375,10 @@ class TCGiant_Sync_Template_Admin {
 		self::must_manage();
 
 		$input = isset( $_POST['tpl'] ) && is_array( $_POST['tpl'] ) ? wp_unslash( $_POST['tpl'] ) : array(); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- sanitize_settings() holds every key to its type.
-		$said  = array( __( 'Template settings saved. Nothing has been sent to eBay: a listing gets its template on its next push.', 'tcgiant-sync' ) );
+		$said  = array( __( 'Template settings saved. Nothing has been sent to eBay: a listing gets its template on its next push.', 'tcgiant-sync' ) . self::pointer() );
 		$clean = TCGiant_Sync_Templates::sanitize_settings( $input, $said );
 		update_option( TCGiant_Sync_Templates::SETTINGS_OPTION, $clean, false );
+		self::recount( 'Template settings saved' );
 
 		// Its own option: the forms that save tcgiant_sync_ebay_settings rewrite
 		// the whole option and would drop it. An empty field, or one that is
@@ -403,6 +417,7 @@ class TCGiant_Sync_Template_Admin {
 		$slug = sanitize_title( wp_unslash( $_POST['slug'] ?? '' ) );
 		if ( ! empty( $_POST['delete'] ) ) {
 			TCGiant_Sync_Templates::delete_block( $slug );
+			self::recount( 'block deleted' );
 			self::notice( 'success', __( 'Block deleted. A template that uses it shows nothing in its place, and the preview says so.', 'tcgiant-sync' ) );
 			self::back( self::url( 'blocks' ) );
 		}
@@ -412,8 +427,75 @@ class TCGiant_Sync_Template_Admin {
 			$html[ $lang ] = (string) wp_unslash( $_POST['html'][ $lang ] ?? '' ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- cleaned whenever it is rendered.
 		}
 		$saved = TCGiant_Sync_Templates::save_block( $slug, sanitize_text_field( wp_unslash( $_POST['label'] ?? '' ) ), $html );
-		self::notice( is_wp_error( $saved ) ? 'error' : 'success', is_wp_error( $saved ) ? $saved->get_error_message() : __( 'Block saved. Templates that use it show it from their next push.', 'tcgiant-sync' ) );
+		if ( ! is_wp_error( $saved ) ) {
+			self::recount( 'block saved' );
+		}
+		self::notice( is_wp_error( $saved ) ? 'error' : 'success', is_wp_error( $saved ) ? $saved->get_error_message() : __( 'Block saved. Templates that use it show it from their next push.', 'tcgiant-sync' ) . self::pointer() );
 		self::back( self::url( 'blocks' ) );
+	}
+
+	// -------------------------------------------------------------------------
+	// Re-send to eBay (3.34.0)
+	// -------------------------------------------------------------------------
+
+	/**
+	 * Re-send to eBay's buttons: Count again, Test on 5, Re-send all, Stop.
+	 * Each needs manage_options and the box's nonce, as every template
+	 * action does.
+	 */
+	public function handle_resend() {
+		check_admin_referer( 'tcgiant_tpl_resend' );
+		self::must_manage();
+
+		$do    = sanitize_key( wp_unslash( $_POST['do'] ?? '' ) );
+		$group = sanitize_key( wp_unslash( $_POST['group'] ?? '' ) );
+
+		switch ( $do ) {
+			case 'count':
+				TCGiant_Sync_Template_Resend::queue_scan( 'Count again', true );
+				self::notice( 'success', __( 'Counting again. Nothing is sent to eBay while it counts. Reload this page in a minute or two for the figures.', 'tcgiant-sync' ) );
+				break;
+
+			case 'test':
+				$result = TCGiant_Sync_Template_Resend::test( $group );
+				self::notice( $result['ok'] ? 'success' : ( $result['rows'] ? 'warning' : 'error' ), $result['message'] );
+				break;
+
+			case 'start':
+				$result = TCGiant_Sync_Template_Resend::start( $group );
+				self::notice( $result['ok'] ? 'success' : 'error', $result['message'] );
+				break;
+
+			case 'stop':
+				self::notice( 'success', TCGiant_Sync_Template_Resend::stop( 'stop' )
+					? __( 'Re-send all stopped. Listings already sent keep their new description; the rest keep the one they have until their next push.', 'tcgiant-sync' )
+					: __( 'No Re-send all was going.', 'tcgiant-sync' ) );
+				break;
+		}
+
+		self::back( self::url() . '#tc-resend' );
+	}
+
+	/**
+	 * Ask Re-send to eBay for a count, after a template-side change. Nothing
+	 * is sent to eBay.
+	 *
+	 * @param string $why What changed, for the log.
+	 */
+	private static function recount( $why ) {
+		if ( class_exists( 'TCGiant_Sync_Template_Resend' ) ) {
+			TCGiant_Sync_Template_Resend::queue_scan( $why );
+		}
+	}
+
+	/**
+	 * The line a notice after a template-side change ends with, pointing to
+	 * Re-send to eBay. It promises no count: the count comes after.
+	 *
+	 * @return string With a space before it, or ''.
+	 */
+	private static function pointer() {
+		return class_exists( 'TCGiant_Sync_Template_Resend' ) ? ' ' . TCGiant_Sync_Template_Resend::pointer() : '';
 	}
 
 	// -------------------------------------------------------------------------
@@ -767,6 +849,10 @@ class TCGiant_Sync_Template_Admin {
 		if ( 'none' !== $choice && ! ( ctype_digit( $choice ) && TCGiant_Sync_Templates::is_usable( (int) $choice ) ) ) {
 			$choice = '';
 		}
+		// A new choice is a template-side change (3.34.0).
+		if ( (string) get_post_meta( $post_id, TCGiant_Sync_Templates::OVERRIDE_META, true ) !== $choice ) {
+			self::recount( 'a product\'s own template choice' );
+		}
 		if ( '' === $choice ) {
 			delete_post_meta( $post_id, TCGiant_Sync_Templates::OVERRIDE_META );
 		} else {
@@ -841,6 +927,9 @@ class TCGiant_Sync_Template_Admin {
 			}
 			$changed++;
 		}
+		if ( $changed > 0 ) {
+			self::recount( 'Set eBay listing template, on the products list' );
+		}
 
 		return add_query_arg( array(
 			'tcgiant_tpl_set'  => $changed,
@@ -881,6 +970,7 @@ class TCGiant_Sync_Template_Admin {
 		);
 		echo ' ';
 		esc_html_e( 'Nothing has been sent to eBay: each listing gets its template on its next push.', 'tcgiant-sync' );
+		echo esc_html( self::pointer() );
 		echo '</p></div>';
 	}
 

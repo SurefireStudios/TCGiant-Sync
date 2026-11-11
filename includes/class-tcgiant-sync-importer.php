@@ -2482,6 +2482,12 @@ class TCGiant_Sync_Importer {
 				// keep it from being saved: Stock Review finds other sites'
 				// products, and counts those not checked yet, by what is recorded.
 				// A row without a site takes the one eBay gave before, if any.
+				//
+				// Recorded whatever "Import listings from" says (3.34.0): with
+				// All eBay sites, a listing a push made before 3.27.5, and never
+				// saved by a sync since, had no site, and Re-send to eBay leaves
+				// a listing with none out. Only the leaving out turns on the
+				// setting.
 				$row_site    = TCGiant_Sync_Sites::site_of( $ebay_item );
 				$row_product = 0;
 				if ( $sites_on && '' === $row_site ) {
@@ -2491,9 +2497,9 @@ class TCGiant_Sync_Importer {
 					}
 				}
 				TCGiant_Sync_Sites::note( $row_site );
-				if ( $sites_on && '' !== $row_site && '' !== $current ) {
+				if ( '' !== $row_site && '' !== $current ) {
 					$row_product = self::find_live_product_for_item( $current );
-					if ( ! $row_product && TCGiant_Sync_Sites::leaves_out( $row_site ) ) {
+					if ( $sites_on && ! $row_product && TCGiant_Sync_Sites::leaves_out( $row_site ) ) {
 						$other_site++;
 						continue;
 					}
@@ -7322,13 +7328,18 @@ class TCGiant_Sync_Importer {
 			// keep it from being saved, and Stock Review finds other sites'
 			// products, and counts those not checked yet, by what is recorded.
 			// Recorded only on the other sites, a product on the shop's own site
-			// outside the filter stayed "not checked yet" for good.
+			// outside the filter stayed "not checked yet" for good. And
+			// recorded whatever "Import listings from" says (3.34.0): with All
+			// eBay sites, a product the category filter keeps from being saved
+			// never learnt its site, and Re-send to eBay leaves a listing with
+			// none out. Only the leaving out, and its tallies, turn on the
+			// setting.
 			$item_site    = TCGiant_Sync_Sites::site_of( $item );
 			$item_product = 0;
 			TCGiant_Sync_Sites::note( $item_site );
-			if ( $sites_on && '' !== $item_site ) {
+			if ( '' !== $item_site ) {
 				$item_product = self::find_live_product_for_item( $item_id );
-				if ( TCGiant_Sync_Sites::leaves_out( $item_site ) ) {
+				if ( $sites_on && TCGiant_Sync_Sites::leaves_out( $item_site ) ) {
 					self::scan_count( $progress, 'other' );
 					$progress['add']['sites'][ $item_site ]   = true;
 					$progress['tally']['sites'][ $item_site ] = true;
@@ -7336,7 +7347,7 @@ class TCGiant_Sync_Importer {
 						self::scan_count( $progress, 'other_left' );
 						continue;
 					}
-				} else {
+				} elseif ( $sites_on ) {
 					self::scan_count( $progress, 'primary' );
 				}
 				TCGiant_Sync_Sites::record_site( $item_product, $item_site );

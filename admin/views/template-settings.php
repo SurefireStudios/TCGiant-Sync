@@ -137,7 +137,7 @@ $tc_walk( 0, 0 );
 			<div class="tc-field">
 				<label class="tc-label" for="tc-bulk-cap"><?php esc_html_e( 'Products bulk pushes may queue a day (50 to 20,000)', 'tcgiant-sync' ); ?></label>
 				<input type="number" class="tc-input" id="tc-bulk-cap" name="bulk_push_cap" min="<?php echo esc_attr( (string) TCGiant_Sync_Exporter::BULK_PUSH_CAP_MIN ); ?>" max="<?php echo esc_attr( (string) TCGiant_Sync_Exporter::BULK_PUSH_CAP_MAX ); ?>" value="<?php echo esc_attr( (string) TCGiant_Sync_Exporter::bulk_push_cap() ); ?>" style="max-width:140px;">
-				<p class="tc-hint"><?php echo esc_html( TCGiant_Sync_Exporter::bulk_push_line() ); ?>. <?php esc_html_e( 'Bulk pushes from the products list, the Listings screen and the coin update all count; a push from a product\'s own screen does not. It resets at midnight UTC.', 'tcgiant-sync' ); ?></p>
+				<p class="tc-hint"><?php echo esc_html( TCGiant_Sync_Exporter::bulk_push_line() ); ?>. <?php esc_html_e( 'Bulk pushes from the products list, the Listings screen and the coin update all count, and so do re-sends from Re-send to eBay, one a listing; a push from a product\'s own screen does not. It resets at midnight UTC.', 'tcgiant-sync' ); ?></p>
 			</div>
 			<div class="tc-field">
 				<label class="tc-label" for="tc-verify-cap"><?php esc_html_e( 'Check with eBay presses a day (0 to 200)', 'tcgiant-sync' ); ?></label>

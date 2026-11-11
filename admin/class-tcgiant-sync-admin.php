@@ -569,6 +569,12 @@ class TCGiant_Sync_Admin {
 			'status'              => 'stopped',
 			'scan_complete_clean' => false,
 		) );
+
+		// And Re-send to eBay's Re-send all (3.34.0): a batch part way
+		// through reads this before each listing, and ends there.
+		if ( class_exists( 'TCGiant_Sync_Template_Resend' ) ) {
+			TCGiant_Sync_Template_Resend::stop( 'emergency' );
+		}
 		TCGiant_Sync_Logger::log( 'Emergency Stop: All sync jobs cleared.', 'warning' );
 
 		wp_safe_redirect( admin_url( 'admin.php?page=tcgiant-sync' ) );
@@ -2236,12 +2242,21 @@ class TCGiant_Sync_Admin {
 			wp_send_json_error( array( 'message' => 'Not connected to eBay.' ) );
 		}
 
+		// What the listing templates' policy blocks read, before: when it
+		// changes, Re-send to eBay counts again (3.34.0).
+		$resend = class_exists( 'TCGiant_Sync_Template_Resend' );
+		$before = $resend ? TCGiant_Sync_Template_Resend::policies_fingerprint() : '';
+
 		// Bust cache so we always get fresh data on explicit refresh.
 		TCGiant_Sync_Exporter::clear_policy_cache();
 
 		$fulfillment = TCGiant_Sync_Exporter::get_policies( 'fulfillment' );
 		$return      = TCGiant_Sync_Exporter::get_policies( 'return' );
 		$payment     = TCGiant_Sync_Exporter::get_policies( 'payment' );
+
+		if ( $resend && TCGiant_Sync_Template_Resend::policies_fingerprint() !== $before ) {
+			TCGiant_Sync_Template_Resend::queue_scan( 'eBay policies fetched, and changed' );
+		}
 
 		if ( is_wp_error( $fulfillment ) ) {
 			$raw_msg = $fulfillment->get_error_message();

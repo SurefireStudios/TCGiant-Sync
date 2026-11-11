@@ -72,6 +72,8 @@ if ( function_exists( 'as_unschedule_all_actions' ) ) {
 		'tcgiant_sync_gallery_heal',       // The gallery pass, 3.28.0.
 		'tcgiant_sync_own_photos',         // The pass over copies of the shop's own photos, 3.30.4.
 		'tcgiant_sync_reconcile_continue', // The weekly check's follow-up, 3.28.0.
+		'tcgiant_sync_tpl_resend_scan',    // Re-send to eBay's count, 3.34.0.
+		'tcgiant_sync_tpl_resend_run',     // Re-send to eBay's Re-send all, 3.34.0.
 
 		// The exporter's queue. This was listed as tcgiant_sync_push_product,
 		// which is not a hook this plugin has ever registered, so queued pushes
@@ -242,6 +244,11 @@ $tcgiant_options = array(
 	'tcgiant_sync_shop_category_map',  // Which eBay shop category each product category goes in, 3.33.0.
 	'tcgiant_sync_template_settings',  // Listing templates' settings, 3.27.8.
 	'tcgiant_sync_template_starters',  // Which starter templates were installed.
+	'tcgiant_sync_tpl_resend_count',   // Re-send to eBay: the last count, 3.34.0.
+	'tcgiant_sync_tpl_resend_state',   // Re-send to eBay: where Re-send all is.
+	'tcgiant_sync_tpl_resend_retry',   // Re-send to eBay: refusals to try again.
+	'tcgiant_sync_tpl_resend_tests',   // Re-send to eBay: each group's Test on 5.
+	'tcgiant_sync_tpl_resend_window',  // Re-send to eBay: re-sends in the last two hours.
 	'tcgiant_sync_bulk_push_cap',      // The daily cap on bulk pushes.
 	'tcgiant_sync_bulk_pushed',        // Bulk pushes counted today.
 	'tcgiant_sync_bulk_waiting',       // Bulk pushes counted today and still waiting.
@@ -270,8 +277,9 @@ foreach ( $tcgiant_options as $tcgiant_option ) {
 // check's findings and its holds, the large-copy removal's holds, the
 // day's eBay call counts (3.28.0's, and the transients 3.27 kept them in),
 // when each stock check waiting to try again was last joined (3.28.0), the
-// listings' categories the delta remembers (3.28.4), and the moved
-// addresses the administrator was emailed about (3.31.0) use dynamic names.
+// listings' categories the delta remembers (3.28.4), the moved addresses
+// the administrator was emailed about (3.31.0), and Re-send to eBay's
+// counted listings, its queue and its holds (3.34.0) use dynamic names.
 // phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 $wpdb->query(
 	"DELETE FROM {$wpdb->options}
@@ -284,6 +292,9 @@ $wpdb->query(
 	    OR option_name LIKE 'tcgiant_sync_move_mailed_%'
 	    OR option_name LIKE 'tcgiant_sync_settle_joined_%'
 	    OR option_name LIKE 'tcgiant_sync_category_memory_%'
+	    OR option_name LIKE 'tcgiant_sync_tpl_resend_ids_%'
+	    OR option_name LIKE 'tcgiant_sync_tpl_resend_queue_%'
+	    OR option_name LIKE 'tcgiant_sync_tpl_resend_lock_%'
 	    OR option_name LIKE '_transient_tcgiant_api_calls_%'
 	    OR option_name LIKE '_transient_timeout_tcgiant_api_calls_%'"
 );
@@ -368,10 +379,11 @@ $wpdb->query(
 );
 
 // What each product holds of them: its own template choice, its eBay-only
-// description, and the record of the description last sent.
+// description, the record of the description last sent, and a re-send of
+// it eBay refused (3.34.0).
 $wpdb->query(
 	"DELETE FROM {$wpdb->prefix}postmeta
-	 WHERE meta_key IN ( '_tcgiant_tpl_override', '_tcgiant_ebay_description', '_tcgiant_tpl_id', '_tcgiant_tpl_ver', '_tcgiant_tpl_hash_sent', '_tcgiant_content_hash', '_tcgiant_desc_hash', '_tcgiant_region_hash', '_tcgiant_tpl_item', '_tcgiant_desc_sent_at' )"
+	 WHERE meta_key IN ( '_tcgiant_tpl_override', '_tcgiant_ebay_description', '_tcgiant_tpl_id', '_tcgiant_tpl_ver', '_tcgiant_tpl_hash_sent', '_tcgiant_content_hash', '_tcgiant_desc_hash', '_tcgiant_region_hash', '_tcgiant_tpl_item', '_tcgiant_desc_sent_at', '_tcgiant_resend_failed' )"
 );
 
 // The WP-Lister notice, dismissed per user.

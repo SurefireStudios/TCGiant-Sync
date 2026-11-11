@@ -415,6 +415,14 @@ class TCGiant_Sync_Exporter {
 	const BULK_WAITING_OPTION = 'tcgiant_sync_bulk_waiting';
 
 	/**
+	 * A description-only re-send of a product's listing that eBay refused
+	 * (3.34.0, TCGiant_Sync_Template_Resend): which listing, on how many days
+	 * it was tried, the last of them, eBay's words, and whether it now needs
+	 * attention. Taken off when a push or a re-send of the listing succeeds.
+	 */
+	const RESEND_FAILED_META = '_tcgiant_resend_failed';
+
+	/**
 	 * Products the last bulk_push_products() call could not queue, because
 	 * the day's cap was reached.
 	 *
@@ -927,6 +935,27 @@ class TCGiant_Sync_Exporter {
 		return $take;
 	}
 
+	/**
+	 * Give back part of what take_bulk_push_allowance() gave, unused (3.34.0):
+	 * a batch of re-sends takes its allowance before it starts, and a listing
+	 * that no longer qualifies, or a pause part way, leaves some of it unsent.
+	 * Only on the day it was taken: after midnight UTC the count is a new
+	 * day's.
+	 *
+	 * @param int    $unused How many were not used.
+	 * @param string $day    The UTC day they were taken, Y-m-d.
+	 */
+	public static function give_back_bulk_push_allowance( $unused, $day ) {
+		$unused = max( 0, (int) $unused );
+		if ( 0 === $unused || gmdate( 'Y-m-d' ) !== (string) $day ) {
+			return;
+		}
+		update_option( self::BULK_PUSHED_OPTION, array(
+			'day'   => gmdate( 'Y-m-d' ),
+			'count' => max( 0, self::bulk_pushed_today() - $unused ),
+		), false );
+	}
+
 	// -------------------------------------------------------------------------
 	// Action Scheduler Callback
 	// -------------------------------------------------------------------------
@@ -1147,7 +1176,18 @@ class TCGiant_Sync_Exporter {
 		$product->update_meta_data( '_ebay_item_id', $item_id );
 		$product->update_meta_data( '_ebay_export_status', 'pushed' );
 		$product->update_meta_data( '_ebay_export_error', '' );
-		$product->update_meta_data( '_ebay_export_last_pushed', current_time( 'mysql' ) );
+		$pushed_at = current_time( 'mysql' );
+		$product->update_meta_data( '_ebay_export_last_pushed', $pushed_at );
+		// Dated by the import's link of a listing an unfinished push made,
+		// not by a push (3.34.0): marked so, for Re-send to eBay. A push
+		// that finishes takes the mark off. The key is
+		// TCGiant_Sync_Listing_Link::LINK_DATED_META's.
+		$link_dated = '_ebay_export_pushed_at_link';
+		if ( ! empty( $result['link_dated'] ) ) {
+			$product->update_meta_data( $link_dated, $pushed_at );
+		} else {
+			$product->delete_meta_data( $link_dated );
+		}
 
 		// A listing a push created is the shop's own: its pushes follow the
 		// shop's defaults (3.28.8). So is one the import links back to the
@@ -3799,6 +3839,69 @@ class TCGiant_Sync_Exporter {
 	}
 
 	/**
+	 * A description as an item sends it, in CDATA. Any literal "]]>" in it is
+	 * split so it cannot end the section early: unescaped, a description
+	 * holding that sequence (common in code snippets) either breaks the
+	 * request or puts raw XML into it.
+	 *
+	 * The item build_item_xml() makes, and the description-only re-send
+	 * (3.34.0, TCGiant_Sync_Template_Resend), both send it this way.
+	 *
+	 * @param string $html The description.
+	 * @return string <Description>...</Description>
+	 */
+	public static function description_xml( $html ) {
+		return '<Description><![CDATA[' . str_replace( ']]>', ']]]]><![CDATA[>', (string) $html ) . ']]></Description>';
+	}
+
+	/**
+	 * The settings an Update of a product's listing builds its item with, as
+	 * do_push() settles them for the revise, without anything a push asks
+	 * eBay first: no read of the listing, no eBay Motors look-up (3.34.0).
+	 *
+	 * For the description-only re-send (TCGiant_Sync_Template_Resend), which
+	 * renders what the next push would send and asks eBay nothing to do it.
+	 * The listing keeps its category (keep_listing_category()), and the
+	 * request site is the listing's own, as do_push() has them.
+	 *
+	 * @param WC_Product $product A product with a listing.
+	 * @return array
+	 */
+	public function resend_settings( WC_Product $product ) {
+		$settings                  = self::keep_listing_category( $this->get_export_settings( $product->get_id() ) );
+		$settings['_request_site'] = TCGiant_Sync_Motors::request_site( $settings, true );
+
+		return $settings;
+	}
+
+	/**
+	 * The description the next push of a product would send its listing,
+	 * built exactly as build_item_xml() builds it, from resend_settings()
+	 * (3.34.0). The title it is given is the one the item sends, worked out
+	 * without the push's log line for a title cut to eBay's length: a count
+	 * runs over every listing, and says nothing of its own.
+	 *
+	 * @param WC_Product $product  The product.
+	 * @param array      $settings resend_settings().
+	 * @return array build_listing_description()'s answer.
+	 */
+	public function resend_description( WC_Product $product, array $settings ) {
+		return $this->build_listing_description( $product, $settings, $this->title_sent( $product->get_name() ) );
+	}
+
+	/**
+	 * A title as the item sends it (sanitize_title()), without the push's
+	 * log line for one cut to eBay's length (3.34.0): the re-send compares
+	 * the product's with the one the Listings table has for its listing.
+	 *
+	 * @param string $title A title.
+	 * @return string
+	 */
+	public function title_sent( $title ) {
+		return $this->sanitize_title( (string) $title, true );
+	}
+
+	/**
 	 * Build the inner <Item> XML content (without the outer <Item> tags).
 	 *
 	 * @param WC_Product $product  The WooCommerce product.
@@ -3930,11 +4033,7 @@ class TCGiant_Sync_Exporter {
 		}
 
 		$xml  = '<Title>' . esc_xml( $title ) . '</Title>' . "\n";
-		// Split any literal "]]>" in the description so it cannot terminate the
-		// CDATA section early. Unescaped, a description containing that
-		// sequence (common in code snippets) either breaks the request or
-		// injects raw XML into the AddItem payload.
-		$xml .= '<Description><![CDATA[' . str_replace( ']]>', ']]]]><![CDATA[>', $description ) . ']]></Description>' . "\n";
+		$xml .= self::description_xml( $description ) . "\n";
 
 		// The eBay shop categories the product maps to (3.33.0): none for an
 		// imported listing that keeps eBay's values, and none for a product
@@ -7327,9 +7426,11 @@ class TCGiant_Sync_Exporter {
 	 * Sanitize a product title to eBay's 80-character limit.
 	 *
 	 * @param string $title Raw WooCommerce product name.
+	 * @param bool   $quiet Leave the log line for a title cut short out:
+	 *                      the re-send's count (3.34.0).
 	 * @return string Sanitized, truncated title.
 	 */
-	private function sanitize_title( $title ) {
+	private function sanitize_title( $title, $quiet = false ) {
 		// Angle brackets only.
 		//
 		// This stripped < > & " ' ! @ # and * on the grounds that eBay
@@ -7351,6 +7452,9 @@ class TCGiant_Sync_Exporter {
 		$title = trim( $title );
 
 		if ( mb_strlen( $title ) > self::MAX_TITLE_LENGTH ) {
+			if ( $quiet ) {
+				return mb_substr( $title, 0, self::MAX_TITLE_LENGTH );
+			}
 			TCGiant_Sync_Logger::log( sprintf(
 				'Export: Title truncated from %d to %d chars: "%s..."',
 				mb_strlen( $title ),
@@ -7495,6 +7599,7 @@ class TCGiant_Sync_Exporter {
 				'region_hash'  => '',
 				'warnings'     => $warnings,
 				'removed'      => $removed,
+				'nested'       => false,
 			);
 		} elseif ( $warnings ) {
 			$render['warnings'] = array_merge( $warnings, $render['warnings'] );
@@ -7623,6 +7728,10 @@ class TCGiant_Sync_Exporter {
 	/**
 	 * Record on a product the description eBay has just accepted.
 	 *
+	 * A re-send of its description that eBay refused (3.34.0,
+	 * TCGiant_Sync_Template_Resend) is put right by this send: its record,
+	 * and "needs attention", go.
+	 *
 	 * @param WC_Product $product Product, saved by the caller.
 	 * @param array|null $desc    build_listing_description()'s answer.
 	 * @param string     $item_id The listing it was sent to.
@@ -7631,17 +7740,57 @@ class TCGiant_Sync_Exporter {
 		if ( ! is_array( $desc ) || ! isset( $desc['hash'] ) ) {
 			return;
 		}
+		foreach ( self::description_record( $desc, $item_id ) as $key => $value ) {
+			$product->update_meta_data( $key, $value );
+		}
+		$product->delete_meta_data( self::RESEND_FAILED_META );
+	}
+
+	/**
+	 * Record what a description-only re-send has just put on eBay (3.34.0):
+	 * the same record a push keeps, written to the table as it is, with no
+	 * save of the product. A save would move the product's date_modified,
+	 * and the re-send's own rule for a listing with no content hash reads
+	 * that as the product changing after its last push.
+	 *
+	 * Not _ebay_export_last_pushed or _ebay_export_pushed_version: this is
+	 * not a push, and nothing else of the listing was sent.
+	 *
+	 * @param int    $product_id The product.
+	 * @param array  $desc       resend_description()'s answer, as sent.
+	 * @param string $item_id    The listing it was sent to.
+	 */
+	public static function record_resend( $product_id, array $desc, $item_id ) {
+		if ( ! isset( $desc['hash'] ) ) {
+			return;
+		}
+		foreach ( self::description_record( $desc, $item_id ) as $key => $value ) {
+			update_post_meta( (int) $product_id, $key, $value );
+		}
+		delete_post_meta( (int) $product_id, self::RESEND_FAILED_META );
+	}
+
+	/**
+	 * The record of a description eBay has accepted, by meta key.
+	 *
+	 * @param array  $desc    build_listing_description()'s answer.
+	 * @param string $item_id The listing it was sent to.
+	 * @return array<string, string>
+	 */
+	private static function description_record( array $desc, $item_id ) {
 		// As strings, which is how post meta comes back.
-		$product->update_meta_data( '_tcgiant_tpl_id', (string) (int) ( $desc['template_id'] ?? 0 ) );
-		$product->update_meta_data( '_tcgiant_tpl_ver', (string) (int) ( $desc['version'] ?? 0 ) );
-		$product->update_meta_data( '_tcgiant_tpl_hash_sent', (string) ( $desc['tpl_hash'] ?? '' ) );
-		$product->update_meta_data( '_tcgiant_content_hash', (string) ( $desc['content_hash'] ?? '' ) );
-		$product->update_meta_data( '_tcgiant_desc_hash', (string) $desc['hash'] );
-		$product->update_meta_data( '_tcgiant_region_hash', (string) ( $desc['region_hash'] ?? '' ) );
-		// Which listing: a re-import cuts a content region only for the
-		// listing the record is of (TCGiant_Sync_Mapper::sent_with_template()).
-		$product->update_meta_data( '_tcgiant_tpl_item', (string) $item_id );
-		$product->update_meta_data( '_tcgiant_desc_sent_at', (string) time() );
+		return array(
+			'_tcgiant_tpl_id'        => (string) (int) ( $desc['template_id'] ?? 0 ),
+			'_tcgiant_tpl_ver'       => (string) (int) ( $desc['version'] ?? 0 ),
+			'_tcgiant_tpl_hash_sent' => (string) ( $desc['tpl_hash'] ?? '' ),
+			'_tcgiant_content_hash'  => (string) ( $desc['content_hash'] ?? '' ),
+			'_tcgiant_desc_hash'     => (string) $desc['hash'],
+			'_tcgiant_region_hash'   => (string) ( $desc['region_hash'] ?? '' ),
+			// Which listing: a re-import cuts a content region only for the
+			// listing the record is of (TCGiant_Sync_Mapper::sent_with_template()).
+			'_tcgiant_tpl_item'      => (string) $item_id,
+			'_tcgiant_desc_sent_at'  => (string) time(),
+		);
 	}
 
 	/**

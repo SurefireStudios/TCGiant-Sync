@@ -303,12 +303,13 @@ foreach ( array_merge( glob( $root . '/includes/*.php' ), glob( $root . '/admin/
 	}
 }
 ksort( $callers );
-check( 'every bulk push comes through the cap: the products list and the coin update through bulk_push_products(), the Listings screen\'s job a product at a time; push_product() only from the product\'s own screen and that job', $callers, array(
-	'class-tcgiant-sync-admin.php bulk_push_products'          => 2,
-	'class-tcgiant-sync-admin.php push_product'                => 1,
-	'class-tcgiant-sync-exporter.php take_bulk_push_allowance' => 1,
-	'class-tcgiant-sync-jobs.php push_product'                 => 1,
-	'class-tcgiant-sync-jobs.php take_bulk_push_allowance'     => 1,
+check( 'every bulk push comes through the cap: the products list and the coin update through bulk_push_products(), the Listings screen\'s job a product at a time, Re-send to eBay\'s Test on 5 and its batches (3.34.0); push_product() only from the product\'s own screen and that job', $callers, array(
+	'class-tcgiant-sync-admin.php bulk_push_products'                => 2,
+	'class-tcgiant-sync-admin.php push_product'                      => 1,
+	'class-tcgiant-sync-exporter.php take_bulk_push_allowance'       => 1,
+	'class-tcgiant-sync-jobs.php push_product'                       => 1,
+	'class-tcgiant-sync-jobs.php take_bulk_push_allowance'           => 1,
+	'class-tcgiant-sync-template-resend.php take_bulk_push_allowance' => 2,
 ) );
 
 done();

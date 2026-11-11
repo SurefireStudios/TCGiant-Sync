@@ -161,6 +161,23 @@ class TCGiant_Sync_API {
 	protected $resends = 0;
 
 	/**
+	 * Set while a description is rendered to be counted for, or sent by, the
+	 * description-only re-send (3.34.0, cached_only()): a counter, as
+	 * with_stock_priority() keeps one, so a nested call cannot end the
+	 * outer one's.
+	 *
+	 * @var int
+	 */
+	private $cache_only = 0;
+
+	/**
+	 * Look-ups cached_only() answered with nothing, because nothing was kept.
+	 *
+	 * @var int
+	 */
+	private $cache_misses = 0;
+
+	/**
 	 * Supported Marketplaces.
 	 */
 	const MARKETPLACES = array(
@@ -659,6 +676,31 @@ class TCGiant_Sync_API {
 			return $fn();
 		} finally {
 			$this->stock_priority--;
+		}
+	}
+
+	/**
+	 * Run something that must ask eBay nothing (3.34.0): the re-send's count
+	 * and its render before each send. The one look-up a description reaches,
+	 * eBay's item specifics for a category (get_category_aspects_in_tree(),
+	 * which names the specifics as eBay spells them), is answered from what
+	 * this site keeps, a week from the last push or product screen that
+	 * asked, and otherwise with an error, as an eBay outage answers a push:
+	 * the specifics keep the names the product gives them.
+	 *
+	 * @param callable $fn     What to run.
+	 * @param int      $missed Set to how many look-ups found nothing kept.
+	 * @return mixed What it returns.
+	 */
+	public function cached_only( callable $fn, &$missed = 0 ) {
+		$this->cache_only++;
+		$before = $this->cache_misses;
+
+		try {
+			return $fn();
+		} finally {
+			$this->cache_only--;
+			$missed = $this->cache_misses - $before;
 		}
 	}
 
@@ -2552,6 +2594,12 @@ class TCGiant_Sync_API {
 		$cached = get_transient( $transient_key );
 		if ( false !== $cached ) {
 			return $cached;
+		}
+
+		// Inside cached_only() (3.34.0): eBay is not asked.
+		if ( $this->cache_only > 0 ) {
+			$this->cache_misses++;
+			return new WP_Error( 'not_cached', __( 'The item specifics eBay defines for this category are not kept on this site yet.', 'tcgiant-sync' ) );
 		}
 
 		$response = $this->request(

@@ -100,6 +100,7 @@ Names in **bold** are the names the plugin's own screens use.
 | eBay's content rules applied before sending: scripts, forms, frames, links that leave eBay and pictures not served over https are removed. The editor warns about email addresses, phone numbers, social media handles and web addresses that aren't eBay's | ✅ |
 | Phone-friendly: the starters have no fixed width over 700 px and read at 375 px; the preview warns about wider fixed widths | ✅ |
 | Every save keeps a version (the last ten), with Restore; templates export and import as files | ✅ |
+| **Re-send to eBay**: after a template change, send the listings already on eBay their new description alone, one eBay call each. It counts them by template and says why others are left out; **Test on 5** first, then **Re-send all** in the background, within your daily bulk-push limit, pausing while eBay calls are short | ✅ |
 
 Nothing changes until you choose a template: the default is **None**, the plain WooCommerce description.
 

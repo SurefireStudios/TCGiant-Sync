@@ -146,6 +146,13 @@ class TCGiant_Sync_Templates {
 	const VERIFY_TRANSIENT = 'tcgiant_tpl_verify_';
 
 	/**
+	 * How a templated description's content hash begins since 3.34.0: see
+	 * content_hash(). One without it was recorded before, or by a preview
+	 * of 3.34.0 from other facts, and is not used.
+	 */
+	const CONTENT_HASH_PREFIX = '3:';
+
+	/**
 	 * Instance.
 	 *
 	 * @var self|null
@@ -181,6 +188,12 @@ class TCGiant_Sync_Templates {
 		// The five starters, once, as drafts with nothing assigned.
 		if ( class_exists( 'TCGiant_Sync_Template_Starters' ) ) {
 			add_action( 'admin_init', array( 'TCGiant_Sync_Template_Starters', 'maybe_install' ) );
+		}
+
+		// Re-send to eBay's count and sends, which Action Scheduler runs
+		// (3.34.0).
+		if ( class_exists( 'TCGiant_Sync_Template_Resend' ) ) {
+			TCGiant_Sync_Template_Resend::register();
 		}
 	}
 
@@ -1227,7 +1240,7 @@ class TCGiant_Sync_Templates {
 	 *                             condition_name, grading, specifics,
 	 *                             variations, images.
 	 * @return array html, template_id, version, hash, tpl_hash, content_hash,
-	 *               chars, warnings, removed.
+	 *               chars, warnings, removed, nested.
 	 */
 	public static function render( $product, array $settings, array $facts ) {
 		$tpl_settings = self::settings();
@@ -1264,7 +1277,8 @@ class TCGiant_Sync_Templates {
 
 		// The content region: the eBay-only description, or the website's.
 		$source = (string) ( $facts['content_source'] ?? '' );
-		if ( false !== stripos( $source, '<style' ) ) {
+		$nested = false !== stripos( $source, '<style' );
+		if ( $nested ) {
 			$warnings[] = __( 'This product\'s description already holds a <style> block, which usually means it was imported with another listing template inside it. The style is removed; check the preview for a design inside a design.', 'tcgiant-sync' );
 		}
 		$content = TCGiant_Sync_Template_Sanitiser::clean( self::content_filters( $source, $tpl['content_filters'] ), $sanitise );
@@ -1368,14 +1382,6 @@ class TCGiant_Sync_Templates {
 		}
 		$tpl_hash = self::template_hash( $tpl );
 
-		$product_side = array_diff_key( $context, array_flip( array_merge( array_keys( $used_policies ), array_keys( $shop ) ) ) );
-		foreach ( array_keys( $product_side ) as $key ) {
-			if ( 0 === strpos( $key, 'block.' ) || 0 === strpos( $key, 'policy.' ) || 0 === strpos( $key, 'design.' ) || 0 === strpos( $key, 'show.' ) ) {
-				unset( $product_side[ $key ] );
-			}
-		}
-		$product_side['content_source'] = $source;
-
 		return array(
 			'html'         => $html,
 			'none'         => false,
@@ -1389,11 +1395,76 @@ class TCGiant_Sync_Templates {
 			// alone (TCGiant_Sync_Mapper::save_as_product()).
 			'region_hash'  => sha1( self::content_region( $html, true ) ),
 			'tpl_hash'     => sha1( $tpl_hash . wp_json_encode( $used_policies ) . wp_json_encode( $shop ) ),
-			'content_hash' => sha1( (string) wp_json_encode( $product_side ) ),
+			'content_hash' => self::content_hash( $product, $facts ),
 			'chars'        => mb_strlen( $html, 'UTF-8' ),
+			// The content source holds a <style> block: a design inside a
+			// design, which the re-send leaves for a look (3.34.0).
+			'nested'       => $nested,
 			'warnings'     => array_values( array_unique( $warnings ) ),
 			'removed'      => self::count_removed( $removed ),
 		);
+	}
+
+	/**
+	 * The hash of the product's facts that reach a field of the listing
+	 * besides its description, and of nothing the template chooses (3.34.0):
+	 * the facts the exporter hands render() as it has them - the title the
+	 * item sends, the SKU, the attributes, the condition and grading, the
+	 * item specifics after eBay's cut, the variations and the photos - and
+	 * the price eBay is sent (TCGiant_Sync_Ebay_Price::for_product()), which
+	 * a template can show through a product meta placeholder.
+	 *
+	 * The re-send compares it with what the last send recorded, so that a
+	 * product whose title, specifics, photos or price changed since then is
+	 * held for a full push rather than sent a new description beside the old
+	 * ones on eBay. What reaches only the description - the content source,
+	 * the short description, the other product meta - is left out: a
+	 * description-only send is the right way to send it. So is everything
+	 * the template side chooses: a new template, a new version, its colours
+	 * (which the specifics table carries), its content filters, a block, the
+	 * Template settings (their meta allowlist too), the shop's fields and
+	 * the policy blocks.
+	 *
+	 * Begins CONTENT_HASH_PREFIX. The hash 3.27.8 to 3.33.0 recorded took in
+	 * the content region's wrapper, whose class is new on every render, so
+	 * it never came out the same twice; nothing read it until 3.34.0, and the
+	 * re-send treats one without the prefix as no content hash at all.
+	 *
+	 * @param WC_Product $product Product.
+	 * @param array      $facts   From the exporter.
+	 * @return string
+	 */
+	private static function content_hash( $product, array $facts ) {
+		$side = array();
+		foreach ( array( 'title', 'sku', 'attributes', 'condition_name', 'grading', 'specifics', 'variations', 'images' ) as $key ) {
+			$side[ $key ] = $facts[ $key ] ?? null;
+		}
+		$side['prices'] = self::prices_sent( $product );
+
+		return self::CONTENT_HASH_PREFIX . sha1( (string) wp_json_encode( $side ) );
+	}
+
+	/**
+	 * The price eBay is sent for a product, or for each of its variations,
+	 * by ID: for content_hash().
+	 *
+	 * @param WC_Product $product Product.
+	 * @return array<int, string>
+	 */
+	private static function prices_sent( $product ) {
+		if ( ! class_exists( 'TCGiant_Sync_Ebay_Price' ) || ! $product instanceof WC_Product ) {
+			return array();
+		}
+
+		$owner  = self::parent_of( $product );
+		$priced = $owner->is_type( 'variable' ) ? array_filter( array_map( 'wc_get_product', (array) $owner->get_children() ) ) : array( $owner );
+		$out    = array();
+		foreach ( $priced as $one ) {
+			if ( $one instanceof WC_Product ) {
+				$out[ (int) $one->get_id() ] = (string) TCGiant_Sync_Ebay_Price::for_product( $one );
+			}
+		}
+		return $out;
 	}
 
 	/**

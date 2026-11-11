@@ -1145,6 +1145,69 @@
     color: var(--tc-text-muted);
 }
 
+/* Re-send to eBay (3.34.0): each button a form of its own, with why it
+   waits beside it when it is disabled. */
+.wrap.tc-dashboard-wrap .tc-resend-form {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 8px;
+    margin: 0 0 6px;
+}
+
+.wrap.tc-dashboard-wrap .tc-resend-form .tc-button[disabled] {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+}
+
+.wrap.tc-dashboard-wrap .tc-resend-why {
+    margin: 0;
+}
+
+.wrap.tc-dashboard-wrap .tc-resend-groups {
+    margin: 8px 0 16px;
+}
+
+.wrap.tc-dashboard-wrap .tc-resend-groups td {
+    vertical-align: top;
+}
+
+.wrap.tc-dashboard-wrap .tc-resend-test-rows,
+.wrap.tc-dashboard-wrap .tc-resend-reasons {
+    margin: 4px 0 8px 18px;
+    padding: 0;
+    list-style: disc;
+}
+
+.wrap.tc-dashboard-wrap .tc-resend-test-rows li,
+.wrap.tc-dashboard-wrap .tc-resend-reasons li {
+    margin-bottom: 4px;
+    overflow-wrap: anywhere;
+}
+
+.wrap.tc-dashboard-wrap .tc-resend-ok {
+    color: var(--tc-success);
+}
+
+/* Not on eBay: asks nothing of the shop, so last and quieter. */
+.wrap.tc-dashboard-wrap .tc-resend-reasons .tc-resend-quiet {
+    color: var(--tc-text-muted);
+    font-size: 12px;
+}
+
+.wrap.tc-dashboard-wrap .tc-resend-heading {
+    margin: 12px 0 4px;
+    font-size: 14px;
+}
+
+.wrap.tc-dashboard-wrap .tc-resend-run {
+    padding: 10px 12px;
+    margin: 12px 0;
+    border: 1px solid var(--tc-border);
+    border-radius: var(--tc-radius-sm);
+}
+
 /* ─── Listing Templates: narrower windows and phones ─── */
 /* Nothing on these screens may widen the page: a button keeps its label on
    one line, and what cannot wrap at a space (a long code, an address in the

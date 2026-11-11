@@ -26,6 +26,20 @@ if ( ! defined( 'ABSPATH' ) ) {
 class TCGiant_Sync_Listing_Link {
 
 	/**
+	 * The _ebay_export_last_pushed a link wrote, rather than a push (3.34.0):
+	 * the sync's completion of a push that did not live to save its listing
+	 * (complete_unfinished_push(), complete_unfinished_push_now(), and
+	 * TCGiant_Sync_Mapper's link of the listing such a push made). That date
+	 * is when the sync linked it, not when the product last matched eBay -
+	 * an edit made between the push and the link is dated before it - so
+	 * Re-send to eBay reads a last push of exactly this date as none, and
+	 * holds the listing for a push (TCGiant_Sync_Template_Resend::date_rule()).
+	 * A push that finishes writes a new date, which no longer matches. Meta
+	 * only: no request reads it.
+	 */
+	const LINK_DATED_META = '_ebay_export_pushed_at_link';
+
+	/**
 	 * Single instance.
 	 *
 	 * @var TCGiant_Sync_Listing_Link|null
@@ -123,6 +137,8 @@ class TCGiant_Sync_Listing_Link {
 			'_ebay_export_error',
 			'_ebay_export_last_pushed',
 			'_ebay_export_pushing_since',
+			// That date, when a link wrote it (3.34.0).
+			self::LINK_DATED_META,
 			// When the first push of the original that has not finished
 			// began, and the latest, and the sales order sync took off it by
 			// listing meanwhile (3.28.7, TCGiant_Sync_Mapper::
@@ -333,7 +349,9 @@ class TCGiant_Sync_Listing_Link {
 		$product->update_meta_data( '_ebay_export_status', 'pushed' );
 		$product->update_meta_data( '_ebay_export_error', '' );
 		if ( '' === (string) $product->get_meta( '_ebay_export_last_pushed' ) ) {
-			$product->update_meta_data( '_ebay_export_last_pushed', current_time( 'mysql' ) );
+			$at = current_time( 'mysql' );
+			$product->update_meta_data( '_ebay_export_last_pushed', $at );
+			$product->update_meta_data( self::LINK_DATED_META, $at );
 		}
 		$product->delete_meta_data( '_ebay_export_pushing_since' );
 
@@ -362,7 +380,9 @@ class TCGiant_Sync_Listing_Link {
 		update_post_meta( $product_id, '_ebay_export_status', 'pushed' );
 		update_post_meta( $product_id, '_ebay_export_error', '' );
 		if ( '' === (string) get_post_meta( $product_id, '_ebay_export_last_pushed', true ) ) {
-			update_post_meta( $product_id, '_ebay_export_last_pushed', current_time( 'mysql' ) );
+			$at = current_time( 'mysql' );
+			update_post_meta( $product_id, '_ebay_export_last_pushed', $at );
+			update_post_meta( $product_id, self::LINK_DATED_META, $at );
 		}
 		delete_post_meta( $product_id, '_ebay_export_pushing_since' );
 

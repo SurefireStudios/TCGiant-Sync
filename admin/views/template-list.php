@@ -106,6 +106,14 @@ $tc_langs = array( 'en' => 'English', 'de' => 'Deutsch', 'fr' => 'Français', 'i
 	<?php endif; ?>
 </div>
 
+<?php
+// Re-send to eBay (3.34.0): a template-side change, sent to the listings
+// already on eBay, description only.
+if ( class_exists( 'TCGiant_Sync_Template_Resend' ) ) {
+	include TCGIANT_SYNC_PATH . 'admin/views/template-resend.php';
+}
+?>
+
 <div class="tc-row-2col" style="margin-top:20px;">
 	<div class="tc-card">
 		<h2><span class="dashicons dashicons-plus-alt"></span> <?php esc_html_e( 'New template', 'tcgiant-sync' ); ?></h2>

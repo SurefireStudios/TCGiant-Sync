@@ -209,6 +209,11 @@ function get_option( $name, $default = false ) {
 }
 function update_option( $name, $value, $autoload = null ) {
 	$GLOBALS['W']['options'][ $name ] = $value;
+	// How it was asked to be loaded, for a harness to read (3.34.0): null
+	// keeps what WordPress had, which for a new option is yes.
+	if ( null !== $autoload || ! isset( $GLOBALS['W']['autoload'][ $name ] ) ) {
+		$GLOBALS['W']['autoload'][ $name ] = null === $autoload ? 'yes' : ( ( false === $autoload || 'no' === $autoload ) ? 'no' : 'yes' );
+	}
 	return true;
 }
 function add_option( $name, $value = '', $deprecated = '', $autoload = 'yes' ) {
@@ -216,6 +221,7 @@ function add_option( $name, $value = '', $deprecated = '', $autoload = 'yes' ) {
 		return false;
 	}
 	$GLOBALS['W']['options'][ $name ] = $value;
+	$GLOBALS['W']['autoload'][ $name ] = ( false === $autoload || 'no' === $autoload ) ? 'no' : 'yes';
 	return true;
 }
 function delete_option( $name ) {
@@ -417,6 +423,19 @@ class WC_Product {
 	public function save() { return $this->id; }
 	public function read_meta_data( $force = false ) {}
 	public function is_in_stock() { return true; }
+	/**
+	 * When it was last saved, as WooCommerce dates it (3.34.0): 'modified',
+	 * a Unix time on the site's own clock; none unless a harness sets one.
+	 */
+	public function get_date_modified() { return isset( $this->data['modified'] ) ? new World_Date( (int) $this->data['modified'] ) : null; }
+}
+
+/** A WC_DateTime, as far as the re-send reads one (3.34.0). */
+class World_Date {
+	private $time;
+	public function __construct( $time ) { $this->time = (int) $time; }
+	public function getOffsetTimestamp() { return $this->time; }
+	public function getTimestamp() { return $this->time; }
 }
 class WC_Product_Variable extends WC_Product {
 	public $variation_attributes = array();

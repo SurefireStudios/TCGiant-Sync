@@ -261,6 +261,8 @@ function linked_as_pushed( $pid, $item_id, $products_before ) {
 		'error'       => meta( $pid, '_ebay_export_error' ),
 		'since'       => meta( $pid, '_ebay_export_pushing_since' ),
 		'pushed'      => '' !== (string) meta( $pid, '_ebay_export_last_pushed' ),
+		// Dated by the link, not by the push, and marked so (3.34.0).
+		'link dated'  => null !== meta( $pid, '_ebay_export_pushed_at_link' ) && meta( $pid, '_ebay_export_pushed_at_link' ) === meta( $pid, '_ebay_export_last_pushed' ),
 		'version'     => meta( $pid, '_ebay_export_pushed_version' ),
 		'listing'     => meta( $pid, '_ebay_listing_status' ),
 		'site'        => meta( $pid, '_ebay_site' ),
@@ -278,6 +280,7 @@ function as_pushed( $item_id, $pid ) {
 		'error'       => '',
 		'since'       => null,
 		'pushed'      => true,
+		'link dated'  => true,
 		'version'     => '3.28.7',
 		'listing'     => 'Active',
 		'site'        => 'US',
