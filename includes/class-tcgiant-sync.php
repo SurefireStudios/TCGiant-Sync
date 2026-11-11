@@ -155,6 +155,10 @@ final class TCGiant_Sync {
 		// Initialize listing-identity protection (every edition; the importer relies on it).
 		TCGiant_Sync_Listing_Link::instance();
 
+		// Filterable item specifics (3.35.0): its batches, on every request,
+		// since Action Scheduler runs them outside the admin; and its form.
+		TCGiant_Sync_Filterable::register();
+
 		// Initialize Cron.
 		TCGiant_Sync_Cron::instance();
 		// Initialize telemetry (Pro only; the file is absent from other editions).

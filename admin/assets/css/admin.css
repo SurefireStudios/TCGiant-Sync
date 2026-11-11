@@ -1396,3 +1396,18 @@
 .wrap.tc-dashboard-wrap .tc-shop-cat-table select { width: 100%; max-width: 520px; }
 .wrap.tc-dashboard-wrap .tc-shop-cat-problem { color: var(--tc-danger); }
 .wrap.tc-dashboard-wrap .tc-shop-cat-stop { margin-top: 16px; }
+
+/* Settings: Filterable item specifics (3.35.0). Its table takes the
+   templates table's phone layout (tc-templates-table). */
+.wrap.tc-dashboard-wrap .tc-filterable-table { margin: 8px 0 12px; }
+.wrap.tc-dashboard-wrap .tc-filterable-table td { vertical-align: top; }
+.wrap.tc-dashboard-wrap .tc-filterable-table label { overflow-wrap: anywhere; }
+.wrap.tc-dashboard-wrap .tc-filterable-notes { color: var(--tc-text-muted); overflow-wrap: anywhere; }
+.wrap.tc-dashboard-wrap .tc-filterable-again { margin: 0 0 8px; }
+.wrap.tc-dashboard-wrap .tc-filterable-run {
+    padding: 10px 12px;
+    margin: 12px 0;
+    border: 1px solid var(--tc-border);
+    border-radius: var(--tc-radius-sm);
+}
+.wrap.tc-dashboard-wrap .tc-filterable-skipped { margin: 6px 0 0 18px; list-style: disc; }

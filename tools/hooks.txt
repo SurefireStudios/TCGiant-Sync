@@ -67,6 +67,7 @@ add_action   admin_post_tcgiant_shop_categories_refresh => handle_refresh
 add_action   admin_post_tcgiant_shop_categories_save => handle_save
 add_action   admin_post_tcgiant_stop_sync => handle_stop_sync
 add_action   admin_post_tcgiant_sync_disconnect => handle_disconnect
+add_action   admin_post_tcgiant_sync_filterable => handle_form
 add_action   admin_post_tcgiant_sync_now => handle_manual_sync
 add_action   admin_post_tcgiant_sync_specific => handle_sync_specific
 add_action   admin_post_tcgiant_tax_notice => handle_tax_notice
@@ -113,6 +114,8 @@ add_action   tcgiant_sync_check_ended_listings => upgrade_auction_import
 add_action   tcgiant_sync_daily_maintenance => auto_relist_ended_items
 add_action   tcgiant_sync_daily_maintenance => daily_maintenance
 add_action   tcgiant_sync_fetch_delta_events => fetch_delta_events
+add_action   tcgiant_sync_filterable_count => run_count
+add_action   tcgiant_sync_filterable_run => run_batch
 add_action   tcgiant_sync_gallery_heal => run_gallery_heal
 add_action   tcgiant_sync_import_orders => import_recent_orders
 add_action   tcgiant_sync_localize_images => process_batch
@@ -227,6 +230,8 @@ schedule     tcgiant_export_push_product
 schedule     tcgiant_sync_check_ended_listings
 schedule     tcgiant_sync_daily_maintenance
 schedule     tcgiant_sync_fetch_delta_events
+schedule     tcgiant_sync_filterable_count
+schedule     tcgiant_sync_filterable_run
 schedule     tcgiant_sync_gallery_heal
 schedule     tcgiant_sync_import_orders
 schedule     tcgiant_sync_localize_images

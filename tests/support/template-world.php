@@ -182,6 +182,9 @@ function get_posts( $args ) {
 	$n = (int) ( $args['numberposts'] ?? 5 );
 	return $n > 0 ? array_slice( $out, 0, $n ) : $out;
 }
+// A world that keeps WordPress's meta cache (support/filterable-world.php,
+// 3.35.0 fix round 1) has its own meta reads and writes.
+if ( ! function_exists( 'get_post_meta' ) ) :
 function get_post_meta( $id, $key = '', $single = false ) {
 	$all = $GLOBALS['W']['meta'][ (int) $id ] ?? array();
 	if ( '' === $key ) {
@@ -197,13 +200,16 @@ function update_post_meta( $id, $key, $value ) {
 	$GLOBALS['W']['meta'][ (int) $id ][ $key ] = wp_unslash( $value );
 	return true;
 }
+endif;
 function add_post_meta( $id, $key, $value, $unique = false ) {
 	return update_post_meta( $id, $key, $value );
 }
+if ( ! function_exists( 'delete_post_meta' ) ) :
 function delete_post_meta( $id, $key ) {
 	unset( $GLOBALS['W']['meta'][ (int) $id ][ $key ] );
 	return true;
 }
+endif;
 function get_option( $name, $default = false ) {
 	return array_key_exists( $name, $GLOBALS['W']['options'] ) ? $GLOBALS['W']['options'][ $name ] : $default;
 }
@@ -241,7 +247,9 @@ function delete_transient( $name ) {
 	unset( $GLOBALS['W']['transients'][ $name ] );
 	return true;
 }
+if ( ! function_exists( 'wp_cache_delete' ) ) :
 function wp_cache_delete( $key, $group = '' ) { return true; }
+endif;
 
 /**
  * The one query the templates make of the database themselves: how many
@@ -314,7 +322,9 @@ function esc_js( $text ) { return addslashes( (string) $text ); }
 function number_format_i18n( $n, $d = 0 ) { return number_format( (float) $n, $d ); }
 function sanitize_text_field( $text ) { return trim( preg_replace( '/[\r\n\t ]+/', ' ', strip_tags( (string) $text ) ) ); }
 function sanitize_key( $key ) { return preg_replace( '/[^a-z0-9_\-]/', '', strtolower( (string) $key ) ); }
+if ( ! function_exists( 'sanitize_title' ) ) :
 function sanitize_title( $title ) { return trim( preg_replace( '/[^a-z0-9_\-]+/', '-', strtolower( (string) $title ) ), '-' ); }
+endif;
 function absint( $n ) { return abs( (int) $n ); }
 function wp_strip_all_tags( $text ) { return trim( strip_tags( (string) preg_replace( '@<(script|style)[^>]*?>.*?</\1>@si', '', (string) $text ) ) ); }
 // What Suggest Category's title goes through (3.29.2), played; test-suggest-title.php
@@ -363,6 +373,10 @@ function wp_get_attachment_image_url( $id, $size = 'thumbnail' ) { return $GLOBA
 
 // --- WooCommerce, played ------------------------------------------------------
 
+// A world that keeps attributes as WooCommerce does, in _product_attributes
+// and terms (support/filterable-world.php, 3.35.0), has its own attribute,
+// labels and terms.
+if ( ! class_exists( 'WC_Product_Attribute', false ) ) :
 class WC_Product_Attribute {
 	public $name;
 	public $options;
@@ -378,6 +392,7 @@ class WC_Product_Attribute {
 	public function is_taxonomy() { return $this->taxonomy; }
 	public function get_variation() { return $this->variation; }
 }
+endif;
 
 class WC_Product {
 	public $id;
@@ -444,12 +459,15 @@ class WC_Product_Variable extends WC_Product {
 class WC_Product_Variation extends WC_Product {}
 
 function wc_get_product( $id ) { return $GLOBALS['W']['products'][ (int) $id ] ?? false; }
+if ( ! function_exists( 'wc_attribute_label' ) ) :
 function wc_attribute_label( $name, $product = null ) {
 	if ( 0 === strpos( $name, 'pa_' ) ) {
 		return ucwords( str_replace( '-', ' ', substr( $name, 3 ) ) );
 	}
 	return $name;
 }
+endif;
+if ( ! function_exists( 'wc_get_product_terms' ) ) :
 function wc_get_product_terms( $product_id, $taxonomy, $args = array() ) {
 	$product = wc_get_product( $product_id );
 	foreach ( $product->get_attributes() as $a ) {
@@ -463,6 +481,7 @@ function wc_get_product_terms( $product_id, $taxonomy, $args = array() ) {
 	}
 	return array();
 }
+endif;
 function get_term_by( $field, $value, $taxonomy ) {
 	$name = $GLOBALS['W']['term_names'][ $taxonomy . '|' . $value ] ?? null;
 	return null === $name ? false : (object) array( 'name' => $name );

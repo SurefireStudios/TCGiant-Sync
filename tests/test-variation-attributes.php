@@ -709,7 +709,8 @@ echo "\nTHE 3.24 MERGE, AND THE SETTING\n" . str_repeat( '=', 124 ) . "\n";
 
 check( 'the merge is as it was: existing set first, a global attribute skipped, gated by Overwrite Attributes', array(
 	false !== strpos( $src, '$merged = $existing_attributes;' ),
-	false !== strpos( $src, "if ( \$already->is_taxonomy() ) {\n\t\t\t\t\tcontinue;" ),
+	// The shop's own: one the plugin made of an item specific (3.35.0) is replaced.
+	false !== strpos( $src, "if ( \$already->is_taxonomy() && ! isset( \$filterable['ours'][ \$claimed[ \$label ] ] ) ) {\n\t\t\t\t\tcontinue;" ),
 	false !== strpos( $src, 'if ( $is_new || $overwrite_attributes ) {' ),
 ), array( true, true, true ) );
 check( '  the variations\' attributes kept after it, whatever it decided', strpos( $src, '$variation_dims = $is_variable ? $this->keep_variation_attributes(' ) > strpos( $src, "'Attributes skipped (WooCommerce won)'" ), true );

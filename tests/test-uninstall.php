@@ -358,8 +358,29 @@ check( '  and its rows, by their prefixes', array( count( $tcg_rs_pre[1] ), $tcg
 preg_match( "/const RESEND_FAILED_META = '(_tcgiant_[a-z_]+)'/", $tcg_exp, $tcg_rs_meta );
 check( '  and a refused re-send\'s record on each product', array( $tcg_rs_meta[1] ?? '', false !== strpos( $tcg_gone, "'" . ( $tcg_rs_meta[1] ?? 'none' ) . "'" ) ), array( '_tcgiant_resend_failed', true ) );
 
+// Filterable item specifics (3.35.0): its count, its run and its holds'
+// prefix, read from its class. What each product records of it stays (fix
+// round 1, LOW 1), with the global attributes, their terms and the brands it
+// describes: shop data, which a reinstalled plugin reads by it as before.
+// So does the choice (CHOICE_OPTION, fix round 2, N3): without it a
+// reinstalled plugin would show the names unticked, and its next Save would
+// turn them back. Its two hooks are cancelled whatever was answered (below).
+$tcg_fs = (string) file_get_contents( __DIR__ . '/../includes/class-tcgiant-sync-filterable.php' );
+preg_match_all( "/const \w+_OPTION = '(tcgiant_[a-z_]+)'/", $tcg_fs, $tcg_fs_opts );
+preg_match( "/const CHOICE_OPTION = '(tcgiant_[a-z_]+)'/", $tcg_fs, $tcg_fs_choice );
+check( 'answered Yes: Filterable item specifics\' count and run are deleted; the choice of names is kept', array( count( $tcg_fs_opts[1] ), array_values( array_diff( array_diff( $tcg_fs_opts[1], array( $tcg_fs_choice[1] ?? '' ) ), $DELETED ) ), $tcg_fs_choice[1] ?? '', in_array( $tcg_fs_choice[1] ?? 'none', $DELETED, true ), count( array_filter( $QUERIES, function ( $q ) use ( $tcg_fs_choice ) { return preg_match( "/'" . preg_quote( $tcg_fs_choice[1] ?? 'none', '/' ) . "'/", $q ); } ) ) ), array( 3, array(), 'tcgiant_sync_filterable', false, 0 ) );
+preg_match( "/const LOCK_PREFIX = '(tcgiant_[a-z_]+)'/", $tcg_fs, $tcg_fs_pre );
+preg_match( "/const META = '(_tcgiant_[a-z_]+)'/", $tcg_fs, $tcg_fs_meta );
+check( '  and its holds by their prefix; each product\'s record of what it converted is kept', array(
+	(bool) array_filter( $QUERIES, function ( $q ) use ( $tcg_fs_pre ) { return false !== strpos( $q, "option_name LIKE '" . ( $tcg_fs_pre[1] ?? 'none' ) . "%'" ); } ),
+	$tcg_fs_meta[1] ?? '',
+	(bool) array_filter( $QUERIES, function ( $q ) use ( $tcg_fs_meta ) { return false !== strpos( $q, (string) ( $tcg_fs_meta[1] ?? 'none' ) ); } ),
+), array( true, '_tcgiant_filterable', false ) );
+check( '  never a term, an attribute or a brand', count( array_filter( $QUERIES, function ( $q ) { return false !== stripos( $q, 'term' ) || false !== stripos( $q, 'woocommerce_attribute' ); } ) ), 0 );
+
 run( array(), false );
 check( 'answered No: Re-send to eBay\'s hooks are cancelled all the same, and its options kept', array( array_values( array_diff( array( 'tcgiant_sync_tpl_resend_scan', 'tcgiant_sync_tpl_resend_run' ), $UNSCHEDULED ) ), array_values( array_intersect( $tcg_rs_opts[1], $DELETED ) ) ), array( array(), array() ) );
+check( 'answered No: Filterable item specifics\' hooks are cancelled all the same, and its options and records kept', array( array_values( array_diff( array( 'tcgiant_sync_filterable_run', 'tcgiant_sync_filterable_count' ), $UNSCHEDULED ) ), array_values( array_intersect( $tcg_fs_opts[1], $DELETED ) ), count( array_filter( $QUERIES, function ( $q ) { return false !== strpos( $q, '_tcgiant_filterable' ); } ) ) ), array( array(), array(), 0 ) );
 check( 'answered No: no template, block or product template key is touched', count( array_filter( $QUERIES, function ( $q ) { return false !== strpos( $q, 'tcgiant_tpl' ); } ) ), 0 );
 
 echo "\n  " . str_repeat( '-', 88 ) . "\n";

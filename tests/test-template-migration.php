@@ -82,7 +82,18 @@ $src = file_get_contents( dirname( __DIR__ ) . '/includes/class-tcgiant-sync-exp
 preg_match( '/private function build_description\( WC_Product \$product \) \{\n(.*?)\n\t\}\n/s', $src, $m );
 $mine = file_get_contents( __FILE__ );
 preg_match( '/function description_3277\( WC_Product \$product \) \{\n(.*?)\n\}\n/s', $mine, $copy );
-check( 'its body is the copy above, line for line', isset( $m[1], $copy[1] ) && $m[1] === $copy[1], true );
+// 3.35.0: an attribute Filterable item specifics converted is read by its
+// values, as the custom attribute it was (TCGiant_Sync_Filterable::as_custom());
+// every other attribute as 3.27.7 read it. These lines, and only these, are
+// 3.35.0's (test-filterable-specifics.php shows that push the same bytes).
+$tcg_3350 = "\t\t\t\t\t// One made filterable from an item specific (3.35.0) by its\n"
+	. "\t\t\t\t\t// values, as the custom attribute it was; any other global\n"
+	. "\t\t\t\t\t// one by its term IDs, as ever.\n"
+	. "\t\t\t\t\t\$was   = class_exists( 'TCGiant_Sync_Filterable' ) ? TCGiant_Sync_Filterable::as_custom( \$product, \$attr ) : null;\n"
+	. "\t\t\t\t\t\$value = implode( ', ', null !== \$was ? \$was['options'] : \$attr->get_options() );";
+$tcg_3277 = "\t\t\t\t\t\$value = implode( ', ', \$attr->get_options() );";
+check( 'its one change since, 3.35.0\'s: a converted attribute read by its values', isset( $m[1] ) && 1 === substr_count( $m[1], $tcg_3350 ), true );
+check( 'its body is the copy above, line for line, but for that', isset( $m[1], $copy[1] ) && str_replace( $tcg_3350, $tcg_3277, $m[1] ) === $copy[1], true );
 
 // ─────────────────────────────────────────────────────────────────────────────
 echo "\nNO TEMPLATE: BYTE FOR BYTE WHAT 3.27.7 SENT\n" . str_repeat( '=', 124 ) . "\n";

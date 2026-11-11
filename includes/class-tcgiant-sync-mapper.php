@@ -2224,7 +2224,17 @@ class TCGiant_Sync_Mapper {
 			$attribute->set_variation( true );
 			$woo_attributes[ sanitize_title( $name ) ] = $attribute;
 		}
-		
+
+		// The item specifics the shop has made filterable (3.35.0) go in as
+		// their global attributes, each value a term, where it can be kept
+		// exactly; the rest, and every variation's, as above. Only when the
+		// attributes are to be written below, so no term is made for nothing.
+		$filterable = null;
+		if ( class_exists( 'TCGiant_Sync_Filterable' ) && ( $is_new || ! empty( $settings['overwrite_attributes'] ) ) ) {
+			$filterable     = TCGiant_Sync_Filterable::for_import( $woo_attributes, $product );
+			$woo_attributes = $filterable['attributes'];
+		}
+
 		// Merged, never replaced.
 		//
 		// set_attributes() takes the whole set, and this used to hand it a list
@@ -2252,14 +2262,16 @@ class TCGiant_Sync_Mapper {
 		}
 
 		foreach ( $woo_attributes as $new_key => $new_attribute ) {
-			$label = strtolower( trim( (string) $new_attribute->get_name() ) );
+			// A filterable one by its eBay name, as the custom one it replaces.
+			$label = strtolower( trim( (string) ( $filterable['made'][ $new_key ]['name'] ?? $new_attribute->get_name() ) ) );
 
 			if ( isset( $claimed[ $label ] ) ) {
 				$already = $existing_attributes[ $claimed[ $label ] ];
 
 				// The shop's own global attribute wins and the eBay one is
-				// dropped rather than added beside it.
-				if ( $already->is_taxonomy() ) {
+				// dropped rather than added beside it. One this plugin made of
+				// an item specific (3.35.0) is replaced, as a custom one is.
+				if ( $already->is_taxonomy() && ! isset( $filterable['ours'][ $claimed[ $label ] ] ) ) {
 					continue;
 				}
 
@@ -2281,6 +2293,9 @@ class TCGiant_Sync_Mapper {
 
 		if ( $is_new || $overwrite_attributes ) {
 			$product->set_attributes( array_values( $merged ) );
+			if ( null !== $filterable ) {
+				TCGiant_Sync_Filterable::after_import( $product, $merged, $filterable );
+			}
 			if ( ! $is_new ) { $sync_decisions[] = 'Attributes updated (eBay won, existing kept)'; }
 		} elseif ( ! $is_new ) {
 			$sync_decisions[] = 'Attributes skipped (WooCommerce won)';
@@ -2398,6 +2413,14 @@ class TCGiant_Sync_Mapper {
 		try {
 			TCGiant_Sync_Runtime::stage( 'WooCommerce saving the product, with everything hooked to that' );
 			$saved_id = $product->save();
+
+			// eBay's Brand into WooCommerce Brands, for a product with none
+			// (3.35.0), when the shop has asked for it and the attributes
+			// were written: with them kept as they were, a run reads the
+			// product's own Brand instead.
+			if ( $saved_id && null !== $filterable ) {
+				TCGiant_Sync_Filterable::brand_after_import( (int) $saved_id, (array) $product_data['attributes'] );
+			}
 
 			if ( $is_variable && $saved_id ) {
 				// eBay's variations as the stock push reads them, before the

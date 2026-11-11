@@ -11,6 +11,7 @@ This file exists so the repository has a changelog where people look for one. It
 
 | Version | Date | Headline |
 |---|---|---|
+| [3.35.0](https://github.com/SurefireStudios/TCGiant-Sync/releases/tag/v3.35.0) | 2026-11-11 | Filterable item specifics: let customers filter by the eBay item specifics you choose |
 | [3.34.0](https://github.com/SurefireStudios/TCGiant-Sync/releases/tag/v3.34.0) | 2026-11-11 | Re-send to eBay: send a new template to listings already on eBay |
 | [3.33.0](https://github.com/SurefireStudios/TCGiant-Sync/releases/tag/v3.33.0) | 2026-11-09 | Shop Categories: choose where each pushed listing goes in your eBay shop |
 | [3.32.1](https://github.com/SurefireStudios/TCGiant-Sync/releases/tag/v3.32.1) | 2026-11-05 | A relisted product goes back on eBay with its new photos |

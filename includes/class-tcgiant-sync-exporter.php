@@ -7489,7 +7489,11 @@ class TCGiant_Sync_Exporter {
 				$lines = array();
 				foreach ( $attrs as $attr ) {
 					$name  = wc_attribute_label( $attr->get_name() );
-					$value = implode( ', ', $attr->get_options() );
+					// One made filterable from an item specific (3.35.0) by its
+					// values, as the custom attribute it was; any other global
+					// one by its term IDs, as ever.
+					$was   = class_exists( 'TCGiant_Sync_Filterable' ) ? TCGiant_Sync_Filterable::as_custom( $product, $attr ) : null;
+					$value = implode( ', ', null !== $was ? $was['options'] : $attr->get_options() );
 					if ( $name && $value ) {
 						$lines[] = '<strong>' . esc_html( $name ) . ':</strong> ' . esc_html( $value );
 					}
@@ -7884,8 +7888,13 @@ class TCGiant_Sync_Exporter {
 				return '' !== $value;
 			} );
 
+			// One made filterable from an item specific (3.35.0) keeps the
+			// slug its custom attribute had: {{attr.brand}}, and the content
+			// hash, as before.
+			$was = class_exists( 'TCGiant_Sync_Filterable' ) ? TCGiant_Sync_Filterable::as_custom( $product, $attribute ) : null;
+
 			$rows[] = array(
-				'slug'  => sanitize_title( $attribute->get_name() ),
+				'slug'  => sanitize_title( null !== $was ? $was['name'] : $attribute->get_name() ),
 				'label' => (string) wc_attribute_label( $attribute->get_name(), $product ),
 				'value' => implode( ', ', $values ),
 			);

@@ -201,7 +201,9 @@ $settings = (string) file_get_contents( $root . '/admin/views/settings.php' );
 
 check( 'the existing set is read before anything is built', strpos( $mapper, '$existing_attributes = $product->get_attributes();' ) < strpos( $mapper, '$merged = $existing_attributes;' ), true );
 check( 'the write starts from what was already there', false !== strpos( $mapper, '$merged = $existing_attributes;' ), true );
-check( '  and a taxonomy attribute is skipped, not replaced', false !== strpos( $mapper, 'if ( $already->is_taxonomy() ) {' ), true );
+// The shop's own global attribute; one the plugin made of an item specific
+// (3.35.0, test-filterable-specifics.php) is replaced as a custom one is.
+check( '  and a taxonomy attribute is skipped, not replaced', false !== strpos( $mapper, 'if ( $already->is_taxonomy() && ! isset( $filterable[\'ours\'][ $claimed[ $label ] ] ) ) {' ), true );
 check( '  nothing is written straight from eBay any more', false === strpos( $mapper, 'set_attributes( array_values( $woo_attributes ) )' ), true );
 
 check( 'the write is gated like every other field', false !== strpos( $mapper, 'if ( $is_new || $overwrite_attributes ) {' ), true );

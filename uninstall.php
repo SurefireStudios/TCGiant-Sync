@@ -74,6 +74,8 @@ if ( function_exists( 'as_unschedule_all_actions' ) ) {
 		'tcgiant_sync_reconcile_continue', // The weekly check's follow-up, 3.28.0.
 		'tcgiant_sync_tpl_resend_scan',    // Re-send to eBay's count, 3.34.0.
 		'tcgiant_sync_tpl_resend_run',     // Re-send to eBay's Re-send all, 3.34.0.
+		'tcgiant_sync_filterable_run',     // Filterable item specifics' conversion, 3.35.0.
+		'tcgiant_sync_filterable_count',   // Filterable item specifics' count, 3.35.0.
 
 		// The exporter's queue. This was listed as tcgiant_sync_push_product,
 		// which is not a hook this plugin has ever registered, so queued pushes
@@ -249,6 +251,8 @@ $tcgiant_options = array(
 	'tcgiant_sync_tpl_resend_retry',   // Re-send to eBay: refusals to try again.
 	'tcgiant_sync_tpl_resend_tests',   // Re-send to eBay: each group's Test on 5.
 	'tcgiant_sync_tpl_resend_window',  // Re-send to eBay: re-sends in the last two hours.
+	'tcgiant_sync_filterable_choices', // Filterable item specifics: the names counted.
+	'tcgiant_sync_filterable_state',   // Filterable item specifics: where its conversion is.
 	'tcgiant_sync_bulk_push_cap',      // The daily cap on bulk pushes.
 	'tcgiant_sync_bulk_pushed',        // Bulk pushes counted today.
 	'tcgiant_sync_bulk_waiting',       // Bulk pushes counted today and still waiting.
@@ -278,8 +282,15 @@ foreach ( $tcgiant_options as $tcgiant_option ) {
 // day's eBay call counts (3.28.0's, and the transients 3.27 kept them in),
 // when each stock check waiting to try again was last joined (3.28.0), the
 // listings' categories the delta remembers (3.28.4), the moved addresses
-// the administrator was emailed about (3.31.0), and Re-send to eBay's
-// counted listings, its queue and its holds (3.34.0) use dynamic names.
+// the administrator was emailed about (3.31.0), Re-send to eBay's
+// counted listings, its queue and its holds (3.34.0), and Filterable item
+// specifics' holds (3.35.0) use dynamic names. What Filterable item specifics
+// converted on each product (_tcgiant_filterable) stays, with the global
+// attributes, values and brands it describes: they are the shop's catalogue,
+// and a reinstalled plugin reads them by it as before, and can turn them back.
+// So does the list of names chosen (tcgiant_sync_filterable): without it a
+// reinstalled plugin would show them unticked, and its next Save would turn
+// them back (3.35.0 fix round 2). Its counts and its run go, above.
 // phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 $wpdb->query(
 	"DELETE FROM {$wpdb->options}
@@ -295,6 +306,7 @@ $wpdb->query(
 	    OR option_name LIKE 'tcgiant_sync_tpl_resend_ids_%'
 	    OR option_name LIKE 'tcgiant_sync_tpl_resend_queue_%'
 	    OR option_name LIKE 'tcgiant_sync_tpl_resend_lock_%'
+	    OR option_name LIKE 'tcgiant_sync_filterable_lock_%'
 	    OR option_name LIKE '_transient_tcgiant_api_calls_%'
 	    OR option_name LIKE '_transient_timeout_tcgiant_api_calls_%'"
 );

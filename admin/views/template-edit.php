@@ -85,8 +85,45 @@ $tc_placeholders = array(
 	),
 );
 if ( function_exists( 'wc_get_attribute_taxonomies' ) ) {
+	// An item specific made filterable (3.35.0) is read, on the products it
+	// was converted on, by the eBay name's key, as its own attribute was (so
+	// that what a push sends, and the content hash, do not change); a product
+	// given the global attribute any other way, by its slug. Where the two
+	// differ - a reserved word, a long name cut, a slug taken, the shop's own
+	// attribute under another slug - both are offered, each saying which
+	// products it fills.
+	//
+	// A key the renderer cannot read as a name (TCGiant_Sync_Template_Renderer::
+	// NAME: a name in another script is percent-encoded) is never offered: a
+	// line under the list says so (fix round 2, N1). Where two would offer the
+	// same placeholder - eBay's "Set" made as set-2 beside the shop's own "Card
+	// Set" on set - it is listed once, with both labels, each saying which
+	// products it fills (N2). Only the list changes: nothing renders otherwise.
+	$tc_made   = class_exists( 'TCGiant_Sync_Filterable' ) ? array_flip( array_map( 'strval', TCGiant_Sync_Filterable::choice()['names'] ) ) : array();
+	$tc_attrs  = array();
+	$tc_no_key = array();
 	foreach ( (array) wc_get_attribute_taxonomies() as $tc_attr ) {
-		$tc_placeholders[ __( 'Attributes', 'tcgiant-sync' ) ][ '{{attr.' . $tc_attr->attribute_name . '}}' ] = $tc_attr->attribute_label;
+		$tc_slug = (string) $tc_attr->attribute_name;
+		$tc_key  = isset( $tc_made[ 'pa_' . $tc_slug ] ) ? sanitize_title( (string) $tc_made[ 'pa_' . $tc_slug ] ) : '';
+		if ( '' === $tc_key || $tc_key === $tc_slug ) {
+			$tc_attrs[ '{{attr.' . $tc_slug . '}}' ][] = array( (string) $tc_attr->attribute_label, '' );
+			continue;
+		}
+		if ( preg_match( '/^' . TCGiant_Sync_Template_Renderer::NAME . '$/', $tc_key ) ) {
+			$tc_attrs[ '{{attr.' . $tc_key . '}}' ][] = array( (string) $tc_attr->attribute_label, __( 'on products with it as an eBay item specific, made filterable or not', 'tcgiant-sync' ) );
+		} else {
+			$tc_no_key[] = (string) $tc_attr->attribute_label;
+		}
+		$tc_attrs[ '{{attr.' . $tc_slug . '}}' ][] = array( (string) $tc_attr->attribute_label, __( 'on products given it any other way', 'tcgiant-sync' ) );
+	}
+	foreach ( $tc_attrs as $tc_code => $tc_labels ) {
+		$tc_words = array();
+		foreach ( $tc_labels as $tc_label ) {
+			$tc_hint = '' !== $tc_label[1] ? $tc_label[1] : ( count( $tc_labels ) > 1 ? __( 'on products that have it', 'tcgiant-sync' ) : '' );
+			/* translators: 1: an attribute's label, 2: which products the placeholder fills */
+			$tc_words[] = '' !== $tc_hint ? sprintf( __( '%1$s, %2$s', 'tcgiant-sync' ), $tc_label[0], $tc_hint ) : $tc_label[0];
+		}
+		$tc_placeholders[ __( 'Attributes', 'tcgiant-sync' ) ][ $tc_code ] = implode( ' / ', $tc_words );
 	}
 }
 foreach ( (array) $tc_settings['meta_allowlist'] as $tc_key ) {
@@ -215,6 +252,16 @@ $tc_action_url       = function ( $do, array $more = array() ) use ( $tc_tpl ) {
 							<li><button type="button" class="tc-insert" data-insert="<?php echo esc_attr( $tc_code ); ?>" title="<?php echo esc_attr( $tc_code ); ?>"><?php echo esc_html( $tc_label ); ?></button></li>
 						<?php endforeach; ?>
 					</ul>
+					<?php if ( __( 'Attributes', 'tcgiant-sync' ) === $tc_group && ! empty( $tc_no_key ) ) : ?>
+						<?php foreach ( $tc_no_key as $tc_label ) : ?>
+							<p class="tc-hint">
+								<?php
+								/* translators: %s: an item specific's name */
+								echo esc_html( sprintf( __( '%s: this item specific\'s name cannot be used as a placeholder, so none is listed for the products it was made filterable on. The Item specifics table still shows it.', 'tcgiant-sync' ), $tc_label ) );
+								?>
+							</p>
+						<?php endforeach; ?>
+					<?php endif; ?>
 				<?php endforeach; ?>
 			</div>
 

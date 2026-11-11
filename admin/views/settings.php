@@ -1137,6 +1137,13 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 			<?php endif; ?>
 		</div>
 	</div>
+
+	<?php
+	// Filterable item specifics (3.35.0), where its class is loaded.
+	if ( class_exists( 'TCGiant_Sync_Filterable' ) ) {
+		require TCGIANT_SYNC_PATH . 'admin/views/filterable.php';
+	}
+	?>
 </div>
 
 <script>

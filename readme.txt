@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.34.0
+Stable tag: 3.35.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -148,6 +148,12 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.35.0 - 2026-11-11 =
+* NEW: Filterable item specifics, on the Settings screen. The item specifics imported from eBay - Brand, Set, Grade and the rest - are saved on each product as attributes of its own, which WooCommerce's filters (the Product Filters block, the Filter Products by Attribute widget) cannot use. The new section lists the item specifics your products have, with how many products have each and how many different values it has. Tick the ones your customers should be able to filter by: each becomes a global attribute (Products > Attributes) - yours of the same name, or a new one - on every product that has it, with the same value, in the same place on the product page, seen or hidden as it was. Products already imported are converted in the background, and imports and syncs from then on keep it so. Nothing changes until you tick one, nothing is sent to eBay, and what a push sends does not change.
+* NEW: With Brand ticked, eBay's Brand can also go into WooCommerce Brands (WooCommerce 9.6 and later), for products that have no brand yet. A brand you have set is never replaced. It has a box of its own, ticked by default.
+* NEW: Item specifics that name one item - Card Name, Card Number, Certification Number, UPC, EAN, ISBN, MPN and the like - are not offered, nor any with more than 2,000 different values; one with over 200 is offered with a warning. Item specifics used for variations are left as they are. On a product whose value WordPress would store differently as a filter value (with "&", "<" or ">", or extra spaces), or that holds more than one value separated by "|", that item specific stays as it is, and the log says which products.
+* NEW: Taking a tick off turns that item specific back into each product's own attribute, wherever TCGiant Sync converted it; a global attribute you set yourself is never touched. The global attribute and its values stay in Products > Attributes, for you to delete if you want - take the tick off first: deleting a global attribute that is still ticked takes that item specific off every product that has it, and a push then no longer sends it.
 
 = 3.34.0 - 2026-11-11 =
 * NEW: Re-send to eBay, on the Listing Templates screen. Until now a listing already on eBay kept its old description after you picked or changed a template, until its next push, which sends the title, price, item specifics and photos again too. Re-send to eBay counts the listings whose description would change, by template, and sends them the new description and nothing else: one eBay call a listing. Press Test on 5 first: it sends five and shows each with its link on eBay and what eBay said. Once all five come back OK, Re-send all sends the rest in the background, a batch at a time, and the box shows how far it has got. Saving the template again locks Re-send all until you test again. Listings whose template you took away go back to the plain description the same way.
@@ -1681,6 +1687,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.35.0 =
+New: Filterable item specifics, on the Settings screen, makes the eBay item specifics you choose - Brand, Set, Grade - global attributes your shop's filters can use, and Brand a WooCommerce brand. Nothing changes until you choose, nothing is sent to eBay, and what a push sends does not change.
 
 = 3.34.0 =
 New: Re-send to eBay, on the Listing Templates screen, sends a changed template to the listings already on eBay - their description and nothing else, one eBay call each - after a Test on 5. Nothing is sent until you press it: a template change still sends nothing by itself. Re-sends count against your daily bulk-push limit. Variation listings, and listings never pushed from this site, wait for their next push.

@@ -59,6 +59,7 @@ Names in **bold** are the names the plugin's own screens use.
 | Ended-listing detection every hour, with **ended-unsold ≠ sold-out** stock handling | ✅ |
 | Weight and dimensions, in the right units for the listing's marketplace | ✅ |
 | **Data Mapping (Re-imports)**: which side wins for title, description, price, images, categories and tags, attributes, weight and dimensions | ✅ |
+| **Filterable item specifics**: choose which imported item specifics (Brand, Set, Grade...) become global attributes your shop's filters can use, and put Brand into WooCommerce Brands. Item specifics that name one item, or have thousands of values, are not offered; nothing changes until you choose, and what a push sends stays the same | ✅ |
 | Bake eBay shipping cost into the product price | ✅ |
 | Map eBay SKU to a Bin Location field | ✅ |
 | **Remove products when their eBay listing sells out?**, with **Preserve Categories (Do Not Trash)**. Products you pushed to eBay yourself are never removed | ✅ |
