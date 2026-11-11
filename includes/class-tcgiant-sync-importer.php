@@ -28,6 +28,11 @@ if ( ! class_exists( 'TCGiant_Sync_Shop_Categories', false ) ) {
 	require_once __DIR__ . '/class-tcgiant-sync-shop-categories.php';
 }
 
+// The new listings the free limit held back, kept for a move to Pro (3.36.0).
+if ( ! class_exists( 'TCGiant_Sync_Limit_Held', false ) ) {
+	require_once __DIR__ . '/class-tcgiant-sync-limit-held.php';
+}
+
 /**
  * TCGiant_Sync_Importer class
  */
@@ -2315,6 +2320,9 @@ class TCGiant_Sync_Importer {
 		$processed = 0;
 		$errors = 0;
 		$skipped = 0;
+		// New listings the free limit held back (3.36.0). Not in $skipped,
+		// which the log calls the category filter's.
+		$limit_held = 0;
 		$fallback_count = 0;
 		// Skipped by the category filter on what TCGiant_Sync_Category_Memory
 		// remembered, with no GetItem. Not in $skipped, or among the fallbacks.
@@ -2527,16 +2535,24 @@ class TCGiant_Sync_Importer {
 					&& ( self::$limit_reported || ! $license->can_import() ) ) {
 					if ( ! self::$limit_reported ) {
 						self::$limit_reported = true;
-						if ( ! self::stop_pressed() ) {
-							self::update_sync_state( array( 'status' => 'limit_reached' ) );
-						}
+						// The delta's status stays "scanning" while it runs,
+						// and the limit is a flag of its own, when it last
+						// held one back (3.36.0). "limit_reached" stays the
+						// full sync's.
+						self::update_sync_state( array( 'limit_held' => time() ) );
 						TCGiant_Sync_Logger::log( sprintf(
 							'Import limit reached (%d/%d products). New listings will not be imported; products already imported carry on syncing normally.',
 							$license->get_active_product_count(),
 							$license->get_free_limit()
 						), 'warning' );
 					}
-					$skipped++;
+					// Written down, so a move to Pro imports it (3.36.0): the
+					// delta's window moves on and never reads it again. Only
+					// one the category filter takes (limit_hold_kept()).
+					if ( self::limit_hold_kept( $ebay_item, $is_filtering, $standard_cats, $valid_custom_ids ) ) {
+						TCGiant_Sync_Limit_Held::note( isset( $ebay_item['ItemID'] ) ? $ebay_item['ItemID'] : '' );
+					}
+					$limit_held++;
 					continue;
 				}
 
@@ -2975,6 +2991,7 @@ class TCGiant_Sync_Importer {
 
 		// Log summary. "Complete" only when the window is: it was said after
 		// every batch of forty, so a sync two weeks behind read as finished.
+		$limit_label  = $limit_held > 0 ? sprintf( ', %d new held back by the free licence limit', $limit_held ) : '';
 		$filter_label = $skipped > 0 ? sprintf( ', %d skipped (category filter)', $skipped ) : '';
 		$remembered_label = $remembered_skips > 0 ? sprintf( ', %d skipped (category filter, remembered)', $remembered_skips ) : '';
 		$site_label = $other_site > 0 ? sprintf( ', %d left out (on other eBay sites)', $other_site ) : '';
@@ -2983,9 +3000,9 @@ class TCGiant_Sync_Importer {
 		$sweep_label    = $swept['pages'] > 0 ? sprintf( ', %d %s of eBay\'s listings read for their categories (GetSellerList; %d %s learnt)', $swept['pages'], 1 === $swept['pages'] ? 'page' : 'pages', $swept['listings'], 1 === $swept['listings'] ? 'listing' : 'listings' ) : '';
 		TCGiant_Sync_Logger::log( sprintf(
 			$more || null !== $read_stop
-				? 'Delta batch done: %d imported, %d errors out of %d modified items%s%s%s%s%s%s.'
-				: 'Delta sync complete! %d imported, %d errors out of %d modified items%s%s%s%s%s%s.',
-			$processed, $errors, $handled, $renewal_label, $filter_label, $remembered_label, $site_label, $fallback_label, $sweep_label
+				? 'Delta batch done: %d imported, %d errors out of %d modified items%s%s%s%s%s%s%s.'
+				: 'Delta sync complete! %d imported, %d errors out of %d modified items%s%s%s%s%s%s%s.',
+			$processed, $errors, $handled, $renewal_label, $limit_label, $filter_label, $remembered_label, $site_label, $fallback_label, $sweep_label
 		), 'success' );
 
 		// eBay could not be read. Keep the window and the place, stay running
@@ -7389,6 +7406,8 @@ class TCGiant_Sync_Importer {
 						$license->get_free_limit()
 					), 'warning' );
 				}
+				// Written down for a move to Pro (3.36.0).
+				TCGiant_Sync_Limit_Held::note( isset( $item['ItemID'] ) ? $item['ItemID'] : '' );
 				continue;
 			}
 
@@ -7519,6 +7538,43 @@ class TCGiant_Sync_Importer {
 	}
 
 
+
+	/**
+	 * Whether a row the free limit held back on the delta is one to import on
+	 * a move to Pro (3.36.0, TCGiant_Sync_Limit_Held). The delta holds a row
+	 * back before its category filter, so the filter is asked here, at no
+	 * call: by the categories the row has, else by what the category memory
+	 * learnt of it. One the filter does not take, or that neither says, is
+	 * not written down - the import it would be replayed through does not
+	 * filter, and the next full sync judges it.
+	 *
+	 * @param array    $row              The delta's row.
+	 * @param bool     $is_filtering     Whether any category filter is set.
+	 * @param string[] $standard_cats    "eBay Standard Categories to Import".
+	 * @param string[] $valid_custom_ids get_allowed_category_ids().
+	 * @return bool
+	 */
+	private static function limit_hold_kept( array $row, $is_filtering, array $standard_cats, array $valid_custom_ids ) {
+		if ( ! $is_filtering ) {
+			return true;
+		}
+
+		$primary = (string) ( $row['PrimaryCategory']['CategoryID'] ?? '' );
+		$store1  = (string) ( $row['Storefront']['StoreCategoryID'] ?? '' );
+		$store2  = (string) ( $row['Storefront']['StoreCategory2ID'] ?? '' );
+
+		if ( '' === $primary && '' === $store1 && '' === $store2 ) {
+			$item_id = (string) ( $row['ItemID'] ?? '' );
+			$known   = TCGiant_Sync_Category_Memory::recall( array( $item_id ) );
+			$known   = $known[ $item_id ] ?? null;
+			if ( null === $known ) {
+				return false;
+			}
+			return self::category_filter_takes( $known[0], $known[1], $known[2], $standard_cats, $valid_custom_ids );
+		}
+
+		return self::category_filter_takes( $primary, $store1, $store2, $standard_cats, $valid_custom_ids, $row['PrimaryCategory']['CategoryName'] ?? '' );
+	}
 
 	/**
 	 * Whether the category filter takes a listing with these categories.
@@ -9253,6 +9309,8 @@ class TCGiant_Sync_Importer {
 						'warning'
 					);
 				}
+				// Written down for a move to Pro (3.36.0).
+				TCGiant_Sync_Limit_Held::note( $item_id );
 				// Held back, it is still one of the imports the sync waits on:
 				// the last to run completes the sync, "limit_reached" or not
 				// (3.30.0). Before, nothing ever did.

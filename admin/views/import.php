@@ -229,7 +229,11 @@ $progress_pct = $tc_screen['queued_pct'];
 				</div>
 			</div>
 
-			<?php if ( 'limit_reached' === $sync_state['status'] ) : ?>
+			<?php
+			// Or a delta that held one back (3.36.0), whose status stays its
+			// own, while the shop is still at the limit.
+			if ( 'limit_reached' === $sync_state['status'] || ( ! empty( $sync_state['limit_held'] ) && ! $license_ui['can_import'] ) ) :
+				?>
 				<div class="tc-limit-reached-card">
 					<p><?php esc_html_e( "You've reached the free tier limit of 50 active products. Upgrade for unlimited imports.", 'tcgiant-sync' ); ?></p>
 					<a href="<?php echo esc_url( $license_ui['upgrade_url'] ); ?>" target="_blank" rel="noopener" class="tc-button tc-upgrade-btn full-width">
@@ -355,6 +359,17 @@ $progress_pct = $tc_screen['queued_pct'];
 							<div class="tc-usage-fill <?php echo $license_ui['usage_pct'] >= 90 ? 'tc-usage-critical' : ( $license_ui['usage_pct'] >= 70 ? 'tc-usage-warning' : '' ); ?>" id="tc-usage-fill" style="width:<?php echo esc_attr( $license_ui['usage_pct'] ); ?>%;"></div>
 						</div>
 					</div>
+					<?php if ( (int) ( $license_ui['held_back'] ?? 0 ) > 0 ) : ?>
+						<p class="tc-hint" id="tc-usage-held">
+							<?php
+							printf(
+								/* translators: %s: a number of eBay listings */
+								esc_html__( '%s new eBay listings held back by the free limit so far. They are imported when this site moves to Pro.', 'tcgiant-sync' ),
+								esc_html( number_format_i18n( (int) $license_ui['held_back'] ) )
+							);
+							?>
+						</p>
+					<?php endif; ?>
 					<?php if ( $license_ui['usage_pct'] >= 80 ) : ?>
 						<a href="<?php echo esc_url( $license_ui['upgrade_url'] ); ?>" target="_blank" rel="noopener" class="tc-button tc-upgrade-btn full-width" style="margin-top:10px;">
 							<span class="dashicons dashicons-superhero-alt" style="font-size:16px;"></span>
@@ -375,13 +390,14 @@ $progress_pct = $tc_screen['queued_pct'];
 				<?php if ( ! $license_ui['can_import'] ) : ?>
 					<div class="tc-limit-reached-inline">
 						<span class="dashicons dashicons-lock" style="color:var(--tc-warning);"></span>
-						<span><?php esc_html_e( 'Import limit reached. Upgrade to continue.', 'tcgiant-sync' ); ?></span>
+						<span><?php esc_html_e( 'Free limit reached: Fetch Inventory still brings stock, prices and ended listings for the products you have. New listings are held back until you upgrade.', 'tcgiant-sync' ); ?></span>
 					</div>
 				<?php endif; ?>
+				<?php // Never disabled by the limit (3.36.0): it holds back new listings only. ?>
 				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
 					<input type="hidden" name="action" value="tcgiant_sync_now">
 					<?php wp_nonce_field( 'tcgiant_sync_now' ); ?>
-					<button type="submit" class="tc-button full-width" id="tc-fetch-btn" <?php echo ! $license_ui['can_import'] ? 'disabled style="opacity:0.5;cursor:not-allowed;"' : ''; ?>>
+					<button type="submit" class="tc-button full-width" id="tc-fetch-btn">
 						<span class="dashicons dashicons-download" style="font-size:16px;"></span>
 						<?php esc_html_e( 'Fetch Inventory', 'tcgiant-sync' ); ?>
 					</button>

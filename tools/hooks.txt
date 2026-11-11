@@ -36,6 +36,7 @@ add_action   admin_notices => bulk_push_admin_notice
 add_action   admin_notices => connect_failed_notice
 add_action   admin_notices => environment_change_notice
 add_action   admin_notices => follow_bulk_notice
+add_action   admin_notices => lapse_notice
 add_action   admin_notices => origin_upgrade_notice
 add_action   admin_notices => other_sites_notice
 add_action   admin_notices => push_switch_notice
@@ -60,6 +61,7 @@ add_action   admin_post_tcgiant_forget_held => handle_forget_held
 add_action   admin_post_tcgiant_forget_push_failures => handle_forget_push_failures
 add_action   admin_post_tcgiant_oauth_start => handle_oauth_start
 add_action   admin_post_tcgiant_prune_now => handle_prune_now
+add_action   admin_post_tcgiant_recheck_license => handle_recheck
 add_action   admin_post_tcgiant_refresh_coin_listings => handle_refresh_coin_listings
 add_action   admin_post_tcgiant_resume_sync => handle_resume_sync
 add_action   admin_post_tcgiant_shop_categories_clear => handle_clear
@@ -109,6 +111,7 @@ add_action   shutdown => make_room
 add_action   shutdown => unguard_loops
 add_action   tcgiant_export_push_product => process_single_push
 add_action   tcgiant_sync_check_ended_listings => check_ended_listings
+add_action   tcgiant_sync_check_ended_listings => maybe_revalidate
 add_action   tcgiant_sync_check_ended_listings => sweep_origins
 add_action   tcgiant_sync_check_ended_listings => upgrade_auction_import
 add_action   tcgiant_sync_daily_maintenance => auto_relist_ended_items
@@ -118,6 +121,8 @@ add_action   tcgiant_sync_filterable_count => run_count
 add_action   tcgiant_sync_filterable_run => run_batch
 add_action   tcgiant_sync_gallery_heal => run_gallery_heal
 add_action   tcgiant_sync_import_orders => import_recent_orders
+add_action   tcgiant_sync_license_check => run_check
+add_action   tcgiant_sync_limit_replay => replay
 add_action   tcgiant_sync_localize_images => process_batch
 add_action   tcgiant_sync_own_photos => run_heal
 add_action   tcgiant_sync_photo_cleanup => process_queue
@@ -234,6 +239,8 @@ schedule     tcgiant_sync_filterable_count
 schedule     tcgiant_sync_filterable_run
 schedule     tcgiant_sync_gallery_heal
 schedule     tcgiant_sync_import_orders
+schedule     tcgiant_sync_license_check
+schedule     tcgiant_sync_limit_replay
 schedule     tcgiant_sync_localize_images
 schedule     tcgiant_sync_own_photos
 schedule     tcgiant_sync_photo_cleanup

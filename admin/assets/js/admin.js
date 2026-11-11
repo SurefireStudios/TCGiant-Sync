@@ -203,15 +203,9 @@
                 updateUsageMeter(lic);
             }
 
-            // Update fetch button state based on license.
-            var $fetchBtn = $('#tc-fetch-btn');
-            if ($fetchBtn.length) {
-                if (lic && !lic.can_import) {
-                    $fetchBtn.prop('disabled', true).css({opacity: 0.5, cursor: 'not-allowed'});
-                } else {
-                    $fetchBtn.prop('disabled', false).css({opacity: 1, cursor: 'pointer'});
-                }
-            }
+            // Fetch Inventory is not disabled by the free limit (3.36.0): a
+            // full sync at the limit still updates the products already
+            // imported, and holds back new listings only.
         });
     }
 

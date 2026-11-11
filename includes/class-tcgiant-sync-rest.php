@@ -272,13 +272,18 @@ class TCGiant_Sync_REST {
 		$result   = $importer->start_full_sync();
 
 		// start_full_sync() used to return nothing, so this check was dead and
-		// the endpoint reported success even when the licence limit or an
-		// in-flight sync had blocked it.
+		// the endpoint reported success even when an in-flight sync had
+		// blocked it.
+		//
+		// A 409 only, since 3.36.0. A 402 for the licence limit was here, but
+		// the limit does not stop a full sync - it holds back new listings one
+		// by one, and tools/check-limit-gates.php keeps it that way - so no
+		// error ever had the code it waited for.
 		if ( is_wp_error( $result ) ) {
 			return new WP_Error(
 				$result->get_error_code(),
 				$result->get_error_message(),
-				array( 'status' => 'limit_reached' === $result->get_error_code() ? 402 : 409 )
+				array( 'status' => 409 )
 			);
 		}
 

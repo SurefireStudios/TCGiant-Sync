@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.35.0
+Stable tag: 3.36.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -148,6 +148,14 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.36.0 - 2026-11-11 =
+* FIX: A Pro licence no longer drops to the free tier because Lemon Squeezy, which sells and checks the licences, gave an unclear answer, nor because a check of a previous key finished just after a new key was activated, or a check finished just after a Re-check had found the licence valid. Until now any reply but "valid" - a busy signal, a server error, an error page, an empty reply - marked the licence expired at its next check, so one bad minute at Lemon Squeezy put a paying shop on the free tier. Now only a clear answer that the key is not valid does that. Anything else changes nothing, and the check is tried again in an hour, then less often, up to every 6 hours. A shop an unclear answer put on the free tier before this version gets Pro back at its first check after updating.
+* FIX: A licence's renewal date passing no longer ends Pro on its own: it makes the plugin check with Lemon Squeezy, and Pro stays on until it answers, for up to 14 days. After that the site goes to the free tier until the licence can be checked, and a notice says so, with a Re-check button. A licence with no renewal date never drops for want of an answer.
+* FIX: The licence is checked in the background, about once a day, also on a site nobody opens the admin of, and no admin page waits on Lemon Squeezy any more. It used to be checked during the page, for up to 15 seconds, and on every admin request once a licence read expired. An expired licence is checked every 6 hours, so a renewal brings Pro back by itself.
+* FIX: New eBay listings the free limit held back while a shop was on the free tier - during a lapse, say - are now written down, the newest 2,000, and imported when the shop moves to Pro, by activating a key or by a check that finds the licence valid again: 100 at a time, within the day's eBay calls. Before, the hourly sync never read them again, and its log counted them as "skipped (category filter)". It now says "held back by the free licence limit".
+* FIX: The licence card on Settings tells "could not be checked, still Pro" apart from "expired", and from this site's activation of the key being released at Lemon Squeezy - which entering the key again fixes, not renewing. It has a Re-check button, and says when no check has finished for 3 days, which means Action Scheduler or WP-Cron is not running on the site. Fetch Inventory is no longer greyed out at the free limit: it still updates the products you have, and only new listings wait. The Import screen counts the listings held back.
+* NEW: The licence card's details show the licence's renewal date, and which Lemon Squeezy store, product and variant a key belongs to, for support.
 
 = 3.35.0 - 2026-11-11 =
 * NEW: Filterable item specifics, on the Settings screen. The item specifics imported from eBay - Brand, Set, Grade and the rest - are saved on each product as attributes of its own, which WooCommerce's filters (the Product Filters block, the Filter Products by Attribute widget) cannot use. The new section lists the item specifics your products have, with how many products have each and how many different values it has. Tick the ones your customers should be able to filter by: each becomes a global attribute (Products > Attributes) - yours of the same name, or a new one - on every product that has it, with the same value, in the same place on the product page, seen or hidden as it was. Products already imported are converted in the background, and imports and syncs from then on keep it so. Nothing changes until you tick one, nothing is sent to eBay, and what a push sends does not change.
@@ -1687,6 +1695,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.36.0 =
+A Pro licence now stays on when Lemon Squeezy cannot be reached or answers unclearly: only a clear "not valid" ends it, and a passed renewal date holds Pro for up to 14 days while it is checked. The check runs in the background, so no admin page waits on Lemon Squeezy. New eBay listings the free limit held back are imported when a shop moves to Pro. A shop an unclear answer put on the free tier gets Pro back at its first check after updating.
 
 = 3.35.0 =
 New: Filterable item specifics, on the Settings screen, makes the eBay item specifics you choose - Brand, Set, Grade - global attributes your shop's filters can use, and Brand a WooCommerce brand. Nothing changes until you choose, nothing is sent to eBay, and what a push sends does not change.

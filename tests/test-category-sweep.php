@@ -348,7 +348,8 @@ $own = burst( 561000000000, 1, 111, $T + 10 );
 product( 701, $own[0], 1 );
 delta( ids_of( array_merge( $b, $own ) ) );
 check( 'at the limit: no list; GetItem only for the listing with a product, which it updates', array( lists(), get_items(), saved_ids() ), array( 0, $own, $own ) );
-check( '  the six new ones held back before their category is asked', summary(), 'Delta sync complete! 1 imported, 0 errors out of 7 modified items, 6 skipped (category filter), 1 GetItem fallbacks.' );
+// Counted as the licence limit's since 3.36.0, not the category filter's.
+check( '  the six new ones held back before their category is asked', summary(), 'Delta sync complete! 1 imported, 0 errors out of 7 modified items, 6 new held back by the free licence limit, 1 GetItem fallbacks.' );
 check( '  and no plan made, or said', logs_with( 'came with no category' ), 0 );
 
 echo "\n   Refused lately, by eBay\n";

@@ -240,6 +240,18 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 		</script>
 
 		<!-- License -->
+		<?php
+		// Where the checks with Lemon Squeezy stand (3.36.0). An edition with
+		// no licence has none, and shows nothing of them.
+		$tc_check    = isset( $license_ui['check'] ) && is_array( $license_ui['check'] ) ? $license_ui['check'] : array();
+		$tc_lstate   = (string) ( $tc_check['state'] ?? '' );
+		$tc_lformat  = get_option( 'date_format' ) . ' ' . get_option( 'time_format' );
+		$tc_lwhen    = function ( $ts ) use ( $tc_lformat ) {
+			return (int) $ts > 0 ? wp_date( $tc_lformat, (int) $ts ) : __( 'never', 'tcgiant-sync' );
+		};
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- the redirect's own note of what a Re-check found.
+		$tc_rechecked = isset( $_GET['license_rechecked'] ) ? sanitize_key( wp_unslash( $_GET['license_rechecked'] ) ) : '';
+		?>
 		<div class="tc-top-card" id="tc-license-section">
 			<div class="tc-top-card-left">
 				<span class="dashicons dashicons-awards tc-top-card-icon"></span>
@@ -249,12 +261,162 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						<p><span class="dashicons dashicons-yes-alt" style="color:var(--tc-success);font-size:13px;width:13px;height:13px;vertical-align:text-bottom;"></span>
 						<?php esc_html_e( 'Pro License Active', 'tcgiant-sync' ); ?>
 						<?php if ( 'lifetime' === $license_ui['variant'] ) : ?><span class="tc-lifetime-badge" style="margin-left:4px;"><?php esc_html_e( 'Lifetime', 'tcgiant-sync' ); ?></span><?php endif; ?></p>
+						<?php if ( 'unclear' === $tc_lstate ) : ?>
+							<p class="tc-license-meta" id="tc-license-unclear">
+								<?php
+								printf(
+									/* translators: 1: date and time, 2: what Lemon Squeezy's answer was, 3: date and time */
+									esc_html__( 'Could not be checked since %1$s (%2$s), so it is still Pro. Next try: %3$s.', 'tcgiant-sync' ),
+									esc_html( $tc_lwhen( $tc_check['unclear_since'] ?? 0 ) ),
+									esc_html( (string) ( $tc_check['unclear_reason'] ?? '' ) ),
+									esc_html( $tc_lwhen( $tc_check['next_check'] ?? 0 ) )
+								);
+								echo ' ';
+								if ( (int) ( $tc_check['grace_until'] ?? 0 ) > 0 ) {
+									printf(
+										/* translators: %s: date and time */
+										esc_html__( 'Its renewal date has passed: Pro holds until %s at the latest if it still cannot be checked.', 'tcgiant-sync' ),
+										esc_html( $tc_lwhen( $tc_check['grace_until'] ) )
+									);
+								} else {
+									esc_html_e( 'Pro holds for as long as it cannot be checked.', 'tcgiant-sync' );
+								}
+								?>
+							</p>
+						<?php elseif ( 'renewing' === $tc_lstate ) : ?>
+							<p class="tc-license-meta" id="tc-license-renewing">
+								<?php
+								printf(
+									/* translators: 1: date and time, 2: date and time */
+									esc_html__( 'Its renewal date, %1$s, has passed, and it is being checked with Lemon Squeezy. It is still Pro meanwhile, until %2$s at the latest.', 'tcgiant-sync' ),
+									esc_html( $tc_lwhen( $tc_check['expires'] ?? 0 ) ),
+									esc_html( $tc_lwhen( $tc_check['grace_until'] ?? 0 ) )
+								);
+								?>
+							</p>
+						<?php endif; ?>
 					<?php else : ?>
 						<p><?php esc_html_e( 'Free Tier (Max 50 Products)', 'tcgiant-sync' ); ?></p>
+						<?php if ( 'expired' === $tc_lstate && empty( $tc_check['reason_known'] ) ) : ?>
+							<p class="tc-license-meta" id="tc-license-unchecked">
+								<?php
+								// Marked by an earlier version, with no reason stored
+								// (fix round 2): not "no reason given".
+								esc_html_e( 'Not checked since this version was installed: an earlier version marked this licence expired, which it also did when Lemon Squeezy could not be reached. A check is queued, or press Re-check.', 'tcgiant-sync' );
+								?>
+							</p>
+						<?php elseif ( 'expired' === $tc_lstate ) : ?>
+							<p class="tc-license-meta" id="tc-license-expired">
+								<?php
+								printf(
+									/* translators: %s: what Lemon Squeezy said */
+									esc_html__( 'Expired: Lemon Squeezy says this licence is not valid (%s). Renew it, then press Re-check; it is also checked every 6 hours.', 'tcgiant-sync' ),
+									esc_html( '' !== (string) ( $tc_check['ls_error'] ?? '' ) ? (string) $tc_check['ls_error'] : ( '' !== (string) ( $tc_check['ls_status'] ?? '' ) ? (string) $tc_check['ls_status'] : __( 'no reason given', 'tcgiant-sync' ) ) )
+								);
+								?>
+							</p>
+						<?php elseif ( 'released' === $tc_lstate ) : ?>
+							<p class="tc-license-meta" id="tc-license-released">
+								<?php
+								// This site's activation, not the key (fix round 1):
+								// renewing would not bring it back.
+								printf(
+									/* translators: %s: what Lemon Squeezy said */
+									esc_html__( 'This site\'s activation of the key is no longer valid at Lemon Squeezy (%s), though the key itself has not expired. It may have been released, for example from your order page. Enter the key again, beside this, to activate it on this site.', 'tcgiant-sync' ),
+									esc_html( '' !== (string) ( $tc_check['ls_error'] ?? '' ) ? (string) $tc_check['ls_error'] : __( 'no reason given', 'tcgiant-sync' ) )
+								);
+								?>
+							</p>
+						<?php elseif ( 'lapsed' === $tc_lstate ) : ?>
+							<p class="tc-license-meta" id="tc-license-lapsed">
+								<?php
+								printf(
+									/* translators: %s: date and time */
+									esc_html__( 'Could not be checked: Lemon Squeezy has not confirmed this licence since its renewal date, %s, more than 14 days ago, so the site is on the free tier until it can be. Press Re-check.', 'tcgiant-sync' ),
+									esc_html( $tc_lwhen( $tc_check['expires'] ?? 0 ) )
+								);
+								?>
+							</p>
+						<?php endif; ?>
+					<?php endif; ?>
+					<?php if ( (int) ( $tc_check['stale_since'] ?? 0 ) > 0 ) : ?>
+						<p class="tc-license-meta" id="tc-license-stale">
+							<?php
+							// Read from what is stored, nothing asked (fix round 1).
+							printf(
+								/* translators: %s: date and time */
+								esc_html__( 'Licence checks are not running: none has finished since %s. They run in the background through Action Scheduler, which WP-Cron starts, so one of them is likely not running on this site: look for tcgiant_sync_license_check under WooCommerce > Status > Scheduled Actions, and check that WP-Cron runs (or a server cron calls wp-cron.php). Re-check runs one now.', 'tcgiant-sync' ),
+								esc_html( $tc_lwhen( $tc_check['stale_since'] ) )
+							);
+							?>
+						</p>
+					<?php endif; ?>
+					<?php if ( in_array( $tc_rechecked, array( 'valid', 'invalid', 'unclear' ), true ) ) : ?>
+						<p class="tc-license-meta" id="tc-license-rechecked">
+							<?php
+							if ( 'valid' === $tc_rechecked ) {
+								esc_html_e( 'Re-checked: Lemon Squeezy says this licence is valid.', 'tcgiant-sync' );
+							} elseif ( 'invalid' === $tc_rechecked && 'released' === $tc_lstate ) {
+								esc_html_e( 'Re-checked: Lemon Squeezy says this site\'s activation of the key is not valid.', 'tcgiant-sync' );
+							} elseif ( 'invalid' === $tc_rechecked ) {
+								esc_html_e( 'Re-checked: Lemon Squeezy says this licence is not valid.', 'tcgiant-sync' );
+							} else {
+								esc_html_e( 'Re-checked: Lemon Squeezy could not be asked, or its answer said nothing for sure, so nothing changed.', 'tcgiant-sync' );
+							}
+							?>
+						</p>
+					<?php endif; ?>
+					<?php if ( '' !== $tc_lstate && 'none' !== $tc_lstate ) : ?>
+						<details class="tc-license-meta" id="tc-license-details">
+							<summary><?php esc_html_e( 'Licence details', 'tcgiant-sync' ); ?></summary>
+							<?php
+							printf(
+								/* translators: 1: date and time, 2: date and time, 3: Lemon Squeezy's status of the key */
+								esc_html__( 'Last answer from Lemon Squeezy: %1$s. Next check: %2$s. Its status for the key: %3$s.', 'tcgiant-sync' ),
+								esc_html( $tc_lwhen( $tc_check['checked_at'] ?? 0 ) ),
+								esc_html( $tc_lwhen( $tc_check['next_check'] ?? 0 ) ),
+								esc_html( '' !== (string) ( $tc_check['ls_status'] ?? '' ) ? (string) $tc_check['ls_status'] : '-' )
+							);
+							echo ' ';
+							// The renewal date the 14 days count from, for support (fix round 1).
+							if ( (int) ( $tc_check['expires'] ?? 0 ) > 0 ) {
+								printf(
+									/* translators: %s: date and time */
+									esc_html__( 'Renews or ends: %s.', 'tcgiant-sync' ),
+									esc_html( $tc_lwhen( $tc_check['expires'] ) )
+								);
+							} else {
+								esc_html_e( 'No end date.', 'tcgiant-sync' );
+							}
+							echo '<br>';
+							printf(
+								/* translators: 1: store ID, 2: product ID, 3: variant ID */
+								esc_html__( 'Lemon Squeezy store %1$s, product %2$s, variant %3$s.', 'tcgiant-sync' ),
+								esc_html( '' !== (string) ( $tc_check['store_id'] ?? '' ) ? (string) $tc_check['store_id'] : '-' ),
+								esc_html( '' !== (string) ( $tc_check['product_id'] ?? '' ) ? (string) $tc_check['product_id'] : '-' ),
+								esc_html( '' !== (string) ( $tc_check['variant_id'] ?? '' ) ? (string) $tc_check['variant_id'] : '-' )
+							);
+							if ( 'mismatch' === ( $tc_check['ids'] ?? '' ) ) {
+								echo ' ';
+								printf(
+									/* translators: %s: which store or product differs */
+									esc_html__( 'Not this plugin\'s (%s): recorded only, Pro is kept.', 'tcgiant-sync' ),
+									esc_html( (string) ( $tc_check['ids_noted'] ?? '' ) )
+								);
+							}
+							?>
+						</details>
 					<?php endif; ?>
 				</div>
 			</div>
 			<div class="tc-top-card-right" style="position:relative;">
+				<?php if ( ! empty( $license_ui['has_key'] ) && '' !== $tc_lstate ) : ?>
+					<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin:0;">
+						<input type="hidden" name="action" value="tcgiant_recheck_license">
+						<?php wp_nonce_field( 'tcgiant_recheck_license' ); ?>
+						<button type="submit" class="tc-button secondary" id="tc-recheck-license"><?php esc_html_e( 'Re-check', 'tcgiant-sync' ); ?></button>
+					</form>
+				<?php endif; ?>
 				<?php if ( $license_ui['is_pro'] ) : ?>
 					<button type="button" class="tc-button secondary" id="tc-deactivate-license"><?php esc_html_e( 'Deactivate', 'tcgiant-sync' ); ?></button>
 				<?php else : ?>

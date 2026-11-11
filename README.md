@@ -145,6 +145,8 @@ Nothing changes until you choose a template: the default is **None**, the plain 
 
 The free tier imports up to 50 active products; **Pro** removes the cap and adds priority support. Push to eBay is not limited in either. → [tcgiant.com/pro](https://tcgiant.com/pro/)
 
+A Pro licence is checked with Lemon Squeezy in the background, about once a day; no page waits on it. A clear answer from Lemon Squeezy that a key is not valid ends Pro. When Lemon Squeezy cannot be reached or answers unclearly, nothing changes and the check is tried again later; only a key whose renewal date passed more than 14 days ago with no clear answer since goes to the free tier until it can be checked. New listings the free limit held back are imported when a shop moves to Pro.
+
 ## Demo
 
 **Website and Pro:** https://tcgiant.com/pro/
