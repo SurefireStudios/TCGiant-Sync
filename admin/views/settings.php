@@ -1271,6 +1271,18 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 					<p class="tc-hint"><?php esc_html_e( 'eBay refuses a new listing with no product identifier in a category that requires one. "Does not apply" is eBay\'s own wording for your eBay site (for example "Nicht zutreffend" on eBay Germany), as eBay gives it. Use it only for products that really have no barcode: a product\'s UPC, EAN or ISBN goes on its eBay tab (or in WooCommerce\'s GTIN field) and is always sent instead. A product can also be marked as having none on its eBay tab, whatever this says. If eBay refuses a new listing for a missing identifier all the same, this decides whether it is sent once more with "Does not apply". Updates and relists of listings already on eBay send no identifier.', 'tcgiant-sync' ); ?></p>
 				</div>
 
+				<!-- A product's WooCommerce brand as eBay's Brand (3.38.0, TCGiant_Sync_Listing_Options::WOO_BRAND_SETTING) -->
+				<?php $tc_brands_here = function_exists( 'taxonomy_exists' ) && taxonomy_exists( 'product_brand' ); ?>
+				<div class="tc-field">
+					<label class="tc-label"><?php esc_html_e( 'WooCommerce Brands as eBay\'s Brand', 'tcgiant-sync' ); ?></label>
+					<div class="tc-radio-group">
+						<label><input type="radio" name="tcgiant_sync_ebay_settings[export_woo_brand]" value="1" <?php checked( $settings['export_woo_brand'] ?? '0', '1' ); ?>> <?php esc_html_e( 'Send each product\'s WooCommerce brand as eBay\'s Brand when its Brand field is empty', 'tcgiant-sync' ); ?></label>
+						<label><input type="radio" name="tcgiant_sync_ebay_settings[export_woo_brand]" value="0" <?php checked( $settings['export_woo_brand'] ?? '0', '0' ); ?>> <?php esc_html_e( 'Off', 'tcgiant-sync' ); ?></label>
+					</div>
+					<p class="tc-hint"><?php esc_html_e( 'Turning this on changes the item specifics of every product with a brand, at its next push or Update: its brand from WooCommerce Brands goes to eBay as the item specific Brand. Only where the product\'s Brand field (on its eBay tab) is empty and its item specifics have no Brand already: the Brand field, and an attribute or item specific named Brand, always win. One brand goes by its name; a brand with a brand under it, the one below; a product with several brands that are not one line sends none, and the log says so. An Update sends it only with the product\'s other item specifics, and never to a live auction: an Update of a live auction keeps the Brand it was listed with, and a brand changed since goes with a new listing. A relist keeps the item specifics the listing had. Not sent at item level for a variable product whose variations differ by Brand. eBay charges no fee for Brand.', 'tcgiant-sync' ); ?></p>
+					<p class="tc-hint"><?php echo $tc_brands_here ? esc_html__( 'WooCommerce Brands is on this site.', 'tcgiant-sync' ) : esc_html__( 'WooCommerce Brands is not on this site (it is part of WooCommerce from 9.6), so this does nothing here until it is.', 'tcgiant-sync' ); ?></p>
+				</div>
+
 				<!-- Package weight and size -->
 				<div class="tc-field">
 					<label class="tc-label"><?php esc_html_e( 'Send Package Weight and Size to eBay?', 'tcgiant-sync' ); ?></label>

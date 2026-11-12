@@ -709,6 +709,9 @@ class TCGiant_Sync_Template_Admin {
 		// With eBay's Warning about the shop category, if it gave one (3.33.0
 		// fix round 1).
 		$warned = TCGiant_Sync_Shop_Categories::verify_warning( $result );
+		// And eBay's Warning that it would drop a listing option (3.38.0 fix
+		// round 2).
+		$warned = trim( $warned . ' ' . TCGiant_Sync_Listing_Options::verify_said( $result ) );
 
 		wp_send_json_success( array(
 			'message' => __( 'eBay accepts this listing, description included. Nothing was listed.', 'tcgiant-sync' ) . ( '' !== $warned ? ' ' . $warned : '' ),

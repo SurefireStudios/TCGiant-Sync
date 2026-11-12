@@ -81,6 +81,8 @@ Names in **bold** are the names the plugin's own screens use.
 | **Item Specifics** section: which item specifics the category requires, the value that would be sent, and what is missing | ✅ |
 | Condition descriptors for Trading Cards and Coins (Graded with grader/grade/cert, or Ungraded) | ✅ |
 | **UPC, EAN or ISBN** on new listings, from the product's eBay tab or WooCommerce's own GTIN field. Where a category requires one and the product has none, **Products With No UPC, EAN or ISBN** sends eBay's own "Does not apply", or refuses the push | ✅ |
+| **More listing options** on the product's eBay tab: **Subtitle**, **Condition note**, **Second category**, **Brand** and **MPN** (as item specifics, by the category's own names, and on an Update only with the product's other item specifics), and for auctions **Buy It Now price** and **Reserve price** (by eBay's price rules: a relist leaves out what its site would refuse). Empty sends nothing. A relist eBay refuses with any of them goes again at once without them, and later relists leave them out until one changes (for a week, when the relist without them was refused too). Emptied, a value the plugin sent comes off the listing at its next Update or relist, except a Buy It Now or reserve price (they stay until the listing ends), anything on a live auction (its Update sends and takes off none of them, and sends again the Brand and MPN it was listed with), and a listing relisted on eBay itself, which keeps what it carried | ✅ |
+| **WooCommerce Brands as eBay's Brand** (off unless turned on): a product's brand from WooCommerce Brands sent as the item specific Brand where its **Brand** field is empty and its item specifics have none; one brand, or the deepest of a line of brands; by the Brand field's rules (not on a relist, on an Update only with the product's other item specifics; a live auction's Update keeps the Brand it was listed with) | ✅ |
 | **"All Other"** item type for non-collectibles, with eBay's plain condition list | ✅ |
 | Package weight and dimensions, converted to the listing site's system (optional) | ✅ |
 | Per-product listing type (Fixed Price / Auction), duration, shipping policy, category, condition | ✅ |
@@ -266,7 +268,6 @@ Tracked as [issues labelled `roadmap`](https://github.com/SurefireStudios/TCGian
 
 - **Editions.** Lite on WordPress.org and Standard on WooCommerce.com, built from this tree. Stage 1 (the extractions) shipped in 3.14.1; Stage 2 (splitting the scheduler and stock-push halves out) is next.
 - **Per-product condition** with eBay's per-category condition list, including refurbished and for-parts.
-- **Brand and MPN** fields on pushed listings (UPC, EAN and ISBN shipped in 3.30.3).
 - **Lossless weight round-trips** by storing kilograms and pounds to four decimals.
 
 ## Contributing

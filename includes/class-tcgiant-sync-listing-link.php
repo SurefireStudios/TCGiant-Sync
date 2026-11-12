@@ -159,6 +159,11 @@ class TCGiant_Sync_Listing_Link {
 			// and go with it.
 			'_ebay_price_seen',
 			'_ebay_price_marked',
+			// The listing options a relist of that listing was refused with
+			// (3.38.0, TCGiant_Sync_Listing_Options::RELIST_MEMO): a copy, or
+			// a product linked to another listing, is judged afresh. The
+			// options themselves are the product's and go with it.
+			'_ebay_export_options_relist_refused',
 			// History belonging to the original.
 			'_tcgiant_sync_log',
 			'_tcgiant_sync_pushed',

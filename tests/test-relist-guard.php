@@ -608,7 +608,8 @@ class Recording_eBay extends TCGiant_Sync_API {
 	}
 	// The photos, when a relist sends them (3.32.1), recorded in $photos.
 	public $photos = array();
-	public function relist_item( $item_id, $quantity = null, $changes = '' ) {
+	// The listing options (3.38.0), which this harness's products never have.
+	public function relist_item( $item_id, $quantity = null, $changes = '', $options_xml = '', array $deleted = array() ) {
 		$this->calls[] = array( 'RelistItem', (string) $item_id, $quantity );
 		if ( '' !== (string) $changes ) {
 			$this->photos[ count( $this->calls ) - 1 ] = (string) $changes;
@@ -617,7 +618,7 @@ class Recording_eBay extends TCGiant_Sync_API {
 	}
 	// A variation listing's Variations block, when one is sent, is recorded as
 	// a fourth entry; a price, when one is sent (3.31.1), as a fifth.
-	public function relist_fixed_price_item( $item_id, $quantity = null, $variations_xml = '', $start_price = '', $pictures_xml = '' ) {
+	public function relist_fixed_price_item( $item_id, $quantity = null, $variations_xml = '', $start_price = '', $pictures_xml = '', $options_xml = '', array $deleted = array() ) {
 		$this->calls[] = '' !== (string) $start_price
 			? array( 'RelistFixedPriceItem', (string) $item_id, $quantity, (string) $variations_xml, (string) $start_price )
 			: ( '' === (string) $variations_xml
@@ -2777,7 +2778,7 @@ check( '  it settles the variations', $settles > 0, true );
 check( '  before the listing\'s figures go into the parent', $settles > 0 && at( $var_check, 'apply_ended_listing_stock(' ) > $settles, true );
 check( '  and still never trashes the product', false === strpos( $var_check, 'maybe_remove_sold_out(' ), true );
 check( 'the relist builds the variations it sends', false !== strpos( $guarded, 'relist_variations_xml(' ), true );
-check( '  and passes them to RelistFixedPriceItem, as its third argument (a price changed here its fourth, 3.31.1; photos changed here its fifth, 3.32.1)', 1 === preg_match( '/->\s*relist_fixed_price_item\s*\(\s*\$\w+\s*,\s*\$\w+\s*,\s*\$variations_xml\s*,\s*\$start_price\s*,\s*\$photos_xml\s*\)/', $guarded ), true );
+check( '  and passes them to RelistFixedPriceItem, as its third argument (a price changed here its fourth, 3.31.1; photos changed here its fifth, 3.32.1; the listing options its sixth and seventh, 3.38.0)', 1 === preg_match( '/->\s*relist_fixed_price_item\s*\(\s*\$\w+\s*,\s*\$\w+\s*,\s*\$variations_xml\s*,\s*\$start_price\s*,\s*\$photos_xml\s*,\s*\$options_xml\s*,\s*\$options_off\s*\)/', $guarded ), true );
 
 echo "\nA LISTING ON ANOTHER EBAY SITE IS NEVER PUT BACK UP (3.27.5)\n" . str_repeat( '=', 126 ) . "\n";
 

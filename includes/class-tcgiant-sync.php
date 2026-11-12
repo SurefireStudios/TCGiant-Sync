@@ -119,6 +119,8 @@ final class TCGiant_Sync {
 			TCGiant_Sync_Ebay_Price::register_admin();
 			// And their product identifiers (3.30.3).
 			TCGiant_Sync_Identifiers::register_admin();
+			// And their listing options (3.38.0).
+			TCGiant_Sync_Listing_Options::register_admin();
 		}
 
 		// Initialize entitlements - the licence where this build has one (must be before Importer).

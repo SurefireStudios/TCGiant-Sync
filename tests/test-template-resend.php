@@ -313,6 +313,16 @@ $GLOBALS['API']->aspects = array( array( 'name' => 'Grade', 'required' => true, 
 check( '  an item specific eBay requires, missing', TCGiant_Sync_Template_Resend::judge( 634 )['reason'], 'refused' );
 $GLOBALS['API']->aspects = array();
 check( '  and with it there: goes', TCGiant_Sync_Template_Resend::judge( 634 )['verdict'], 'send' );
+// 3.38.0 (review 5's rev5:V01 and R5-1): a category requiring Brand, the
+// Brand field, no other item specifics - judged as the push's Update, which
+// sends no ItemSpecifics: left as the push refuses it with nothing recorded,
+// and sent where the listing is recorded with that Brand (eBay keeps it).
+listing( 6391, array(), array( TCGiant_Sync_Listing_Options::BRAND_META => 'Zeta' ) );
+listing( 6392, array(), array( TCGiant_Sync_Listing_Options::BRAND_META => 'Zeta', TCGiant_Sync_Listing_Options::SENT_META => array( 'item' => '110000006392', 'specifics' => array( 'Brand' => 'Zeta' ) ) ) );
+$GLOBALS['API']->aspects = array( array( 'name' => 'Brand', 'required' => true, 'multi' => false, 'mode' => 'FREE_TEXT', 'selection' => '', 'values' => array() ) );
+check( '  Brand required, the Brand field and no other item specifics, nothing recorded: refused, as the push\'s Update is', TCGiant_Sync_Template_Resend::judge( 6391 )['reason'], 'refused' );
+check( '  recorded with that Brand: goes, as the push\'s Update does', TCGiant_Sync_Template_Resend::judge( 6392 )['verdict'], 'send' );
+$GLOBALS['API']->aspects = array();
 listing( 635, array(), array( '_ebay_listing_type' => null, '_ebay_export_listing_type' => 'Chinese' ) );
 check( 'no format recorded, the product pushed as an auction: an auction', TCGiant_Sync_Template_Resend::judge( 635 )['reason'], 'auction' );
 $var = new WC_Product_Variable( 636, array( 'name' => 'Toploaders', 'description' => 'Packs of 25.', 'type' => 'variable', 'modified' => time() - 3700 ) );
@@ -547,7 +557,9 @@ check( 'a content hash from before 3.34.0, the product unmodified since its push
 $GLOBALS['W']['meta'][901]['_tcgiant_content_hash'] = '2:' . sha1( 'what a preview of 3.34.0 recorded' );
 $e->data['modified'] = time() - 3600 + 31;
 check( '  one marked "2:", from other facts: not used either - saved since its push, held', TCGiant_Sync_Template_Resend::judge( 901 )['reason'], 'held' );
-$e->data['modified'] = time() - 3600 + 30;
+// From the push time as recorded, not the clock now: a second passing
+// between the two made it 31 seconds, and held (3.38.0).
+$e->data['modified'] = strtotime( $GLOBALS['W']['meta'][901]['_ebay_export_last_pushed'] . ' UTC' ) + 30;
 check( '  saved within the push\'s own 30 seconds: sent', TCGiant_Sync_Template_Resend::judge( 901 )['verdict'], 'send' );
 $e->data['modified'] = time() - 3600 + 31;
 check( '  saved a second later (a sale, an edit): held', TCGiant_Sync_Template_Resend::judge( 901 )['reason'], 'held' );

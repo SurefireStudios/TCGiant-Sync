@@ -32,6 +32,16 @@
  * Time: the clock the time budget reads is played (TCGiant_Sync_Runtime::$clock);
  * hours and days passing are played by moving every stored time back (later()).
  *
+ * And the wall clock is played too (3.38.0): one instant for the whole run,
+ * clock() - 12:00 UTC on 20 October 2026, never the wall clock's - which the
+ * API, inventory and importer classes read, each loaded as a copy with its
+ * time() and one-argument gmdate() reading it, and so does every check here.
+ * A run that crossed 00:00 UTC (the day's call count is kept by date) or
+ * 00:05:30 UTC (the day's budget, and eBay's 518, wait for it) failed, the
+ * code having read one day and its check the next. TCG_RECONCILE_CLOCK, a
+ * Unix time, stands the run elsewhere (23:59:59 UTC, say); the children share
+ * it.
+ *
  * @package TCGiant_Sync
  */
 
@@ -54,6 +64,30 @@ if ( 'staging' === $CHILD ) {
 	define( 'TCGIANT_SYNC_IS_STAGING', true );
 }
 
+// ─── the clock (3.38.0) ─────────────────────────────────────────────────────
+
+// One instant for the run, and for its children, which inherit it.
+$TCG_CLOCK = '' !== (string) getenv( 'TCG_RECONCILE_CLOCK' ) ? (int) getenv( 'TCG_RECONCILE_CLOCK' ) : gmmktime( 12, 0, 0, 10, 20, 2026 );
+putenv( 'TCG_RECONCILE_CLOCK=' . $TCG_CLOCK );
+function clock() { return (int) $GLOBALS['TCG_CLOCK']; }
+function clock_gmdate( $format ) { return gmdate( $format, clock() ); }
+/** A copy of a plugin class whose time() and one-argument gmdate() read clock(). */
+function clock_copy( $file ) {
+	$src  = str_replace( '__DIR__', var_export( dirname( $file ), true ), (string) file_get_contents( $file ) );
+	$copy = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'tcg-reconcile-' . getmypid() . '-' . basename( $file );
+	file_put_contents( $copy, preg_replace(
+		array( '/(?<![\w>:$])time\(\s*\)/', "/(?<![\\w>:$])gmdate\\(\\s*('[^']*'|\"[^\"]*\")\\s*\\)/" ),
+		array( 'clock()', 'clock_gmdate($1)' ),
+		$src
+	) );
+	register_shutdown_function( function () use ( $copy ) {
+		@unlink( $copy );
+	} );
+	return $copy;
+}
+$GLOBALS['TCG_API_FILE']       = clock_copy( dirname( __DIR__ ) . '/includes/class-tcgiant-sync-api.php' );
+$GLOBALS['TCG_INVENTORY_FILE'] = clock_copy( dirname( __DIR__ ) . '/includes/class-tcgiant-sync-inventory.php' );
+
 // ─── the world ──────────────────────────────────────────────────────────────
 
 require __DIR__ . '/support/settings-world.php';
@@ -62,7 +96,7 @@ $ROOT = dirname( __DIR__ );
 require $ROOT . '/includes/class-tcgiant-sync-runtime.php';
 require $ROOT . '/includes/class-tcgiant-sync-environment.php';
 // eBay's 518 is waited on with item D's helpers (3.28.0 release fix round 2).
-require $ROOT . '/includes/class-tcgiant-sync-importer.php';
+require clock_copy( $ROOT . '/includes/class-tcgiant-sync-importer.php' );
 
 $W = &$GLOBALS['W'];
 
@@ -149,7 +183,7 @@ function as_schedule_single_action( $when, $hook, $args = array(), $group = '', 
 	return $GLOBALS['W']['as_id'];
 }
 function as_enqueue_async_action( $hook, $args = array(), $group = '', $unique = false, $priority = 10 ) {
-	return as_schedule_single_action( time(), $hook, $args, $group );
+	return as_schedule_single_action( clock(), $hook, $args, $group );
 }
 function as_match( $a, $hook, $args, $group ) {
 	return $a['hook'] === $hook && ( null === $args || $a['args'] === $args ) && ( '' === (string) $group || $a['group'] === $group );
@@ -182,7 +216,7 @@ function run_queue( $max = 50 ) {
 	while ( $ran < $max ) {
 		$next = null;
 		foreach ( $GLOBALS['W']['queue'] as $id => $a ) {
-			if ( 'pending' === $a['status'] && $a['when'] <= time() && ( null === $next || $a['when'] < $GLOBALS['W']['queue'][ $next ]['when'] ) ) {
+			if ( 'pending' === $a['status'] && $a['when'] <= clock() && ( null === $next || $a['when'] < $GLOBALS['W']['queue'][ $next ]['when'] ) ) {
 				$next = $id;
 			}
 		}
@@ -466,8 +500,8 @@ function take_over() {
 	$GLOBALS['W']['options'][ OPT ] = $p;
 }
 function next_reset() {
-	$today = gmmktime( 0, 0, 0, (int) gmdate( 'n' ), (int) gmdate( 'j' ), (int) gmdate( 'Y' ) ) + 330;
-	return $today > time() ? $today : $today + 86400;
+	$today = gmmktime( 0, 0, 0, (int) clock_gmdate('n'), (int) clock_gmdate('j'), (int) clock_gmdate('Y') ) + 330;
+	return $today > clock() ? $today : $today + 86400;
 }
 function near( $got, $want, $by = 5 ) { return is_int( $got ) && abs( $got - $want ) <= $by; }
 /** The calls sent since mark(), by name. */
@@ -475,7 +509,7 @@ function calls_sent() { return array_column( $GLOBALS['W']['wire'], 0 ); }
 /** When the 518 is next asked about, as every check, push and pass share it. */
 function slot_518() { return (int) ( $GLOBALS['W']['transients'][ TCGiant_Sync_Importer::EBAY_518_TRANSIENT ]['until'] ?? 0 ); }
 function line_518( $done, $page, $when ) { return sprintf( 'Reconciliation: %seBay\'s call limit is reached (Calls to this call have exceeded the call limit.), so %s is read once it lifts - asked again at %s UTC.', $done, $page, gmdate( 'H:i', $when ) ); }
-function calls_today() { return (int) ( $GLOBALS['W']['options'][ 'tcgiant_sync_api_calls_' . gmdate( 'Y-m-d' ) ] ?? 0 ); }
+function calls_today() { return (int) ( $GLOBALS['W']['options'][ 'tcgiant_sync_api_calls_' . clock_gmdate('Y-m-d') ] ?? 0 ); }
 
 $INV = new TCGiant_Sync_Inventory();
 
@@ -530,10 +564,10 @@ check( '  it reads pages 1 to 25, and no more', pages_read(), range( 1, 25 ) );
 check( '  and says so in one line', lines( 'pages' ), array( 'Reconciliation: pages 1-25 of 47 checked, continuing.' ) );
 check( '  no "page cap" warning', lines( 'cap' ), array() );
 check( '  its place kept: page 26 of 47, the totals so far, no slice at it', array( $tcg_place['page'], $tcg_place['total_pages'], $tcg_place['checked'], $tcg_place['mismatches'], $tcg_place['owner'], $tcg_place['wait_until'] ), array( 26, 47, $FIRST, 2, '', 0 ) );
-check( '  and when the pass began', near( $tcg_place['started_at'], time() ), true );
+check( '  and when the pass began', near( $tcg_place['started_at'], clock() ), true );
 check( '  the place is never autoloaded', $W['autoload'][ OPT ], 'no' );
-check( '  the rest handed to a follow-up for this pass, due now', array( count( pending() ), pending()[0]['args'] ?? null, pending()[0]['group'] ?? null, near( pending()[0]['when'] ?? 0, time() ) ), array( 1, array( 'pass' => $tcg_place['started_at'] ), TCGiant_Sync_Inventory::RECONCILE_GROUP, true ) );
-check( '  and the stall check armed two hours on', near( wp_next_scheduled( STALL ), time() + 7200 ), true );
+check( '  the rest handed to a follow-up for this pass, due now', array( count( pending() ), pending()[0]['args'] ?? null, pending()[0]['group'] ?? null, near( pending()[0]['when'] ?? 0, clock() ) ), array( 1, array( 'pass' => $tcg_place['started_at'] ), TCGiant_Sync_Inventory::RECONCILE_GROUP, true ) );
+check( '  and the stall check armed two hours on', near( wp_next_scheduled( STALL ), clock() + 7200 ), true );
 check( '  nothing recorded yet', array( settings()['last_reconciliation'], settings()['last_reconciliation_mismatches'] ), array( OLD_RECORD, 7 ) );
 check( '  two of the mismatches found so far logged, as before', lines( 'mismatch:' ), array(
 	'Reconciliation mismatch: "Tape 251" (eBay #110000000251, WC #100251) — WC stock: 0, eBay available: 1',
@@ -667,7 +701,7 @@ shop( 9321, $DIFFER );
 weekly();
 mark();
 // The shared ceiling reached while page 30 is read: page 31 is refused before it is sent.
-$W['on_page'][30] = function () { $GLOBALS['W']['options'][ 'tcgiant_sync_api_calls_' . gmdate( 'Y-m-d' ) ] = 40000; };
+$W['on_page'][30] = function () { $GLOBALS['W']['options'][ 'tcgiant_sync_api_calls_' . clock_gmdate('Y-m-d') ] = 40000; };
 run_queue();
 $tcg_place = place();
 check( 'pages 26 to 30 read; page 31 refused, never sent', pages_read(), range( 26, 30 ) );
@@ -689,7 +723,7 @@ mark();
 $INV->continue_reconciliation( $tcg_place['started_at'] );
 check( 'a follow-up early does nothing', array( pages_read(), $W['log'], place()['page'] ), array( array(), array(), 31 ) );
 // 00:05:30 comes: a new UTC day, a new count.
-later( next_reset() - time() + 1 );
+later( next_reset() - clock() + 1 );
 $W['options'] = array_filter( $W['options'], function ( $k ) { return 0 !== strpos( $k, 'tcgiant_sync_api_calls_' ); }, ARRAY_FILTER_USE_KEY );
 mark();
 run_queue();
@@ -703,15 +737,15 @@ shop( 900 );
 $W['answers'][3] = array( array( '518', 'Calls to this call have exceeded the call limit.' ) );
 weekly();
 $tcg_when = place()['wait_until'];
-check( 'eBay\'s 518: page 3 waits for the next slot, an hour at most, and the slot is shared', array( place()['page'], near( $tcg_when, TCGiant_Sync_Importer::after_ebay_518() ), $tcg_when <= time() + 3600, slot_518(), place()['e518'], place()['tries'], lines( 'call limit' ) ), array( 3, true, true, $tcg_when, 1, 0, array( line_518( 'pages 1-2 of 5 checked; ', 'page 3 of 5', $tcg_when ) ) ) );
+check( 'eBay\'s 518: page 3 waits for the next slot, an hour at most, and the slot is shared', array( place()['page'], near( $tcg_when, TCGiant_Sync_Importer::after_ebay_518() ), $tcg_when <= clock() + 3600, slot_518(), place()['e518'], place()['tries'], lines( 'call limit' ) ), array( 3, true, true, $tcg_when, 1, 0, array( line_518( 'pages 1-2 of 5 checked; ', 'page 3 of 5', $tcg_when ) ) ) );
 as_unschedule_all_actions( FOLLOW );
 mark();
 stall_check();
 weekly();
 check( '  its follow-up lost meanwhile: the stall check and a weekly run still wait for its time', array( pages_read(), lines( 'still under way' ) !== array(), wp_next_scheduled( STALL ) ), array( array(), true, $tcg_when + 7200 ) );
 // Its time comes, but a sale check met the 518 again meanwhile: nothing is sent.
-later( $tcg_when - time() + 1 );
-$tcg_slot = time() + 1800;
+later( $tcg_when - clock() + 1 );
+$tcg_slot = clock() + 1800;
 set_transient( TCGiant_Sync_Importer::EBAY_518_TRANSIENT, array( 'until' => $tcg_slot ), 1800 );
 mark();
 stall_check();
@@ -723,7 +757,7 @@ mark();
 run_queue();
 check( '  the question meets a 518 too: one call that hour, and no page read', array( calls_sent(), place()['page'], near( place()['wait_until'], TCGiant_Sync_Importer::after_ebay_518() ), slot_518() === place()['wait_until'] ), array( array( 'GeteBayOfficialTime' ), 3, true, true ) );
 // It lifts: the next slot reads on from page 3.
-later( place()['wait_until'] - time() + 1 );
+later( place()['wait_until'] - clock() + 1 );
 mark();
 run_queue();
 check( '  it lifts: asked once, and the pass carries on from page 3 to the end', array( calls_sent(), pages_read(), lines( 'Complete' ) !== array(), place() ), array( array( 'GeteBayOfficialTime', 'GetSellerList', 'GetSellerList', 'GetSellerList' ), array( 3, 4, 5 ), true, null ) );
@@ -733,7 +767,7 @@ fresh();
 shop( 9321 );
 $W['answers'][3] = array( array( '518', 'Calls to this call have exceeded the call limit.' ) );
 weekly();
-later( place()['wait_until'] - time() + 1 );
+later( place()['wait_until'] - clock() + 1 );
 mark();
 run_queue();
 check( '  lifted in a pass of 47 pages: asked once, then every page read in two slices', array( count( array_keys( calls_sent(), 'GeteBayOfficialTime', true ) ), pages_read(), lines( 'Complete' ) !== array() ), array( 1, range( 3, 47 ), true ) );
@@ -743,7 +777,7 @@ fresh();
 shop( 900 );
 $W['answers'][3] = array( array( '518', 'Calls to this call have exceeded the call limit.' ), array( '10007', 'Internal error to the application.' ) );
 weekly();
-later( place()['wait_until'] - time() + 1 );
+later( place()['wait_until'] - clock() + 1 );
 mark();
 run_queue();
 check( '  a 518, then a failure that passes: tried again in 15 minutes, a try counted, no longer waiting on the 518', array( calls_sent(), place()['tries'], place()['e518'] ), array( array( 'GeteBayOfficialTime', 'GetSellerList' ), 1, 0 ) );
@@ -788,18 +822,18 @@ check( '  out of date under the 518, found by the weekly run: it starts again fr
 // The plugin's own budget, used up, still waits for 00:05:30 - when it resets.
 fresh();
 shop( 900 );
-$W['on_page'][2] = function () { $GLOBALS['W']['options'][ 'tcgiant_sync_api_calls_' . gmdate( 'Y-m-d' ) ] = 40000; };
+$W['on_page'][2] = function () { $GLOBALS['W']['options'][ 'tcgiant_sync_api_calls_' . clock_gmdate('Y-m-d') ] = 40000; };
 weekly();
 check( 'the plugin\'s own budget used up: waits for 00:05:30 UTC, not the hourly slot', array( place()['page'], place()['wait_until'], place()['e518'], slot_518() ), array( 3, next_reset(), 0, 0 ) );
 fresh();
 shop( 900 );
 $W['answers'][3] = array( array( 'http', 429 ) );
 weekly();
-check( 'eBay\'s HTTP 429: tried again in 15 minutes, a try counted', array( place()['page'], near( place()['wait_until'], time() + 900 ), place()['tries'], lines( 'tried again' ) ), array( 3, true, 1, array( 'Reconciliation: pages 1-2 of 5 checked; page 3 of 5 could not be read (eBay returned HTTP 429 (too many requests).), so it is tried again in 15 minutes (try 2 of 5).' ) ) );
+check( 'eBay\'s HTTP 429: tried again in 15 minutes, a try counted', array( place()['page'], near( place()['wait_until'], clock() + 900 ), place()['tries'], lines( 'tried again' ) ), array( 3, true, 1, array( 'Reconciliation: pages 1-2 of 5 checked; page 3 of 5 could not be read (eBay returned HTTP 429 (too many requests).), so it is tried again in 15 minutes (try 2 of 5).' ) ) );
 // Refused on the first page: nothing read yet, nothing known of the pages.
 fresh();
 shop( 900 );
-$W['options'][ 'tcgiant_sync_api_calls_' . gmdate( 'Y-m-d' ) ] = 40000;
+$W['options'][ 'tcgiant_sync_api_calls_' . clock_gmdate('Y-m-d') ] = 40000;
 weekly();
 check( 'refused on page 1: the pass waits, with nothing read', array( pages_read(), place()['page'], place()['wait_until'], lines( 'used up' ) ), array( array(), 1, next_reset(), array( 'Reconciliation: the day\'s eBay calls are used up (Daily API call budget exhausted. Will resume tomorrow.), so page 1 is read just after 00:05 UTC.' ) ) );
 
@@ -811,8 +845,8 @@ list( $tcg_all ) = shop( 600 );
 $W['answers'][2] = array( $TCG_BUSY, $TCG_BUSY );
 $W['answers'][3] = array( $TCG_BUSY );
 weekly();
-check( 'page 2 fails: the slice says what it read, and tries again in 15 minutes', array( lines( 'Reconciliation:' ), place()['page'], place()['tries'], near( place()['wait_until'], time() + 900 ), near( pending()[0]['when'] ?? 0, time() + 900 ) ), array( array( 'Reconciliation: Starting weekly inventory check...', 'Reconciliation: page 1 of 3 checked; page 2 of 3 could not be read (Internal error to the application.), so it is tried again in 15 minutes (try 2 of 5).' ), 2, 1, true, true ) );
-check( '  the stall check two hours after the try', near( wp_next_scheduled( STALL ), time() + 900 + 7200 ), true );
+check( 'page 2 fails: the slice says what it read, and tries again in 15 minutes', array( lines( 'Reconciliation:' ), place()['page'], place()['tries'], near( place()['wait_until'], clock() + 900 ), near( pending()[0]['when'] ?? 0, clock() + 900 ) ), array( array( 'Reconciliation: Starting weekly inventory check...', 'Reconciliation: page 1 of 3 checked; page 2 of 3 could not be read (Internal error to the application.), so it is tried again in 15 minutes (try 2 of 5).' ), 2, 1, true, true ) );
+check( '  the stall check two hours after the try', near( wp_next_scheduled( STALL ), clock() + 900 + 7200 ), true );
 later( 900 );
 mark();
 run_queue();
@@ -868,14 +902,14 @@ check( 'a weekly run while the follow-up waits: still under way, no second pass'
 as_unschedule_all_actions( FOLLOW );
 $tcg_live          = place();
 $tcg_live['owner'] = 'another-request';
-$tcg_live['beat']  = time() - 60;
+$tcg_live['beat']  = clock() - 60;
 $W['options'][ OPT ] = $tcg_live;
 mark();
 weekly();
 stall_check();
 $INV->continue_reconciliation( $tcg_live['started_at'] );
 check( 'a weekly run, the stall check, a follow-up, while a slice is at work: each leaves it', array( pages_read(), lines( 'Reconciliation' ), place() ), array( array(), array( sprintf( 'Reconciliation: the check begun %s is still under way (pages 1-25 of 47 checked), so a second one does not start.', gmdate( 'Y-m-d H:i', $tcg_live['started_at'] ) . ' UTC' ) ), $tcg_live ) );
-$W['options'][ OPT ]['beat'] = time() - 601;
+$W['options'][ OPT ]['beat'] = clock() - 601;
 mark();
 stall_check();
 check( '  ten minutes without a word, it is taken to be gone: the stall check carries on, each page read once', array( pages_read(), lines( 'Complete' ) ), array( range( 26, 47 ), array( sprintf( 'Reconciliation: Complete. Checked %d items across 47 pages, found 3 mismatch(es).', $ALL ) ) ) );
@@ -889,7 +923,7 @@ $INV->continue_reconciliation( 12345 );
 check( 'a follow-up for another pass does nothing', array( pages_read(), $W['log'], place()['page'] ), array( array(), array(), 26 ) );
 fresh();
 shop( 450 );
-$INV->continue_reconciliation( time() );
+$INV->continue_reconciliation( clock() );
 stall_check();
 check( '  nor one, nor the stall check, with no pass', array( pages_read(), $W['log'], place() ), array( array(), array(), null ) );
 // Another run takes the pass over part way through a slice: this one stops.
@@ -916,7 +950,7 @@ check( 'taken over as it finishes: it says so, and records nothing', array( line
 // Two weekly runs starting together: only one gets the pass.
 fresh();
 shop( 450 );
-$W['options'][ OPT ] = array( 'started_at' => time(), 'page' => 1, 'total_pages' => 0, 'checked' => 0, 'mismatches' => 0, 'tries' => 0, 'wait_until' => 0, 'owner' => 'the-other', 'beat' => time() );
+$W['options'][ OPT ] = array( 'started_at' => clock(), 'page' => 1, 'total_pages' => 0, 'checked' => 0, 'mismatches' => 0, 'tries' => 0, 'wait_until' => 0, 'owner' => 'the-other', 'beat' => clock() );
 $tcg_raw = maybe_serialize( $W['options'][ OPT ] );
 unset( $W['options'][ OPT ] );
 // The other's row lands between this one's read and its write.
@@ -970,7 +1004,7 @@ weekly();
 later( 7201 );
 mark();
 stall_check();
-check( '  one the stall check carried on and that hands on again leaves one follow-up, due now', array( pages_read(), count( pending() ), near( pending()[0]['when'] ?? 0, time() ) ), array( range( 7, 12 ), 1, true ) );
+check( '  one the stall check carried on and that hands on again leaves one follow-up, due now', array( pages_read(), count( pending() ), near( pending()[0]['when'] ?? 0, clock() ) ), array( range( 7, 12 ), 1, true ) );
 // Its follow-up due, not long overdue: left to it.
 fresh();
 shop( 9321, $DIFFER );
@@ -978,7 +1012,7 @@ weekly();
 later( 3600 );
 mark();
 stall_check();
-check( 'the follow-up an hour overdue: the stall check leaves it, armed again two hours on', array( pages_read(), $W['log'], near( wp_next_scheduled( STALL ), time() + 7200 ), count( pending() ) ), array( array(), array(), true, 1 ) );
+check( 'the follow-up an hour overdue: the stall check leaves it, armed again two hours on', array( pages_read(), $W['log'], near( wp_next_scheduled( STALL ), clock() + 7200 ), count( pending() ) ), array( array(), array(), true, 1 ) );
 // The weekly run finds it gone quiet: carries it on, starts no new one.
 fresh();
 shop( 9321, $DIFFER );
@@ -999,7 +1033,7 @@ run_queue();
 $tcg_after = place();
 check( 'a slice that throws on page 28: said, as before', lines( 'Exception' ), array( 'Reconciliation: Exception — Lock wait timeout exceeded' ) );
 check( '  its place as page 27 left it, let go of', array( $tcg_after['page'], $tcg_after['owner'], pending() ), array( 28, '', array() ) );
-check( '  the stall check armed as the slice began', near( wp_next_scheduled( STALL ), time() + 7200 ), true );
+check( '  the stall check armed as the slice began', near( wp_next_scheduled( STALL ), clock() + 7200 ), true );
 unset( $W['throw_on'][105451] );
 later( 7200 );
 mark();
@@ -1020,7 +1054,7 @@ load_world( $tcg_file );
 $tcg_after = place();
 check( 'killed while reading page 30 (a process of its own, ended there)', array( $tcg_code, $tcg_out, pages_read() ), array( 0, '', range( 26, 30 ) ) );
 check( '  its place as page 29 left it, still marked as its, no line for the slice', array( $tcg_after['page'], '' !== $tcg_after['owner'], lines( 'continuing' ), lines( 'Complete' ) ), array( 30, true, array(), array() ) );
-check( '  the stall check it armed as it began', near( wp_next_scheduled( STALL ), time() + 7200 ), true );
+check( '  the stall check it armed as it began', near( wp_next_scheduled( STALL ), clock() + 7200 ), true );
 mark();
 weekly();
 check( '  a weekly run within ten minutes takes it to be at work: nothing read', array( pages_read(), count( lines( 'still under way' ) ) ), array( array(), 1 ) );
@@ -1095,7 +1129,7 @@ echo "\nA PASS OLDER THAN THREE DAYS STARTS AGAIN\n" . str_repeat( '=', 124 ) . 
 fresh();
 shop( 9321, $DIFFER );
 weekly();
-$W['options'][ 'tcgiant_sync_api_calls_' . gmdate( 'Y-m-d' ) ] = 40000;
+$W['options'][ 'tcgiant_sync_api_calls_' . clock_gmdate('Y-m-d') ] = 40000;
 mark();
 run_queue();
 $tcg_place = place();
@@ -1112,7 +1146,7 @@ later( 3 * 86400 + 1 );
 mark();
 run_queue( 1 );
 check( 'past three days: its follow-up starts it again from page 1, saying so', array( lines( 'starts again' ), lines( 'Starting' ), pages_read() ), array( array( sprintf( 'Reconciliation: the check begun %s had not finished after 3 days, so it starts again from page 1. Pages 1-25 of 47 had been checked: %d item(s), 2 mismatch(es).', gmdate( 'Y-m-d H:i', $tcg_place['started_at'] - 3 * 86400 - 1 ) . ' UTC', $FIRST ) ), array( 'Reconciliation: Starting weekly inventory check...' ), range( 1, 25 ) ) );
-check( '  a new pass, begun now', array( near( place()['started_at'], time() ), place()['page'], place()['checked'] ), array( true, 26, $FIRST ) );
+check( '  a new pass, begun now', array( near( place()['started_at'], clock() ), place()['page'], place()['checked'] ), array( true, 26, $FIRST ) );
 fresh();
 shop( 9321, $DIFFER );
 weekly();
@@ -1141,7 +1175,7 @@ shop( 900 );
 $W['answers'][3] = array( array( '518', 'Calls to this call have exceeded the call limit.' ) );
 weekly();
 other_request_saves( 'enable_reconciliation', '0' );
-later( next_reset() - time() + 1 );
+later( next_reset() - clock() + 1 );
 mark();
 run_queue();
 check( '  and while it waited for 00:05:30: stopped when it comes', array( count( lines( 'turned off' ) ), place(), pages_read() ), array( 1, null, array() ) );

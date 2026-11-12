@@ -1824,7 +1824,7 @@ eval( $src ); // phpcs:ignore Squiz.PHP.Eval.Discouraged
 class Push_Probe extends Push_Harness_Exporter {
 	public function get_export_settings( $product_id ) { return array( 'listing_type' => 'FixedPriceItem', 'listing_duration' => 'GTC' ); }
 	public function validate_export_settings( array $settings, $new_listing = true ) { return true; }
-	public function find_missing_required_aspects( WC_Product $product, array $settings ) { return array(); }
+	public function find_missing_required_aspects( WC_Product $product, array $settings, $revise = false ) { return array(); }
 }
 $PROBE = ( new ReflectionClass( 'Push_Probe' ) )->newInstanceWithoutConstructor();
 

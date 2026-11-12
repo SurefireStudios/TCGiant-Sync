@@ -21,6 +21,15 @@
  * WordPress and WooCommerce are played as in test-sale-check.php; Action
  * Scheduler keeps each action's time and status; eBay answers from a script.
  *
+ * The clock (3.38.0): every part stands at the harness's own, never the wall
+ * clock's - 12:00 UTC on 20 October 2026 where a part sets none, or
+ * TCG_SALE_CHECK_CLOCK, a Unix time, to stand it elsewhere (23:59:59 UTC, say).
+ * The importer and the inventory classes are loaded with their time() and
+ * one-argument gmdate() reading it, as is current_time(). A part that read the
+ * wall clock failed when the run crossed 00:05:30 UTC, where the day's budget
+ * and eBay's 518 wait: the importer worked out its wait one day, the check the
+ * next.
+ *
  * @package TCGiant_Sync
  */
 
@@ -156,7 +165,7 @@ function delete_option( $name ) {
 	unset( $GLOBALS['OPTIONS'][ $name ] );
 	return true;
 }
-function current_time( $type, $gmt = 0 ) { return gmdate( 'Y-m-d H:i:s' ); }
+function current_time( $type, $gmt = 0 ) { return gmdate( 'Y-m-d H:i:s', now() ); }
 function has_term() { return false; }
 
 // Post meta, kept on the product, every write noted in order.
@@ -278,7 +287,12 @@ function wc_update_product_stock_status( $id, $status ) {
 // importer is loaded with its time() and one-argument gmdate() reading it
 // (see below); Action Scheduler here reads it too.
 $NOW = null;
-function now() { return null === $GLOBALS['NOW'] ? time() : (int) $GLOBALS['NOW']; }
+function now() { return null === $GLOBALS['NOW'] ? clock_start() : (int) $GLOBALS['NOW']; }
+/** Where the clock stands when a part sets none (3.38.0): never the wall clock. */
+function clock_start() {
+	$at = (string) getenv( 'TCG_SALE_CHECK_CLOCK' );
+	return '' !== $at ? (int) $at : gmmktime( 12, 0, 0, 10, 20, 2026 );
+}
 function harness_gmdate( $format ) { return gmdate( $format, now() ); }
 
 // Action Scheduler, with each action's time and status: pending until it is
@@ -402,7 +416,15 @@ class TCGiant_Sync_Mapper {
 
 require $ROOT . '/includes/class-tcgiant-sync-runtime.php';
 require $ROOT . '/includes/class-tcgiant-sync-variations.php';
-require $ROOT . '/includes/class-tcgiant-sync-inventory.php';
+// The inventory class, its clock the harness's too (3.38.0), as the importer's below.
+$INVENTORY_COPY = sys_get_temp_dir() . '/tcg-sale-check-retry-' . getmypid() . '-inventory.php';
+file_put_contents( $INVENTORY_COPY, preg_replace(
+	array( '/(?<![\w>:$])time\(\s*\)/', "/(?<![\\w>:$])gmdate\\(\\s*('[^']*'|\"[^\"]*\")\\s*\\)/" ),
+	array( 'now()', 'harness_gmdate($1)' ),
+	(string) file_get_contents( $ROOT . '/includes/class-tcgiant-sync-inventory.php' )
+) );
+require $INVENTORY_COPY;
+@unlink( $INVENTORY_COPY );
 require $ROOT . '/includes/class-tcgiant-sync-sites.php';
 // Which the importer loads from beside itself (3.28.4, the catalog 3.28.5,
 // the shop's categories 3.33.0, and the listings the free limit held back
@@ -1392,7 +1414,7 @@ product( 421, 'COIN-421', 1, '150000000006' );
 $hold = new ReflectionMethod( 'TCGiant_Sync_Importer', 'hold_back_listing' );
 $hold->setAccessible( true );
 // Moved past by 3.27: no reason kept.
-$OPTIONS[ TCGiant_Sync_Importer::DELTA_HELD_OPTION ] = array( '150000000004' => array( 'item_id' => '150000000004', 'from' => '2026-10-01T00:00:00.000Z', 'at' => time() - DAY_IN_SECONDS ) );
+$OPTIONS[ TCGiant_Sync_Importer::DELTA_HELD_OPTION ] = array( '150000000004' => array( 'item_id' => '150000000004', 'from' => '2026-10-01T00:00:00.000Z', 'at' => now() - DAY_IN_SECONDS ) );
 $hold->invoke( null, '150000000001', '2026-10-20T00:00:00.000Z', TCGiant_Sync_Importer::HELD_KILLED );
 $hold->invoke( null, '150000000002', '2026-10-20T00:15:00.000Z', TCGiant_Sync_Importer::HELD_UNREAD );
 $hold->invoke( null, '150000000002', '', TCGiant_Sync_Importer::HELD_SALE_CHECK );         // its check gave up too

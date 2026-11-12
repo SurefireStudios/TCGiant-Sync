@@ -12,6 +12,11 @@
  * hashes) is written in the push's success block only - never by Verify,
  * which builds the very same item, nor by a push eBay refused.
  *
+ * And (3.38.0 fix round 2) Verify and Check with eBay say eBay's Warning
+ * that it would drop a listing option - the subtitle (12317), the
+ * condition note (21920381), the second category (21917152, 21916361) -
+ * which otherwise read as "No errors".
+ *
  * Loaded for real: the Verify button's handler (TCGiant_Sync_Admin::
  * ajax_verify_product()), the API class's Verify calls, the exporter's push
  * (process_single_push() and do_push()), and the templates.
@@ -274,5 +279,29 @@ verify( 87 );
 check( 'an id a push had refused: Verify asks eBay all the same', false !== strpos( end( $API->calls )[1], '<StoreCategoryID>9051</StoreCategoryID>' ), true );
 check_with_ebay( 87 );
 check( '  and Check with eBay', false !== strpos( end( $API->calls )[1], '<StoreCategoryID>9051</StoreCategoryID>' ), true );
+
+// ─────────────────────────────────────────────────────────────────────────────
+echo "\nWHAT VERIFY AND CHECK WITH EBAY SAY OF A LISTING OPTION EBAY WOULD DROP (3.38.0 FIX ROUND 2)\n" . str_repeat( '=', 124 ) . "\n";
+
+new WC_Product( 88, array( 'name' => 'Subtitled', 'description' => 'x' ) );
+update_post_meta( 88, TCGiant_Sync_Listing_Options::SUBTITLE_META, 'Mint, boxed' );
+$dropped = array( 'ShortMessage' => 'Listing Enhancement not supported.', 'LongMessage' => 'Listing Enhancement <SubTitle> is not supported for this category and has been removed.', 'ErrorCode' => '12317', 'SeverityCode' => 'Warning' );
+$API->answers['VerifyAddFixedPriceItem'] = array( 'Ack' => 'Warning', 'Errors' => $dropped, 'Fees' => $fees );
+list( $calls, $ok, $said ) = verify( 88 );
+check( 'Verify: eBay\'s Warning that it would drop the subtitle (12317) shown, not "No errors"', array( $ok, $said ), array( true, "⚠️ eBay would drop the subtitle here (its warning 12317).\nEstimated fees: InsertionFee: \$0.30" ) );
+check( '  one call, the subtitle in the item it checked, nothing sent again', array( $calls, false !== strpos( end( $API->calls )[1], '<SubTitle>Mint, boxed</SubTitle>' ) ), array( array( 'VerifyAddFixedPriceItem' ), true ) );
+$API->answers['VerifyAddFixedPriceItem'] = array( 'Ack' => 'Warning', 'Errors' => array( $other, $dropped, array( 'ErrorCode' => '21917152', 'ShortMessage' => 'Dropped.', 'LongMessage' => 'Dropped.', 'SeverityCode' => 'Warning' ), array( 'ErrorCode' => '21920381', 'ShortMessage' => 'Ignored.', 'LongMessage' => 'Ignored.', 'SeverityCode' => 'Warning' ) ) );
+check( '  several, each by its code, among another Warning: the subtitle, the second category, the condition note', verify( 88 )[2], '⚠️ eBay would drop the subtitle (its warning 12317), the second category (its warning 21917152) and the condition note (its warning 21920381) here.' );
+$API->answers['VerifyAddFixedPriceItem'] = array( 'Ack' => 'Warning', 'Errors' => array( 'ErrorCode' => '21916361', 'ShortMessage' => 'Dropped.', 'LongMessage' => 'Dropped.', 'SeverityCode' => 'Warning' ) );
+check( '  21916361, the second category\'s other', verify( 88 )[2], '⚠️ eBay would drop the second category here (its warning 21916361).' );
+$API->answers['VerifyAddFixedPriceItem'] = array( 'Ack' => 'Warning', 'Errors' => array( 'ErrorCode' => '12317', 'ShortMessage' => 'Odd.', 'LongMessage' => 'Odd.', 'SeverityCode' => 'Error' ) );
+check( '  the code given as an Error, not a Warning: not said', verify( 88 )[2], '✅ Listing verified! No errors.' );
+$API->answers['VerifyAddFixedPriceItem'] = array( 'Ack' => 'Warning', 'Errors' => array( $warning, $dropped ) );
+check( '  with eBay\'s Warning about the shop category too: both', verify( 88 )[2], '⚠️ eBay warned about the shop category: ' . $warning['LongMessage'] . ' eBay would drop the subtitle here (its warning 12317).' );
+$API->answers['VerifyAddFixedPriceItem'] = array( 'Ack' => 'Warning', 'Errors' => $dropped );
+list( $calls, $ok, $said ) = check_with_ebay( 88 );
+check( 'Check with eBay: the same, after its own words', array( $calls, $ok, $said ), array( array( 'VerifyAddFixedPriceItem' ), true, 'eBay accepts this listing, description included. Nothing was listed. eBay would drop the subtitle here (its warning 12317).' ) );
+$API->answers['VerifyAddFixedPriceItem'] = array( 'Ack' => 'Success' );
+check( '  with no such Warning, as before', array( check_with_ebay( 88 )[2], verify( 88 )[2] ), array( 'eBay accepts this listing, description included. Nothing was listed.', '✅ Listing verified! No errors.' ) );
 
 done();

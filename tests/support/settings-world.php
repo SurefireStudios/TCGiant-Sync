@@ -432,7 +432,9 @@ else :
 endif;
 
 require $ROOT . '/includes/class-tcgiant-sync-catalog.php';
-require $ROOT . '/includes/class-tcgiant-sync-api.php';
+// A harness may load a copy of the API class instead (its clock played, say:
+// test-reconcile.php, 3.38.0), by naming it in $GLOBALS['TCG_API_FILE'].
+require $GLOBALS['TCG_API_FILE'] ?? $ROOT . '/includes/class-tcgiant-sync-api.php';
 require $ROOT . '/includes/class-tcgiant-sync-sites.php';
 // A harness may load a copy of the class instead (its release switch set the
 // other way, say), by naming it in $GLOBALS['TCG_INVENTORY_FILE'].

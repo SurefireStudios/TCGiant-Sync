@@ -50,6 +50,12 @@ if ( ! class_exists( 'TCGiant_Sync_Shop_Categories', false ) ) {
 	require_once __DIR__ . '/class-tcgiant-sync-shop-categories.php';
 }
 
+// A listing's subtitle, condition note, second category, Buy It Now and
+// reserve, and Brand and MPN (3.38.0).
+if ( ! class_exists( 'TCGiant_Sync_Listing_Options', false ) ) {
+	require_once __DIR__ . '/class-tcgiant-sync-listing-options.php';
+}
+
 /**
  * TCGiant_Sync_Exporter class
  */
@@ -213,6 +219,112 @@ class TCGiant_Sync_Exporter {
 	 * @var array|null
 	 */
 	private $shop_categories_sent = null;
+
+	/**
+	 * What the last build_item_xml() decided of the product's listing
+	 * options (3.38.0, TCGiant_Sync_Listing_Options::plan()): the state the
+	 * listing carries of the plugin's once eBay takes the item, recorded then
+	 * (record_listing_made()); null when there is nothing to record. A relist
+	 * sets it to its own (relist_ended_listing()).
+	 *
+	 * @var array|null
+	 */
+	private $options_sent = null;
+
+	/**
+	 * The DeletedField elements the last build_item_xml() made for a revise
+	 * (3.38.0): '' for none, as for every product with its listing options
+	 * empty. They go after the Item.
+	 *
+	 * @var string
+	 */
+	private $options_deleted = '';
+
+	/**
+	 * Why the item the last build_item_xml() made for a new listing may not
+	 * be sent for its listing options (3.38.0): a Buy It Now or reserve price
+	 * not above the opening bid. Given by every check after a build, as the
+	 * price's is (description_too_long()).
+	 *
+	 * @var WP_Error|null
+	 */
+	private $options_refused = null;
+
+	/**
+	 * The fields the last build_item_xml() took off its listing (3.38.0 fix
+	 * round 1, TCGiant_Sync_Listing_Options::plan()'s 'off'): an Update eBay
+	 * refuses for one of them drops it from the record
+	 * (TCGiant_Sync_Listing_Options::refused_take_off()).
+	 *
+	 * @var string[]
+	 */
+	private $options_off = array();
+
+	/**
+	 * What the last revise's build left out of the listing options, said
+	 * once eBay has answered it (3.38.0 fix round 1, options_answered()):
+	 * 'id' and 'notes', or null.
+	 *
+	 * @var array|null
+	 */
+	private $options_pending = null;
+
+	/**
+	 * Whether the build under way sends Brand and MPN in its item specifics
+	 * (3.38.0 fix round 1), decided before its description is rendered, so
+	 * the template's specifics table carries them exactly when the item does
+	 * (template_specifics()). Null outside a build.
+	 *
+	 * @var bool|null
+	 */
+	private $options_specifics = null;
+
+	/**
+	 * The category's aspects as the build under way first read them, for a
+	 * product with Brand or MPN filled (3.38.0 fix round 1): every item
+	 * specifics map of that build uses this one read, so a failed read is
+	 * not tried again in the build. Null when not read.
+	 *
+	 * @var array|WP_Error|null
+	 */
+	private $options_aspects = null;
+
+	/**
+	 * The item specifics the build under way sends without Brand and MPN, as
+	 * options_go() built them for an Update (3.38.0 fix round 1), or null.
+	 *
+	 * @var array|null
+	 */
+	private $options_without = null;
+
+	/**
+	 * Whether the build under way is a push's relist's (3.38.0 fix round 1):
+	 * the item is built for a revise, but goes to RelistItem, which sends no
+	 * item specifics and makes its own plan of the listing options.
+	 *
+	 * @var bool
+	 */
+	private $building_relist = false;
+
+	/**
+	 * Whether the build under way is a live auction's Update of a product
+	 * with Brand or MPN filled (3.38.0 fix round 2: decided first in
+	 * build_item_xml(), by revise_is_auction(), for options_go()): its item
+	 * specifics go exactly as 3.37.0 sent them, and the log says so with
+	 * the other listing options a live auction is not sent.
+	 *
+	 * @var bool
+	 */
+	private $options_live = false;
+
+	/**
+	 * The Brand and MPN recorded as sent with the listing the build under
+	 * way revises (3.38.0 fix round 4, TCGiant_Sync_Listing_Options::
+	 * listed()): a live auction's Update sends them again. Name => value.
+	 *
+	 * @var array<string,string>
+	 */
+	private $options_listed = array();
 
 	/**
 	 * The item specifics eBay defines for each category this push has read,
@@ -1087,6 +1199,9 @@ class TCGiant_Sync_Exporter {
 				$result['prices'] = $this->prices_sent;
 				// And the photos, where it was sent any (3.30.4).
 				$result['photos'] = $this->photos_sent;
+				// And its listing options (3.38.0), where there is anything
+				// to record.
+				$result['options'] = $this->options_sent;
 
 				// eBay has made a listing that, until the save below, only this
 				// request knows the number of. If it dies now, the record of it
@@ -1210,6 +1325,11 @@ class TCGiant_Sync_Exporter {
 		if ( ! empty( $result['photos'] ) && is_array( $result['photos'] ) ) {
 			TCGiant_Sync_Own_Photos::record_push( $product_id, (string) $item_id, $result['photos'] );
 		}
+
+		// And the listing options it sent, against the listing (3.38.0):
+		// only a value recorded so is ever taken off eBay when its field is
+		// emptied. Nothing from an import's link, or a product with none.
+		TCGiant_Sync_Listing_Options::record( $product, $result['options'] ?? null, (string) $item_id );
 
 		// Record which build sent this. Without it there is no way to tell a
 		// listing carrying the right item specifics from one sent before a fix
@@ -1918,7 +2038,11 @@ class TCGiant_Sync_Exporter {
 
 		// Fail locally with the specific missing aspects rather than sending a
 		// request eBay will reject with a generic error.
-		$missing_aspects = self::checks_aspects( $sent_settings, ! empty( $ebay_item_id ) ) ? $this->find_missing_required_aspects( $product, $sent_settings ) : array();
+		// Judged by the rule the build sends by (3.38.0 fix round 4). A
+		// product held ended as the new listing the push would make in its
+		// place (fix round 5).
+		$judged_update   = ! empty( $ebay_item_id ) && ! self::pushes_new_listing( $product->get_id() );
+		$missing_aspects = self::checks_aspects( $sent_settings, ! empty( $ebay_item_id ) ) ? $this->find_missing_required_aspects( $product, $sent_settings, $judged_update ) : array();
 		if ( ! empty( $missing_aspects ) ) {
 			return new WP_Error(
 				'missing_required_aspects',
@@ -2017,8 +2141,10 @@ class TCGiant_Sync_Exporter {
 				// eBay would refuse, and no second GetItem below.
 				$response = new WP_Error( 'listing_ended', 'The listing has ended, as eBay said when it was read for this push.' );
 			} else {
-				// Existing listing — revise it, on its own site (3.28.9).
-				$full_xml = '<Item>' . "\n" . '<ItemID>' . esc_attr( $ebay_item_id ) . '</ItemID>' . "\n" . $item_xml . "\n" . '</Item>';
+				// Existing listing — revise it, on its own site (3.28.9). With
+				// the listing options it takes off, after the Item (3.38.0):
+				// none for a product whose options are empty.
+				$full_xml = '<Item>' . "\n" . '<ItemID>' . esc_attr( $ebay_item_id ) . '</ItemID>' . "\n" . $item_xml . "\n" . '</Item>' . $this->options_deleted;
 				// A whole vehicle on eBay Motors, or a listing there whose part of
 				// eBay Motors is not known, is revised as before 3.28.9, and said.
 				if ( TCGiant_Sync_Motors::revised_as_before( $sent_settings ) ) {
@@ -2043,6 +2169,8 @@ class TCGiant_Sync_Exporter {
 			if ( ! is_wp_error( $response ) ) {
 				// ReviseItem returns ItemID in the response.
 				$returned_item_id = $response['ItemID'] ?? $ebay_item_id;
+				// Its listing options, as eBay took them (3.38.0 fix round 1).
+				$this->options_answered( $product->get_id(), (string) $returned_item_id, $response );
 				$this->say_shop_categories( $product->get_id(), (string) $returned_item_id, $response );
 				$this->say_category_kept( $product->get_id(), $kept_settings, (string) $ebay_item_id );
 				self::say_policies_ignored( $product->get_id(), $settings, (string) $ebay_item_id );
@@ -2060,6 +2188,8 @@ class TCGiant_Sync_Exporter {
 			// status, so a listing that is actually still live can never be
 			// duplicated by mistake.
 			if ( ! self::is_ended_listing_error( $response ) ) {
+				// Refused while taking a listing option off (3.38.0 fix round 1).
+				$this->options_answered( $product->get_id(), (string) $ebay_item_id, $response );
 				return $response;
 			}
 
@@ -2123,6 +2253,10 @@ class TCGiant_Sync_Exporter {
 					// below, and revised, where the main photo is not asked
 					// for. The new listing's own build decides (3.30.4).
 					$this->main_photo_refused = null;
+					// And its listing options' price rules (3.38.0 fix round
+					// 2): an ended auction is relisted below, which leaves a
+					// price out rather than refuse it.
+					$this->options_refused = null;
 
 					// Every item built is measured before it can be sent
 					// (3.28.5), as the first was.
@@ -2190,7 +2324,7 @@ class TCGiant_Sync_Exporter {
 				}
 
 				if ( $relist_live ) {
-					$full_xml = '<Item>' . "\n" . '<ItemID>' . esc_attr( $ebay_item_id ) . '</ItemID>' . "\n" . $item_xml . "\n" . '</Item>';
+					$full_xml = '<Item>' . "\n" . '<ItemID>' . esc_attr( $ebay_item_id ) . '</ItemID>' . "\n" . $item_xml . "\n" . '</Item>' . $this->options_deleted;
 					$revise   = function ( $xml ) use ( $api, $fixed_price, $kept_settings, $ebay_item_id, $product ) {
 						return self::on_listing_site( $kept_settings, function () use ( $api, $fixed_price, $xml ) {
 							return $fixed_price ? $api->revise_fixed_price_item( $xml ) : $api->revise_item( $xml );
@@ -2203,6 +2337,10 @@ class TCGiant_Sync_Exporter {
 					if ( $held && ! self::is_ended_listing_error( $response ) ) {
 						TCGiant_Sync_Logger::warning( self::photos_unchanged_warning( $product->get_id(), $held ) );
 					}
+
+					// Its listing options, as eBay took or refused them (3.38.0
+					// fix round 1).
+					$this->options_answered( $product->get_id(), (string) ( is_wp_error( $response ) ? $ebay_item_id : ( $response['ItemID'] ?? $ebay_item_id ) ), $response );
 
 					if ( is_wp_error( $response ) ) {
 						return $response;
@@ -2264,7 +2402,15 @@ class TCGiant_Sync_Exporter {
 				// listing, live, would leave it where it is on eBay.
 				$relist_settings = self::keep_listing_category( $this->get_export_settings( $product->get_id() ) );
 				$relist_settings['_source']['shop_category'] = 'override';
-				$this->build_item_xml( $product, $relist_settings, true );
+				// Built as a relist's (3.38.0 fix round 1): RelistItem sends
+				// no item specifics, so its description's table carries no
+				// Brand or MPN, and the relist says its own listing options.
+				$this->building_relist = true;
+				try {
+					$this->build_item_xml( $product, $relist_settings, true );
+				} finally {
+					$this->building_relist = false;
+				}
 				$too_long = $this->description_too_long();
 				if ( is_wp_error( $too_long ) ) {
 					return $too_long;
@@ -2444,6 +2590,8 @@ class TCGiant_Sync_Exporter {
 			}
 
 			$this->say_shop_categories( $product->get_id(), (string) $response['ItemID'], $response );
+			// Its listing options, as eBay took them (3.38.0 fix round 1).
+			$this->options_answered( $product->get_id(), (string) $response['ItemID'], $response );
 
 			$made = array(
 				'item_id'          => $response['ItemID'],
@@ -3029,6 +3177,12 @@ class TCGiant_Sync_Exporter {
 	 * one of them could not go, or the product shows copies of its own
 	 * photos; and nothing of them otherwise, as before.
 	 *
+	 * Every relist carries the product's listing options (3.38.0), and one
+	 * eBay refuses while it carries them goes once more without them, as
+	 * 3.37.0 sent it, its relists then leaving them out until one changes
+	 * (fix round 2, refused_with_options(),
+	 * TCGiant_Sync_Listing_Options::RELIST_MEMO).
+	 *
 	 * @param int        $product_id Product.
 	 * @param string     $source     For the log, e.g. "Bulk relist".
 	 * @param array|null $in_hand    eBay's GetItem answer for the listing the
@@ -3281,6 +3435,49 @@ class TCGiant_Sync_Exporter {
 		}
 		$photos_xml = is_array( $photos ) ? (string) $photos['xml'] : '';
 
+		// The product's listing options (3.38.0): each filled field but Brand
+		// and MPN - a relist sends no item specifics, and keeps the listing's
+		// - judged by eBay's answer for the listing: its format, condition,
+		// primary category, opening bid and reserve (fix round 1: a reserve
+		// above the ended listing's, or added to one with none, and a Buy It
+		// Now not above the reserve the relist carries, are left out and said,
+		// and the relist goes). An emptied one this plugin sent is taken off
+		// by DeletedField. Nothing for a product with none, and the relist
+		// goes as before.
+		$options = TCGiant_Sync_Listing_Options::plan( $product, array(
+			'mode'            => 'relist',
+			'auction'         => ! $fixed && ! $product->is_type( 'variable' ),
+			'condition_id'    => TCGiant_Sync_API::scalar_value( $item['ConditionID'] ?? '' ),
+			'descriptors'     => ! empty( $item['ConditionDescriptors'] ),
+			'primary'         => TCGiant_Sync_API::scalar_value( $item['PrimaryCategory']['CategoryID'] ?? '' ),
+			'vehicle'         => TCGiant_Sync_Motors::SITE === $listed_on && ! $motors_site,
+			'start_price'     => $fixed ? '' : TCGiant_Sync_API::scalar_value( $item['StartPrice'] ?? '' ),
+			'listing_reserve' => $fixed ? '' : TCGiant_Sync_API::scalar_value( $item['ReservePrice'] ?? '' ),
+			// Fix round 2: the ended listing's Buy It Now, which the relist
+			// keeps when it sends none, and its site, whose minimum a Buy It
+			// Now sent must meet.
+			'listing_bin'     => $fixed ? '' : TCGiant_Sync_API::scalar_value( $item['BuyItNowPrice'] ?? '' ),
+			'site'            => $listed_on,
+			'item_id'         => $ebay_item_id,
+		) );
+		$options_xml = (string) $options['xml'];
+		$options_off = (array) $options['deleted'];
+		// A relist eBay refused while it carried these very options goes
+		// without them, as 3.37.0 sent it, until one of them changes (fix
+		// round 2, TCGiant_Sync_Listing_Options::RELIST_MEMO): said, and
+		// nothing of them recorded.
+		$options_plain = TCGiant_Sync_Listing_Options::relist_held( $product_id, $options_xml, $options_off );
+		if ( $options_plain ) {
+			TCGiant_Sync_Logger::warning( TCGiant_Sync_Listing_Options::relist_held_said( $source, $product_id, $options_xml, $options_off ) );
+			$options_xml = '';
+			$options_off = array();
+		} elseif ( $options['notes'] ) {
+			$said = TCGiant_Sync_Listing_Options::notes_said( $product_id, $source, $options['notes'] );
+			if ( '' !== $said ) {
+				TCGiant_Sync_Logger::log( $said );
+			}
+		}
+
 		// Recorded before the call, against the listing it relists (fix round
 		// 1), already spent (fix round 2, TCGiant_Sync_Own_Photos::
 		// record_unanswered()): if eBay makes the relist and its answer is
@@ -3300,24 +3497,57 @@ class TCGiant_Sync_Exporter {
 
 		// A push's relist of an auction carries the shop's edits (3.28.8).
 		$changes = $from_push && ! $fixed ? (string) $changes : '';
-		$relist  = function () use ( $api, $fixed, $ebay_item_id, $quantity, $variations_xml, &$changes, $start_price, $photos_xml ) {
+		$relist  = function () use ( $api, $fixed, $ebay_item_id, $quantity, $variations_xml, &$changes, $start_price, $photos_xml, &$options_xml, &$options_off ) {
 			return $fixed
-				? $api->relist_fixed_price_item( $ebay_item_id, $quantity, $variations_xml, $start_price, $photos_xml )
-				: $api->relist_item( $ebay_item_id, $quantity, '' !== $changes ? $changes : $photos_xml );
+				? $api->relist_fixed_price_item( $ebay_item_id, $quantity, $variations_xml, $start_price, $photos_xml, $options_xml, $options_off )
+				: $api->relist_item( $ebay_item_id, $quantity, '' !== $changes ? $changes : $photos_xml, $options_xml, $options_off );
 		};
 		$send    = function () use ( $motors_site, $relist, $ebay_item_id, $product_id, $item ) {
 			return $motors_site ? TCGiant_Sync_Motors::listing_call( 'relist', $relist, sprintf( 'eBay listing %1$s of WC #%2$d', $ebay_item_id, $product_id ), $product_id, TCGiant_Sync_API::scalar_value( $item['PrimaryCategory']['CategoryID'] ?? '' ) ) : $relist();
 		};
-		$sent_again = $this->storefront_resends();
-		$result     = $send();
+		$attempt = function () use ( $from_push, $product, &$changes, $send ) {
+			$sent_again = $this->storefront_resends();
+			$result     = $send();
 
-		// A push's relist refused for its shop category alone goes once more
-		// without it (fix round 1): refused, the auction would stay ended.
-		if ( $from_push ) {
-			$result = $this->storefront_retried( $product, $result, $changes, function ( $xml ) use ( &$changes, $send ) {
-				$changes = $xml;
-				return $send();
-			}, $sent_again );
+			// A push's relist refused for its shop category alone goes once more
+			// without it (fix round 1): refused, the auction would stay ended.
+			if ( $from_push ) {
+				$result = $this->storefront_retried( $product, $result, $changes, function ( $xml ) use ( &$changes, $send ) {
+					$changes = $xml;
+					return $send();
+				}, $sent_again );
+			}
+
+			return $result;
+		};
+		$went_once = $api->resends();
+		$result    = $attempt();
+
+		// Refused by eBay while it carried listing options (3.38.0 fix round
+		// 2): once more in this run without them, exactly as 3.37.0 sent it,
+		// through the same API path and every budget guard it has - a guard
+		// that says no sends nothing. The listing goes back up, nothing of
+		// the options is recorded, and a relist carrying the same options
+		// goes without them from now on (RELIST_MEMO), so this costs one
+		// call more per product per set of values: a refusal that had
+		// nothing to do with them then costs what it did in 3.37.0.
+		// Remembered before the second try for a week (fix round 3): the
+		// refusal may have had nothing to do with them. Once eBay takes the
+		// relist without them, they were the cause, and the memo lasts until
+		// one changes.
+		if ( ( '' !== $options_xml || $options_off ) && self::refused_with_options( $result, $went_once ) ) {
+			$refused_with = $result;
+			$carried_xml  = $options_xml;
+			$carried_off  = $options_off;
+			TCGiant_Sync_Listing_Options::relist_refused( $product_id, $carried_xml, $carried_off );
+			$options_plain = true;
+			$options_xml   = '';
+			$options_off   = array();
+			$result        = $attempt();
+			if ( ! is_wp_error( $result ) ) {
+				TCGiant_Sync_Listing_Options::relist_taken_plain( $product_id, $carried_xml, $carried_off );
+			}
+			TCGiant_Sync_Logger::warning( TCGiant_Sync_Listing_Options::relist_without_said( $source, $product_id, $carried_xml, $carried_off, $refused_with, $result ) );
 		}
 
 		if ( is_wp_error( $result ) ) {
@@ -3334,6 +3564,26 @@ class TCGiant_Sync_Exporter {
 
 		// Relisted: a refusal for its photos is over.
 		delete_post_meta( $product_id, self::RELIST_PHOTOS_MEMO );
+
+		// The listing options it carries of the plugin's, now against the new
+		// listing (3.38.0), as a push records them: a push's relist hands the
+		// same to record_listing_made(). Not one eBay's answer warns it
+		// dropped (fix round 1). Nothing for a relist that went without them
+		// (fix round 2): it carries what the ended listing had, as one made
+		// on eBay does, and a record of it would let an Update take off a
+		// value not sent to this listing. Fix round 4: the Brand and MPN
+		// recorded for the ended listing go to the new one either way, as
+		// eBay rolls the item specifics over (carried_over()).
+		list( $options_state, $options_dropped ) = TCGiant_Sync_Listing_Options::accepted( TCGiant_Sync_Listing_Options::carried_over( $options_plain ? null : $options['state'], $product_id, (string) $ebay_item_id ), $result );
+		TCGiant_Sync_Listing_Options::record( $product_id, $options_state, $new_id );
+		$this->options_sent = $options_state;
+		if ( $options_dropped ) {
+			TCGiant_Sync_Logger::log( TCGiant_Sync_Listing_Options::dropped_said( $product_id, (string) $new_id, $options_dropped, $source ) );
+		}
+		// A relist eBay took with its options: none of them is refused now.
+		if ( '' !== $options_xml || $options_off ) {
+			delete_post_meta( $product_id, TCGiant_Sync_Listing_Options::RELIST_MEMO );
+		}
 
 		// RelistItem sends no category: the relist stays in the one the
 		// listing was in, a retired ID's too (3.28.1). Said, with how to move it.
@@ -3429,7 +3679,7 @@ class TCGiant_Sync_Exporter {
 		// And what a push's relist carried: the photos only when it sent them.
 		$photos_sent = false !== strpos( (string) substr( $changes, (int) strrpos( $changes, '</Description>' ) ), 'PictureDetails' );
 		TCGiant_Sync_Logger::log( sprintf(
-			'%s: WC #%d relisted on eBay as %s (was %s)%s%s%s%s.',
+			'%s: WC #%d relisted on eBay as %s (was %s)%s%s%s%s%s.',
 			$source,
 			$product_id,
 			$new_id,
@@ -3437,7 +3687,8 @@ class TCGiant_Sync_Exporter {
 			null !== $quantity ? sprintf( ', quantity %d', $quantity ) : '',
 			'' === $changes ? '' : ( $photos_sent ? ', with the product\'s title, description and photos' : ', with the product\'s title and description, and its photos as they were on eBay' ),
 			self::relist_prices_said( $relist_prices, $start_price ),
-			is_array( $photos ) ? ', with the product\'s photos, changed here since the listing had them' : ''
+			is_array( $photos ) ? ', with the product\'s photos, changed here since the listing had them' : '',
+			TCGiant_Sync_Listing_Options::relist_said( $options_xml, $options_off )
 		), 'success' );
 
 		// And a push's relist, the shop category it was sent (3.33.0).
@@ -3913,10 +4164,27 @@ class TCGiant_Sync_Exporter {
 	private function build_item_xml( WC_Product $product, array $settings, $revise = false ) {
 		$this->last_render = null;
 
+		// Whether Brand and MPN go in this build's item specifics (3.38.0 fix
+		// round 1), decided before the description, whose specifics table
+		// carries them exactly when the item does. Nothing to decide, and
+		// nothing read, for a product with neither.
+		$this->options_aspects   = null;
+		$this->options_without   = null;
+		// A live auction's Update holds them back (fix round 2), as it does
+		// the other listing options: options_go(). Fix round 4: and sends
+		// again the Brand and MPN its listing was listed with, as recorded -
+		// a product whose fields were emptied since too.
+		$this->options_listed    = $revise && ! $this->building_relist ? TCGiant_Sync_Listing_Options::listed( $product->get_id(), (string) $product->get_meta( '_ebay_item_id' ) ) : array();
+		$this->options_live      = $revise && ! $this->building_relist && ( TCGiant_Sync_Listing_Options::has_specifics( $product ) || $this->options_listed ) && $this->revise_is_auction( $product, $settings );
+		$this->options_specifics = $this->options_go( $product, $settings, $revise );
+
 		$title             = $this->sanitize_title( $product->get_name() );
 		$rendered          = $this->build_listing_description( $product, $settings, $title );
 		$description       = $rendered['html'];
 		$this->last_render = $rendered;
+
+		$options_specifics       = $this->options_specifics;
+		$this->options_specifics = null;
 		// The price eBay is sent, from one place (3.29.0): the regular price
 		// as before, unless the product has an eBay price of its own, or the
 		// shop has a rule, tax or postage to take off.
@@ -3930,6 +4198,11 @@ class TCGiant_Sync_Exporter {
 		$this->photos_sent        = null;
 		// And its eBay shop categories (3.33.0), decided below.
 		$this->shop_categories_sent = null;
+		// And its listing options (3.38.0), decided below.
+		$this->options_sent    = null;
+		$this->options_deleted = '';
+		$this->options_refused = null;
+		$this->options_off     = array();
 		// How many to offer.
 		//
 		// When the shop tracks stock, that figure decides it, floored at 1 so
@@ -4058,28 +4331,9 @@ class TCGiant_Sync_Exporter {
 		}
 		
 	
-		// A live listing's own format, as the import recorded it (3.28.8).
-		$live_type       = $revise ? (string) $product->get_meta( '_ebay_listing_type' ) : '';
-		$imported_revise = $revise && ! self::sends_all( $settings, true );
-		if ( $imported_revise ) {
-			// An imported listing is revised as the format it is: a recorded
-			// auction as a live auction (decision 16), whose opening bid,
-			// quantity and format the revise never sends. One whose format no
-			// read recorded is not given an auction's one item by the shop's
-			// default format: its quantity is the product's.
-			$format       = '' !== $live_type ? $live_type : ( 'override' === ( $settings['_source']['format'] ?? '' ) ? ( $settings['listing_type'] ?? 'FixedPriceItem' ) : 'FixedPriceItem' );
-			$live_auction = 'Chinese' === $live_type;
-		} else {
-			// A product the plugin pushed, and any new listing: by the
-			// settings, as 3.28.6 sent it - a pushed auction's revise keeps its
-			// price, quantity and format (the owner's ruling on decision 16) -
-			// except a listing recorded as fixed-price, which is sent its own
-			// quantity whatever the shop's default format (finding 6B). Not
-			// when the auction format is the product's own choice: that goes
-			// as 3.28.6 sent it.
-			$format       = ( '' !== $live_type && 'Chinese' !== $live_type && 'override' !== ( $settings['_source']['format'] ?? '' ) ) ? $live_type : ( $settings['listing_type'] ?? 'FixedPriceItem' );
-			$live_auction = false;
-		}
+		// The format the item goes as (sent_format(): 3.38.0 fix round 2
+		// moved it there, unchanged, for options_go()).
+		list( $format, $live_auction, $live_type ) = $this->sent_format( $product, $settings, $revise );
 
 		if ( ! $product->is_type( 'variable' ) ) {
 			// Auctions are always quantity 1 on eBay.
@@ -4114,6 +4368,11 @@ class TCGiant_Sync_Exporter {
 		// imported listing's revise unless the product sets a condition of its
 		// own, or a category with the condition eBay has (3.28.8): a used part
 		// stays 3000, a PSA 10 slab stays graded.
+		// The condition the listing has once this item goes, for its
+		// condition note (3.38.0): the one sent, or else eBay's as last read.
+		$live_snapshot    = $revise ? TCGiant_Sync_Ebay_Live::snapshot( $product->get_id() ) : array();
+		$condition_sent   = (string) ( $live_snapshot['condition_id'] ?? '' );
+		$descriptors_sent = ! empty( $live_snapshot['descriptors'] );
 		if ( self::sends( $settings, 'condition', $revise ) ) {
 			$descriptor_xml = $this->build_condition_descriptors_xml( $settings, $product->get_id() );
 			if ( ! empty( $descriptor_xml ) ) {
@@ -4125,14 +4384,137 @@ class TCGiant_Sync_Exporter {
 				if ( false !== strpos( $descriptor_xml, '<ConditionDescriptor>' ) ) {
 					$xml .= $descriptor_xml . "\n";
 				}
+				$condition_sent   = $condition_id;
+				$descriptors_sent = false !== strpos( $descriptor_xml, '<ConditionDescriptor>' );
 			} else {
 				$xml .= '<ConditionID>' . esc_attr( $settings['condition_id'] ) . '</ConditionID>' . "\n";
+				$condition_sent   = (string) $settings['condition_id'];
+				$descriptors_sent = false;
+			}
+		}
+
+		// The product's listing options (3.38.0): its subtitle, condition
+		// note, second category, and an auction's Buy It Now and reserve,
+		// each only when filled in - an empty one sends nothing, so a product
+		// with none sends 3.37.0's item. None to a live auction's Update; an
+		// emptied one this plugin sent taken off (TCGiant_Sync_Listing_Options::
+		// plan()).
+		$options = TCGiant_Sync_Listing_Options::plan( $product, array(
+			'mode'         => $revise ? 'revise' : 'new',
+			// An auction by the format sent, or, for a revise, by the
+			// listing's own recorded format: a pushed auction revised while
+			// the shop's default is fixed-price is still a live auction.
+			'auction'      => ! $product->is_type( 'variable' ) && ( 'Chinese' === $format || 'Chinese' === $live_type ),
+			'condition_id' => $condition_sent,
+			'descriptors'  => $descriptors_sent,
+			'primary'      => (string) ( $settings['category_id'] ?? '' ),
+			'vehicle'      => TCGiant_Sync_Motors::BRANCH_VEHICLES === (string) ( $settings['_listing_branch'] ?? '' ),
+			'start_price'  => $product->is_type( 'variable' ) ? '' : (string) $price,
+			'item_id'      => $revise ? (string) $product->get_meta( '_ebay_item_id' ) : '',
+		) );
+		$xml                  .= $options['xml'];
+		$this->options_sent    = $options['state'];
+		$this->options_deleted = TCGiant_Sync_Listing_Options::deleted_xml( $options['deleted'] );
+		$this->options_off     = $options['off'];
+		if ( '' !== $options['refused'] ) {
+			$this->options_refused = new WP_Error( 'missing_export_settings', $options['refused'] );
+		}
+		// A live auction's Update holds Brand and MPN back too (fix round 2,
+		// options_go()): said with the rest. A WooCommerce brand only where
+		// it would have filled in eBay's Brand (fix round 3). Fix round 4:
+		// said with what the Update sends instead - the Brand and MPN the
+		// listing was listed with, as recorded - and not where that is what
+		// the fields would send.
+		if ( $this->options_live ) {
+			$kind  = $this->options_specifics_kind( $product, $settings );
+			$words = TCGiant_Sync_Listing_Options::listed_words( $this->options_listed );
+			if ( '' !== $kind ) {
+				$this->options_without = $this->options_without ?? $this->build_specifics_map( $product, $settings, false, $this->options_aspects );
+				$wanted = TCGiant_Sync_Listing_Options::adds( $this->options_without, $product );
+				$listed = TCGiant_Sync_Listing_Options::listed_by_field( $this->options_listed );
+				ksort( $wanted );
+				ksort( $listed );
+				if ( $wanted !== $listed ) {
+					$options['notes'][] = ( 'fields' === $kind ? 'specifics:live' : 'woo_brand:live' ) . ( '' !== $words ? ':' . $words : '' );
+				}
+			} elseif ( '' !== $words ) {
+				$this->options_without = $this->options_without ?? $this->build_specifics_map( $product, $settings, false, $this->options_aspects );
+				if ( TCGiant_Sync_Listing_Options::resent( $this->options_without, $this->options_listed ) !== $this->options_without ) {
+					$options['notes'][] = 'specifics:kept:' . $words;
+				}
+			}
+		}
+		// Said once a push. A revise's, once eBay has answered it, and not
+		// when the listing turns out to have ended (fix round 1): a live
+		// auction's "not sent", beside the line of the relist or new listing
+		// that follows, contradicted it - that one says its own. Never by a
+		// push's relist's build: its RelistItem says its own plan.
+		$this->options_pending = null;
+		if ( $options['notes'] && ! $this->building_relist ) {
+			if ( $revise ) {
+				$this->options_pending = array( 'id' => $product->get_id(), 'notes' => $options['notes'] );
+			} else {
+				$this->say_options_notes( $product->get_id(), $options['notes'] );
 			}
 		}
 
 		// ItemSpecifics: the product's WooCommerce attributes, plus the
-		// configured grading/coin fields.
-		$specifics_map      = $this->build_specifics_map( $product, $settings );
+		// configured grading/coin fields. And its Brand and MPN fields
+		// (3.38.0) when options_go() said they go: never as a partial set on
+		// an Update (fix round 1). A product with neither filled builds them
+		// once, as 3.37.0 did.
+		$listed_now = null;
+		if ( ! TCGiant_Sync_Listing_Options::has_specifics( $product ) ) {
+			$specifics_map = $this->build_specifics_map( $product, $settings, false );
+		} else {
+			$specifics_map = $options_specifics ? $this->build_specifics_map( $product, $settings, true, $this->options_aspects ) : null;
+			$without       = $this->options_without ?? $this->build_specifics_map( $product, $settings, false, $this->options_aspects );
+			if ( $options_specifics ) {
+				$this->say_specifics_cut( $product->get_id(), $without, $specifics_map );
+				// Fix round 4: what of them it sends, for the record; and a
+				// variable product's field its variations differ by, said.
+				$listed_now = TCGiant_Sync_Listing_Options::listed_in( $this->specifics_sent( $specifics_map ), TCGiant_Sync_Listing_Options::adds( $without, $product ) );
+				$this->say_axis_held( $product );
+			} else {
+				$specifics_map = $without;
+				// Not for a live auction's Update, which said why (fix round 2).
+				if ( ! $this->building_relist && ! $this->options_live && empty( $this->card_said[ 'options-specifics:' . $product->get_id() ] ) ) {
+					$this->card_said[ 'options-specifics:' . $product->get_id() ] = true;
+					TCGiant_Sync_Logger::log( 'woo' === $this->options_specifics_kind( $product, $settings )
+						? sprintf( '%1$s: WC #%2$d - its WooCommerce brand was not sent as eBay\'s Brand: this Update sends no other item specifics, and eBay replaces all of a listing\'s item specifics with those sent, so it alone would take off any others the listing has on eBay. It goes with a new listing, or an Update that sends other item specifics.', $this->build_for, $product->get_id() )
+						: sprintf( '%1$s: WC #%2$d - its Brand and MPN were not sent: this Update sends no other item specifics, and eBay replaces all of a listing\'s item specifics with those sent, so the two alone would take off any others the listing has on eBay. They go with a new listing, or an Update that sends other item specifics.', $this->build_for, $product->get_id() ) );
+				}
+			}
+		}
+		// A live auction's Update sends again the Brand and MPN its listing
+		// was listed with, as recorded (fix round 4, review 4's M-1, the
+		// owner's choice): eBay sees its own values, so it neither takes
+		// them off nor refuses a change. Nothing recorded: the set as it was.
+		if ( $this->options_live ) {
+			$resent = TCGiant_Sync_Listing_Options::resent( $specifics_map, $this->options_listed );
+			if ( $resent !== $specifics_map ) {
+				$this->say_specifics_cut( $product->get_id(), $specifics_map, $resent, true );
+				$specifics_map = $resent;
+			}
+		}
+		// What the record keeps of them (fix round 4): what a new listing,
+		// or an Update whose ItemSpecifics go, sends of the product's own
+		// Brand and MPN - none clears them; an Update with no ItemSpecifics,
+		// and a live auction's, leave them. Never a push's relist's build:
+		// its RelistItem carries them over itself.
+		if ( ! $this->building_relist ) {
+			$this->options_sent = TCGiant_Sync_Listing_Options::state_with(
+				$this->options_sent,
+				$this->options_live || ( $revise && ! $this->specifics_sent( $specifics_map ) ) ? null : (array) $listed_now,
+				$product->get_id(),
+				$revise ? (string) $product->get_meta( '_ebay_item_id' ) : ''
+			);
+		}
+		// Several WooCommerce brands that are not one line give none (fix
+		// round 3): said once a push, where one would have gone.
+		if ( ! $this->building_relist ) {
+			$this->say_woo_brands( $product, $settings, $revise, $specifics_map );
+		}
 		$item_specifics_xml = $this->build_item_specifics_xml( $product, $settings, $specifics_map );
 		if ( ! empty( $item_specifics_xml ) ) {
 			$xml .= $item_specifics_xml . "\n";
@@ -5993,11 +6375,18 @@ class TCGiant_Sync_Exporter {
 	 * it, or eBay's "Does not apply", or the build refuses the push for it
 	 * (TCGiant_Sync_Identifiers::plan()); an Update leaves eBay's as it is.
 	 *
+	 * 3.38.0 fix round 4 (review 4's L-3): an Update's item specifics are
+	 * judged as the build sends them - Brand and MPN only where
+	 * options_go() lets them go, and a live auction's with the Brand and MPN
+	 * it was listed with (judged_specifics()).
+	 *
 	 * @param WC_Product $product  Product being listed.
 	 * @param array      $settings Merged export settings.
+	 * @param bool       $revise   Whether the item goes to a Revise call (an
+	 *                             Update); false for a new listing and Verify.
 	 * @return string[] Names of required aspects with no value. Empty when fine.
 	 */
-	public function find_missing_required_aspects( WC_Product $product, array $settings ) {
+	public function find_missing_required_aspects( WC_Product $product, array $settings, $revise = false ) {
 		$category_id = $settings['category_id'] ?? '';
 		if ( empty( $category_id ) ) {
 			return array();
@@ -6013,7 +6402,7 @@ class TCGiant_Sync_Exporter {
 		}
 
 		$provided = array();
-		foreach ( $this->build_specifics_map( $product, $settings ) as $name => $value ) {
+		foreach ( $this->judged_specifics( $product, $settings, $revise, $aspects ) as $name => $value ) {
 			$provided[ self::normalize_aspect_name( $name ) ] = $value;
 		}
 
@@ -6038,16 +6427,65 @@ class TCGiant_Sync_Exporter {
 	}
 
 	/**
+	 * The item specifics find_missing_required_aspects() judges (3.38.0 fix
+	 * round 4, review 4's L-3): those the build sends. A new listing and
+	 * Verify: with Brand and MPN, as before. An Update of a product with
+	 * them, or whose listing was recorded with them: a live auction's with
+	 * the Brand and MPN it was listed with (options_live); another's with
+	 * them only alongside a non-empty set (options_go()), and one that sends
+	 * no ItemSpecifics at all by the Brand and MPN recorded as on its
+	 * listing, which eBay keeps then (fix round 5). Any other product: as
+	 * 3.37.0 built them.
+	 *
+	 * @param WC_Product $product  The product.
+	 * @param array      $settings Its settings.
+	 * @param bool       $revise   Whether the item goes to a Revise call.
+	 * @param array      $aspects  The category's aspects, as read.
+	 * @return array<string,string>
+	 */
+	private function judged_specifics( WC_Product $product, array $settings, $revise, array $aspects ) {
+		$listed = $revise ? TCGiant_Sync_Listing_Options::listed( $product->get_id(), (string) $product->get_meta( '_ebay_item_id' ) ) : array();
+		$own    = TCGiant_Sync_Listing_Options::has_specifics( $product );
+		if ( ! $revise || ( ! $own && ! $listed ) ) {
+			return $this->build_specifics_map( $product, $settings );
+		}
+		$without = $this->build_specifics_map( $product, $settings, false, $aspects );
+		if ( $this->revise_is_auction( $product, $settings ) ) {
+			return TCGiant_Sync_Listing_Options::resent( $without, $listed );
+		}
+		$sent = array_column( $this->specifics_sent( $without ), 1 );
+		// Fix round 5 (review 5's R5-1, the owner's (a)): an Update that
+		// sends no ItemSpecifics at all leaves eBay's whole set as it is, so
+		// it is judged by what the record says the listing carries - the
+		// Brand and MPN it was listed with. Nothing recorded: the set as it
+		// is, 3.37.0's judgement.
+		if ( ! $sent ) {
+			return TCGiant_Sync_Listing_Options::resent( $without, $listed );
+		}
+		if ( ! $own || ! TCGiant_Sync_Listing_Options::specifics_go( true, $sent ) ) {
+			return $without;
+		}
+		return $this->build_specifics_map( $product, $settings, true, $aspects );
+	}
+
+	/**
 	 * Build the full name => value map of item specifics for a product.
 	 *
 	 * Product attributes first, then the grading/coin fields, which win on a
 	 * clash because they are explicitly configured for this listing.
 	 *
-	 * @param WC_Product $product  Product being listed.
-	 * @param array      $settings Merged export settings.
+	 * @param WC_Product          $product  Product being listed.
+	 * @param array               $settings Merged export settings.
+	 * @param bool                $options  With the product's Brand and MPN
+	 *                                      fields (3.38.0,
+	 *                                      TCGiant_Sync_Listing_Options::
+	 *                                      with_specifics()).
+	 * @param array|WP_Error|null $aspects  The category's aspects as already
+	 *                                      read, or null: read here when
+	 *                                      needed, and given back (fix round 1).
 	 * @return array<string,string>
 	 */
-	private function build_specifics_map( WC_Product $product, array $settings ) {
+	private function build_specifics_map( WC_Product $product, array $settings, $options = true, &$aspects = null ) {
 		$specifics = array_merge(
 			$this->collect_attribute_specifics( $product ),
 			$this->collect_configured_specifics( $settings ),
@@ -6056,7 +6494,311 @@ class TCGiant_Sync_Exporter {
 
 		$specifics = $this->add_derived_specifics( $specifics, $settings );
 
-		return $this->canonicalize_specific_names( $specifics, $settings );
+		// The product's Brand and MPN fields (3.38.0), in place of any item
+		// specific of the same name, before the names are made the
+		// category's: named as its aspects name them (fix round 1). Nothing
+		// done, and nothing read, when both are empty.
+		if ( $options && TCGiant_Sync_Listing_Options::has_specifics( $product ) ) {
+			if ( null === $aspects && ! empty( $settings['category_id'] ) ) {
+				$aspects = self::category_aspects( $settings );
+			}
+			$specifics = TCGiant_Sync_Listing_Options::with_specifics( $specifics, $product, is_array( $aspects ) ? $aspects : array() );
+		}
+
+		return $this->canonicalize_specific_names( $specifics, $settings, $aspects );
+	}
+
+	/**
+	 * Whether a build sends Brand and MPN in its item specifics (3.38.0 fix
+	 * round 1, TCGiant_Sync_Listing_Options::specifics_go()): a new listing
+	 * and Verify do; an Update, pushed or imported, only when the item
+	 * specifics 3.37.0 would have sent it are not empty; a push's relist
+	 * never (RelistItem sends no item specifics); a live auction's Update
+	 * never (fix round 2, options_live: it sends 3.37.0's item specifics
+	 * exactly, as it sends none of the other listing options - eBay
+	 * refuses changed item specifics once an auction has a bid or is
+	 * within 12 hours of its end, and the plugin cannot see bids). Asked
+	 * once a build, before its description. A product with neither filled:
+	 * true, as nothing changes, and nothing is built or read.
+	 *
+	 * @param WC_Product $product  The product.
+	 * @param array      $settings The build's settings.
+	 * @param bool       $revise   Whether the item goes to a Revise call.
+	 * @return bool
+	 */
+	private function options_go( WC_Product $product, array $settings, $revise ) {
+		if ( ! TCGiant_Sync_Listing_Options::has_specifics( $product ) ) {
+			return true;
+		}
+		if ( $this->building_relist ) {
+			return false;
+		}
+		if ( $this->options_live ) {
+			return false;
+		}
+		if ( ! $revise ) {
+			return true;
+		}
+		$this->options_without = $this->build_specifics_map( $product, $settings, false, $this->options_aspects );
+		return TCGiant_Sync_Listing_Options::specifics_go( true, array_column( $this->specifics_sent( $this->options_without ), 1 ) );
+	}
+
+	/**
+	 * The format an item goes as, and how a revise treats it, as
+	 * build_item_xml() decides it (3.38.0 fix round 2 moved this here from
+	 * there, unchanged, for revise_is_auction()): the format; whether the
+	 * revise is a live auction's that sends no opening bid or quantity; and
+	 * the listing's own recorded format.
+	 *
+	 * @param WC_Product $product  The product.
+	 * @param array      $settings The build's settings.
+	 * @param bool       $revise   Whether the item goes to a Revise call.
+	 * @return array{0: string, 1: bool, 2: string}
+	 */
+	private function sent_format( WC_Product $product, array $settings, $revise ) {
+		// A live listing's own format, as the import recorded it (3.28.8).
+		$live_type       = $revise ? (string) $product->get_meta( '_ebay_listing_type' ) : '';
+		$imported_revise = $revise && ! self::sends_all( $settings, true );
+		if ( $imported_revise ) {
+			// An imported listing is revised as the format it is: a recorded
+			// auction as a live auction (decision 16), whose opening bid,
+			// quantity and format the revise never sends. One whose format no
+			// read recorded is not given an auction's one item by the shop's
+			// default format: its quantity is the product's.
+			$format       = '' !== $live_type ? $live_type : ( 'override' === ( $settings['_source']['format'] ?? '' ) ? ( $settings['listing_type'] ?? 'FixedPriceItem' ) : 'FixedPriceItem' );
+			$live_auction = 'Chinese' === $live_type;
+		} else {
+			// A product the plugin pushed, and any new listing: by the
+			// settings, as 3.28.6 sent it - a pushed auction's revise keeps its
+			// price, quantity and format (the owner's ruling on decision 16) -
+			// except a listing recorded as fixed-price, which is sent its own
+			// quantity whatever the shop's default format (finding 6B). Not
+			// when the auction format is the product's own choice: that goes
+			// as 3.28.6 sent it.
+			$format       = ( '' !== $live_type && 'Chinese' !== $live_type && 'override' !== ( $settings['_source']['format'] ?? '' ) ) ? $live_type : ( $settings['listing_type'] ?? 'FixedPriceItem' );
+			$live_auction = false;
+		}
+
+		return array( $format, $live_auction, $live_type );
+	}
+
+	/**
+	 * Whether an Update of the product goes to a live auction (3.38.0 fix
+	 * round 2): by the format it is sent as, or the listing's recorded one,
+	 * as build_item_xml() hands the listing options' plan its 'auction'.
+	 * Never a variable product.
+	 *
+	 * @param WC_Product $product  The product.
+	 * @param array      $settings The Update's settings.
+	 * @return bool
+	 */
+	private function revise_is_auction( WC_Product $product, array $settings ) {
+		list( $format, , $live_type ) = $this->sent_format( $product, $settings, true );
+		return ! $product->is_type( 'variable' ) && ( 'Chinese' === $format || 'Chinese' === $live_type );
+	}
+
+	/**
+	 * The item specifics a template's table shows (3.38.0 fix round 1): the
+	 * ones the item sends. In a build, with Brand and MPN exactly when its
+	 * ItemSpecifics carries them (options_go()); outside one - Re-send to
+	 * eBay, the template's preview - as the product's next push would: an
+	 * Update's rule for a product with a listing (fix round 2: never to a
+	 * live auction), a new listing's otherwise. A product with neither
+	 * filled: 3.37.0's, built as 3.37.0 built it.
+	 *
+	 * @param WC_Product $product  The product.
+	 * @param array      $settings Its settings.
+	 * @return array<string,string>
+	 */
+	private function template_specifics( WC_Product $product, array $settings ) {
+		// A live auction's Update: with the Brand and MPN it was listed with,
+		// as its ItemSpecifics carries them (fix round 4). In a build, as the
+		// build decided; outside one, as its next Update would.
+		$listed = null !== $this->options_specifics
+			? ( $this->options_live ? $this->options_listed : array() )
+			: TCGiant_Sync_Listing_Options::listed( $product->get_id(), (string) $product->get_meta( '_ebay_item_id' ) );
+		if ( $listed && ( null !== $this->options_specifics || $this->revise_is_auction( $product, $settings ) ) ) {
+			$aspects = null !== $this->options_specifics ? $this->options_aspects : null;
+			return TCGiant_Sync_Listing_Options::resent( $this->build_specifics_map( $product, $settings, false, $aspects ), $listed );
+		}
+		if ( ! TCGiant_Sync_Listing_Options::has_specifics( $product ) ) {
+			return $this->build_specifics_map( $product, $settings );
+		}
+		if ( null !== $this->options_specifics ) {
+			return $this->build_specifics_map( $product, $settings, $this->options_specifics, $this->options_aspects );
+		}
+		$aspects = null;
+		$go      = '' === (string) $product->get_meta( '_ebay_item_id' )
+			|| ( ! $this->revise_is_auction( $product, $settings )
+				&& TCGiant_Sync_Listing_Options::specifics_go( true, array_column( $this->specifics_sent( $this->build_specifics_map( $product, $settings, false, $aspects ) ), 1 ) ) );
+		return $this->build_specifics_map( $product, $settings, $go, $aspects );
+	}
+
+	/**
+	 * Said once a push (3.38.0 fix round 1): the item specifics Brand and MPN
+	 * pushed past eBay's thirty, which the item no longer sends - and an
+	 * Update's whole replace takes off the listing.
+	 *
+	 * @param int   $product_id The product.
+	 * @param array $without    The item specifics without the two.
+	 * @param array $with       With them.
+	 * @param bool  $listed     Whether they are the ones a live auction was
+	 *                          listed with, sent again (fix round 4).
+	 */
+	private function say_specifics_cut( $product_id, array $without, array $with, $listed = false ) {
+		$sent = array_column( $this->specifics_sent( $with ), 0 );
+		$cut  = array();
+		foreach ( $this->specifics_sent( $without ) as $pair ) {
+			if ( ! in_array( $pair[0], $sent, true ) && ! TCGiant_Sync_Listing_Options::names_field( 'brand', $pair[0] ) && ! TCGiant_Sync_Listing_Options::names_field( 'mpn', $pair[0] ) ) {
+				$cut[] = $pair[0];
+			}
+		}
+		if ( ! $cut || ! empty( $this->card_said[ 'options-cut:' . $product_id ] ) ) {
+			return;
+		}
+		$this->card_said[ 'options-cut:' . $product_id ] = true;
+		$values = TCGiant_Sync_Listing_Options::values( (int) $product_id );
+		TCGiant_Sync_Logger::warning( sprintf(
+			$listed
+				// Fix round 4: a live auction's, sent again as listed.
+				? '%1$s: WC #%2$d - the Brand and MPN its live auction was listed with go first among its item specifics again, and eBay takes %3$d at most, so these were left out: %4$s.'
+				: ( '' !== $values['brand'] . $values['mpn']
+				? '%1$s: WC #%2$d - its Brand and MPN fields go first among its item specifics, and eBay takes %3$d at most, so these were left out: %4$s.'
+				// Fix round 3: the WooCommerce brand alone.
+				: '%1$s: WC #%2$d - its WooCommerce brand goes first among its item specifics as eBay\'s Brand, and eBay takes %3$d at most, so these were left out: %4$s.' ),
+			$this->build_for,
+			(int) $product_id,
+			self::MAX_SPECIFICS,
+			implode( ', ', $cut )
+		) );
+	}
+
+	/**
+	 * Said once a push (3.38.0 fix round 4, review 4's L-2): a variable
+	 * product whose variations differ by Brand or MPN, where its field, or
+	 * its WooCommerce brand, would otherwise have gone among the item's own
+	 * item specifics. eBay takes it in each variation, and refuses a name in
+	 * both.
+	 *
+	 * @param WC_Product $product The product.
+	 */
+	private function say_axis_held( WC_Product $product ) {
+		$held = TCGiant_Sync_Listing_Options::axis_held( $product );
+		if ( ! $held || ! empty( $this->card_said[ 'options-axis:' . $product->get_id() ] ) ) {
+			return;
+		}
+		$this->card_said[ 'options-axis:' . $product->get_id() ] = true;
+		TCGiant_Sync_Logger::log( TCGiant_Sync_Listing_Options::axis_said( $this->build_for, $product->get_id(), $held ) );
+	}
+
+	/**
+	 * What a build's Brand and MPN come from, for what it says (3.38.0 fix
+	 * round 3): 'fields' when the Brand or MPN field is filled; 'woo' when
+	 * the product's WooCommerce brand alone would fill in eBay's Brand - the
+	 * item specifics without it carry none (built here once a build, and
+	 * kept for the build: options_without); '' for nothing of the shop's to
+	 * add, a Brand its item specifics carry already.
+	 *
+	 * @param WC_Product $product  The product.
+	 * @param array      $settings The build's settings.
+	 * @return string
+	 */
+	private function options_specifics_kind( WC_Product $product, array $settings ) {
+		$values = TCGiant_Sync_Listing_Options::values( $product );
+		if ( '' !== $values['brand'] . $values['mpn'] ) {
+			return 'fields';
+		}
+		if ( '' === TCGiant_Sync_Listing_Options::woo_brand( $product ) ) {
+			return '';
+		}
+		$this->options_without = $this->options_without ?? $this->build_specifics_map( $product, $settings, false, $this->options_aspects );
+		return '' !== TCGiant_Sync_Listing_Options::fills_brand( $this->options_without, $product ) ? 'woo' : '';
+	}
+
+	/**
+	 * Said once a push (3.38.0 fix round 3): a product with several
+	 * WooCommerce brands that are not one line sends none as eBay's Brand,
+	 * where one would have gone - its Brand field empty, its item specifics
+	 * carrying no Brand, and going: a new listing, Verify, or an Update
+	 * with other item specifics that is not a live auction's. Nothing read
+	 * when the setting is off.
+	 *
+	 * @param WC_Product $product       The product.
+	 * @param array      $settings      The build's settings.
+	 * @param bool       $revise        Whether the item goes to a Revise call.
+	 * @param array      $specifics_map The item specifics the build sends.
+	 */
+	private function say_woo_brands( WC_Product $product, array $settings, $revise, array $specifics_map ) {
+		if ( ! TCGiant_Sync_Listing_Options::woo_brand_on() || ! empty( $this->card_said[ 'woo-brands:' . $product->get_id() ] ) || '' !== TCGiant_Sync_Listing_Options::values( $product )['brand'] ) {
+			return;
+		}
+		$read = TCGiant_Sync_Listing_Options::woo_brand_read( $product );
+		if ( ! $read['several'] ) {
+			return;
+		}
+		foreach ( $specifics_map as $name => $value ) {
+			if ( TCGiant_Sync_Listing_Options::names_field( 'brand', (string) $name ) && '' !== trim( (string) $value ) ) {
+				return;
+			}
+		}
+		if ( $revise && ( $this->revise_is_auction( $product, $settings ) || ! TCGiant_Sync_Listing_Options::specifics_go( true, array_column( $this->specifics_sent( $specifics_map ), 1 ) ) ) ) {
+			return;
+		}
+		$this->card_said[ 'woo-brands:' . $product->get_id() ] = true;
+		TCGiant_Sync_Logger::log( TCGiant_Sync_Listing_Options::woo_brands_said( $this->build_for, $product->get_id(), $read['several'] ) );
+	}
+
+	/**
+	 * eBay's answer to an item built by build_item_xml(), for its listing
+	 * options (3.38.0 fix round 1). Taken: a field eBay's answer warns it
+	 * dropped is not recorded as sent (TCGiant_Sync_Listing_Options::
+	 * accepted()). An Update refused while it was taking a recorded field
+	 * off, for that field (10031, 10039): the entry leaves the record, and
+	 * the log says so once (refused_take_off()). Nothing for a product with
+	 * none, and nothing is sent again.
+	 *
+	 * @param int    $product_id The product.
+	 * @param string $item_id    The listing.
+	 * @param mixed  $answer     eBay's answer.
+	 */
+	private function options_answered( $product_id, $item_id, $answer ) {
+		// What the revise left out, now that eBay has answered it - unless
+		// the listing has ended (fix round 1).
+		$pending               = $this->options_pending;
+		$this->options_pending = null;
+		if ( $pending && ! self::is_ended_listing_error( $answer ) ) {
+			$this->say_options_notes( (int) $pending['id'], $pending['notes'] );
+		}
+
+		if ( is_wp_error( $answer ) ) {
+			$said = TCGiant_Sync_Listing_Options::refused_take_off( $product_id, $item_id, $this->options_off, $answer, $this->build_for );
+			if ( '' !== $said ) {
+				TCGiant_Sync_Logger::warning( $said );
+			}
+			return;
+		}
+		list( $this->options_sent, $dropped ) = TCGiant_Sync_Listing_Options::accepted( $this->options_sent, $answer );
+		if ( $dropped ) {
+			TCGiant_Sync_Logger::log( TCGiant_Sync_Listing_Options::dropped_said( $product_id, $item_id, $dropped, $this->build_for ) );
+		}
+	}
+
+	/**
+	 * What a build left out of the listing options, said once a push
+	 * (3.38.0).
+	 *
+	 * @param int      $product_id The product.
+	 * @param string[] $notes      TCGiant_Sync_Listing_Options::plan()'s.
+	 */
+	private function say_options_notes( $product_id, array $notes ) {
+		if ( ! empty( $this->card_said[ 'options:' . $product_id ] ) ) {
+			return;
+		}
+		$this->card_said[ 'options:' . $product_id ] = true;
+		$said = TCGiant_Sync_Listing_Options::notes_said( $product_id, $this->build_for, $notes );
+		if ( '' !== $said ) {
+			TCGiant_Sync_Logger::log( $said );
+		}
 	}
 
 	/**
@@ -6341,17 +7083,22 @@ class TCGiant_Sync_Exporter {
 	 * pre-flight check and then being rejected by eBay for the same field would
 	 * be worse than not checking at all.
 	 *
-	 * @param array $specifics Specifics to send.
-	 * @param array $settings  Resolved export settings.
+	 * @param array               $specifics Specifics to send.
+	 * @param array               $settings  Resolved export settings.
+	 * @param array|WP_Error|null $aspects   The category's aspects as
+	 *                                       already read, or null: read here,
+	 *                                       and given back (3.38.0 fix round 1).
 	 * @return array
 	 */
-	private function canonicalize_specific_names( array $specifics, array $settings ) {
+	private function canonicalize_specific_names( array $specifics, array $settings, &$aspects = null ) {
 		$category_id = $settings['category_id'] ?? '';
 		if ( empty( $category_id ) || empty( $specifics ) ) {
 			return $specifics;
 		}
 
-		$aspects = self::category_aspects( $settings );
+		if ( null === $aspects ) {
+			$aspects = self::category_aspects( $settings );
+		}
 		if ( is_wp_error( $aspects ) || empty( $aspects ) ) {
 			return $specifics;
 		}
@@ -7656,6 +8403,10 @@ class TCGiant_Sync_Exporter {
 		if ( $this->main_photo_refused ) {
 			return $this->main_photo_refused;
 		}
+		// And its listing options (3.38.0).
+		if ( $this->options_refused ) {
+			return $this->options_refused;
+		}
 		$chars = (int) ( $this->last_render['chars'] ?? 0 );
 		if ( $chars <= 500000 || ! empty( $this->last_render['plain'] ) ) {
 			return null;
@@ -7826,7 +8577,7 @@ class TCGiant_Sync_Exporter {
 			'attributes'        => $by_slug,
 			'condition_name'    => $this->condition_name( $settings ),
 			'grading'           => $this->grading_facts( $settings ),
-			'specifics'         => $this->specifics_sent( $this->build_specifics_map( $product, $settings ) ),
+			'specifics'         => $this->specifics_sent( $this->template_specifics( $product, $settings ) ),
 			'variations'        => $product instanceof WC_Product_Variable ? $this->variation_specifics_set( $product ) : array(),
 			'images'            => $this->description_image_urls( $product ),
 		);
@@ -8734,6 +9485,29 @@ class TCGiant_Sync_Exporter {
 		}
 
 		return false === stripos( $error->get_error_message(), 'UUID' );
+	}
+
+	/**
+	 * Whether eBay refused a relist in a way its listing options may have
+	 * caused, so that it may go once more without them (3.38.0 fix round 2,
+	 * relist_ended_listing()): eBay answered and refused it (api_error, and
+	 * never a second sending of one it already took - relist_not_made()),
+	 * the request went once (one sent again after a timeout or a 5xx may
+	 * have been made by eBay - TCGiant_Sync_API::resends()), and not as a
+	 * listing that has ended. Not a refusal this site made itself - the
+	 * day's calls, a staging copy, no token - nor no answer at all: nothing
+	 * about the listing options there.
+	 *
+	 * @param mixed $result  The relist call's answer.
+	 * @param int   $resends TCGiant_Sync_API::resends() from just before it went.
+	 * @return bool
+	 */
+	private static function refused_with_options( $result, $resends ) {
+		return is_wp_error( $result )
+			&& 'api_error' === $result->get_error_code()
+			&& self::relist_not_made( $result )
+			&& TCGiant_Sync_API::instance()->resends() === (int) $resends
+			&& ! self::is_ended_listing_error( $result );
 	}
 
 	/**

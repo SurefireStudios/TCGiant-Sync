@@ -2050,9 +2050,16 @@ class TCGiant_Sync_API {
 	 *                                 the listing had them (3.32.1), as the
 	 *                                 exporter builds it for a push; '' keeps
 	 *                                 eBay's.
+	 * @param string   $options_xml    The product's listing options (3.38.0,
+	 *                                 TCGiant_Sync_Listing_Options::plan()),
+	 *                                 each element on its line; '' keeps
+	 *                                 eBay's.
+	 * @param string[] $deleted        DeletedField values, the options this
+	 *                                 plugin sent and the product emptied
+	 *                                 (3.38.0).
 	 * @return array|WP_Error
 	 */
-	public function relist_fixed_price_item( $item_id, $quantity = null, $variations_xml = '', $start_price = '', $pictures_xml = '' ) {
+	public function relist_fixed_price_item( $item_id, $quantity = null, $variations_xml = '', $start_price = '', $pictures_xml = '', $options_xml = '', array $deleted = array() ) {
 		// Without a quantity eBay relists at the quantity the listing was
 		// first given, whatever sold since, so the shop's own figure is sent
 		// when there is one.
@@ -2073,8 +2080,9 @@ class TCGiant_Sync_API {
 			. ( null !== $quantity ? "\n<Quantity>" . max( 1, (int) $quantity ) . '</Quantity>' : '' )
 			. ( '' !== (string) $start_price ? "\n<StartPrice>" . esc_xml( (string) $start_price ) . '</StartPrice>' : '' )
 			. ( '' !== (string) $variations_xml ? "\n" . $variations_xml : '' )
-			. ( '' !== (string) $pictures_xml ? "\n" . $pictures_xml : '' ) . '
-</Item>';
+			. ( '' !== (string) $pictures_xml ? "\n" . $pictures_xml : '' )
+			. ( '' !== (string) $options_xml ? "\n" . rtrim( (string) $options_xml ) : '' ) . '
+</Item>' . self::deleted_fields_xml( $deleted );
 
 		$result = $this->trading_api_request( 'RelistFixedPriceItem', $xml );
 
@@ -2100,16 +2108,20 @@ class TCGiant_Sync_API {
 	 *                           changed here since the listing had them
 	 *                           (3.32.1). eBay keeps everything it is not
 	 *                           sent.
+	 * @param string   $options_xml The product's listing options (3.38.0),
+	 *                              after them; '' keeps eBay's.
+	 * @param string[] $deleted     DeletedField values (3.38.0).
 	 * @return array|WP_Error
 	 */
-	public function relist_item( $item_id, $quantity = null, $changes = '' ) {
+	public function relist_item( $item_id, $quantity = null, $changes = '', $options_xml = '', array $deleted = array() ) {
 		$xml = '
 <Item>
 <ItemID>' . esc_attr( $item_id ) . '</ItemID>
 <UUID>' . self::generate_ebay_uuid() . '</UUID>'
 			. ( null !== $quantity ? "\n<Quantity>" . max( 1, (int) $quantity ) . '</Quantity>' : '' )
-			. ( '' !== (string) $changes ? "\n" . rtrim( (string) $changes ) : '' ) . '
-</Item>';
+			. ( '' !== (string) $changes ? "\n" . rtrim( (string) $changes ) : '' )
+			. ( '' !== (string) $options_xml ? "\n" . rtrim( (string) $options_xml ) : '' ) . '
+</Item>' . self::deleted_fields_xml( $deleted );
 
 		$result = $this->trading_api_request( 'RelistItem', $xml );
 
@@ -2122,6 +2134,21 @@ class TCGiant_Sync_API {
 		}
 
 		return $result;
+	}
+
+	/**
+	 * DeletedField elements for a relist, after its Item (3.38.0): '' for
+	 * none, as for every relist before 3.38.0.
+	 *
+	 * @param string[] $deleted Field paths, e.g. Item.SubTitle.
+	 * @return string
+	 */
+	private static function deleted_fields_xml( array $deleted ) {
+		$xml = '';
+		foreach ( $deleted as $field ) {
+			$xml .= "\n<DeletedField>" . esc_xml( (string) $field ) . '</DeletedField>';
+		}
+		return $xml;
 	}
 
 	/**

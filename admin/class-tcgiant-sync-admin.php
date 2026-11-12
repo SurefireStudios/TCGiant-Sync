@@ -22,6 +22,12 @@ if ( ! class_exists( 'TCGiant_Sync_Identifiers', false ) ) {
 	require_once dirname( __DIR__ ) . '/includes/class-tcgiant-sync-identifiers.php';
 }
 
+// The listing options on a product's eBay tab: subtitle, condition note,
+// second category, Buy It Now and reserve, Brand and MPN (3.38.0).
+if ( ! class_exists( 'TCGiant_Sync_Listing_Options', false ) ) {
+	require_once dirname( __DIR__ ) . '/includes/class-tcgiant-sync-listing-options.php';
+}
+
 /**
  * TCGiant_Sync_Admin class
  */
@@ -86,6 +92,9 @@ class TCGiant_Sync_Admin {
 			// eBay's "Does not apply" for a product with no identifier (3.30.3,
 			// TCGiant_Sync_Identifiers::SETTING).
 			'export_identifier_unavailable',
+			// A product's WooCommerce brand as eBay's Brand (3.38.0,
+			// TCGiant_Sync_Listing_Options::WOO_BRAND_SETTING).
+			'export_woo_brand',
 		),
 	);
 
@@ -2106,6 +2115,9 @@ class TCGiant_Sync_Admin {
 
 		// And its product identifier (3.30.3).
 		TCGiant_Sync_Identifiers::save_posted( $product_id, $_POST );
+
+		// And its listing options (3.38.0).
+		TCGiant_Sync_Listing_Options::save_posted( $product_id, $_POST );
 
 		// Pre-push validation: check all requirements BEFORE queuing.
 		// This gives the user instant feedback instead of async error discovery.
@@ -4857,6 +4869,12 @@ class TCGiant_Sync_Admin {
 		if ( $product ) {
 			TCGiant_Sync_Identifiers::render_product_section( $product );
 		}
+
+		// == MORE LISTING OPTIONS: subtitle, condition note, second category,
+		// an auction's Buy It Now and reserve, Brand and MPN (3.38.0) ==
+		if ( $product ) {
+			TCGiant_Sync_Listing_Options::render_product_section( $product, (string) ( $global_settings['export_listing_type'] ?? 'FixedPriceItem' ) );
+		}
 		?>
 
 		<?php // == STEP 5: ITEM SPECIFICS ==
@@ -6009,6 +6027,9 @@ class TCGiant_Sync_Admin {
 		// And its product identifier (3.30.3).
 		TCGiant_Sync_Identifiers::save_posted( $product_id, $_POST );
 
+		// And its listing options (3.38.0).
+		TCGiant_Sync_Listing_Options::save_posted( $product_id, $_POST );
+
 		// Settled as a new listing's, which Verify checks (3.28.9): an eBay
 		// Motors category is verified on eBay Motors.
 		$settings = $exporter->settle_motors( $exporter->get_export_settings( $product_id ), true );
@@ -6082,6 +6103,11 @@ class TCGiant_Sync_Admin {
 		// eBay's Warning about the shop category, which otherwise reads as "No
 		// errors" for a listing eBay would put in Other (3.33.0 fix round 1).
 		$warned = TCGiant_Sync_Shop_Categories::verify_warning( $result );
+		// And eBay's Warning that it would drop a listing option - a subtitle
+		// or condition note the category does not take, a second category -
+		// which a push would otherwise only log after the fact (3.38.0 fix
+		// round 2).
+		$warned = trim( $warned . ' ' . TCGiant_Sync_Listing_Options::verify_said( $result ) );
 
 		$msg = '' === $warned ? __( '✅ Listing verified! No errors.', 'tcgiant-sync' ) : '⚠️ ' . $warned;
 		if ( ! empty( $fees ) ) {

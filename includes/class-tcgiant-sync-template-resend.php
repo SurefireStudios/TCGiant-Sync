@@ -821,7 +821,7 @@ class TCGiant_Sync_Template_Resend {
 		if ( TCGiant_Sync_Exporter::checks_aspects( $settings, true ) ) {
 			$cold    = 0;
 			$missing = TCGiant_Sync_API::instance()->cached_only( function () use ( $exporter, $product, $settings ) {
-				return $exporter->find_missing_required_aspects( $product, $settings );
+				return $exporter->find_missing_required_aspects( $product, $settings, true );
 			}, $cold );
 			$missed += (int) $cold;
 			if ( ! empty( $missing ) ) {

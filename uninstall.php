@@ -189,7 +189,9 @@ if ( ! empty( $tcgiant_settings['relay_secret'] ) && function_exists( 'wp_remote
  * Several names here were previously wrong (tcgiant_sync_settings,
  * tcgiant_sync_sync_state), so uninstalling left every real option behind —
  * including tcgiant_sync_ebay_settings, which holds the eBay OAuth access and
- * refresh tokens and the relay signing key.
+ * refresh tokens and the relay signing key. Every setting is a key of that
+ * one option and goes with it: export_woo_brand (3.38.0, a product's
+ * WooCommerce brand as eBay's Brand) among them.
  */
 $tcgiant_options = array(
 	'tcgiant_sync_ebay_settings',      // Settings + OAuth tokens + relay secret.
@@ -387,7 +389,18 @@ $wpdb->query(
 // own eBay prices, _ebay_export_price, and the postage in its website
 // prices, _ebay_baked_shipping. The eBay numbers a photo was put on eBay as
 // (3.30.4, _tcgiant_ebay_number) stay with the photo, as its eBay copy's
-// address does (_tcgiant_eps_url).
+// address does (_tcgiant_eps_url). And, as every _ebay_export_ choice of the
+// shop's does, a product's listing options stay (3.38.0: _ebay_export_subtitle,
+// _ebay_export_condition_note, _ebay_export_second_category and its _name,
+// _ebay_export_buy_it_now, _ebay_export_reserve, _ebay_export_brand,
+// _ebay_export_mpn), with the record of those a push sent to its listing,
+// _ebay_export_options_sent: what a reinstalled plugin may take off eBay
+// again, and the Brand and MPN a live auction's Update sends again;
+// _ebay_export_options_said, which Buy It Now
+// and reserve a fixed-price product was last told were not sent; and
+// _ebay_export_options_relist_refused, the listing options a relist eBay
+// refused carried, which relists then leave out until one changes, as the
+// photos' _ebay_relist_photos_refused stays.
 $wpdb->query(
 	"DELETE FROM {$wpdb->prefix}postmeta
 	 WHERE meta_key IN ( '_ebay_live', '_ebay_price_seen', '_ebay_price_marked', '_ebay_price_basis', '_tcgiant_pushed_photos', '_tcgiant_photos_held', '_tcgiant_photos_released' )"

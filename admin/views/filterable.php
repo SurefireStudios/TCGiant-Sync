@@ -162,6 +162,7 @@ foreach ( $tc_fs['rows'] as $tc_fs_row ) {
 			<?php else : ?>
 				<p class="tc-hint"><?php esc_html_e( 'WooCommerce Brands is not on this site (it comes with WooCommerce 9.6 and later), so Brand can only be an attribute filter here.', 'tcgiant-sync' ); ?></p>
 			<?php endif; ?>
+			<p class="tc-hint"><?php esc_html_e( 'Keep the Brand attribute on your products: an Update sends a product\'s item specifics as a whole, so one without Brand takes eBay\'s Brand off its listing (unless \'WooCommerce Brands as eBay\'s Brand\' is on; a live auction\'s Update still takes it off).', 'tcgiant-sync' ); ?></p>
 
 			<p class="tc-hint"><?php esc_html_e( 'Item specifics used for variations, such as a Size the customer picks, are left as they are. Taking a tick off turns that item specific back into each product\'s own attribute; its global attribute and values stay in Products > Attributes, for you to delete if you want. Take the tick off first: deleting a global attribute that is still ticked takes that item specific off every product that has it, and a push then no longer sends it. A value that differs from one already there only in its capitals ("TOPPS" and "Topps") is kept as eBay has it, as a value of its own, so a filter can list both.', 'tcgiant-sync' ); ?></p>
 
