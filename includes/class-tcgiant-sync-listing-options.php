@@ -1826,8 +1826,7 @@ class TCGiant_Sync_Listing_Options {
 			if ( ! isset( $posted[ $meta ] ) || ! is_string( $posted[ $meta ] ) ) {
 				continue;
 			}
-			$typed = 'condition_note' === $field ? sanitize_textarea_field( wp_unslash( $posted[ $meta ] ) ) : sanitize_text_field( wp_unslash( $posted[ $meta ] ) );
-			$value = self::clean( $field, $typed );
+			$value = self::typed( $field, $posted[ $meta ] );
 			if ( '' === $value ) {
 				delete_post_meta( (int) $product_id, $meta );
 			} else {
@@ -1845,6 +1844,41 @@ class TCGiant_Sync_Listing_Options {
 		if ( array_intersect_key( self::values( (int) $product_id ), self::ITEM_FIELDS ) !== $was ) {
 			delete_post_meta( (int) $product_id, self::RELIST_MEMO );
 		}
+	}
+
+	/**
+	 * A posted field as save_posted() keeps it: sanitised as the tab's field
+	 * is (a condition note keeps its lines), then as it would be sent
+	 * (clean()). '' is an empty field, which save_posted() deletes. The bulk
+	 * edit (3.39.0) asks it before it sets one, so a value eBay could not
+	 * take is never saved as an emptied field.
+	 *
+	 * @param string $field The field.
+	 * @param string $raw   What was posted, still slashed.
+	 * @return string
+	 */
+	public static function typed( $field, $raw ) {
+		$typed = 'condition_note' === $field ? sanitize_textarea_field( wp_unslash( $raw ) ) : sanitize_text_field( wp_unslash( $raw ) );
+		return self::clean( $field, $typed );
+	}
+
+	/**
+	 * Whether a product takes an auction's Buy It Now and reserve: its eBay
+	 * tab shows their rows only then, and the bulk edit (3.39.0) sets them
+	 * only then. Never a variable product. An auction by the format it would
+	 * be pushed as - its own, else the shop's - or by the format its listing
+	 * is recorded as (fix round 1): an imported auction in a fixed-price shop
+	 * is relisted as an auction, with these.
+	 *
+	 * @param WC_Product $product        The product.
+	 * @param string     $default_format The shop's default format (Settings), for a product with none of its own.
+	 * @return bool
+	 */
+	public static function auction_fields_shown( $product, $default_format ) {
+		$product_id = (int) $product->get_id();
+		$own_format = (string) get_post_meta( $product_id, '_ebay_export_listing_type', true );
+		$recorded   = (string) get_post_meta( $product_id, '_ebay_listing_type', true );
+		return ! $product->is_type( 'variable' ) && ( 'Chinese' === ( '' !== $own_format ? $own_format : (string) $default_format ) || 'Chinese' === $recorded );
 	}
 
 	/**
@@ -1873,12 +1907,11 @@ class TCGiant_Sync_Listing_Options {
 		foreach ( self::METAS as $field => $meta ) {
 			$values[ $field ] = (string) get_post_meta( $product_id, $meta, true );
 		}
-		$own_format = (string) get_post_meta( $product_id, '_ebay_export_listing_type', true );
 		// An auction by the format it would be pushed as, or by the format
 		// its listing is recorded as (fix round 1): an imported auction in a
 		// fixed-price shop is relisted as an auction, with these.
 		$recorded   = (string) get_post_meta( $product_id, '_ebay_listing_type', true );
-		$auction    = ! $variable && ( 'Chinese' === ( '' !== $own_format ? $own_format : (string) $default_format ) || 'Chinese' === $recorded );
+		$auction    = self::auction_fields_shown( $product, $default_format );
 		$cat_name   = (string) get_post_meta( $product_id, self::SECOND_CATEGORY_NAME_META, true );
 		$choices    = array();
 		if ( class_exists( 'TCGiant_Sync_Catalog' ) ) {

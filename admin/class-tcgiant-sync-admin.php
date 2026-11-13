@@ -1932,12 +1932,14 @@ class TCGiant_Sync_Admin {
 	 * The box as the eBay tab showed it, posted beside it in $key (3.29.1):
 	 * '1' ticked, '0' not, or null when the post does not say.
 	 *
-	 * @param string $key The posted field.
+	 * @param string     $key    The posted field.
+	 * @param array|null $posted What was posted: $_POST when null (3.39.0).
 	 * @return string|null
 	 */
-	private static function posted_follow_shown( $key ) {
+	private static function posted_follow_shown( $key, $posted = null ) {
 		// phpcs:ignore WordPress.Security.NonceVerification.Missing
-		$shown = isset( $_POST[ $key ] ) ? sanitize_text_field( wp_unslash( $_POST[ $key ] ) ) : '';
+		$posted = is_array( $posted ) ? $posted : $_POST;
+		$shown  = isset( $posted[ $key ] ) ? sanitize_text_field( wp_unslash( $posted[ $key ] ) ) : '';
 
 		return in_array( $shown, array( '0', '1' ), true ) ? $shown : null;
 	}
@@ -3777,21 +3779,36 @@ class TCGiant_Sync_Admin {
 	 * @param int $post_id WooCommerce Product ID.
 	 */
 	public function save_product_export_meta( $post_id ) {
+		// phpcs:ignore WordPress.Security.NonceVerification.Missing -- WooCommerce checked its own nonce before this action.
+		self::save_export_posted( $post_id, $_POST );
+	}
+
+	/**
+	 * The eBay tab's save of a product's own eBay settings, from what was
+	 * posted: the product screen's save (save_product_export_meta(), $_POST),
+	 * and the bulk edit of eBay fields (3.39.0, TCGiant_Sync_Bulk_Edit), which
+	 * posts only the field it changes, in the tab's own names - so a value
+	 * goes through the same lines, cleaning and checks either way, and a field
+	 * not posted is left as it is.
+	 *
+	 * @param int   $post_id WooCommerce Product ID.
+	 * @param array $posted  What was posted, still slashed, by the tab's names.
+	 */
+	public static function save_export_posted( $post_id, array $posted ) {
 		if ( ! current_user_can( 'edit_post', $post_id ) ) {
 			return;
 		}
-		// phpcs:disable WordPress.Security.NonceVerification.Missing
 		// Whose values the listing's pushes send (3.28.8): the box is on the
 		// tab only for a product with a listing.
-		if ( ! empty( $_POST['_ebay_export_follow_defaults_shown'] ) ) {
-			if ( self::save_follow_defaults( $post_id, ! empty( $_POST['_ebay_export_follow_defaults'] ), false, self::posted_follow_shown( '_ebay_export_follow_defaults_was' ) ) ) {
+		if ( ! empty( $posted['_ebay_export_follow_defaults_shown'] ) ) {
+			if ( self::save_follow_defaults( $post_id, ! empty( $posted['_ebay_export_follow_defaults'] ), false, self::posted_follow_shown( '_ebay_export_follow_defaults_was', $posted ) ) ) {
 				TCGiant_Sync_Ebay_Live::forget_notice_count();
 			}
 		}
-		if ( isset( $_POST['_ebay_export_category_id_select'] ) ) {
-			$cat_select = sanitize_text_field( wp_unslash( $_POST['_ebay_export_category_id_select'] ) );
+		if ( isset( $posted['_ebay_export_category_id_select'] ) ) {
+			$cat_select = sanitize_text_field( wp_unslash( $posted['_ebay_export_category_id_select'] ) );
 			if ( 'custom' === $cat_select ) {
-				$cat_val = isset( $_POST['_ebay_export_category_id_custom'] ) ? sanitize_text_field( wp_unslash( $_POST['_ebay_export_category_id_custom'] ) ) : '';
+				$cat_val = isset( $posted['_ebay_export_category_id_custom'] ) ? sanitize_text_field( wp_unslash( $posted['_ebay_export_category_id_custom'] ) ) : '';
 			} else {
 				$cat_val = $cat_select;
 			}
@@ -3802,10 +3819,10 @@ class TCGiant_Sync_Admin {
 			update_post_meta( $post_id, '_ebay_export_category_typed', 'custom' === $cat_select ? $cat_val : '' );
 			// The category's name, never one left from another category
 			// (3.28.9).
-			update_post_meta( $post_id, '_ebay_export_category_name', self::category_name_to_keep( $cat_before[0], $cat_val, $cat_before[1], isset( $_POST['_ebay_export_category_name'] ) ? sanitize_text_field( wp_unslash( $_POST['_ebay_export_category_name'] ) ) : null ) );
+			update_post_meta( $post_id, '_ebay_export_category_name', self::category_name_to_keep( $cat_before[0], $cat_val, $cat_before[1], isset( $posted['_ebay_export_category_name'] ) ? sanitize_text_field( wp_unslash( $posted['_ebay_export_category_name'] ) ) : null ) );
 		}
-		if ( isset( $_POST['_ebay_export_condition_id'] ) ) {
-			update_post_meta( $post_id, '_ebay_export_condition_id', sanitize_text_field( wp_unslash( $_POST['_ebay_export_condition_id'] ) ) );
+		if ( isset( $posted['_ebay_export_condition_id'] ) ) {
+			update_post_meta( $post_id, '_ebay_export_condition_id', sanitize_text_field( wp_unslash( $posted['_ebay_export_condition_id'] ) ) );
 		}
 		// ConditionDescriptor overrides.
 		$descriptor_fields = array(
@@ -3818,64 +3835,63 @@ class TCGiant_Sync_Admin {
 			'_ebay_export_fulfillment_policy',
 		);
 		foreach ( $descriptor_fields as $field ) {
-			if ( isset( $_POST[ $field ] ) ) {
-				update_post_meta( $post_id, $field, sanitize_text_field( wp_unslash( $_POST[ $field ] ) ) );
+			if ( isset( $posted[ $field ] ) ) {
+				update_post_meta( $post_id, $field, sanitize_text_field( wp_unslash( $posted[ $field ] ) ) );
 			}
 		}
 
 		// Item specifics from the eBay Listing tab. Written only when that panel
 		// was on screen with its fields rendered - saving a product whose panel
 		// was never opened must leave what is stored alone, not clear it.
-		if ( ! empty( $_POST['_ebay_export_specifics_present'] ) ) {
-			self::save_entered_specifics( $post_id, $_POST['_ebay_export_specifics'] ?? array() );
+		if ( ! empty( $posted['_ebay_export_specifics_present'] ) ) {
+			self::save_entered_specifics( $post_id, $posted['_ebay_export_specifics'] ?? array() );
 		}
 
 		// Its listing template and eBay-only description, likewise only when
 		// they were on screen.
-		if ( class_exists( 'TCGiant_Sync_Template_Admin' ) && isset( $_POST['_tcgiant_tpl_nonce'] ) && wp_verify_nonce( sanitize_key( wp_unslash( $_POST['_tcgiant_tpl_nonce'] ) ), 'tcgiant_tpl_product' ) ) {
-			TCGiant_Sync_Template_Admin::save_product_fields( $post_id, $_POST );
+		if ( class_exists( 'TCGiant_Sync_Template_Admin' ) && isset( $posted['_tcgiant_tpl_nonce'] ) && wp_verify_nonce( sanitize_key( wp_unslash( $posted['_tcgiant_tpl_nonce'] ) ), 'tcgiant_tpl_product' ) ) {
+			TCGiant_Sync_Template_Admin::save_product_fields( $post_id, $posted );
 		}
 
 		// Handle grader ID and grade value saving based on item type.
-		if ( isset( $_POST['_ebay_export_item_type'] ) ) {
-			$item_type = sanitize_text_field( wp_unslash( $_POST['_ebay_export_item_type'] ) );
+		if ( isset( $posted['_ebay_export_item_type'] ) ) {
+			$item_type = sanitize_text_field( wp_unslash( $posted['_ebay_export_item_type'] ) );
 			if ( 'tcg' === $item_type ) {
-				if ( isset( $_POST['_ebay_export_grader_id_tcg'] ) ) {
-					update_post_meta( $post_id, '_ebay_export_grader_id', sanitize_text_field( wp_unslash( $_POST['_ebay_export_grader_id_tcg'] ) ) );
+				if ( isset( $posted['_ebay_export_grader_id_tcg'] ) ) {
+					update_post_meta( $post_id, '_ebay_export_grader_id', sanitize_text_field( wp_unslash( $posted['_ebay_export_grader_id_tcg'] ) ) );
 				}
-				if ( isset( $_POST['_ebay_export_grade_value_tcg'] ) ) {
-					update_post_meta( $post_id, '_ebay_export_grade_value', sanitize_text_field( wp_unslash( $_POST['_ebay_export_grade_value_tcg'] ) ) );
+				if ( isset( $posted['_ebay_export_grade_value_tcg'] ) ) {
+					update_post_meta( $post_id, '_ebay_export_grade_value', sanitize_text_field( wp_unslash( $posted['_ebay_export_grade_value_tcg'] ) ) );
 				}
 			} elseif ( 'coins' === $item_type ) {
-				if ( isset( $_POST['_ebay_export_grader_id_coins'] ) ) {
-					update_post_meta( $post_id, '_ebay_export_grader_id', sanitize_text_field( wp_unslash( $_POST['_ebay_export_grader_id_coins'] ) ) );
+				if ( isset( $posted['_ebay_export_grader_id_coins'] ) ) {
+					update_post_meta( $post_id, '_ebay_export_grader_id', sanitize_text_field( wp_unslash( $posted['_ebay_export_grader_id_coins'] ) ) );
 				}
-				if ( isset( $_POST['_ebay_export_grade_value_coins'] ) ) {
-					update_post_meta( $post_id, '_ebay_export_grade_value', sanitize_text_field( wp_unslash( $_POST['_ebay_export_grade_value_coins'] ) ) );
+				if ( isset( $posted['_ebay_export_grade_value_coins'] ) ) {
+					update_post_meta( $post_id, '_ebay_export_grade_value', sanitize_text_field( wp_unslash( $posted['_ebay_export_grade_value_coins'] ) ) );
 				}
 			}
 		} else {
 			// Fallback if item type wasn't posted but grader fields were.
-			if ( isset( $_POST['_ebay_export_grader_id'] ) ) {
-				update_post_meta( $post_id, '_ebay_export_grader_id', sanitize_text_field( wp_unslash( $_POST['_ebay_export_grader_id'] ) ) );
+			if ( isset( $posted['_ebay_export_grader_id'] ) ) {
+				update_post_meta( $post_id, '_ebay_export_grader_id', sanitize_text_field( wp_unslash( $posted['_ebay_export_grader_id'] ) ) );
 			}
-			if ( isset( $_POST['_ebay_export_grade_value'] ) ) {
-				update_post_meta( $post_id, '_ebay_export_grade_value', sanitize_text_field( wp_unslash( $_POST['_ebay_export_grade_value'] ) ) );
+			if ( isset( $posted['_ebay_export_grade_value'] ) ) {
+				update_post_meta( $post_id, '_ebay_export_grade_value', sanitize_text_field( wp_unslash( $posted['_ebay_export_grade_value'] ) ) );
 			}
 		}
 
 		// Handle ungraded condition saving based on item type.
-		if ( isset( $_POST['_ebay_export_item_type'] ) ) {
-			$item_type = sanitize_text_field( wp_unslash( $_POST['_ebay_export_item_type'] ) );
-			if ( 'tcg' === $item_type && isset( $_POST['_ebay_export_ungraded_condition_tcg'] ) ) {
-				update_post_meta( $post_id, '_ebay_export_ungraded_condition', sanitize_text_field( wp_unslash( $_POST['_ebay_export_ungraded_condition_tcg'] ) ) );
-			} elseif ( 'coins' === $item_type && isset( $_POST['_ebay_export_ungraded_condition_coins'] ) ) {
-				update_post_meta( $post_id, '_ebay_export_ungraded_condition', sanitize_text_field( wp_unslash( $_POST['_ebay_export_ungraded_condition_coins'] ) ) );
+		if ( isset( $posted['_ebay_export_item_type'] ) ) {
+			$item_type = sanitize_text_field( wp_unslash( $posted['_ebay_export_item_type'] ) );
+			if ( 'tcg' === $item_type && isset( $posted['_ebay_export_ungraded_condition_tcg'] ) ) {
+				update_post_meta( $post_id, '_ebay_export_ungraded_condition', sanitize_text_field( wp_unslash( $posted['_ebay_export_ungraded_condition_tcg'] ) ) );
+			} elseif ( 'coins' === $item_type && isset( $posted['_ebay_export_ungraded_condition_coins'] ) ) {
+				update_post_meta( $post_id, '_ebay_export_ungraded_condition', sanitize_text_field( wp_unslash( $posted['_ebay_export_ungraded_condition_coins'] ) ) );
 			}
-		} elseif ( isset( $_POST['_ebay_export_ungraded_condition'] ) ) {
-			update_post_meta( $post_id, '_ebay_export_ungraded_condition', sanitize_text_field( wp_unslash( $_POST['_ebay_export_ungraded_condition'] ) ) );
+		} elseif ( isset( $posted['_ebay_export_ungraded_condition'] ) ) {
+			update_post_meta( $post_id, '_ebay_export_ungraded_condition', sanitize_text_field( wp_unslash( $posted['_ebay_export_ungraded_condition'] ) ) );
 		}
-		// phpcs:enable WordPress.Security.NonceVerification.Missing
 	}
 
 	/**
@@ -4749,14 +4765,9 @@ class TCGiant_Sync_Admin {
 				// The Push and Verify buttons never stopped posting this field, so with
 				// nothing rendering it they were posting an empty string and wiping
 				// whatever was stored. Rendering it fixes that by itself.
-				$legacy_conditions = array( '' => __( '-- use the store default --', 'tcgiant-sync' ) );
-				foreach ( TCGiant_Sync_Catalog::CONDITIONS as $tc_cid => $tc_clabel ) {
-					// eBay only accepts these four on books, film, music and games.
-					if ( in_array( (string) $tc_cid, TCGiant_Sync_Catalog::CONDITIONS_MEDIA_ONLY, true ) ) {
-						continue;
-					}
-					$legacy_conditions[ $tc_cid ] = $tc_clabel;
-				}
+				// The list without eBay's media-only four (TCGiant_Sync_Catalog::
+				// plain_conditions(), which the bulk edit offers too, 3.39.0).
+				$legacy_conditions = array( '' => __( '-- use the store default --', 'tcgiant-sync' ) ) + TCGiant_Sync_Catalog::plain_conditions();
 				?>
 				<div id="tc-legacy-condition-wrapper" style="<?php echo 'other' === $item_type ? '' : 'display:none;'; ?>">
 					<?php

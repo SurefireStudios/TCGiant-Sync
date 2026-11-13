@@ -377,6 +377,13 @@ $ended_page = listings_page( array( 'listing_status' => 'Ended' ) );
 check( 'the Ended view still offers Relist', false !== strpos( $ended_page, 'value="bulk_relist"' ), true );
 check( '  and says which ended unsold', false !== strpos( $ended_page, 'Ended unsold' ), true );
 check( 'All offers Relist', false !== strpos( listings_page( array() ), 'value="bulk_relist"' ), true );
+// 3.39.0 (fix round 1, open question 1): a link to the products list,
+// filtered by the plugin's eBay status to these listings' products, where
+// WooCommerce's Bulk Edit carries the eBay fields.
+$bulk_link = function ( $page ) {
+	return preg_match( '#<a href="https://shop\.example/wp-admin/edit\.php\?post_type=product&(?:amp;)?tc_ebay_status=([a-z_]+)" class="page-title-action tc-bulk-edit-link" title="([^"]*)">Edit eBay fields in the products list</a>#', $page, $m ) ? array( $m[1], false !== strpos( $m[2], 'Screen Options sets how many a page shows' ) ) : null;
+};
+check( 'Edit eBay fields in the products list: All and Active open the products listed on eBay; Ended and Sold, those whose listing ended; it says a bulk edit changes one page\'s ticked rows', array( $bulk_link( listings_page( array() ) ), $bulk_link( listings_page( array( 'listing_status' => 'Active' ) ) ), $bulk_link( $ended_page ), $bulk_link( $sold_page ) ), array( array( 'listed', true ), array( 'listed', true ), array( 'ended', true ), array( 'ended', true ) ) );
 
 echo "\nSTOCK REVIEW: SOLD OUT AND STILL HERE, ONLY WHAT THE BUTTON WOULD MOVE\n" . str_repeat( '=', 140 ) . "\n";
 

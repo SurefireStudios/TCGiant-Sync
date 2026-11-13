@@ -17,6 +17,20 @@
  *    ended an untracked product's listing, and block checkout queued two
  *    pushes for one sale.
  *
+ * 3.39.0 (fix round 1): a stock write that leaves WooCommerce's stock as it
+ * was - WooCommerce's own Bulk Edit writes back every selected product's
+ * stock - queues no push, unless a website sale never reached eBay or Stock
+ * Review lists the product. The played wc_update_product_stock() and the
+ * data store's save fire WooCommerce's before-set-stock actions, as
+ * WooCommerce 4.9+ does, and the meta cache can be played stale.
+ *
+ * 3.39.0 (fix round 3): WooCommerce hooks its deprecated-hook shim on
+ * woocommerce_product_get_stock_quantity on every site, so the rule met a
+ * hooked stock filter on a real site and never left a write alone. The hooks
+ * are now kept as WordPress keeps them, in $wp_filter, one WP_Hook each, and
+ * WooCommerce's own shim (tests/woocommerce, 11.2.2) is hooked from the
+ * start, as on a site.
+ *
  * Loaded for real: TCGiant_Sync_Environment, TCGiant_Sync_API (down to the
  * HTTP call, which is captured here and answered in eBay's own envelope),
  * TCGiant_Sync_Sites, TCGiant_Sync_Runtime, TCGiant_Sync_Variations,
@@ -52,7 +66,6 @@ $POSTS      = array();
 $META       = array();
 $OPTIONS    = array();
 $TRANSIENTS = array();
-$HOOKS      = array();
 $DID        = array();
 $LOG        = array();
 $QUEUE      = array();
@@ -112,29 +125,117 @@ function wp_load_alloptions() { return array( 'home' => 'https://coinshop.exampl
 function wp_get_environment_type() { return 'production'; }
 function wp_parse_url( $url, $component = -1 ) { return parse_url( $url, $component ); }
 
-// Hooks, by priority, as WordPress runs them.
+// Hooks, by priority, as WordPress runs them. Since 3.39.0 fix round 3 they
+// are kept as WordPress keeps them: in $wp_filter, one WordPress WP_Hook a
+// hook (tests/wordpress, WordPress 7.1.3's own class), whose callbacks the
+// plugin's stock rule reads as it does on a site. has_filter(),
+// current_filter() and _wp_filter_build_unique_id() are WordPress's own,
+// copied. add_action(), do_action() and apply_filters() are played: they run
+// a hook's callbacks in WP_Hook's order, as WordPress does, and keep the
+// hook's name in $wp_current_filter while it runs, as WordPress does (and
+// leave it there when a callback throws, as WordPress does).
+// apply_filters_ref_array() is apply_filters() with its arguments in a list.
+// remove_action() and remove_filter() are still not defined, so the plugin's
+// code that takes a callback off a hook meets a WordPress without them, as
+// before; the harness takes its own callbacks off with
+// harness_remove_filter().
+require __DIR__ . '/wordpress/class-wp-hook.php';
+$wp_filter         = array();
+$wp_current_filter = array();
+function _wp_filter_build_unique_id( $hook_name, $callback, $priority ): ?string {
+	if ( is_string( $callback ) ) {
+		return $callback;
+	}
+
+	if ( is_object( $callback ) ) {
+		/*
+		 * The prefix keeps the ID from being the decimal representation of an integer. PHP casts such a
+		 * string to int when it is used as an array key, which would change the type of the keys in
+		 * WP_Hook::$callbacks and break consumers that pass them to string functions.
+		 */
+		return 'spl_object_id:' . spl_object_id( $callback );
+	}
+
+	if ( ! isset( $callback[1] ) || ! is_string( $callback[1] ) ) {
+		return null;
+	}
+
+	if ( is_object( $callback[0] ) ) {
+		// Object class calling.
+		return ( (string) spl_object_id( $callback[0] ) ) . $callback[1];
+	} elseif ( is_string( $callback[0] ) ) {
+		// Static calling.
+		return $callback[0] . '::' . $callback[1];
+	}
+
+	return null;
+}
 function add_action( $hook, $callback, $priority = 10, $accepted_args = 1 ) {
-	$GLOBALS['HOOKS'][ $hook ][] = array( $callback, $accepted_args, $priority, count( $GLOBALS['HOOKS'][ $hook ] ?? array() ) );
+	global $wp_filter;
+	if ( ! isset( $wp_filter[ $hook ] ) ) {
+		$wp_filter[ $hook ] = new WP_Hook();
+	}
+	$wp_filter[ $hook ]->add_filter( $hook, $callback, $priority, $accepted_args );
 	return true;
 }
 function add_filter( $hook, $callback, $priority = 10, $accepted_args = 1 ) { return add_action( $hook, $callback, $priority, $accepted_args ); }
+function has_filter( $hook_name, $callback = false, $priority = false ) {
+	global $wp_filter;
+
+	if ( ! isset( $wp_filter[ $hook_name ] ) ) {
+		return false;
+	}
+
+	return $wp_filter[ $hook_name ]->has_filter( $hook_name, $callback, $priority );
+}
+function current_filter() {
+	global $wp_current_filter;
+
+	return end( $wp_current_filter );
+}
+/** A harness's own callback taken off, as WordPress's remove_filter() does. */
+function harness_remove_filter( $hook, $callback, $priority = 10 ) {
+	global $wp_filter;
+	$r = false;
+	if ( isset( $wp_filter[ $hook ] ) ) {
+		$r = $wp_filter[ $hook ]->remove_filter( $hook, $callback, $priority );
+		if ( ! $wp_filter[ $hook ]->callbacks ) {
+			unset( $wp_filter[ $hook ] );
+		}
+	}
+	return $r;
+}
+/** A hook's callbacks in the order WordPress runs them: (callback, accepted args, priority). */
 function harness_listeners( $hook ) {
-	$list = $GLOBALS['HOOKS'][ $hook ] ?? array();
-	usort( $list, function ( $a, $b ) { return $a[2] === $b[2] ? $a[3] - $b[3] : ( $a[2] < $b[2] ? -1 : 1 ); } );
+	$list = array();
+	if ( isset( $GLOBALS['wp_filter'][ $hook ] ) && $GLOBALS['wp_filter'][ $hook ] instanceof WP_Hook ) {
+		foreach ( $GLOBALS['wp_filter'][ $hook ]->callbacks as $priority => $callbacks ) {
+			foreach ( is_array( $callbacks ) ? $callbacks : array() as $c ) {
+				if ( is_array( $c ) && isset( $c['function'] ) ) {
+					$list[] = array( $c['function'], (int) ( $c['accepted_args'] ?? 1 ), $priority );
+				}
+			}
+		}
+	}
 	return $list;
 }
 function do_action( $hook, ...$args ) {
 	$GLOBALS['DID'][ $hook ] = ( $GLOBALS['DID'][ $hook ] ?? 0 ) + 1;
+	$GLOBALS['wp_current_filter'][] = $hook;
 	foreach ( harness_listeners( $hook ) as $l ) {
 		call_user_func_array( $l[0], array_slice( $args, 0, $l[1] ) );
 	}
+	array_pop( $GLOBALS['wp_current_filter'] );
 }
 function apply_filters( $hook, $value, ...$args ) {
+	$GLOBALS['wp_current_filter'][] = $hook;
 	foreach ( harness_listeners( $hook ) as $l ) {
 		$value = call_user_func_array( $l[0], array_slice( array_merge( array( $value ), $args ), 0, $l[1] ) );
 	}
+	array_pop( $GLOBALS['wp_current_filter'] );
 	return $value;
 }
+function apply_filters_ref_array( $hook, $args ) { return apply_filters( $hook, ...$args ); }
 function did_action( $hook ) { return $GLOBALS['DID'][ $hook ] ?? 0; }
 
 function get_option( $name, $default = false ) { return array_key_exists( $name, $GLOBALS['OPTIONS'] ) ? $GLOBALS['OPTIONS'][ $name ] : $default; }
@@ -156,8 +257,14 @@ function get_transient( $name ) { return $GLOBALS['TRANSIENTS'][ $name ] ?? fals
 function set_transient( $name, $value, $ttl = 0 ) { $GLOBALS['TRANSIENTS'][ $name ] = $value; return true; }
 function delete_transient( $name ) { unset( $GLOBALS['TRANSIENTS'][ $name ] ); return true; }
 
+// WordPress's meta cache: what this request read before. $META_CACHE, when a
+// test primes it, holds a product's meta as an earlier read in the request
+// left it - a sale landing since in another request is not in it - and
+// WooCommerce's own stock write empties it for that product
+// (wp_cache_delete( $id, 'post_meta' )), as wc_update_product_stock() below.
+$META_CACHE = array();
 function get_post_meta( $id, $key = '', $single = false ) {
-	$v = $GLOBALS['META'][ (int) $id ][ $key ] ?? null;
+	$v = array_key_exists( $key, $GLOBALS['META_CACHE'][ (int) $id ] ?? array() ) ? $GLOBALS['META_CACHE'][ (int) $id ][ $key ] : ( $GLOBALS['META'][ (int) $id ][ $key ] ?? null );
 	if ( null === $v ) {
 		return $single ? '' : array();
 	}
@@ -214,6 +321,11 @@ class Harness_Wpdb {
 		return $out;
 	}
 	public function get_var( $query ) {
+		// A product's _stock read from the database itself (3.39.0): the
+		// stock as stored, never the meta cache.
+		if ( preg_match( "/^SELECT meta_value FROM wp_postmeta WHERE post_id = (\\d+) AND meta_key = '_stock' LIMIT 1$/", trim( $query ), $sm ) ) {
+			return isset( $GLOBALS['META'][ (int) $sm[1] ]['_stock'] ) ? (string) $GLOBALS['META'][ (int) $sm[1] ]['_stock'] : null;
+		}
 		$ids = $this->matching( $query );
 		// The stock checks' joins (3.28.0 fix round 3): read by name.
 		if ( preg_match( "/^SELECT option_value FROM wp_options WHERE option_name = '(tcgiant_sync_settle_joined_[^']+)' LIMIT 1$/", trim( $query ), $jm ) ) {
@@ -257,6 +369,23 @@ class Harness_Wpdb {
 $wpdb = new Harness_Wpdb();
 
 // --- WooCommerce ----------------------------------------------------------------
+
+// WooCommerce's deprecated-hook shim, hooked as on every WooCommerce site
+// (3.39.0 fix round 3). WooCommerce's own two classes, copied from 11.2.2
+// into tests/woocommerce, and one WC_Deprecated_Filter_Hooks constructed, as
+// WooCommerce constructs it when it loads: its constructor hooks
+// maybe_handle_deprecated_hook() at -1000 on every new hook in its map,
+// woocommerce_product_get_stock_quantity among them, and that runs the old
+// hook, woocommerce_get_stock_quantity, only when something is hooked on it.
+// Its map has no old name for woocommerce_product_variation_get_stock_quantity
+// or woocommerce_update_product_stock_query. WooCommerce's
+// wc_deprecated_hook(), which it calls when an old hook runs, is played: the
+// old hook that ran is recorded in $WC_DEPRECATED_RAN, not printed.
+$WC_DEPRECATED_RAN = array();
+function wc_deprecated_hook( $hook, $version, $replacement = null, $message = null ) { $GLOBALS['WC_DEPRECATED_RAN'][] = array( $hook, $version, $replacement ); }
+require __DIR__ . '/woocommerce/abstract-wc-deprecated-hooks.php';
+require __DIR__ . '/woocommerce/class-wc-deprecated-filter-hooks.php';
+$WC_DEPRECATED_FILTERS = new WC_Deprecated_Filter_Hooks();
 
 /**
  * A product: its fields are its meta. A variation keeps stock of its own
@@ -303,12 +432,17 @@ class WC_Product {
 		return 'yes' === ( $GLOBALS['META'][ $this->get_stock_managed_by_id() ]['_manage_stock'] ?? 'no' )
 			|| ( $this->get_stock_managed_by_id() === $this->id && 'yes' === $this->f( '_manage_stock', 'no' ) );
 	}
-	public function get_stock_quantity() {
+	// As WooCommerce's getters (3.39.0 fix round 2): in the view context the
+	// figure goes through woocommerce_product_get_stock_quantity, or
+	// woocommerce_product_variation_get_stock_quantity for a variation, where
+	// another plugin may add to it; 'edit' is the figure as stored.
+	public function get_stock_quantity( $context = 'view' ) {
 		if ( ! $this->managing_stock() ) {
 			return null;
 		}
 		$holder = $this->get_stock_managed_by_id();
-		return $holder === $this->id ? (int) $this->f( '_stock', 0 ) : (int) ( $GLOBALS['META'][ $holder ]['_stock'] ?? 0 );
+		$qty    = $holder === $this->id ? (int) $this->f( '_stock', 0 ) : (int) ( $GLOBALS['META'][ $holder ]['_stock'] ?? 0 );
+		return 'view' === $context ? apply_filters( ( 'variation' === $this->get_type() ? 'woocommerce_product_variation_get_' : 'woocommerce_product_get_' ) . 'stock_quantity', $qty, $this ) : $qty;
 	}
 	public function get_stock_status() { return (string) $this->f( '_stock_status', 'instock' ); }
 	public function is_in_stock() { return 'outofstock' !== $this->get_stock_status(); }
@@ -350,6 +484,11 @@ class WC_Product {
 			$GLOBALS['POSTS'][ $this->id ] = array( 'type' => 'product_variation', 'kind' => 'variation', 'status' => 'publish', 'parent' => 0 );
 		}
 		$stock_changed = array_key_exists( '_stock', $this->changes ) && (string) $this->changes['_stock'] !== (string) ( $GLOBALS['META'][ $this->id ]['_stock'] ?? '' );
+		// WooCommerce's data store, as it writes a changed stock: its
+		// before-set-stock action first (WooCommerce 4.9+), then the write.
+		if ( ! empty( $GLOBALS['SAVE_FIRES'] ) && array_key_exists( '_stock', $this->changes ) ) {
+			do_action( 'variation' === $this->get_type() ? 'woocommerce_variation_before_set_stock' : 'woocommerce_product_before_set_stock', $this );
+		}
 		foreach ( $this->changes as $key => $value ) {
 			if ( '__parent' === $key ) {
 				$GLOBALS['POSTS'][ $this->id ]['parent'] = $value;
@@ -435,11 +574,14 @@ function wc_get_product_id_by_sku( $sku ) {
 }
 /**
  * WooCommerce's own, in its order (wc_update_product_stock() and its data
- * store's update_product_stock(), WooCommerce 11.2.1): writes the stock of
- * whichever product holds it and fires woocommerce_updated_product_stock with
- * its id; saves the product (woocommerce_update_product, where other plugins'
- * save hooks run); then fires the stock action for that product - the one the
- * plugin listens to in order to push a change to eBay.
+ * store's update_product_stock(), WooCommerce 11.2.1): fires its
+ * before-set-stock action (WooCommerce 4.9+) with the product holding the
+ * stock - the object it was handed, when that holds it, as a bulk edit hands
+ * the product it loaded; writes the stock of whichever product holds it,
+ * empties the meta cache of it, and fires woocommerce_updated_product_stock
+ * with its id; saves the product (woocommerce_update_product, where other
+ * plugins' save hooks run); then fires the stock action for that product -
+ * the one the plugin listens to in order to push a change to eBay.
  */
 function wc_update_product_stock( $product, $quantity = null, $operation = 'set' ) {
 	$p      = is_object( $product ) ? $product : wc_get_product( $product );
@@ -447,16 +589,22 @@ function wc_update_product_stock( $product, $quantity = null, $operation = 'set'
 	if ( ! $p || ! isset( $GLOBALS['POSTS'][ $holder ] ) || null === $quantity ) {
 		return null;
 	}
+	$with_stock = (int) $holder === (int) $p->get_id() ? $p : wc_get_product( $holder );
+	do_action( $with_stock->is_type( 'variation' ) ? 'woocommerce_variation_before_set_stock' : 'woocommerce_product_before_set_stock', $with_stock );
 	$GLOBALS['WRITES'][] = array( $holder, $operation, (int) $quantity, TCGiant_Sync_Inventory::is_push_suppressed() );
 	$m   = &$GLOBALS['META'][ $holder ];
 	$now = (int) ( $m['_stock'] ?? 0 );
 	// Another plugin holding this one's quantity: the write does not take,
-	// and the action fires all the same.
+	// and the action fires all the same. A set is stored as WooCommerce's
+	// SQL stores it (fix round 2): number_format( $new_stock,
+	// WC_ROUNDING_PRECISION, '.', '' ), so 4 is "4.000000"; an increase or
+	// decrease is the database's own sum.
 	if ( ! in_array( (int) $holder, $GLOBALS['HELD_STOCK'] ?? array(), true ) ) {
-		$m['_stock'] = 'set' === $operation ? (int) $quantity : ( 'decrease' === $operation ? $now - (int) $quantity : $now + (int) $quantity );
+		$m['_stock'] = 'set' === $operation ? number_format( (float) (int) $quantity, 6, '.', '' ) : ( 'decrease' === $operation ? $now - (int) $quantity : $now + (int) $quantity );
 	}
 	$m['_stock_status'] = $m['_stock'] > 0 ? 'instock' : 'outofstock';
 	unset( $m );
+	unset( $GLOBALS['META_CACHE'][ (int) $holder ] );
 	if ( empty( $GLOBALS['NO_SQL_ACTION'] ) ) {
 		do_action( 'woocommerce_updated_product_stock', (int) $holder );
 	}
@@ -740,7 +888,7 @@ $API = TCGiant_Sync_API::instance();
 // --- driving it ----------------------------------------------------------------
 
 function fresh_shop( array $settings = array() ) {
-	foreach ( array( 'POSTS', 'META', 'TRANSIENTS', 'DID', 'LOG', 'QUEUE', 'WIRE', 'WIRE_URLS', 'WRITES', 'ORDERS', 'ORDER_SAVES', 'ON_CALL' ) as $g ) {
+	foreach ( array( 'POSTS', 'META', 'META_CACHE', 'TRANSIENTS', 'DID', 'LOG', 'QUEUE', 'WIRE', 'WIRE_URLS', 'WRITES', 'ORDERS', 'ORDER_SAVES', 'ON_CALL' ) as $g ) {
 		$GLOBALS[ $g ] = array();
 	}
 	$GLOBALS['KILL_ON'] = null;
@@ -926,7 +1074,7 @@ add_filter( 'woocommerce_can_reduce_order_stock', function ( $yes ) { return $GL
 echo "\nTHE HOOKS\n" . str_repeat( '=', 132 ) . "\n";
 
 $registered = function ( $hook, $method ) {
-	foreach ( $GLOBALS['HOOKS'][ $hook ] ?? array() as $l ) {
+	foreach ( harness_listeners( $hook ) as $l ) {
 		if ( is_array( $l[0] ) && $method === $l[0][1] ) {
 			return array( $l[1], $l[2] );
 		}
@@ -2829,8 +2977,10 @@ check( 'R2-L2 eBay\'s QuantitySold fell below the record: said as a warning, and
 
 echo "\nR2-M4: STOCK SHARED ON THE PARENT, WITH NO RECORD YET\n" . str_repeat( '=', 132 ) . "\n";
 
-// L9: the parent's 6 set on eBay (nothing to send: the record is made), then
-// eBay sells 1 S and 2 M, then a website sale.
+// L9: the parent's stock set to 6, the 6 eBay already shows (nothing to send:
+// the record is made), then eBay sells 1 S and 2 M, then a website sale. The
+// set is a real change, from 7 (3.39.0 fix round 1): a write that leaves the
+// stock as it was queues no push, so it makes no record either - below.
 $tee = function ( $s_sold, $m_sold, $s_av = 6, $m_av = 6 ) { return variation_listing( '164000001640', array( ev( 'TE-S', $s_av + $s_sold, $s_sold, array( 'size' => 'S' ) ), ev( 'TE-M', $m_av + $m_sold, $m_sold, array( 'size' => 'M' ) ) ) ); };
 $tee_shop = function () {
 	fresh_shop();
@@ -2839,10 +2989,11 @@ $tee_shop = function () {
 	variation( 1642, 1640, 'TE-M', null, array( 'size' => 'M' ) );
 };
 $tee_shop();
+$META[1640]['_stock'] = 7;
 ebay_has( '164000001640', $tee( 0, 0 ) );
 hand_edit( 1640, 6 );
 run_queue();
-check( 'R2-M4 the shared 6 already on eBay: nothing sent, and each variation\'s record made', array( calls(), meta( 1641, '_ebay_sold_seen' )['sold'] ?? null, meta( 1642, '_ebay_sold_seen' )['sold'] ?? null ), array( array( 'GetItem' ), 0, 0 ) );
+check( 'R2-M4 the shared stock set from 7 to the 6 already on eBay: nothing sent, and each variation\'s record made', array( calls(), meta( 1641, '_ebay_sold_seen' )['sold'] ?? null, meta( 1642, '_ebay_sold_seen' )['sold'] ?? null ), array( array( 'GetItem' ), 0, 0 ) );
 next_request();
 $WIRE = array();
 ebay_has( '164000001640', $tee( 1, 2, 5, 4 ), $tee( 1, 2, 2, 2 ) );
@@ -2850,6 +3001,13 @@ website_order( 1668, array( 1641 => 1 ) );
 run_queue();
 check( '  L9 eBay sells 1 S and 2 M, then the website 1: the shared stock 2, and each variation sent 2', array( stock( 1640 ), statuses( sent( 'ReviseInventoryStatus' ) ) ), array( 2, array( 'TE-S' => 2, 'TE-M' => 2 ) ) );
 check( '  L9: the sale\'s push recorded each variation\'s eBay sales on it', array( meta( 1641, '_ebay_sold_seen' )['sold'] ?? null, meta( 1642, '_ebay_sold_seen' )['sold'] ?? null ), array( 1, 2 ) );
+// The shared 6 written again as 6 (a bulk edit's write): no push, no call,
+// so no record - the sale's push then looks at eBay against the 6 before it.
+$tee_shop();
+ebay_has( '164000001640', $tee( 0, 0 ) );
+hand_edit( 1640, 6 );
+run_queue();
+check( '  the shared 6 written again as 6 (3.39.0): nothing queued, no call, no record made', array( count( pushes() ), calls(), meta( 1641, '_ebay_sold_seen' ), meta( 1642, '_ebay_sold_seen' ) ), array( 0, array(), null, null ) );
 // No record at all: each variation against the stock before the sale.
 $tee_shop();
 ebay_has( '164000001640', $tee( 1, 2, 5, 4 ), $tee( 1, 2, 2, 2 ) );
@@ -4602,5 +4760,495 @@ $RF4_THROW_ON = '';
 $RF4_PEEK     = null;
 $QUEUE        = array();
 $TRANSIENTS   = array();
+
+echo "\n3.39.0 FIX ROUND 1: A STOCK WRITE THAT LEAVES WOOCOMMERCE'S STOCK AS IT WAS QUEUES NO PUSH\n" . str_repeat( '=', 132 ) . "\n";
+
+// WooCommerce's Bulk Edit (WC_Admin_Post_Types::bulk_edit_save()), Stock at
+// No change, for a product that manages stock: the figure it loaded, written
+// back with wc_update_product_stock( $product, $product->get_stock_quantity(),
+// 'set', true ). It fires the before-set-stock action, then the set-stock one.
+function bulk_edit_write( $product ) {
+	$p = is_object( $product ) ? $product : wc_get_product( $product );
+	wc_update_product_stock( $p, $p->get_stock_quantity(), 'set' );
+}
+/** A new request: the last one's line of unchanged writes written first, as its end would. */
+function fresh_request( array $settings = array() ) {
+	TCGiant_Sync_Inventory::log_unchanged_stock_writes();
+	fresh_shop( $settings );
+}
+/** The request's end: the log's line of unchanged writes, if any. */
+function request_end() {
+	do_action( 'shutdown' );
+	return array_values( array_map( function ( $l ) { return $l[1]; }, array_filter( $GLOBALS['LOG'], function ( $l ) { return false !== strpos( $l[1], 'left WooCommerce\'s stock as it was' ); } ) ) );
+}
+// Fix round 2 (review 2's M-1): the line names what sends the stock - a
+// change of it, or an Update - and what the weekly check does: it logs.
+$unchanged_line = function ( $n, $named ) {
+	return sprintf( 'Real-time stock sync: %s left WooCommerce\'s stock as it was (WC %s), so no eBay update was queued for them. If eBay shows a different quantity, change the stock or Update the listing to send it; the weekly stock check logs listings that differ.', 1 === $n ? '1 stock save of a product on eBay' : $n . ' stock saves of products on eBay', $named );
+};
+
+check( 'the record is made at WooCommerce\'s before-set-stock actions, product and variation', array( $registered( 'woocommerce_product_before_set_stock', 'note_stock_before' ), $registered( 'woocommerce_variation_before_set_stock', 'note_stock_before' ) ), array( array( 1, 10 ), array( 1, 10 ) ) );
+
+// 1. The review's probe: a no-change write of a linked product.
+fresh_request();
+product( 3901, 4, '390100003901' );
+ebay_has( '390100003901', listing( '390100003901', 4, 0 ) );
+bulk_edit_write( 3901 );
+check( 'a bulk edit\'s write of the same 4: no push queued, no pending mark, nothing said of a change', array( count( pushes() ), meta( 3901, '_ebay_push_pending' ), logged( 'stock changed to' ), $DID['woocommerce_product_before_set_stock'] ?? 0 ), array( 0, null, false, 1 ) );
+run_queue( true );
+check( '  no eBay call', calls(), array() );
+check( '  the request\'s one log line, naming the product', request_end(), array( $unchanged_line( 1, '#3901' ) ) );
+check( '  said once: a second end of the request writes nothing more', request_end(), array( $unchanged_line( 1, '#3901' ) ) );
+
+// 2. 300 linked products in one bulk edit.
+fresh_request();
+for ( $i = 0; $i < 300; $i++ ) {
+	product( 4000 + $i, 2, (string) ( 140000000000 + $i ) );
+	bulk_edit_write( 4000 + $i );
+}
+run_queue( true, 1000 );
+check( '300 linked products, Stock at No change: no push, no eBay call', array( count( pushes() ), count( calls() ), count_logged( 'queuing eBay update' ) ), array( 0, 0, 0 ) );
+check( '  one log line for the request, five named and the rest counted', request_end(), array( $unchanged_line( 300, '#4000, #4001, #4002, #4003, #4004 and 295 more' ) ) );
+
+// 3. A real change, as the product screen, REST, CSV, quick edit or a bulk
+// edit that sets the stock write it.
+fresh_request();
+product( 3903, 4, '390300003903' );
+wc_update_product_stock( 3903, 3, 'set' );
+check( 'a real change, 4 to 3: queued as before', push_args(), array( array( 3903, 'edit', null ) ) );
+run_queue();
+check( '  sent: one ReviseInventoryStatus of 3, no read first', array( calls(), qty_sent( sent( 'ReviseInventoryStatus' ) ) ), array( array( 'ReviseInventoryStatus' ), 3 ) );
+check( '  and no line of unchanged writes', request_end(), array() );
+fresh_request();
+product( 3913, 6, '391300003913' );
+wc_update_product_stock( wc_get_product( 3913 ), 2, 'increase' );
+wc_update_product_stock( wc_get_product( 3913 ), 1, 'decrease' );
+check( '  a bulk edit raising it by 2, then one lowering it by 1: queued as before (one push, which reads the stock when it runs)', array( count( pushes() ), stock( 3913 ) ), array( 1, 7 ) );
+// The product's own save, through WooCommerce's data store (the product
+// screen, REST, quick edit): its before-set-stock action, then the change.
+$SAVE_FIRES = true;
+fresh_request();
+product( 3923, 5, '392300003923' );
+$p3923 = wc_get_product( 3923 );
+$p3923->set_stock_quantity( 4 );
+$p3923->save();
+check( '  a product\'s own save changing 5 to 4: queued', push_args(), array( array( 3923, 'edit', null ) ) );
+$SAVE_FIRES = false;
+
+// 4. A website sale that never reached eBay: its push carries it.
+fresh_request();
+product( 3904, 4, '390400003904' );
+$META[3904]['_ebay_push_pending'] = array( 'unsent' => time() + DAY_IN_SECONDS );
+$META[3904]['_ebay_unsent_qty']   = array( 'sale-x' => 1 );
+bulk_edit_write( 3904 );
+check( 'the same 4, but a website sale never reached eBay: pushed, as it carries that sale', array( count( pushes() ), push_args()[0][1] ?? null ), array( 1, 'edit' ) );
+check( '  no line of unchanged writes', request_end(), array() );
+fresh_request();
+product( 3914, 4, '391400003914' );
+$META[3914]['_ebay_push_pending'] = array( 'unsent' => time() - 60 );
+bulk_edit_write( 3914 );
+check( '  an unsent mark long lapsed: not waiting, so not pushed', count( pushes() ), 0 );
+
+// 5. Stock Review lists a push eBay never took.
+fresh_request();
+product( 3905, 4, '390500003905' );
+product( 3915, 4, '391500003915' );
+$OPTIONS['tcgiant_sync_push_failures'] = array( array( 'time' => time(), 'product_id' => 3905, 'item_id' => '390500003905', 'sku' => '', 'reason' => 'edit', 'qty' => 0, 'order' => 0, 'stock' => 4, 'code' => '518', 'message' => 'Call usage limit' ) );
+bulk_edit_write( 3905 );
+bulk_edit_write( 3915 );
+check( 'the same 4, listed in Stock Review as not sent: pushed; another product beside it, not listed: not', push_args(), array( array( 3905, 'edit', null ) ) );
+
+// 6. A website sale: its order push, as before.
+fresh_request();
+product( 3906, 4, '390600003906' );
+ebay_has( '390600003906', listing( '390600003906', 4, 0 ), listing( '390600003906', 4, 0 ) );
+website_order( 3916, array( 3906 => 1 ) );
+check( 'a website sale: its order push queued, and nothing else', push_args(), array( array( 3906, 'order', 1 ) ) );
+run_queue();
+check( '  eBay told 3, as before', array( calls(), qty_sent( sent( 'ReviseInventoryStatus' ) ) ), array( array( 'GetItem', 'ReviseInventoryStatus' ), 3 ) );
+
+// 7. A no-change write, then a real change, in one request.
+fresh_request();
+product( 3907, 4, '390700003907' );
+bulk_edit_write( 3907 );
+wc_update_product_stock( 3907, 5, 'set' );
+check( 'the same 4, then 5 in the same request: the change queued', push_args(), array( array( 3907, 'edit', null ) ) );
+check( '  the line counts the first write alone', request_end(), array( $unchanged_line( 1, '#3907' ) ) );
+
+// 8. WooCommerce's race: a sale lands in another request between the bulk
+// edit's load and its write, which puts the old figure back. The product the
+// bulk edit holds, and this request's meta cache, still say 5; the database
+// says 4. Before 4, after 5: queued, as before.
+fresh_request();
+product( 3908, 5, '390800003908' );
+$p3908                = wc_get_product( 3908 );
+$p3908->snap          = $META[3908];
+$META_CACHE[3908]     = $META[3908];
+$META[3908]['_stock'] = 4;
+check( 'the race: the bulk edit\'s product and the meta cache say 5, the database 4', array( $p3908->get_stock_quantity(), (int) get_post_meta( 3908, '_stock', true ), stock( 3908 ) ), array( 5, 5, 4 ) );
+bulk_edit_write( $p3908 );
+check( '  its write of 5: queued, as before', array( push_args(), stock( 3908 ) ), array( array( array( 3908, 'edit', null ) ), 5 ) );
+run_queue();
+check( '  eBay sent 5, as before', array( calls(), qty_sent( sent( 'ReviseInventoryStatus' ) ) ), array( array( 'ReviseInventoryStatus' ), 5 ) );
+
+// 9. Variations.
+fresh_request();
+variable( 3950, '395000003950' );
+variation( 3951, 3950, 'V-R', 3, array( 'Colour' => 'Red' ), array( '_ebay_variation_sku' => 'V-R' ) );
+wc_update_product_stock( 3951, 3, 'set' );
+check( 'a variation keeping its own 3, written as 3: no push (woocommerce_variation_before_set_stock)', array( count( pushes() ), $DID['woocommerce_variation_before_set_stock'] ?? 0, $DID['woocommerce_variation_set_stock'] ?? 0 ), array( 0, 1, 1 ) );
+check( '  the request\'s line names it', request_end(), array( $unchanged_line( 1, '#3951' ) ) );
+wc_update_product_stock( 3951, 2, 'set' );
+check( '  then 3 to 2: queued for the variation', push_args(), array( array( 3951, 'edit', null ) ) );
+fresh_request();
+variable( 3950, '395000003950' );
+variation( 3951, 3950, 'V-R', 3, array( 'Colour' => 'Red' ), array( '_ebay_variation_sku' => 'V-R', '_ebay_push_pending' => array( 'unsent' => time() + DAY_IN_SECONDS ) ) );
+wc_update_product_stock( 3951, 3, 'set' );
+check( '  a variation with a sale that never reached eBay, written as 3: pushed', push_args(), array( array( 3951, 'edit', null ) ) );
+fresh_request();
+variable( 3955, '395500003955', array( '_manage_stock' => 'yes', '_stock' => 6 ) );
+variation( 3956, 3955, 'V-S', null, array( 'size' => 'S' ) );
+wc_update_product_stock( 3956, 6, 'set' );
+check( '  a variation whose stock its parent keeps, the shared 6 written as 6: judged as the parent, no push', array( count( pushes() ), $DID['woocommerce_product_before_set_stock'] ?? 0 ), array( 0, 1 ) );
+
+// 10. An auction, and a product reaching 0.
+fresh_request();
+product( 3909, 1, '390900003909', array( '_ebay_listing_type' => 'Chinese', '_ebay_listing_type_item' => '390900003909' ) );
+bulk_edit_write( 3909 );
+check( 'an auction with 1, written as 1: no push, no call', array( count( pushes() ), calls() ), array( 0, array() ) );
+fresh_request();
+product( 3910, 1, '391000003910' );
+ebay_has( '391000003910', listing( '391000003910', 1, 0 ) );
+wc_update_product_stock( 3910, 0, 'set' );
+run_queue();
+check( 'a fixed-price product set from 1 to 0: ended, as before', array( push_args(), calls() ), array( array(), array( 'EndItem' ) ) );
+fresh_request();
+product( 3911, 0, '391100003911' );
+ebay_has( '391100003911', listing( '391100003911', 2, 0 ) );
+bulk_edit_write( 3911 );
+run_queue();
+check( '  one already at 0, written as 0: nothing queued (the weekly check and Stock Review find eBay\'s 2)', array( count( pushes() ), calls() ), array( 0, array() ) );
+
+// 11. The record is for one write, and always taken off.
+fresh_request();
+product( 3970, 4, '397000003970' );
+bulk_edit_write( 3970 );
+do_action( 'woocommerce_product_set_stock', wc_get_product( 3970 ) );
+check( 'a write left as it was, then another plugin firing the set-stock action itself (no before action): no record, so pushed as before', push_args(), array( array( 3970, 'edit', null ) ) );
+fresh_request();
+product( 3971, 4, '397100003971' );
+TCGiant_Sync_Inventory::mark_ebay_origin( 3971 );
+wc_update_product_stock( 3971, 4, 'set' );
+delete_transient( 'tcgiant_stock_from_ebay_3971' );
+do_action( 'woocommerce_product_set_stock', wc_get_product( 3971 ) );
+check( '  eBay\'s own write, then the set-stock action alone: the record went with the first, so pushed', push_args(), array( array( 3971, 'edit', null ) ) );
+check( '  eBay\'s own write is not counted as left alone', request_end(), array() );
+fresh_request();
+product( 3972, 3, '397200003972' );
+unset( $META[3972]['_stock'] );
+wc_update_product_stock( 3972, 0, 'set' );
+check( '  no stock row before the write (stock kept from now on), set to 0: pushed', push_args(), array( array( 3972, 'edit', null ) ) );
+fresh_request();
+product( 3973, 4, '397300003973' );
+do_action( 'woocommerce_product_set_stock', wc_get_product( 3973 ) );
+check( '  the set-stock action with no before action at all, the stock unchanged: pushed, as before', push_args(), array( array( 3973, 'edit', null ) ) );
+
+// 12. Counted only for a write that would have been sent.
+fresh_request();
+product( 3980, 4 );
+bulk_edit_write( 3980 );
+check( 'a product not on eBay, written as 4: nothing queued, nothing said', array( count( pushes() ), request_end() ), array( 0, array() ) );
+fresh_request( array( 'push_stock_to_ebay' => '0' ) );
+product( 3981, 4, '398100003981' );
+bulk_edit_write( 3981 );
+check( '  a shop that does not send stock to eBay: nothing queued, nothing said', array( count( pushes() ), request_end() ), array( 0, array() ) );
+fresh_request();
+product( 3982, 4, '398200003982' );
+TCGiant_Sync_Inventory::begin_ebay_origin();
+try {
+	bulk_edit_write( 3982 );
+} finally {
+	TCGiant_Sync_Inventory::end_ebay_origin();
+}
+check( '  a write of eBay\'s own figures: nothing queued, nothing said', array( count( pushes() ), request_end() ), array( 0, array() ) );
+
+echo "\n3.39.0 FIX ROUND 2: LIKE WITH LIKE, OTHER PLUGINS' STOCK FILTERS, AND FOUR PARTS OF THE RULE PINNED\n" . str_repeat( '=', 132 ) . "\n";
+
+// Review 2's L-3, R02: WooCommerce stores a set as its SQL writes it,
+// number_format( $new_stock, WC_ROUNDING_PRECISION, '.', '' ) - the played
+// wc_update_product_stock() now does too - so the record reads "4.000000"
+// where the product says 4: compared as numbers, not as text.
+fresh_request();
+product( 3990, 5, '399000003990' );
+wc_update_product_stock( 3990, 4, 'set' );
+check( 'R02: a set stored as WooCommerce stores it, "4.000000"; the change 5 to 4 queued', array( $META[3990]['_stock'], push_args() ), array( '4.000000', array( array( 3990, 'edit', null ) ) ) );
+run_queue();
+bulk_edit_write( 3990 );
+check( '  then a bulk edit\'s write of the same 4, the database holding "4.000000": left as it was, no push', array( count( pushes() ), request_end() ), array( 0, array( $unchanged_line( 1, '#3990' ) ) ) );
+
+// R03: a record left by a before action with no set action (a save that
+// wrote nothing) is replaced by the next before action, never kept.
+$SAVE_FIRES = true;
+fresh_request();
+product( 3991, 5, '399100003991' );
+$p3991                = wc_get_product( 3991 );
+$p3991->snap          = $META[3991];
+$META[3991]['_stock'] = 4; // another request's sale since the object was loaded
+$p3991->set_stock_quantity( 4 );
+$p3991->save(); // its before-set-stock action records 4; nothing changed, so no set-stock action
+$SAVE_FIRES = false;
+check( 'R03: a save that wrote nothing: the before action fired, the set-stock action did not', array( $DID['woocommerce_product_before_set_stock'] ?? 0, $DID['woocommerce_product_set_stock'] ?? 0, count( pushes() ) ), array( 1, 0, 0 ) );
+$META[3991]['_stock'] = 5; // a restock in another request, sent from there
+wc_update_product_stock( 3991, 4, 'set' ); // this request then writes its stale 4
+check( '  a restock elsewhere to 5, then this request writes 4: the fresh before action read 5, not the 4 left over, so pushed', array( push_args(), stock( 3991 ) ), array( array( array( 3991, 'edit', null ) ), 4 ) );
+
+// R05: the variation handler takes its record off before its eBay-origin
+// return, as the product handler does (case 11).
+fresh_request();
+variable( 3992, '399200003992' );
+variation( 3993, 3992, 'V-O', 4, array( 'Colour' => 'Blue' ), array( '_ebay_variation_sku' => 'V-O' ) );
+TCGiant_Sync_Inventory::mark_ebay_origin( 3993 );
+wc_update_product_stock( 3993, 4, 'set' );
+delete_transient( 'tcgiant_stock_from_ebay_3993' );
+do_action( 'woocommerce_variation_set_stock', wc_get_product( 3993 ) );
+check( 'R05: a variation - eBay\'s own write, then the set-stock action alone: the record went with the first, so pushed', push_args(), array( array( 3993, 'edit', null ) ) );
+check( '  eBay\'s own write of the variation is not counted as left alone', request_end(), array() );
+
+// R01: Stock Review's row for a variation keeping its own stock carries the
+// variation's ID (the push's holder), not the parent the listing is linked to.
+fresh_request();
+variable( 3994, '399400003994' );
+variation( 3995, 3994, 'V-P', 3, array( 'Colour' => 'Red' ), array( '_ebay_variation_sku' => 'V-P' ) );
+variation( 3996, 3994, 'V-Q', 3, array( 'Colour' => 'Green' ), array( '_ebay_variation_sku' => 'V-Q' ) );
+$OPTIONS['tcgiant_sync_push_failures'] = array( array( 'time' => time(), 'product_id' => 3995, 'item_id' => '399400003994', 'sku' => 'V-P', 'reason' => 'edit', 'qty' => 0, 'order' => 0, 'stock' => 3, 'code' => '518', 'message' => 'Call usage limit' ) );
+wc_update_product_stock( 3995, 3, 'set' );
+wc_update_product_stock( 3996, 3, 'set' );
+check( 'R01: a variation keeping its own 3, listed in Stock Review by its own ID, written as 3: pushed; its sister, not listed: not', push_args(), array( array( 3995, 'edit', null ) ) );
+
+// Review 2's L-2: other plugins' stock filters. TCGiant Sync hooks none of
+// WooCommerce's three. Fix round 3: as on every WooCommerce site, the one
+// callback on them here is WooCommerce's deprecated-hook shim, on the first;
+// whatever else is hooked on one is another plugin's. Each case takes its
+// own callback off again (harness_remove_filter()), never the shim.
+$stock_filter_src = 0;
+foreach ( array_merge( array( $ROOT . '/tcgiant-sync.php' ), glob( $ROOT . '/includes/*.php' ), glob( $ROOT . '/admin/*.php' ), glob( $ROOT . '/admin/views/*.php' ) ) as $f ) {
+	$stock_filter_src += preg_match_all( '/woocommerce_product_get_stock_quantity|woocommerce_product_variation_get_stock_quantity|woocommerce_update_product_stock_query/', (string) file_get_contents( $f ) );
+}
+/** What is hooked on a hook, in the order WordPress runs it: "priority: Class::method", or "priority: Closure". */
+$hooked = function ( $hook ) {
+	return array_map( function ( $l ) {
+		return $l[2] . ': ' . ( is_array( $l[0] ) ? ( is_object( $l[0][0] ) ? get_class( $l[0][0] ) : (string) $l[0][0] ) . '::' . $l[0][1] : ( $l[0] instanceof Closure ? 'Closure' : (string) $l[0] ) );
+	}, harness_listeners( $hook ) );
+};
+$shim_hooked = array( '-1000: WC_Deprecated_Filter_Hooks::maybe_handle_deprecated_hook' );
+check( 'the plugin hooks none of WooCommerce\'s stock filters, and names them in its source only in STOCK_FILTERS; here, as on a site, only WooCommerce\'s deprecated-hook shim is hooked, on the first', array( TCGiant_Sync_Inventory::STOCK_FILTERS, array_map( $hooked, TCGiant_Sync_Inventory::STOCK_FILTERS ), $stock_filter_src ), array( array( 'woocommerce_product_get_stock_quantity', 'woocommerce_product_variation_get_stock_quantity', 'woocommerce_update_product_stock_query' ), array( $shim_hooked, array(), array() ), 3 ) );
+// A stock-location plugin: _stock holds location A; the stock a product
+// reports is every location's, through WooCommerce's filter.
+$LOCATION_B = array();
+$add_b      = function ( $qty, $product ) { return null === $qty ? null : $qty + ( $GLOBALS['LOCATION_B'][ $product->get_id() ] ?? 0 ); };
+
+// E1: location A written 5 to 4 while B holds 1, so the stock the product
+// reports after (4 + 1) is the 5 the database held before.
+fresh_request();
+product( 3997, 5, '399700003997' );
+$LOCATION_B[3997] = 1;
+add_filter( 'woocommerce_product_get_stock_quantity', $add_b, 10, 2 );
+check( 'E1: a stock-location plugin\'s filter beside WooCommerce\'s shim: A 5 and B 1, the product reports 6, the stored figure is 5', array( wc_get_product( 3997 )->get_stock_quantity(), wc_get_product( 3997 )->get_stock_quantity( 'edit' ), $hooked( 'woocommerce_product_get_stock_quantity' ) ), array( 6, 5, array( $shim_hooked[0], '10: Closure' ) ) );
+wc_update_product_stock( 3997, 4, 'set' );
+check( '  A written 5 to 4 (reported 5, the database\'s 5 before): pushed, as before', array( push_args(), request_end() ), array( array( array( 3997, 'edit', null ) ), array() ) );
+harness_remove_filter( 'woocommerce_product_get_stock_quantity', $add_b, 10 );
+// E1 by a product class of its own, no filter but WooCommerce's shim hooked:
+// it adds B in the view context only, as WooCommerce's getters do;
+// WooCommerce hands the one object to both actions. Only the stored figure
+// ('edit') shows the change.
+fresh_request();
+product( 3998, 5, '399800003998' );
+$p3998 = new class( 3998 ) extends WC_Product_Simple {
+	public function get_stock_quantity( $context = 'view' ) {
+		$own = parent::get_stock_quantity( 'edit' );
+		return 'view' === $context && null !== $own ? $own + 1 : $own;
+	}
+};
+do_action( 'woocommerce_product_before_set_stock', $p3998 );
+$META[3998]['_stock'] = '4.000000';
+do_action( 'woocommerce_product_set_stock', $p3998 );
+check( '  E1 by a product class adding B itself, only WooCommerce\'s shim hooked: A 5 to 4, reported 5 after - compared as stored, so pushed', array( push_args(), $hooked( 'woocommerce_product_get_stock_quantity' ), $p3998->get_stock_quantity() ), array( array( array( 3998, 'edit', null ) ), $shim_hooked, 5 ) );
+
+// E2: location B 1 to 2, then A written as it is: _stock is unchanged, but
+// the stock the product reports went 6 to 7. The filter hooked, it is sent.
+fresh_request();
+product( 3999, 5, '399900003999' );
+$LOCATION_B[3999] = 1;
+add_filter( 'woocommerce_product_get_stock_quantity', $add_b, 10, 2 );
+$LOCATION_B[3999] = 2;
+wc_update_product_stock( 3999, 5, 'set' );
+check( 'E2: B 1 to 2, then A written as it is, 5: the product now reports 7, so pushed, as before', array( push_args(), wc_get_product( 3999 )->get_stock_quantity(), request_end() ), array( array( array( 3999, 'edit', null ) ), 7, array() ) );
+harness_remove_filter( 'woocommerce_product_get_stock_quantity', $add_b, 10 );
+
+// Each of the three hooked by another plugin's filter: a write that looks
+// unchanged is sent, as before.
+fresh_request();
+product( 3985, 4, '398500003985' );
+$same_qty = function ( $q ) { return $q; };
+add_filter( 'woocommerce_product_get_stock_quantity', $same_qty );
+bulk_edit_write( 3985 );
+check( 'woocommerce_product_get_stock_quantity hooked, by a filter that changes nothing: a bulk edit\'s write of the same 4 pushed', array( push_args(), request_end() ), array( array( array( 3985, 'edit', null ) ), array() ) );
+harness_remove_filter( 'woocommerce_product_get_stock_quantity', $same_qty );
+fresh_request();
+variable( 3986, '398600003986' );
+variation( 3987, 3986, 'V-H', 3, array( 'Colour' => 'Black' ), array( '_ebay_variation_sku' => 'V-H' ) );
+add_filter( 'woocommerce_product_variation_get_stock_quantity', $same_qty );
+wc_update_product_stock( 3987, 3, 'set' );
+check( '  woocommerce_product_variation_get_stock_quantity hooked: a variation\'s 3 written as 3 pushed', push_args(), array( array( 3987, 'edit', null ) ) );
+harness_remove_filter( 'woocommerce_product_variation_get_stock_quantity', $same_qty );
+// A plugin holding a product's stock back through WooCommerce's write
+// query: the write does not take, and the object holds the figure asked.
+fresh_request();
+product( 3988, 4, '398800003988' );
+$HELD_STOCK = array( 3988 );
+$hold_query = function ( $sql ) { return ''; };
+add_filter( 'woocommerce_update_product_stock_query', $hold_query );
+bulk_edit_write( 3988 );
+check( '  woocommerce_update_product_stock_query hooked (a plugin holding the stock): the same 4 pushed', array( push_args(), stock( 3988 ) ), array( array( array( 3988, 'edit', null ) ), 4 ) );
+harness_remove_filter( 'woocommerce_update_product_stock_query', $hold_query );
+$HELD_STOCK = array();
+fresh_request();
+product( 3984, 4, '398400003984' );
+bulk_edit_write( 3984 );
+check( '  and with only WooCommerce\'s shim hooked again: the same 4 left as it was', array( count( pushes() ), request_end(), array_map( $hooked, TCGiant_Sync_Inventory::STOCK_FILTERS ) ), array( 0, array( $unchanged_line( 1, '#3984' ) ), array( $shim_hooked, array(), array() ) ) );
+
+// D2, a known limit (by design): another plugin writes _stock itself, with
+// no WooCommerce action, then announces the figure through
+// wc_update_product_stock(). The before action reads the figure already
+// written, so the write is judged unchanged and eBay keeps the old one.
+fresh_request();
+product( 3983, 4, '398300003983' );
+$META[3983]['_stock'] = 3;
+wc_update_product_stock( 3983, 3, 'set' );
+check( 'D2 (known limit): _stock written 4 to 3 directly, then wc_update_product_stock( 3 ): judged unchanged, not pushed', array( count( pushes() ), stock( 3983 ), request_end() ), array( 0, 3, array( $unchanged_line( 1, '#3983' ) ) ) );
+
+echo "\n3.39.0 FIX ROUND 3: WOOCOMMERCE'S DEPRECATED-HOOK SHIM IS NOT A FILTER; WHAT IT FORWARDS TO IS\n" . str_repeat( '=', 132 ) . "\n";
+
+// WooCommerce hooks its deprecated-hook shim on every site (11.2.2's
+// WC_Deprecated_Filter_Hooks, tests/woocommerce), so 3.39.0 as previewed met
+// a hooked woocommerce_product_get_stock_quantity on every real site and
+// never left a write alone. Every case above ran with it hooked.
+check( 'WooCommerce\'s shim: hooked at -1000 on woocommerce_product_get_stock_quantity, forwarding to the old woocommerce_get_stock_quantity; its map has no old name for the other two', array( has_filter( 'woocommerce_product_get_stock_quantity', array( $WC_DEPRECATED_FILTERS, 'maybe_handle_deprecated_hook' ) ), $WC_DEPRECATED_FILTERS->get_old_hooks( 'woocommerce_product_get_stock_quantity' ), $WC_DEPRECATED_FILTERS->get_old_hooks( 'woocommerce_product_variation_get_stock_quantity' ), $WC_DEPRECATED_FILTERS->get_old_hooks( 'woocommerce_update_product_stock_query' ) ), array( -1000, array( 'woocommerce_get_stock_quantity' ), array(), array() ) );
+
+// The live failure (3.39.0's live test, WooCommerce 11.2.2): a bulk edit
+// with every field at No change, of linked simple products managing stock
+// at 1, each stored by WooCommerce as "1.000000", WooCommerce's shim hooked
+// and nothing else. The preview queued and sent a push for each.
+fresh_request();
+foreach ( array( 3960, 3961, 3962 ) as $live_id ) {
+	product( $live_id, 1, (string) ( 396000000000 + $live_id ) );
+	$META[ $live_id ]['_stock'] = '1.000000';
+	ebay_has( (string) ( 396000000000 + $live_id ), listing( (string) ( 396000000000 + $live_id ), 1, 0 ) );
+}
+foreach ( array( 3960, 3961, 3962 ) as $live_id ) {
+	bulk_edit_write( $live_id );
+}
+check( 'THE LIVE FAILURE: a bulk edit at No change of three linked products managing stock at 1 ("1.000000"), only WooCommerce\'s shim hooked: left alone - no push, no pending mark, nothing said of a change', array( count( pushes() ), meta( 3960, '_ebay_push_pending' ), meta( 3962, '_ebay_push_pending' ), logged( 'stock changed to' ), $META[3961]['_stock'], array_map( $hooked, TCGiant_Sync_Inventory::STOCK_FILTERS ) ), array( 0, null, null, false, '1.000000', array( $shim_hooked, array(), array() ) ) );
+run_queue( true );
+check( '  no eBay call, and the request\'s one log line naming the three', array( calls(), request_end() ), array( array(), array( $unchanged_line( 3, '#3960, #3961, #3962' ) ) ) );
+
+// A variation keeping its own stock, written as it is, the shim hooked.
+fresh_request();
+variable( 3963, '396300003963' );
+variation( 3964, 3963, 'V-W', 2, array( 'Colour' => 'White' ), array( '_ebay_variation_sku' => 'V-W' ) );
+$META[3964]['_stock'] = '2.000000';
+wc_update_product_stock( 3964, 2, 'set' );
+check( 'a variation keeping its own 2, written as 2, WooCommerce\'s shim hooked: left alone', array( count( pushes() ), request_end() ), array( 0, array( $unchanged_line( 1, '#3964' ) ) ) );
+
+// What the shim forwards to counts: another plugin on the old name, which
+// the shim runs in the stock's view context.
+fresh_request();
+product( 3965, 4, '396500003965' );
+$old_stock_filter = function ( $q ) { return $q; };
+add_filter( 'woocommerce_get_stock_quantity', $old_stock_filter );
+$WC_DEPRECATED_RAN = array();
+bulk_edit_write( 3965 );
+check( 'another plugin on the old woocommerce_get_stock_quantity, run by the shim: the same 4 pushed, as before', array( push_args(), request_end(), $WC_DEPRECATED_RAN[0] ?? null ), array( array( array( 3965, 'edit', null ) ), array(), array( 'woocommerce_get_stock_quantity', '3.0.0', 'woocommerce_product_get_stock_quantity' ) ) );
+harness_remove_filter( 'woocommerce_get_stock_quantity', $old_stock_filter );
+
+// Another plugin's filter beside the shim, on the new name.
+fresh_request();
+product( 3966, 4, '396600003966' );
+add_filter( 'woocommerce_product_get_stock_quantity', $same_qty, 20 );
+bulk_edit_write( 3966 );
+check( 'another plugin\'s filter on woocommerce_product_get_stock_quantity beside the shim, changing nothing: the same 4 pushed', array( push_args(), $hooked( 'woocommerce_product_get_stock_quantity' ) ), array( array( array( 3966, 'edit', null ) ), array( $shim_hooked[0], '20: Closure' ) ) );
+harness_remove_filter( 'woocommerce_product_get_stock_quantity', $same_qty, 20 );
+
+// Another plugin on an old name the shim's map gives for another hook: the
+// old woocommerce_get_price is woocommerce_product_get_price's, not the
+// stock's.
+fresh_request();
+product( 3967, 4, '396700003967' );
+$old_price_filter = function ( $price ) { return $price; };
+add_filter( 'woocommerce_get_price', $old_price_filter );
+bulk_edit_write( 3967 );
+check( 'another plugin on the old woocommerce_get_price (the shim\'s old name for woocommerce_product_get_price): the same 4 left alone', array( count( pushes() ), request_end(), $WC_DEPRECATED_FILTERS->get_old_hooks( 'woocommerce_product_get_price' ) ), array( 0, array( $unchanged_line( 1, '#3967' ) ), array( 'woocommerce_get_price' ) ) );
+harness_remove_filter( 'woocommerce_get_price', $old_price_filter );
+
+// Fail open: wherever WordPress's hooks are not as expected, the write is
+// sent. Each case puts the hooks back as they were.
+// 1. has_filter() says the first is hooked, and $wp_filter holds no WP_Hook
+// for it.
+fresh_request();
+product( 3968, 4, '396800003968' );
+$kept_hook = $wp_filter['woocommerce_product_get_stock_quantity'];
+$wp_filter['woocommerce_product_get_stock_quantity'] = new class() {
+	public $callbacks = array();
+	public function has_filter() { return true; }
+};
+bulk_edit_write( 3968 );
+$hooked_then = has_filter( 'woocommerce_product_get_stock_quantity' );
+$wp_filter['woocommerce_product_get_stock_quantity'] = $kept_hook;
+check( 'fail open: has_filter() says woocommerce_product_get_stock_quantity is hooked, $wp_filter holds no WP_Hook for it: the same 4 pushed', array( push_args(), $hooked_then ), array( array( array( 3968, 'edit', null ) ), true ) );
+// 2. $wp_filter not an array.
+fresh_request();
+product( 3969, 4, '396900003969' );
+$wp_filter = new ArrayObject( $wp_filter );
+bulk_edit_write( 3969 );
+$wp_filter = $wp_filter->getArrayCopy();
+check( '  $wp_filter not an array: pushed', push_args(), array( array( 3969, 'edit', null ) ) );
+// 3. A hook's callbacks not an array (an ArrayObject, holding only
+// WooCommerce's shim, which has no old name for this hook); a priority's
+// callbacks not a list.
+fresh_request();
+product( 3970, 4, '397000003970' );
+$wp_filter['woocommerce_update_product_stock_query']            = new WP_Hook();
+$wp_filter['woocommerce_update_product_stock_query']->callbacks = new ArrayObject( array( -1000 => array( 'shim' => array( 'function' => array( $WC_DEPRECATED_FILTERS, 'maybe_handle_deprecated_hook' ), 'accepted_args' => 8 ) ) ) );
+bulk_edit_write( 3970 );
+$wp_filter['woocommerce_update_product_stock_query']->callbacks = array( 10 => 'not a list' );
+product( 3971, 4, '397100003971' );
+bulk_edit_write( 3971 );
+unset( $wp_filter['woocommerce_update_product_stock_query'] );
+check( '  a hook\'s callbacks not an array: pushed; a priority\'s callbacks not a list: pushed', push_args(), array( array( 3970, 'edit', null ), array( 3971, 'edit', null ) ) );
+// 4. A shim whose old names for the hook are not a list of names; and one
+// with none.
+$odd_shim = new class() extends WC_Deprecated_Filter_Hooks {
+	public $old = 'woocommerce_get_stock_quantity';
+	public function __construct() {} // Not hooked in on the map's hooks: hooked below on one.
+	public function get_old_hooks( $new_hook ) { return $this->old; }
+};
+add_filter( 'woocommerce_update_product_stock_query', array( $odd_shim, 'maybe_handle_deprecated_hook' ), -1000, 8 );
+fresh_request();
+product( 3972, 4, '397200003972' );
+bulk_edit_write( 3972 );
+$odd_shim->old = array( array( 'woocommerce_get_stock_quantity' ) );
+product( 3973, 4, '397300003973' );
+bulk_edit_write( 3973 );
+check( '  a shim whose old names are a name, not a list, or a list holding something not a name: pushed', push_args(), array( array( 3972, 'edit', null ), array( 3973, 'edit', null ) ) );
+fresh_request();
+$odd_shim->old = array();
+product( 3974, 4, '397400003974' );
+bulk_edit_write( 3974 );
+check( '  a shim forwarding that hook to no old name: left alone', array( count( pushes() ), request_end() ), array( 0, array( $unchanged_line( 1, '#3974' ) ) ) );
+harness_remove_filter( 'woocommerce_update_product_stock_query', array( $odd_shim, 'maybe_handle_deprecated_hook' ), -1000 );
+check( '  the hooks as they were: only WooCommerce\'s shim, on the first', array_map( $hooked, TCGiant_Sync_Inventory::STOCK_FILTERS ), array( $shim_hooked, array(), array() ) );
+
+$QUEUE      = array();
+$TRANSIENTS = array();
 printf( "\n  %d passed, %d failed\n\n", $pass, $fail );
 exit( $fail > 0 ? 1 : 0 );

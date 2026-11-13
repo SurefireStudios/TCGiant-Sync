@@ -144,7 +144,8 @@ TCGiant_Sync_Template_Admin::save_product_fields( 101, array( '_tcgiant_tpl_over
 check( 'a save without the panel on screen changes nothing', get_post_meta( 101, TCGiant_Sync_Templates::OVERRIDE_META, true ), '' );
 
 $admin_src = file_get_contents( dirname( __DIR__ ) . '/admin/class-tcgiant-sync-admin.php' );
-check( 'the product save asks for the panel\'s own nonce first', false !== strpos( $admin_src, "wp_verify_nonce( sanitize_key( wp_unslash( \$_POST['_tcgiant_tpl_nonce'] ) ), 'tcgiant_tpl_product' )" ), true );
+// 3.39.0: the product save hands $_POST to save_export_posted(), which reads it as $posted.
+check( 'the product save asks for the panel\'s own nonce first', false !== strpos( $admin_src, "wp_verify_nonce( sanitize_key( wp_unslash( \$posted['_tcgiant_tpl_nonce'] ) ), 'tcgiant_tpl_product' )" ) && false !== strpos( $admin_src, "self::save_export_posted( \$post_id, \$_POST );" ), true );
 
 new WC_Product( 102, array( 'name' => 'Theirs' ) );
 $GLOBALS['W']['caps']['edit_post'] = false;

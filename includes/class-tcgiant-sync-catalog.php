@@ -599,6 +599,26 @@ class TCGiant_Sync_Catalog {
 	);
 
 	/**
+	 * The conditions a product's eBay tab offers for an "All Other" item:
+	 * CONDITIONS without the four eBay takes only on books, film, music and
+	 * games. The tab's Condition select and the bulk edit's (3.39.0) list the
+	 * same.
+	 *
+	 * @return array<string,string> Condition ID => label, in CONDITIONS' order.
+	 */
+	public static function plain_conditions() {
+		$out = array();
+		foreach ( self::CONDITIONS as $id => $label ) {
+			// eBay only accepts these four on books, film, music and games.
+			if ( in_array( (string) $id, self::CONDITIONS_MEDIA_ONLY, true ) ) {
+				continue;
+			}
+			$out[ $id ] = $label;
+		}
+		return $out;
+	}
+
+	/**
 	 * Get categories, including user-defined custom saved categories.
 	 *
 	 * @return array Map of category ID => label.

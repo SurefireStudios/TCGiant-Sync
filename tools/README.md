@@ -85,6 +85,22 @@ requires the newest entry in `readme.txt`'s `== Changelog ==` and in
 `changelog.txt` to be that version, with a real date: a candidate staged with
 `YYYY-MM-DD` fails until the release day's date is in both.
 
+`check-bulk-edit-js.js` runs the bulk edit group's own JavaScript (3.39.0) in
+jsdom, inside a products list built from WordPress's own `inline-edit-post.js`
+and jQuery and WooCommerce's own `quick-edit.js`: two bulk edits on one page
+with no reload, Cancel, and Move to Trash with the group open, and what the
+list's form sends each time. `tests/test-bulk-edit.php` pins the script's
+source; this runs it. It is not in `tests/run.php`, because it needs Node, a
+jsdom install, a WordPress copy and WooCommerce's `quick-edit.js`, none of which
+this repository carries, and it installs nothing:
+
+```
+node tools/check-bulk-edit-js.js <node_modules/jsdom> <wordpress dir> <dir holding quick-edit.js> [php]
+```
+
+It draws the group with `php tests/test-bulk-edit.php --panel`, ends
+"N passed, M failed", and exits 1 on a failure.
+
 `check-archive-parity.php` is not part of the routine run, because it needs a
 committed tree. There are two ways a customer receives this plugin — the
 uploaded zip, from the allowlist in `build-manifest.php`, and the GitHub source

@@ -816,7 +816,18 @@ class TCGiant_Sync_Identifiers {
 		} else {
 			delete_post_meta( (int) $product_id, self::TYPE_META );
 		}
-		if ( isset( $posted[ self::NONE_META ] ) && '1' === (string) $posted[ self::NONE_META ] ) {
+		self::set_none( (int) $product_id, isset( $posted[ self::NONE_META ] ) && '1' === (string) $posted[ self::NONE_META ] );
+	}
+
+	/**
+	 * Tick or untick "This product has no UPC, EAN or ISBN": the eBay tab's
+	 * box, and the bulk edit's (3.39.0).
+	 *
+	 * @param int  $product_id The product.
+	 * @param bool $none       Ticked.
+	 */
+	public static function set_none( $product_id, $none ) {
+		if ( $none ) {
 			update_post_meta( (int) $product_id, self::NONE_META, '1' );
 		} else {
 			delete_post_meta( (int) $product_id, self::NONE_META );

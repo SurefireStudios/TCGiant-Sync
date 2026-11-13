@@ -98,6 +98,15 @@ $follow_labels = TCGiant_Sync_Admin::follow_action_labels();
 
 <div class="wrap tc-dashboard-wrap">
 	<h1 class="wp-heading-inline"><?php esc_html_e( 'eBay Listings', 'tcgiant-sync' ); ?></h1>
+	<?php
+	// The products list, filtered by the plugin's eBay status to products
+	// listed on eBay (or ended), where WooCommerce's Bulk Edit carries the
+	// eBay fields (3.39.0). That filter has Listed on eBay and Ended, and
+	// not this page's search or other filters, so the link names the list,
+	// not these rows; there is no second form here. The products list asks
+	// for its own capability.
+	?>
+	<a href="<?php echo esc_url( admin_url( 'edit.php?post_type=product&tc_ebay_status=' . ( in_array( $current_status, array( 'Ended', 'Sold' ), true ) ? 'ended' : 'listed' ) ) ); ?>" class="page-title-action tc-bulk-edit-link" title="<?php esc_attr_e( 'Opens the products list filtered to products listed on eBay (from Ended or Sold, to those whose listing ended). Tick them, then Bulk actions, Edit: the eBay (TCGiant Sync) group is there. A bulk edit changes the products ticked on one page of the list; Screen Options sets how many a page shows.', 'tcgiant-sync' ); ?>"><?php esc_html_e( 'Edit eBay fields in the products list', 'tcgiant-sync' ); ?></a>
 	<hr class="wp-header-end" />
 
 	<?php TCGiant_Sync_Admin::instance()->render_tabs( 'listings' ); ?>

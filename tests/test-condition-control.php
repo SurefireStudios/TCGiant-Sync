@@ -53,8 +53,10 @@ check( 'the Push payload still reads that element',
 	substr_count( $admin, "override_condition_id:\$('#_ebay_export_condition_id').val()" ), 2 );
 check( 'the AJAX handlers still map it to the meta key',
 	substr_count( $admin, "'override_condition_id'       => '_ebay_export_condition_id'," ), 2 );
+// 3.39.0: the product save hands $_POST to save_export_posted(), which the
+// bulk edit of eBay fields saves through too.
 check( 'the product save still writes it',
-	false !== strpos( $admin, "isset( \$_POST['_ebay_export_condition_id'] )" ), true );
+	false !== strpos( $admin, "isset( \$posted['_ebay_export_condition_id'] )" ) && false !== strpos( $admin, "self::save_export_posted( \$post_id, \$_POST );" ), true );
 
 $exporter = file_get_contents( $root . '/includes/class-tcgiant-sync-exporter.php' );
 check( 'and the exporter still applies it over the store default',

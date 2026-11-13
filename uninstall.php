@@ -431,7 +431,11 @@ $wpdb->query(
 	"DELETE FROM {$wpdb->usermeta} WHERE meta_key = 'tcgiant_wplister_notice_dismissed'"
 );
 
-// Delete all plugin transients (and their timeout rows).
+// Delete all plugin transients (and their timeout rows): among them each
+// user's record of their last bulk edit of eBay fields, for its notice
+// (3.39.0, tcgiant_sync_bulk_edit_said_<user ID>). The bulk edit keeps
+// nothing else: what it changes are the products' own _ebay_export_ choices,
+// which stay, as above.
 $wpdb->query(
 	"DELETE FROM {$wpdb->options}
 	 WHERE option_name LIKE '\_transient\_tcgiant\_%'

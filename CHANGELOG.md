@@ -11,6 +11,7 @@ This file exists so the repository has a changelog where people look for one. It
 
 | Version | Date | Headline |
 |---|---|---|
+| [3.39.0](https://github.com/SurefireStudios/TCGiant-Sync/releases/tag/v3.39.0) | 2026-11-13 | Bulk edit of eBay fields in WooCommerce's own Bulk Edit; a bulk edit no longer re-sends unchanged stock to eBay |
 | [3.38.0](https://github.com/SurefireStudios/TCGiant-Sync/releases/tag/v3.38.0) | 2026-11-12 | More listing options: subtitle, condition note, second category, Brand and MPN, and an auction's Buy It Now and reserve; WooCommerce Brands as eBay's Brand (opt-in) |
 | [3.37.0](https://github.com/SurefireStudios/TCGiant-Sync/releases/tag/v3.37.0) | 2026-11-11 | Automatic buyer feedback, and eBay refunds recorded on WooCommerce orders |
 | [3.36.0](https://github.com/SurefireStudios/TCGiant-Sync/releases/tag/v3.36.0) | 2026-11-11 | A Pro licence stays Pro when Lemon Squeezy gives an unclear answer |

@@ -218,6 +218,44 @@ class TCGiant_Sync_Inventory {
 	private static $order_reduction_products = array();
 
 	/**
+	 * Each product's _stock as the database held it just before WooCommerce
+	 * wrote it in this request (3.39.0), by the product holding the stock:
+	 * the figure, or null for no row. Made by note_stock_before() and taken
+	 * off by the stock change handlers, whatever they then do.
+	 *
+	 * @var array<int,string|null>
+	 */
+	private static $stock_before = array();
+
+	/**
+	 * The stock writes in this request that left a linked product's stock as
+	 * it was, and so queued nothing: how many, and the first few products,
+	 * for the request's one log line (log_unchanged_stock_writes()).
+	 *
+	 * @var array{n: int, ids: int[]}
+	 */
+	private static $unchanged_writes = array( 'n' => 0, 'ids' => array() );
+
+	/** How many products the log line of unchanged stock writes names; the rest are counted. */
+	const UNCHANGED_WRITES_NAMED = 5;
+
+	/**
+	 * WooCommerce's filters of the stock a product reports and of its stock
+	 * write. While another plugin filters one, a write that looks unchanged
+	 * is sent all the same (stock_write_unchanged()): the stock may then be
+	 * kept where _stock does not show it, as a stock-location plugin keeps
+	 * it. TCGiant Sync hooks none of them. WooCommerce itself hooks the
+	 * first on every site, with its deprecated-hook shim, which filters
+	 * nothing unless something is hooked on the old name it forwards to
+	 * (stock_filtered(); 3.39.0).
+	 */
+	const STOCK_FILTERS = array(
+		'woocommerce_product_get_stock_quantity',
+		'woocommerce_product_variation_get_stock_quantity',
+		'woocommerce_update_product_stock_query',
+	);
+
+	/**
 	 * What the import records about the auction a product follows: its
 	 * opening bid, the bid it has reached, how many bids, and Buy It Now. They
 	 * describe one listing, and go when the product moves on to another.
@@ -333,6 +371,11 @@ class TCGiant_Sync_Inventory {
 		add_filter( 'woocommerce_prevent_adjust_line_item_product_stock', array( $this, 'keep_ebay_order_lines' ), 10, 2 );
 
 		// Real-time stock sync: manual stock edits, CSV imports, REST API updates.
+		// WooCommerce's stock as it was just before each write, so a write that
+		// leaves it as it was is not sent (3.39.0): WooCommerce's own Bulk Edit
+		// writes every selected product's stock again, changed or not.
+		add_action( 'woocommerce_product_before_set_stock', array( __CLASS__, 'note_stock_before' ) );
+		add_action( 'woocommerce_variation_before_set_stock', array( __CLASS__, 'note_stock_before' ) );
 		add_action( 'woocommerce_product_set_stock', array( $this, 'on_product_stock_change' ) );
 		add_action( 'woocommerce_variation_set_stock', array( $this, 'on_variation_stock_change' ) );
 
@@ -1389,6 +1432,10 @@ class TCGiant_Sync_Inventory {
 			return;
 		}
 
+		// The stock before this write, always taken off: a record is for one
+		// write only (3.39.0).
+		$before = self::take_stock_before( (int) $product->get_id() );
+
 		// Circular update guard: don't push to eBay if this change came FROM eBay.
 		if ( $this->is_ebay_origin_change( $product->get_id() ) ) {
 			return;
@@ -1400,6 +1447,14 @@ class TCGiant_Sync_Inventory {
 		// still pushed. (Before 3.28.0, one order's reduction stopped every
 		// stock change for the rest of the request.)
 		if ( self::reduced_by_order( $product ) ) {
+			return;
+		}
+
+		// A write that left the stock as it was, with nothing waiting on a
+		// push: WooCommerce's Bulk Edit, say, which writes each product's
+		// stock again (3.39.0).
+		if ( self::stock_write_unchanged( $product, $before ) ) {
+			self::note_unchanged_write( $product );
 			return;
 		}
 
@@ -1416,6 +1471,8 @@ class TCGiant_Sync_Inventory {
 			return;
 		}
 
+		$before = self::take_stock_before( (int) $variation->get_id() );
+
 		if ( $this->is_ebay_origin_change( $variation->get_id() ) ) {
 			return;
 		}
@@ -1424,7 +1481,266 @@ class TCGiant_Sync_Inventory {
 			return;
 		}
 
+		if ( self::stock_write_unchanged( $variation, $before ) ) {
+			self::note_unchanged_write( $variation );
+			return;
+		}
+
 		$this->queue_stock_update_for_product( $variation );
+	}
+
+	/**
+	 * Hook: woocommerce_product_before_set_stock and
+	 * woocommerce_variation_before_set_stock (WooCommerce 4.9+), which
+	 * WooCommerce fires just before it writes a product's stock - from
+	 * wc_update_product_stock(), and from its data store when a save changes
+	 * the stock. Keeps that product's _stock as the database holds it, for
+	 * the handlers above to compare with the stock after the write (3.39.0).
+	 *
+	 * Read from the database itself, never the product object or the meta
+	 * cache: WooCommerce's Bulk Edit writes back the figure it loaded at the
+	 * start of the request, and a sale landing since would be hidden by
+	 * either - the push of that write must still go, as before.
+	 *
+	 * @param WC_Product $product The product whose stock is about to be written.
+	 * @return void
+	 */
+	public static function note_stock_before( $product ) {
+		global $wpdb;
+
+		if ( ! is_object( $product ) || ! method_exists( $product, 'get_id' ) ) {
+			return;
+		}
+
+		$id = (int) $product->get_id();
+
+		if ( $id < 1 ) {
+			return;
+		}
+
+		if ( ! isset( $wpdb ) || ! is_object( $wpdb ) ) {
+			// Nothing to read it from: no record, so the write is sent as before.
+			unset( self::$stock_before[ $id ] );
+			return;
+		}
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- the point is to miss the cache.
+		$raw = $wpdb->get_var( $wpdb->prepare( "SELECT meta_value FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key = '_stock' LIMIT 1", $id ) );
+
+		self::$stock_before[ $id ] = null === $raw ? null : (string) $raw;
+	}
+
+	/**
+	 * The record note_stock_before() made for a product, taken off.
+	 *
+	 * @param int $product_id The product.
+	 * @return array{0: bool, 1: string|null} Whether there was one, and the figure.
+	 */
+	private static function take_stock_before( $product_id ) {
+		if ( ! array_key_exists( $product_id, self::$stock_before ) ) {
+			return array( false, null );
+		}
+
+		$before = self::$stock_before[ $product_id ];
+		unset( self::$stock_before[ $product_id ] );
+
+		return array( true, $before );
+	}
+
+	/**
+	 * Whether a stock write left WooCommerce's stock as it was, with nothing
+	 * waiting on a push, so that none is queued (3.39.0). All five:
+	 *
+	 * 1. the stock before the write was recorded for this product (no record -
+	 *    a write WooCommerce did not announce - is sent, as before);
+	 * 2. it is the stock after the write as WooCommerce stored it, both
+	 *    figures there: get_stock_quantity( 'edit' ), which runs no filter, so
+	 *    the database's figure is compared with the stored one, like with like;
+	 * 3. no website sale of the product waits for eBay (UNSENT_TOKEN: such a
+	 *    push carries a sale that never reached eBay);
+	 * 4. Stock Review does not list it as a push eBay never took
+	 *    (PUSH_FAILURES_OPTION);
+	 * 5. nothing filters STOCK_FILTERS (stock_filtered()): with another
+	 *    plugin filtering the stock a product reports, or WooCommerce's write
+	 *    of it, the stock may have changed where _stock does not show it, so
+	 *    the write is sent as before. WooCommerce's own deprecated-hook shim
+	 *    counts only when something is hooked on the old name it forwards to.
+	 *
+	 * A real change - from the product screen, REST, CSV, quick edit, or a
+	 * bulk edit that changes the stock - and WooCommerce's own race, where a
+	 * sale lands between a bulk edit's load and its write, differ before and
+	 * after, so they are sent as before. A write that changes nothing no
+	 * longer corrects a listing eBay already disagrees with: a real stock
+	 * change, an Update of the listing or Push to eBay sends the stock, and
+	 * the weekly stock check logs listings that differ. Another plugin
+	 * that writes _stock itself and then announces the same figure through
+	 * wc_update_product_stock() is judged unchanged: the record reads the
+	 * figure it already wrote.
+	 *
+	 * @param WC_Product $product The product whose stock was written.
+	 * @param array      $before  From take_stock_before().
+	 * @return bool
+	 */
+	private static function stock_write_unchanged( $product, array $before ) {
+		if ( ! $before[0] ) {
+			return false;
+		}
+
+		$after = $product->get_stock_quantity( 'edit' );
+
+		if ( null === $before[1] || ! is_numeric( $before[1] ) || null === $after || ! is_numeric( $after ) || (float) $before[1] !== (float) $after ) {
+			return false;
+		}
+
+		$id = (int) $product->get_id();
+
+		if ( isset( self::pending_entries( $id )[ self::UNSENT_TOKEN ] ) ) {
+			return false;
+		}
+
+		foreach ( (array) get_option( self::PUSH_FAILURES_OPTION, array() ) as $row ) {
+			if ( is_array( $row ) && (int) ( $row['product_id'] ?? 0 ) === $id ) {
+				return false;
+			}
+		}
+
+		return ! self::stock_filtered();
+	}
+
+	/**
+	 * Whether anything filters a product's reported stock or its stock write
+	 * (STOCK_FILTERS), so that a write that looks unchanged is sent. Every
+	 * callback on those hooks counts, read from the hook's own list
+	 * ($wp_filter[ $hook ]->callbacks), but one: WooCommerce's deprecated-hook
+	 * shim, WC_Deprecated_Hooks::maybe_handle_deprecated_hook(), which
+	 * WooCommerce hooks at -1000 on the first of them on every site. It
+	 * changes nothing itself: it runs the old names it forwards to
+	 * (get_old_hooks(); woocommerce_get_stock_quantity) only when something
+	 * is hooked on one, so it counts only then (wc_shim_idle()). TCGiant Sync
+	 * hooks none of them, so there is nothing of its own to leave out.
+	 *
+	 * Wherever WordPress's hooks are not as expected - no has_filter(), a
+	 * hook has_filter() says is hooked with no WP_Hook for it in $wp_filter,
+	 * callbacks that are not lists - nothing can be told, and the write is
+	 * sent.
+	 *
+	 * @return bool
+	 */
+	private static function stock_filtered() {
+		global $wp_filter;
+
+		if ( ! function_exists( 'has_filter' ) ) {
+			return true;
+		}
+
+		foreach ( self::STOCK_FILTERS as $hook ) {
+			if ( false === has_filter( $hook ) ) {
+				continue;
+			}
+
+			if ( ! is_array( $wp_filter ) || ! isset( $wp_filter[ $hook ] ) || ! ( $wp_filter[ $hook ] instanceof WP_Hook ) || ! is_array( $wp_filter[ $hook ]->callbacks ) ) {
+				return true;
+			}
+
+			foreach ( $wp_filter[ $hook ]->callbacks as $callbacks ) {
+				if ( ! is_array( $callbacks ) ) {
+					return true;
+				}
+
+				foreach ( $callbacks as $callback ) {
+					if ( ! self::wc_shim_idle( $hook, $callback ) ) {
+						return true;
+					}
+				}
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Whether a callback on one of STOCK_FILTERS is WooCommerce's
+	 * deprecated-hook shim with nothing hooked on any old name it forwards
+	 * that hook to, so that it leaves the stock as it is (stock_filtered()).
+	 * Anything else - another callback, or a shim whose old names are not a
+	 * list of names - is not.
+	 *
+	 * @param string $hook     The hook.
+	 * @param mixed  $callback One of its callbacks, as WP_Hook keeps it.
+	 * @return bool
+	 */
+	private static function wc_shim_idle( $hook, $callback ) {
+		$function = is_array( $callback ) && isset( $callback['function'] ) ? $callback['function'] : null;
+
+		if ( ! is_array( $function ) || ! isset( $function[0], $function[1] ) || ! ( $function[0] instanceof WC_Deprecated_Hooks ) || 'maybe_handle_deprecated_hook' !== $function[1] ) {
+			return false;
+		}
+
+		$old_hooks = $function[0]->get_old_hooks( $hook );
+
+		if ( ! is_array( $old_hooks ) ) {
+			return false;
+		}
+
+		foreach ( $old_hooks as $old_hook ) {
+			if ( ! is_string( $old_hook ) || false !== has_filter( $old_hook ) ) {
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	/**
+	 * Count a stock write that left a linked product's stock as it was, for
+	 * the request's one log line. Only one that would have been sent before:
+	 * not a product off eBay, a write of eBay's own figures, or a shop that
+	 * does not send stock to eBay - none of them queued anything anyway.
+	 *
+	 * @param WC_Product $product The product.
+	 * @return void
+	 */
+	private static function note_unchanged_write( $product ) {
+		if ( self::is_push_suppressed() || ! self::pushes_enabled() || '' === (string) get_post_meta( self::link_owner( $product ), '_ebay_item_id', true ) ) {
+			return;
+		}
+
+		if ( 0 === self::$unchanged_writes['n'] && function_exists( 'add_action' ) ) {
+			add_action( 'shutdown', array( __CLASS__, 'log_unchanged_stock_writes' ) );
+		}
+
+		self::$unchanged_writes['n']++;
+
+		if ( count( self::$unchanged_writes['ids'] ) < self::UNCHANGED_WRITES_NAMED ) {
+			self::$unchanged_writes['ids'][] = (int) $product->get_id();
+		}
+	}
+
+	/**
+	 * Hook: shutdown, once a stock write left a linked product's stock as it
+	 * was. One log line for the request, however many products a bulk edit
+	 * wrote.
+	 *
+	 * @return void
+	 */
+	public static function log_unchanged_stock_writes() {
+		$n = (int) self::$unchanged_writes['n'];
+
+		if ( $n < 1 ) {
+			return;
+		}
+
+		$ids = self::$unchanged_writes['ids'];
+
+		self::$unchanged_writes = array( 'n' => 0, 'ids' => array() );
+
+		TCGiant_Sync_Logger::log( sprintf(
+			'Real-time stock sync: %d %s left WooCommerce\'s stock as it was (WC #%s%s), so no eBay update was queued for them. If eBay shows a different quantity, change the stock or Update the listing to send it; the weekly stock check logs listings that differ.',
+			$n,
+			1 === $n ? 'stock save of a product on eBay' : 'stock saves of products on eBay',
+			implode( ', #', $ids ),
+			$n > count( $ids ) ? sprintf( ' and %d more', $n - count( $ids ) ) : ''
+		) );
 	}
 
 	/**

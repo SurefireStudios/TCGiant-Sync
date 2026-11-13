@@ -1183,13 +1183,31 @@ class TCGiant_Sync_Ebay_Price {
 	 * @param string $typed      What was typed.
 	 */
 	public static function set_own( $product_id, $typed ) {
-		$typed = trim( (string) $typed );
-		$value = '' === $typed ? '' : wc_format_decimal( $typed );
-		if ( ! is_numeric( $value ) || (float) $value <= 0 ) {
+		$value = self::typed( $typed );
+		if ( '' === $value ) {
 			delete_post_meta( (int) $product_id, self::OWN_META );
 			return;
 		}
-		update_post_meta( (int) $product_id, self::OWN_META, self::money( self::cents( $value ) ) );
+		update_post_meta( (int) $product_id, self::OWN_META, $value );
+	}
+
+	/**
+	 * An eBay price as set_own() keeps what the shop typed: a price above
+	 * nothing, in the shop's own decimal separator, as eBay takes one; '' for
+	 * anything else, which set_own() takes as empty. The bulk edit (3.39.0)
+	 * asks it before it sets one, so a price it cannot take is never saved
+	 * as an emptied field.
+	 *
+	 * @param string $typed What was typed.
+	 * @return string
+	 */
+	public static function typed( $typed ) {
+		$typed = trim( (string) $typed );
+		$value = '' === $typed ? '' : wc_format_decimal( $typed );
+		if ( ! is_numeric( $value ) || (float) $value <= 0 ) {
+			return '';
+		}
+		return self::money( self::cents( $value ) );
 	}
 
 	/**
