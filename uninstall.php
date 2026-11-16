@@ -266,6 +266,7 @@ $tcgiant_options = array(
 	'tcgiant_sync_bulk_push_cap',      // The daily cap on bulk pushes.
 	'tcgiant_sync_bulk_pushed',        // Bulk pushes counted today.
 	'tcgiant_sync_bulk_waiting',       // Bulk pushes counted today and still waiting.
+	'tcgiant_sync_send_stock_today',   // Send stock to eBay: pushes counted today on the free plan, 3.40.0.
 	'tcgiant_sync_jobs',               // Bulk job progress records.
 	'tcgiant_export_state',            // Export state machine.
 	'tcgiant_listings_table_version',
@@ -433,9 +434,13 @@ $wpdb->query(
 
 // Delete all plugin transients (and their timeout rows): among them each
 // user's record of their last bulk edit of eBay fields, for its notice
-// (3.39.0, tcgiant_sync_bulk_edit_said_<user ID>). The bulk edit keeps
-// nothing else: what it changes are the products' own _ebay_export_ choices,
-// which stay, as above.
+// (3.39.0, tcgiant_sync_bulk_edit_said_<user ID>), and of their last "Send
+// stock to eBay" on the products list (3.40.0,
+// tcgiant_sync_send_stock_said_<user ID>; its day's count on the free plan,
+// tcgiant_sync_send_stock_today, is in the list above). The bulk edit keeps nothing
+// else: what it changes are the products' own _ebay_export_ choices, which
+// stay, as above. The Listings page's "Send stock to eBay" keeps its counts
+// on its job, in tcgiant_sync_jobs, deleted above.
 $wpdb->query(
 	"DELETE FROM {$wpdb->options}
 	 WHERE option_name LIKE '\_transient\_tcgiant\_%'

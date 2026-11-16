@@ -102,7 +102,13 @@ class TCGiant_Sync_Jobs {
 	 * Job types the Listings screen starts, and which may therefore be asked
 	 * for as "everything matching the current filters".
 	 */
-	const LISTING_JOB_TYPES = array( 'bulk_push', 'bulk_end', 'bulk_relist', 'bulk_verify', 'bulk_follow_send', 'bulk_follow_keep', 'bulk_follow_origin', 'bulk_set_format' );
+	const LISTING_JOB_TYPES = array( 'bulk_push', 'bulk_end', 'bulk_relist', 'bulk_verify', 'bulk_follow_send', 'bulk_follow_keep', 'bulk_follow_origin', 'bulk_send_stock', 'bulk_set_format' );
+
+	/**
+	 * Products the Listings screen's "Send stock to eBay" (3.40.0) takes in
+	 * one request: it only queues pushes, and asks eBay nothing.
+	 */
+	const SEND_STOCK_BATCH = 100;
 
 	/**
 	 * The Listings screen's jobs that say whose values each listing's
@@ -188,17 +194,43 @@ class TCGiant_Sync_Jobs {
 	}
 
 	/**
+	 * A job as the database holds it now, not this request's copy (3.40.0
+	 * fix round 1): a Cancel saved by another request is seen.
+	 *
+	 * @param string $job_id Job ID.
+	 * @return array|null
+	 */
+	public static function get_job_fresh( $job_id ) {
+		if ( function_exists( 'wp_cache_delete' ) ) {
+			wp_cache_delete( self::OPTION_KEY, 'options' );
+		}
+		return self::get_job( $job_id );
+	}
+
+	/**
 	 * Update a job.
 	 *
 	 * @param string $job_id Job ID.
 	 * @param array  $data   Key-value pairs to update.
 	 */
 	public static function update_job( $job_id, array $data ) {
+		// The row as it is now, not this request's copy: a Cancel saved by
+		// another request while this one ran a batch must not be written
+		// over (3.40.0 fix round 1).
+		if ( function_exists( 'wp_cache_delete' ) ) {
+			wp_cache_delete( self::OPTION_KEY, 'options' );
+		}
 		$jobs = get_option( self::OPTION_KEY, array() );
 		$jobs = is_array( $jobs ) ? $jobs : array();
 
 		if ( ! isset( $jobs[ $job_id ] ) ) {
 			return;
+		}
+
+		// Cancelled stays cancelled: a batch under way when Cancel came
+		// writes its progress, not its status.
+		if ( 'cancelled' === ( $jobs[ $job_id ]['status'] ?? '' ) ) {
+			unset( $data['status'] );
 		}
 
 		// The item list is never part of the progress record.
@@ -322,7 +354,7 @@ class TCGiant_Sync_Jobs {
 			wp_send_json_error( array( 'message' => 'Missing type or product_ids.' ) );
 		}
 
-		$valid_types = array( 'bulk_push', 'bulk_end', 'bulk_verify', 'bulk_relist', 'bulk_settle', 'bulk_restore_images', 'bulk_set_format', 'bulk_remove_sold', 'bulk_zero_stock', 'bulk_use_ebay_figure', 'bulk_keep_stock', 'bulk_trash_other_sites', 'bulk_follow_send', 'bulk_follow_keep', 'bulk_follow_origin' );
+		$valid_types = array( 'bulk_push', 'bulk_end', 'bulk_verify', 'bulk_relist', 'bulk_settle', 'bulk_restore_images', 'bulk_set_format', 'bulk_remove_sold', 'bulk_zero_stock', 'bulk_use_ebay_figure', 'bulk_keep_stock', 'bulk_trash_other_sites', 'bulk_follow_send', 'bulk_follow_keep', 'bulk_follow_origin', 'bulk_send_stock' );
 		if ( ! in_array( $type, $valid_types, true ) ) {
 			wp_send_json_error( array( 'message' => 'Invalid job type.' ) );
 		}
@@ -365,8 +397,32 @@ class TCGiant_Sync_Jobs {
 			);
 		}
 
+		// "Send stock to eBay" (3.40.0) with sending switched off, or no
+		// connection: nothing would be queued, so the job is refused whole,
+		// in the words its notice uses, and logged once.
+		if ( 'bulk_send_stock' === $type ) {
+			$stopped = TCGiant_Sync_Inventory::send_stock_stopped();
+			if ( '' !== $stopped ) {
+				$said            = TCGiant_Sync_Inventory::send_stock_said();
+				$said['stopped'] = $stopped;
+				TCGiant_Sync_Inventory::log_send_stock( $said, 'Listings page', get_current_user_id() );
+				wp_send_json_error( array( 'message' => implode( ' ', TCGiant_Sync_Inventory::send_stock_lines( $said ) ) ) );
+			}
+		}
+
 		$job_id = self::create_job( $type, $product_ids, $args );
 		self::update_job( $job_id, array( 'status' => 'running' ) );
+
+		// "Send stock to eBay": one line at the start, so that a closed tab
+		// still leaves a trace (fix round 1).
+		if ( 'bulk_send_stock' === $type ) {
+			TCGiant_Sync_Logger::log( sprintf(
+				1 === count( $product_ids ) ? 'Send stock to eBay (Listings page, user #%d): started on %d product. %s' : 'Send stock to eBay (Listings page, user #%d): started on %d products. %s',
+				get_current_user_id(),
+				count( $product_ids ),
+				TCGiant_Sync_Inventory::send_stock_today_line()
+			) );
+		}
 
 		wp_send_json_success( array(
 			'job_id' => $job_id,
@@ -409,8 +465,18 @@ class TCGiant_Sync_Jobs {
 		if ( isset( self::FOLLOW_JOB_TYPES[ $job['type'] ] ) ) {
 			$batch_size = TCGiant_Sync_Admin::FOLLOW_JOB_BATCH;
 		}
+		if ( 'bulk_send_stock' === $job['type'] ) {
+			$batch_size = self::SEND_STOCK_BATCH;
+		}
 		$start_index = $job['processed'];
 		$batch       = array_slice( self::get_job_items( $job_id ), $start_index, $batch_size );
+
+		// "Send stock to eBay" (3.40.0): the batch through the one method
+		// the products list's action uses, its lists added to the job's.
+		if ( 'bulk_send_stock' === $job['type'] ) {
+			self::send_stock_batch( $job_id, $job, $batch );
+			return;
+		}
 		$succeeded   = $job['succeeded'];
 		$failed      = $job['failed'];
 		$queued      = $job['queued'] ?? 0;
@@ -786,6 +852,108 @@ class TCGiant_Sync_Jobs {
 	}
 
 	/**
+	 * One batch of the Listings screen's "Send stock to eBay" (3.40.0):
+	 * TCGiant_Sync_Inventory::send_stock_to_ebay() for up to SEND_STOCK_BATCH
+	 * products, stopping once that many pushes are queued (fix round 1:
+	 * counted in pushes, not products, so a batch of variable products
+	 * stays small); processed counts the products handled. Its lists are
+	 * added to the job's (send_stock), the queued pushes counted as queued
+	 * and the products not sent as kept. Today's allowance used, the rest
+	 * of the job is said as capped, unread, and the job ends. The last
+	 * batch writes the job's one log line - with what was queued and why it
+	 * stopped, if it did - and the progress window shows its notice
+	 * (lines). A batch that finds the job cancelled when it is done logs
+	 * what it queued meanwhile. Answers the request.
+	 *
+	 * @param string $job_id The job.
+	 * @param array  $job    The job record.
+	 * @param int[]  $batch  This batch's products.
+	 * @return void
+	 */
+	private static function send_stock_batch( $job_id, array $job, array $batch ) {
+		$said      = TCGiant_Sync_Inventory::send_stock_to_ebay( $batch, self::SEND_STOCK_BATCH );
+		$processed = (int) $job['processed'] + (int) $said['done'];
+
+		// Today's allowance used: the rest of the job is said, unread.
+		if ( ! empty( $said['capped_out'] ) && $processed < (int) $job['total'] ) {
+			$said      = TCGiant_Sync_Inventory::send_stock_capped_rest( $said, array_slice( self::get_job_items( $job_id ), $processed ) );
+			$processed = (int) $job['total'];
+		}
+
+		// Cancelled while this batch ran: what it queued meanwhile is
+		// logged, and the job stays cancelled.
+		$now = self::get_job_fresh( $job_id );
+		if ( is_array( $now ) && 'cancelled' === ( $now['status'] ?? '' ) ) {
+			self::send_stock_batch_cancelled( $job_id, $job, $now, $said, $processed );
+			return;
+		}
+
+		$all     = TCGiant_Sync_Inventory::merge_send_stock( $job['send_stock'] ?? null, $said );
+		$queued  = TCGiant_Sync_Inventory::send_stock_queued( $all );
+		$skipped = TCGiant_Sync_Inventory::send_stock_skipped( $all );
+
+		// Stopped part way (sending switched off, or the connection gone,
+		// since the job began): nothing more could be queued.
+		$is_done = $processed >= (int) $job['total'] || '' !== $all['stopped'];
+
+		if ( $is_done ) {
+			TCGiant_Sync_Inventory::log_send_stock( $all, 'Listings page', get_current_user_id() );
+		}
+
+		self::update_job( $job_id, array(
+			'processed'  => $processed,
+			'queued'     => $queued,
+			'kept'       => $skipped,
+			'send_stock' => $all,
+			'status'     => $is_done ? 'completed' : 'running',
+		) );
+
+		wp_send_json_success( array(
+			'status'    => $is_done ? 'completed' : 'running',
+			'processed' => $processed,
+			'total'     => $job['total'],
+			'succeeded' => 0,
+			'queued'    => $queued,
+			'kept'      => $skipped,
+			'capped'    => 0,
+			'failed'    => 0,
+			'is_async'  => true,
+			'type'      => $job['type'],
+			'errors'    => array(),
+			'lines'     => $is_done ? TCGiant_Sync_Inventory::send_stock_lines( $all ) : array(),
+		) );
+	}
+
+	/**
+	 * A batch of "Send stock to eBay" that finds its job cancelled when it
+	 * is done (fix round 1): what it queued meanwhile is logged and added to
+	 * the job's lists, the job stays cancelled (update_job() keeps it), and
+	 * the request is answered cancelled.
+	 *
+	 * @param string $job_id    The job.
+	 * @param array  $job       The job record, as this batch began.
+	 * @param array  $now       The job record, as the database holds it now.
+	 * @param array  $said      This batch's lists.
+	 * @param int    $processed Products handled, this batch included.
+	 * @return void
+	 */
+	private static function send_stock_batch_cancelled( $job_id, array $job, array $now, array $said, $processed ) {
+		$all = TCGiant_Sync_Inventory::merge_send_stock( $now['send_stock'] ?? null, $said );
+		TCGiant_Sync_Inventory::log_send_stock( $said, 'Listings page', get_current_user_id(), 'a batch under way when the job was cancelled: ' );
+		self::update_job( $job_id, array(
+			'processed'  => $processed,
+			'queued'     => TCGiant_Sync_Inventory::send_stock_queued( $all ),
+			'kept'       => TCGiant_Sync_Inventory::send_stock_skipped( $all ),
+			'send_stock' => $all,
+		) );
+		wp_send_json_success( array(
+			'status'    => 'cancelled',
+			'processed' => $processed,
+			'total'     => $job['total'],
+		) );
+	}
+
+	/**
 	 * AJAX: Get job status.
 	 */
 	public function ajax_job_status() {
@@ -831,6 +999,17 @@ class TCGiant_Sync_Jobs {
 		}
 
 		self::update_job( $job_id, array( 'status' => 'cancelled' ) );
+
+		// "Send stock to eBay": what it queued before the Cancel, in its one
+		// line (3.40.0 fix round 1). A batch still under way logs its own.
+		if ( 'bulk_send_stock' === ( $job['type'] ?? '' ) && ! in_array( (string) ( $job['status'] ?? '' ), array( 'completed', 'cancelled' ), true ) ) {
+			TCGiant_Sync_Inventory::log_send_stock(
+				TCGiant_Sync_Inventory::merge_send_stock( $job['send_stock'] ?? null, TCGiant_Sync_Inventory::send_stock_said() ),
+				'Listings page',
+				get_current_user_id(),
+				sprintf( 1 === (int) ( $job['total'] ?? 0 ) ? 'cancelled after %d of %d product: ' : 'cancelled after %d of %d products: ', (int) ( $job['processed'] ?? 0 ), (int) ( $job['total'] ?? 0 ) )
+			);
+		}
 
 		wp_send_json_success( array( 'message' => 'Job cancelled.' ) );
 	}

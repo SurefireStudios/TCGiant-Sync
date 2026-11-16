@@ -1571,8 +1571,9 @@ class TCGiant_Sync_Inventory {
 	 * sale lands between a bulk edit's load and its write, differ before and
 	 * after, so they are sent as before. A write that changes nothing no
 	 * longer corrects a listing eBay already disagrees with: a real stock
-	 * change, an Update of the listing or Push to eBay sends the stock, and
-	 * the weekly stock check logs listings that differ. Another plugin
+	 * change, an Update of the listing, Push to eBay or "Send stock to eBay"
+	 * (3.40.0, send_stock_to_ebay()) sends the stock, and the weekly stock
+	 * check logs listings that differ. Another plugin
 	 * that writes _stock itself and then announces the same figure through
 	 * wc_update_product_stock() is judged unchanged: the record reads the
 	 * figure it already wrote.
@@ -1735,7 +1736,7 @@ class TCGiant_Sync_Inventory {
 		self::$unchanged_writes = array( 'n' => 0, 'ids' => array() );
 
 		TCGiant_Sync_Logger::log( sprintf(
-			'Real-time stock sync: %d %s left WooCommerce\'s stock as it was (WC #%s%s), so no eBay update was queued for them. If eBay shows a different quantity, change the stock or Update the listing to send it; the weekly stock check logs listings that differ.',
+			'Real-time stock sync: %d %s left WooCommerce\'s stock as it was (WC #%s%s), so no eBay update was queued for them. If eBay shows a different quantity, send it with Send stock to eBay (Bulk actions); the weekly stock check logs listings that differ.',
 			$n,
 			1 === $n ? 'stock save of a product on eBay' : 'stock saves of products on eBay',
 			implode( ', #', $ids ),
@@ -1778,7 +1779,10 @@ class TCGiant_Sync_Inventory {
 	/**
 	 * Queue a push of one product's stock to eBay, after a stock change that
 	 * did not come from eBay or from a website order: a hand edit, a CSV
-	 * import, the REST API.
+	 * import, the REST API - or when asked to by "Send stock to eBay"
+	 * (3.40.0; send_stock_to_ebay()), which sends the stock a product has
+	 * now through this same code, so its push is the one a stock change of
+	 * that product queues.
 	 *
 	 * Only the product is queued, never a quantity or a SKU. The push reads
 	 * the product's stock when it runs, and finds the listing from the product
@@ -1787,19 +1791,39 @@ class TCGiant_Sync_Inventory {
 	 * sharing a SKU, sent one product's stock to the other's listing - or
 	 * ended it.
 	 *
+	 * Asked for (3.40.0), it differs in these only: a website sale's push of
+	 * the product already on its way counts as one waiting (live_sale_push():
+	 * it reads eBay and sends the stock when it runs); the per-product log
+	 * lines are left to the action's one line; and (fix round 1) a listing
+	 * recorded as ended and settled is not queued (ended_settled()), the
+	 * free plan's daily allowance is taken (take_send_stock_allowance()),
+	 * and the push carries 'asked', so that at 0 it reads eBay first; and
+	 * (fix round 2) should Action Scheduler not save its push, what was
+	 * taken for it is given back (enqueue_asked_push()).
+	 *
 	 * @param WC_Product $product Product or variation object.
+	 * @param bool       $asked   Asked for by "Send stock to eBay" (3.40.0).
+	 * @return array status - 'queued', or why not: 'suppressed', 'off',
+	 *               'not_linked', 'not_connected', 'not_sent' (push_target()
+	 *               refused it: logged), 'no_stock', 'auction' (above 0),
+	 *               'ended', 'pending' (one already waiting), 'capped'
+	 *               (today's allowance used) or 'not_queued' (asked for,
+	 *               and Action Scheduler did not save it: logged); with
+	 *               holder (the
+	 *               product whose stock is sent), stock and the target once
+	 *               known.
 	 */
-	private function queue_stock_update_for_product( $product ) {
+	private function queue_stock_update_for_product( $product, $asked = false ) {
 		// This stock value came from eBay — pushing it back would be an echo.
 		if ( self::is_push_suppressed() ) {
-			return;
+			return array( 'status' => 'suppressed' );
 		}
 
 		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
 
 		if ( ! self::pushes_enabled( $settings ) ) {
 			self::note_push_off();
-			return;
+			return array( 'status' => 'off' );
 		}
 
 		$target = $this->push_target( $product, false );
@@ -1808,7 +1832,7 @@ class TCGiant_Sync_Inventory {
 		// and nothing to read - a CSV of them on a shop with no tokens asks
 		// the database nothing.
 		if ( is_wp_error( $target ) && 'not_linked' === $target->get_error_code() ) {
-			return;
+			return array( 'status' => 'not_linked' );
 		}
 
 		// Not connected to eBay, and not just for a while: never connected, or
@@ -1816,12 +1840,12 @@ class TCGiant_Sync_Inventory {
 		// send it. A shop disconnected for less still queues it, and the
 		// tries carry it past the reconnect (PUSH_RECONNECT_WINDOW).
 		if ( ! self::may_queue( $settings ) ) {
-			return;
+			return array( 'status' => 'not_connected' );
 		}
 
 		if ( is_wp_error( $target ) ) {
 			self::log_not_pushed( (int) $product->get_id(), $target );
-			return;
+			return array( 'status' => 'not_sent' );
 		}
 
 		// The product whose stock is sent: itself, or for a variation whose
@@ -1831,7 +1855,7 @@ class TCGiant_Sync_Inventory {
 
 		// A product that does not track stock has no quantity to send.
 		if ( ! $holder || ! $holder->managing_stock() ) {
-			return;
+			return array( 'status' => 'no_stock', 'holder' => $product_id );
 		}
 
 		$new_stock = $holder->get_stock_quantity();
@@ -1840,17 +1864,31 @@ class TCGiant_Sync_Inventory {
 		// for tracked products, but nothing here depended on that being true,
 		// and a null arriving downstream reads as zero and ends the listing.
 		if ( null === $new_stock || '' === $new_stock ) {
-			return;
+			return array( 'status' => 'no_stock', 'holder' => $product_id );
 		}
 
 		// An auction is always one item, so there is no quantity to send it.
 		// Only running out matters to it - see push_auction().
 		if ( (int) $new_stock > 0 && $target['auction'] ) {
-			TCGiant_Sync_Logger::log( sprintf(
-				'Real-time stock sync: WC #%d stock changed to %d. It is on eBay auction %s, which is always one item, so no quantity is sent.',
-				$product_id, $new_stock, $target['item_id']
-			) );
-			return;
+			if ( ! $asked ) {
+				TCGiant_Sync_Logger::log( sprintf(
+					'Real-time stock sync: WC #%d stock changed to %d. It is on eBay auction %s, which is always one item, so no quantity is sent.',
+					$product_id, $new_stock, $target['item_id']
+				) );
+			}
+			return array( 'status' => 'auction', 'holder' => $product_id );
+		}
+
+		// Asked for: a listing recorded as ended, its sales in the stock -
+		// its push would send nothing (fix round 1).
+		if ( $asked && self::ended_settled( $target, (int) $new_stock ) ) {
+			return array( 'status' => 'ended', 'holder' => $product_id );
+		}
+
+		// Asked for: a website sale's push already on its way reads eBay and
+		// sends the stock when it runs, so it is the push asked for.
+		if ( $asked && self::live_sale_push( $product_id ) ) {
+			return array( 'status' => 'pending', 'holder' => $product_id );
 		}
 
 		// One push waiting for this product is enough: it reads the stock when
@@ -1859,21 +1897,795 @@ class TCGiant_Sync_Inventory {
 		// way queues another.
 		$dedup_key = 'tcgiant_stock_pending_' . $product_id;
 		if ( get_transient( $dedup_key ) ) {
-			return;
+			return array( 'status' => 'pending', 'holder' => $product_id );
+		}
+
+		// Asked for, on the free plan: one of today's pushes (fix round 1).
+		if ( $asked && ! self::take_send_stock_allowance() ) {
+			return array( 'status' => 'capped', 'holder' => $product_id );
 		}
 		set_transient( $dedup_key, 1, 60 );
 
-		TCGiant_Sync_Logger::log( sprintf(
-			'Real-time stock sync: WC #%d stock changed to %d - queuing eBay update for listing %s.',
-			$product_id, $new_stock, $target['item_id']
-		) );
+		if ( ! $asked ) {
+			TCGiant_Sync_Logger::log( sprintf(
+				'Real-time stock sync: WC #%d stock changed to %d - queuing eBay update for listing %s.',
+				$product_id, $new_stock, $target['item_id']
+			) );
+		}
 
-		as_enqueue_async_action( self::PUSH_HOOK, array( array(
+		$job = array(
 			'product_id' => $product_id,
 			'reason'     => 'edit',
 			'item'       => $target['item_id'],
 			'token'      => self::mark_push_pending( $product_id ),
-		) ), self::PUSH_GROUP );
+		);
+		if ( ! $asked ) {
+			as_enqueue_async_action( self::PUSH_HOOK, array( $job ), self::PUSH_GROUP );
+		} elseif ( ! self::enqueue_asked_push( $job + array( 'asked' => 1 ), $dedup_key ) ) {
+			return array( 'status' => 'not_queued', 'holder' => $product_id );
+		}
+
+		return array(
+			'status' => 'queued',
+			'holder' => $product_id,
+			'stock'  => (int) $new_stock,
+			'target' => $target,
+		);
+	}
+
+	/**
+	 * "Send stock to eBay" (3.40.0), from the products list's Bulk actions
+	 * or the Listings page's: the stock each chosen product has now, queued
+	 * through queue_stock_update_for_product() as a stock change of it is,
+	 * so each push is the one a stock change to that figure queues. Only
+	 * 3.39.0's rule that a write leaving the stock as it was sends nothing
+	 * (stock_write_unchanged()) is not asked: there is no write here, and
+	 * sending a stock eBay may not show is the point. Every other rule is
+	 * the stock change's: pushes off or no connection (nothing is queued at
+	 * all), not on eBay, stock not managed, an auction above 0, one push
+	 * waiting at a time, eBay's own figure just written, a website order's
+	 * own reduction; and the push runs as every stock push runs - its tries,
+	 * Stock Review, the day's share of eBay calls, the staging block.
+	 *
+	 * Asked for, three things are its own (fix round 1, the owner's
+	 * decisions): a listing recorded as ended and settled is not queued (the
+	 * push would send nothing: run_push()'s own test, ended_settled()); the
+	 * push carries 'asked', so that at 0 it reads eBay first and leaves a
+	 * listing eBay already shows at 0 as it is (push_fixed_price(),
+	 * push_auction()); and on the free plan the action queues at most
+	 * SEND_STOCK_FREE_DAILY pushes a UTC day (take_send_stock_allowance()):
+	 * the rest are said as capped, and not looked at.
+	 *
+	 * Nothing is sent to eBay here: only Action Scheduler pushes are
+	 * queued. A variable product ticked sends each of its enabled variations
+	 * that keeps its own stock as that variation's own change would, and the
+	 * stock it keeps for its variations once, as one shared-stock push.
+	 * Each product needs edit_post.
+	 *
+	 * @param int[] $ids        Products chosen.
+	 * @param int   $max_pushes Stop once this many pushes are queued (the
+	 *                          Listings page's batch); 0 for none.
+	 * @return array What was queued and what was not, by list
+	 *               (SEND_STOCK_LISTS: n and up to SEND_STOCK_NAMED IDs),
+	 *               stopped ('' or why the rest was not queued), staging,
+	 *               capped_out (today's allowance used) and done (how many
+	 *               of $ids were handled).
+	 */
+	public static function send_stock_to_ebay( array $ids, $max_pushes = 0 ) {
+		$said     = self::send_stock_said();
+		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
+
+		$said['stopped'] = self::send_stock_stopped( $settings );
+		if ( '' !== $said['stopped'] ) {
+			return $said;
+		}
+
+		$said['staging'] = TCGiant_Sync_Environment::write_block() ? 1 : 0;
+		$auto_end        = ! isset( $settings['auto_end_zero_stock'] ) || ! empty( $settings['auto_end_zero_stock'] );
+		$sent            = array();
+		$ids             = array_values( array_unique( array_map( 'intval', $ids ) ) );
+		$done            = 0;
+
+		foreach ( $ids as $id ) {
+			if ( '' !== $said['stopped'] || ! empty( $said['capped_out'] ) || ( $max_pushes > 0 && self::send_stock_queued( $said ) >= $max_pushes ) ) {
+				break;
+			}
+			$done++;
+			if ( $id < 1 ) {
+				continue;
+			}
+			if ( ! current_user_can( 'edit_post', $id ) ) {
+				self::said_add( $said, 'denied', $id );
+				continue;
+			}
+			$product = wc_get_product( $id );
+			if ( ! $product ) {
+				self::said_add( $said, 'not_linked', $id );
+				continue;
+			}
+			list( $units, $disabled ) = self::stock_units( $product );
+			// A disabled variation is not on eBay: the exporter lists
+			// enabled ones only.
+			foreach ( $disabled as $off_id ) {
+				self::said_add( $said, 'not_linked', $off_id );
+			}
+			foreach ( $units as $unit ) {
+				if ( ! empty( $said['capped_out'] ) ) {
+					self::said_add( $said, 'capped', (int) $unit->get_id() );
+					continue;
+				}
+				if ( '' !== $said['stopped'] ) {
+					break;
+				}
+				self::instance()->send_stock_unit( $unit, $said, $sent, $auto_end );
+			}
+		}
+
+		// Today's allowance used: the rest are said, and not looked at.
+		if ( ! empty( $said['capped_out'] ) ) {
+			$said = self::send_stock_capped_rest( $said, array_slice( $ids, $done ) );
+			$done = count( $ids );
+		}
+		$said['done'] = $done;
+
+		return $said;
+	}
+
+	/**
+	 * Why "Send stock to eBay" queues nothing at all (3.40.0): 'off' when
+	 * "Send website stock changes to eBay?" is No (pushes_enabled()),
+	 * 'not_connected' when no push could be sent (may_queue()), else ''.
+	 *
+	 * @param mixed $settings tcgiant_sync_ebay_settings; read when not an array.
+	 * @return string
+	 */
+	public static function send_stock_stopped( $settings = null ) {
+		if ( ! is_array( $settings ) ) {
+			$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
+		}
+		if ( ! self::pushes_enabled( $settings ) ) {
+			return 'off';
+		}
+		if ( ! self::may_queue( $settings ) ) {
+			return 'not_connected';
+		}
+		return '';
+	}
+
+	/**
+	 * What one chosen product sends (3.40.0): itself, or for a variable
+	 * product linked to eBay, the stock it keeps for its variations once
+	 * (a shared-stock push), when an enabled variation takes it (fix round
+	 * 2), and each enabled variation keeping its own stock. A disabled
+	 * variation (not published) is not on eBay, as the exporter has it (fix
+	 * round 1): it is named, not sent, one taking the parent's stock too
+	 * (fix round 2). One with nothing to send is itself, and is said as a
+	 * stock change of it would be; one whose variations are all disabled
+	 * is said by them alone.
+	 *
+	 * @param WC_Product $product The product chosen.
+	 * @return array{0: WC_Product[], 1: int[]} What to send, and the
+	 *               disabled variations.
+	 */
+	private static function stock_units( $product ) {
+		if ( ! $product->is_type( 'variable' ) || '' === (string) get_post_meta( (int) $product->get_id(), '_ebay_item_id', true ) ) {
+			return array( array( $product ), array() );
+		}
+
+		$units    = array();
+		$disabled = array();
+		$pooled   = false;
+		foreach ( (array) $product->get_children() as $child_id ) {
+			$child = wc_get_product( (int) $child_id );
+			if ( ! $child ) {
+				continue;
+			}
+			if ( 'publish' !== (string) $child->get_status() ) {
+				$disabled[] = (int) $child_id;
+			} elseif ( self::stock_held_by_parent( $child ) ) {
+				$pooled = true;
+			} else {
+				$units[] = $child;
+			}
+		}
+		// The stock it keeps for its variations, once, first: only when an
+		// enabled variation takes it (review 2's L-2).
+		if ( $pooled && $product->managing_stock() ) {
+			array_unshift( $units, $product );
+		}
+
+		if ( ! $units && ! $disabled ) {
+			$units[] = $product;
+		}
+
+		return array( $units, $disabled );
+	}
+
+	/**
+	 * Queue one product's stock, as a stock change of it would, and say
+	 * what happened in the action's lists (3.40.0).
+	 *
+	 * @param WC_Product $product  The product or variation.
+	 * @param array      $said     The lists, added to.
+	 * @param array      $sent     Products whose push this request queued.
+	 * @param bool       $auto_end "Auto-end listing when stock reaches 0".
+	 * @return void
+	 */
+	private function send_stock_unit( $product, array &$said, array &$sent, $auto_end ) {
+		$id = (int) $product->get_id();
+
+		// As a stock change of it: eBay's own figure, just written here, is
+		// not sent back; a website order's own reduction is sent by the
+		// order's push.
+		if ( $this->is_ebay_origin_change( $id ) || self::reduced_by_order( $product ) ) {
+			self::said_add( $said, 'on_way', $id );
+			return;
+		}
+
+		$queued = $this->queue_stock_update_for_product( $product, true );
+		$holder = (int) ( $queued['holder'] ?? $id );
+
+		if ( 'queued' === $queued['status'] ) {
+			$sent[ $holder ] = true;
+			self::said_add( $said, self::send_stock_call( $queued['target'], (int) $queued['stock'], $auto_end ), $holder );
+			return;
+		}
+
+		// The push this request has just queued for it: sent once.
+		if ( 'pending' === $queued['status'] && isset( $sent[ $holder ] ) ) {
+			return;
+		}
+
+		// Switched off, or the connection gone, since the action began: it
+		// stops there, and says so (fix round 1).
+		if ( 'off' === $queued['status'] || 'not_connected' === $queued['status'] ) {
+			$said['stopped'] = $queued['status'];
+			return;
+		}
+
+		if ( 'capped' === $queued['status'] ) {
+			$said['capped_out'] = 1;
+		}
+
+		$lists = array(
+			'not_linked' => 'not_linked',
+			'no_stock'   => 'no_stock',
+			'auction'    => 'auction',
+			'ended'      => 'ended',
+			'pending'    => 'on_way',
+			'suppressed' => 'on_way',
+			'capped'     => 'capped',
+		);
+		self::said_add( $said, $lists[ $queued['status'] ] ?? 'not_sent', $id );
+	}
+
+	/**
+	 * Which of the action's queued lists a push goes in, by what it will
+	 * send eBay (3.40.0), as the push decides it: a shared stock is read,
+	 * sent to the variations taking it, and read back ('pool'; at 0
+	 * 'pool_zero', where eBay's refusal of the last variation's 0 ends the
+	 * listing). At 0 the push reads eBay first (fix round 1): a listing that
+	 * is not a variation is ended with auto-end on if eBay still shows stock
+	 * ('end'); with it off an auction is left running with no call ('none');
+	 * a variation, or a listing with auto-end off, is set to 0 if eBay shows
+	 * more, and ended only if eBay will not take 0 ('zero'). Everything else
+	 * sets eBay's quantity ('revise').
+	 *
+	 * @param array $target   From push_target().
+	 * @param int   $stock    The stock queued.
+	 * @param bool  $auto_end "Auto-end listing when stock reaches 0".
+	 * @return string
+	 */
+	private static function send_stock_call( array $target, $stock, $auto_end ) {
+		if ( $target['pool'] ) {
+			return $stock > 0 ? 'pool' : 'pool_zero';
+		}
+		if ( $stock > 0 ) {
+			return 'revise';
+		}
+		if ( $target['variation'] ) {
+			return 'zero';
+		}
+		if ( $auto_end ) {
+			return 'end';
+		}
+		return $target['auction'] ? 'none' : 'zero';
+	}
+
+	/**
+	 * Whether a listing is recorded here as ended, with its sales in the
+	 * stock, so that a push of it sends nothing: run_push()'s own test, for
+	 * a fixed-price listing or a shared stock, and push_auction()'s for an
+	 * auction at 0. Local reads only (fix round 1).
+	 *
+	 * @param array $target From push_target().
+	 * @param int   $stock  The stock it would send.
+	 * @return bool
+	 */
+	private static function ended_settled( array $target, $stock ) {
+		$owner_id = (int) $target['owner_id'];
+
+		if ( $target['auction'] ) {
+			$owner = wc_get_product( $owner_id );
+			return (int) $stock <= 0 && $owner && self::auction_settled( $owner ) && self::settle_trusted( $owner_id );
+		}
+
+		return 'Ended' === (string) get_post_meta( $owner_id, '_ebay_listing_status', true )
+			&& self::listing_already_settled( $owner_id, $target['item_id'] )
+			&& self::settle_trusted( $owner_id );
+	}
+
+	/**
+	 * IDs each of "Send stock to eBay"'s lists names (3.40.0); the rest are
+	 * counted.
+	 */
+	const SEND_STOCK_NAMED = 5;
+
+	/**
+	 * "Send stock to eBay"'s lists (3.40.0), in the order they are said:
+	 * the pushes queued, by what each sends eBay, then each reason a product
+	 * was not sent.
+	 */
+	const SEND_STOCK_LISTS = array( 'revise', 'end', 'zero', 'pool', 'pool_zero', 'none', 'not_linked', 'no_stock', 'auction', 'ended', 'on_way', 'denied', 'capped', 'not_sent' );
+
+	/** Of SEND_STOCK_LISTS, the pushes queued. */
+	const SEND_STOCK_QUEUED = array( 'revise', 'end', 'zero', 'pool', 'pool_zero', 'none' );
+
+	/** Of SEND_STOCK_QUEUED, those at 0 whose listing may be ended: the notice is a warning. */
+	const SEND_STOCK_AT_ZERO = array( 'end', 'zero', 'pool_zero' );
+
+	/**
+	 * Pushes "Send stock to eBay" may queue a UTC day on the free plan
+	 * (fix round 1, the owner's decision): a fifth of the free plan's 1,000
+	 * eBay calls. No limit on a paid plan.
+	 */
+	const SEND_STOCK_FREE_DAILY = 200;
+
+	/** The relay's daily allowance of eBay calls on the free plan. */
+	const FREE_PLAN_CALLS = 1000;
+
+	/** {day, count}: the pushes "Send stock to eBay" queued today, on the free plan. */
+	const SEND_STOCK_TODAY_OPTION = 'tcgiant_sync_send_stock_today';
+
+	/**
+	 * The most pushes "Send stock to eBay" may queue today, or 0 for no
+	 * limit (fix round 1). The plan is read from the eBay allowance the
+	 * relay last gave this site (the site_cap of tcgiant_relay_budget_<day>,
+	 * today's or yesterday's, however old: unlike
+	 * TCGiant_Sync_API::site_daily_allowance(), which drops a figure older
+	 * than two hours, because a budget must be current). Above the free
+	 * plan's 1,000 is a paid plan. None known counts as free.
+	 *
+	 * @return int
+	 */
+	public static function send_stock_daily_cap() {
+		$now = time();
+		foreach ( array( gmdate( 'Y-m-d', $now ), gmdate( 'Y-m-d', $now - DAY_IN_SECONDS ) ) as $day ) {
+			$budget = get_transient( 'tcgiant_relay_budget_' . $day );
+			if ( is_array( $budget ) && isset( $budget['site_cap'] ) && is_numeric( $budget['site_cap'] ) ) {
+				return (int) $budget['site_cap'] > self::FREE_PLAN_CALLS ? 0 : self::SEND_STOCK_FREE_DAILY;
+			}
+		}
+		return self::SEND_STOCK_FREE_DAILY;
+	}
+
+	/**
+	 * Pushes "Send stock to eBay" has queued today on the free plan, by the
+	 * UTC day, as the bulk push counts (TCGiant_Sync_Exporter::
+	 * bulk_pushed_today()), in its own option.
+	 *
+	 * @return int
+	 */
+	public static function send_stock_today() {
+		if ( function_exists( 'wp_cache_delete' ) ) {
+			wp_cache_delete( self::SEND_STOCK_TODAY_OPTION, 'options' );
+		}
+		$day = get_option( self::SEND_STOCK_TODAY_OPTION, array() );
+		if ( ! is_array( $day ) || gmdate( 'Y-m-d' ) !== ( $day['day'] ?? '' ) ) {
+			return 0;
+		}
+		return max( 0, (int) ( $day['count'] ?? 0 ) );
+	}
+
+	/**
+	 * Take one of today's pushes for "Send stock to eBay" (fix round 1), as
+	 * TCGiant_Sync_Exporter::take_bulk_push_allowance() takes the bulk
+	 * push's: false when today's are used. Nothing is counted on a plan with
+	 * no limit.
+	 *
+	 * @return bool
+	 */
+	private static function take_send_stock_allowance() {
+		$cap = self::send_stock_daily_cap();
+		if ( $cap < 1 ) {
+			return true;
+		}
+		$today = self::send_stock_today();
+		if ( $today >= $cap ) {
+			return false;
+		}
+		update_option( self::SEND_STOCK_TODAY_OPTION, array(
+			'day'   => gmdate( 'Y-m-d' ),
+			'count' => $today + 1,
+		), false );
+		return true;
+	}
+
+	/**
+	 * Give back the unit take_send_stock_allowance() took for a push that
+	 * was not queued after all (fix round 2, review 2's L-4): one less on
+	 * today's count. Nothing on a plan with no limit, or once the UTC day
+	 * has turned and the count begun again.
+	 *
+	 * @return void
+	 */
+	private static function give_back_send_stock_allowance() {
+		if ( self::send_stock_daily_cap() < 1 ) {
+			return;
+		}
+		$today = self::send_stock_today();
+		if ( $today < 1 ) {
+			return;
+		}
+		update_option( self::SEND_STOCK_TODAY_OPTION, array(
+			'day'   => gmdate( 'Y-m-d' ),
+			'count' => $today - 1,
+		), false );
+	}
+
+	/**
+	 * Queue a push "Send stock to eBay" asked for (fix round 2, review 2's
+	 * L-4). Should Action Scheduler not save it - its store throws, as its
+	 * database store does on a failed insert, or it gives no action ID -
+	 * what was taken for it is put back: today's unit, the 60-second mark
+	 * and the push's pending mark. That is logged, and the action goes on,
+	 * so its own line and notice are still written, with this product said
+	 * as not sent.
+	 *
+	 * @param array  $job       The push.
+	 * @param string $dedup_key Its 60-second mark.
+	 * @return bool Queued.
+	 */
+	private static function enqueue_asked_push( array $job, $dedup_key ) {
+		$why = '';
+		try {
+			$action_id = as_enqueue_async_action( self::PUSH_HOOK, array( $job ), self::PUSH_GROUP );
+		} catch ( Throwable $e ) {
+			$action_id = 0;
+			$why       = $e->getMessage();
+		}
+		if ( 0 !== $action_id ) {
+			return true;
+		}
+
+		self::give_back_send_stock_allowance();
+		delete_transient( $dedup_key );
+		self::push_done( $job, true );
+		TCGiant_Sync_Logger::log( sprintf(
+			'Stock push for WC #%d (Send stock to eBay) not queued: Action Scheduler did not save it%s. Nothing was sent; send its stock again.',
+			(int) $job['product_id'],
+			'' !== $why ? ' (' . $why . ')' : ''
+		), 'warning' );
+		return false;
+	}
+
+	/**
+	 * "Send stock to eBay today: 120 of 200", where the action starts and in
+	 * its notice (fix round 1).
+	 *
+	 * @return string
+	 */
+	public static function send_stock_today_line() {
+		$cap = self::send_stock_daily_cap();
+		if ( $cap < 1 ) {
+			return __( 'Send stock to eBay: no daily limit on your plan.', 'tcgiant-sync' );
+		}
+		return sprintf(
+			/* translators: 1: pushes queued today, 2: the daily limit */
+			__( 'Send stock to eBay today: %1$s of %2$s.', 'tcgiant-sync' ),
+			number_format_i18n( self::send_stock_today() ),
+			number_format_i18n( $cap )
+		);
+	}
+
+	/**
+	 * Empty lists for "Send stock to eBay" (3.40.0).
+	 *
+	 * @return array
+	 */
+	public static function send_stock_said() {
+		$said = array(
+			'stopped'    => '',
+			'staging'    => 0,
+			'capped_out' => 0,
+			'done'       => 0,
+		);
+		foreach ( self::SEND_STOCK_LISTS as $list ) {
+			$said[ $list ] = array(
+				'n'   => 0,
+				'ids' => array(),
+			);
+		}
+		return $said;
+	}
+
+	/**
+	 * One product in one of the action's lists.
+	 *
+	 * @param array  $said The lists.
+	 * @param string $list Which.
+	 * @param int    $id   The product.
+	 * @return void
+	 */
+	private static function said_add( array &$said, $list, $id ) {
+		$said[ $list ]['n']++;
+		if ( count( $said[ $list ]['ids'] ) < self::SEND_STOCK_NAMED ) {
+			$said[ $list ]['ids'][] = (int) $id;
+		}
+	}
+
+	/**
+	 * Products left once today's allowance is used, said as capped without
+	 * being looked at: counted, and the first named (fix round 1).
+	 *
+	 * @param array $said The lists.
+	 * @param int[] $ids  The products left.
+	 * @return array
+	 */
+	public static function send_stock_capped_rest( array $said, array $ids ) {
+		$said['capped']['n'] += count( $ids );
+		foreach ( $ids as $id ) {
+			if ( count( $said['capped']['ids'] ) >= self::SEND_STOCK_NAMED ) {
+				break;
+			}
+			$said['capped']['ids'][] = (int) $id;
+		}
+		$said['capped_out'] = 1;
+		return $said;
+	}
+
+	/**
+	 * Two batches of the action, as one (the Listings page's job, 3.40.0).
+	 *
+	 * @param mixed $a The lists so far (not an array: none).
+	 * @param array $b A batch's.
+	 * @return array
+	 */
+	public static function merge_send_stock( $a, array $b ) {
+		$out = self::send_stock_said();
+		$a   = is_array( $a ) ? $a : $out;
+
+		$out['stopped']    = '' !== (string) ( $a['stopped'] ?? '' ) ? (string) $a['stopped'] : (string) ( $b['stopped'] ?? '' );
+		$out['staging']    = max( (int) ( $a['staging'] ?? 0 ), (int) ( $b['staging'] ?? 0 ) );
+		$out['capped_out'] = max( (int) ( $a['capped_out'] ?? 0 ), (int) ( $b['capped_out'] ?? 0 ) );
+		foreach ( self::SEND_STOCK_LISTS as $list ) {
+			$out[ $list ]['n']   = (int) ( $a[ $list ]['n'] ?? 0 ) + (int) ( $b[ $list ]['n'] ?? 0 );
+			$out[ $list ]['ids'] = array_slice( array_merge( (array) ( $a[ $list ]['ids'] ?? array() ), (array) ( $b[ $list ]['ids'] ?? array() ) ), 0, self::SEND_STOCK_NAMED );
+		}
+		return $out;
+	}
+
+	/**
+	 * How many pushes the action queued (3.40.0).
+	 *
+	 * @param array $said Its lists.
+	 * @return int
+	 */
+	public static function send_stock_queued( array $said ) {
+		$n = 0;
+		foreach ( self::SEND_STOCK_QUEUED as $list ) {
+			$n += (int) ( $said[ $list ]['n'] ?? 0 );
+		}
+		return $n;
+	}
+
+	/**
+	 * How many products the action did not send (3.40.0).
+	 *
+	 * @param array $said Its lists.
+	 * @return int
+	 */
+	public static function send_stock_skipped( array $said ) {
+		$n = 0;
+		foreach ( array_diff( self::SEND_STOCK_LISTS, self::SEND_STOCK_QUEUED ) as $list ) {
+			$n += (int) ( $said[ $list ]['n'] ?? 0 );
+		}
+		return $n;
+	}
+
+	/**
+	 * Whether the action's notice is a warning (fix round 1): it stopped,
+	 * on a staging copy, nothing queued, a push at 0 whose listing may be
+	 * ended, or today's limit reached.
+	 *
+	 * @param array $said Its lists.
+	 * @return bool
+	 */
+	public static function send_stock_warns( array $said ) {
+		if ( '' !== (string) ( $said['stopped'] ?? '' ) || ! empty( $said['staging'] ) || self::send_stock_queued( $said ) < 1 || (int) ( $said['capped']['n'] ?? 0 ) > 0 ) {
+			return true;
+		}
+		foreach ( self::SEND_STOCK_AT_ZERO as $list ) {
+			if ( (int) ( $said[ $list ]['n'] ?? 0 ) > 0 ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * "#1, #2 and 3 more", for one of the action's lists.
+	 *
+	 * @param array $entry n and ids.
+	 * @return string
+	 */
+	private static function said_ids( array $entry ) {
+		$ids  = array_map( 'intval', (array) ( $entry['ids'] ?? array() ) );
+		$more = (int) ( $entry['n'] ?? 0 ) - count( $ids );
+		return '#' . implode( ', #', $ids ) . ( $more > 0 ? sprintf( ' and %d more', $more ) : '' );
+	}
+
+	/**
+	 * Why the action stopped, in words, for the notice (fix round 1).
+	 *
+	 * @param string $stopped 'off' or 'not_connected'.
+	 * @return string
+	 */
+	private static function send_stock_stop_words( $stopped ) {
+		return 'off' === $stopped
+			? __( '"Send website stock changes to eBay?" is No in TCGiant Sync, Settings', 'tcgiant-sync' )
+			: __( 'this site is not connected to eBay', 'tcgiant-sync' );
+	}
+
+	/**
+	 * What "Send stock to eBay" did, in sentences, for the notice after it
+	 * (3.40.0): on the products list, and the Listings page's progress
+	 * window. Short and plain (fix round 1).
+	 *
+	 * @param array $said Its lists.
+	 * @return string[]
+	 */
+	public static function send_stock_lines( array $said ) {
+		$stopped = (string) ( $said['stopped'] ?? '' );
+		$n       = self::send_stock_queued( $said );
+
+		if ( '' !== $stopped && $n < 1 ) {
+			return array( 'off' === $stopped
+				? __( 'Send stock to eBay: nothing was queued, because "Send website stock changes to eBay?" is No in TCGiant Sync, Settings. Set it to Yes to send stock to eBay.', 'tcgiant-sync' )
+				: __( 'Send stock to eBay: nothing was queued, because this site is not connected to eBay. Connect it in TCGiant Sync, Settings, then send the stock again.', 'tcgiant-sync' ) );
+		}
+
+		if ( '' !== $stopped ) {
+			$lines = array( sprintf(
+				/* translators: 1: number of pushes, 2: why it stopped, 3: what to do then */
+				_n( 'Send stock to eBay: %1$d push queued, then it stopped: %2$s, so it will not be sent if it is still waiting. %3$s', 'Send stock to eBay: %1$d pushes queued, then it stopped: %2$s, so those still waiting will not be sent. %3$s', $n, 'tcgiant-sync' ),
+				$n,
+				self::send_stock_stop_words( $stopped ),
+				'off' === $stopped ? __( 'Send stock to eBay again once it is Yes.', 'tcgiant-sync' ) : __( 'Send stock to eBay again once it is connected.', 'tcgiant-sync' )
+			) );
+		} elseif ( $n < 1 ) {
+			$lines = array( __( 'Send stock to eBay: nothing was queued.', 'tcgiant-sync' ) );
+		} else {
+			/* translators: %d: number of pushes */
+			$lines = array( sprintf( _n( 'Send stock to eBay: %d push queued. It sends a product\'s stock in the background, as a stock change would.', 'Send stock to eBay: %d pushes queued. Each sends a product\'s stock in the background, as a stock change would.', $n, 'tcgiant-sync' ), $n ) );
+		}
+
+		$words = array(
+			/* translators: %d: number of products */
+			'revise'     => _n( '%d sets eBay\'s quantity to its stock.', '%d set eBay\'s quantity to their stock.', (int) $said['revise']['n'], 'tcgiant-sync' ),
+			/* translators: 1: number of products, 2: their IDs */
+			'end'        => _n( '%1$d at 0: its eBay listing will be ended if eBay still shows stock (an auction with bids is left running): %2$s.', '%1$d at 0: their eBay listings will be ended if eBay still shows stock (an auction with bids is left running): %2$s.', (int) $said['end']['n'], 'tcgiant-sync' ),
+			/* translators: 1: number of products, 2: their IDs */
+			'zero'       => _n( '%1$d at 0: eBay is set to 0 if it still shows stock. If eBay will not take 0 (Out-of-Stock control off), the listing is ended: %2$s.', '%1$d at 0: eBay is set to 0 if it still shows stock. If eBay will not take 0 (Out-of-Stock control off), the listing is ended: %2$s.', (int) $said['zero']['n'], 'tcgiant-sync' ),
+			/* translators: %d: number of products */
+			'pool'       => _n( '%d shared stock: eBay is read, the variations set (four a call), then read again.', '%d shared stocks: eBay is read, the variations set (four a call), then read again.', (int) $said['pool']['n'], 'tcgiant-sync' ),
+			/* translators: 1: number of products, 2: their IDs */
+			'pool_zero'  => _n( '%1$d shared stock at 0: each variation is set to 0 if eBay still shows it with stock; if eBay will not take 0 (Out-of-Stock control off), the listing is ended: %2$s.', '%1$d shared stocks at 0: each variation is set to 0 if eBay still shows it with stock; if eBay will not take 0 (Out-of-Stock control off), the listing is ended: %2$s.', (int) $said['pool_zero']['n'], 'tcgiant-sync' ),
+			/* translators: 1: number of products, 2: their IDs */
+			'none'       => _n( '%1$d auction at 0 with "Auto-end listing when stock reaches 0" off: it is left running, and nothing is sent: %2$s.', '%1$d auctions at 0 with "Auto-end listing when stock reaches 0" off: they are left running, and nothing is sent: %2$s.', (int) $said['none']['n'], 'tcgiant-sync' ),
+			/* translators: 1: number of products, 2: their IDs */
+			'not_linked' => _n( '%1$d not sent: not on eBay: %2$s.', '%1$d not sent: not on eBay: %2$s.', (int) $said['not_linked']['n'], 'tcgiant-sync' ),
+			/* translators: 1: number of products, 2: their IDs */
+			'no_stock'   => _n( '%1$d not sent: WooCommerce does not manage its stock, or has no figure for it: %2$s.', '%1$d not sent: WooCommerce does not manage their stock, or has no figure for them: %2$s.', (int) $said['no_stock']['n'], 'tcgiant-sync' ),
+			/* translators: 1: number of products, 2: their IDs */
+			'auction'    => _n( '%1$d not sent: an auction with stock is one item, so there is no quantity to send: %2$s.', '%1$d not sent: an auction with stock is one item, so there is no quantity to send: %2$s.', (int) $said['auction']['n'], 'tcgiant-sync' ),
+			/* translators: 1: number of products, 2: their IDs */
+			'ended'      => _n( '%1$d not sent: the eBay listing has ended - relist it to sell it again: %2$s.', '%1$d not sent: the eBay listings have ended - relist them to sell them again: %2$s.', (int) $said['ended']['n'], 'tcgiant-sync' ),
+			/* translators: 1: number of products, 2: their IDs */
+			'on_way'     => _n( '%1$d not sent: a push of its stock is already on its way, or eBay\'s own figure was just brought in: %2$s.', '%1$d not sent: a push of their stock is already on its way, or eBay\'s own figure was just brought in: %2$s.', (int) $said['on_way']['n'], 'tcgiant-sync' ),
+			/* translators: 1: number of products, 2: their IDs */
+			'denied'     => _n( '%1$d not sent: you cannot edit it: %2$s.', '%1$d not sent: you cannot edit them: %2$s.', (int) $said['denied']['n'], 'tcgiant-sync' ),
+			/* translators: 1: number of products, 2: the daily limit, 3: their IDs */
+			'capped'     => _n( '%1$d not sent: today\'s limit for Send stock to eBay (%2$s on the free plan) is reached - select it again tomorrow, or upgrade: %3$s.', '%1$d not sent: today\'s limit for Send stock to eBay (%2$s on the free plan) is reached - select them again tomorrow, or upgrade: %3$s.', (int) $said['capped']['n'], 'tcgiant-sync' ),
+			/* translators: 1: number of products, 2: their IDs */
+			'not_sent'   => _n( '%1$d not sent: its stock cannot be sent to its listing, and the log says why: %2$s.', '%1$d not sent: their stock cannot be sent to their listing, and the log says why: %2$s.', (int) $said['not_sent']['n'], 'tcgiant-sync' ),
+		);
+		foreach ( self::SEND_STOCK_LISTS as $list ) {
+			$count = (int) $said[ $list ]['n'];
+			if ( $count < 1 ) {
+				continue;
+			}
+			if ( in_array( $list, array( 'revise', 'pool' ), true ) ) {
+				$lines[] = sprintf( $words[ $list ], $count );
+			} elseif ( 'capped' === $list ) {
+				$lines[] = sprintf( $words[ $list ], $count, number_format_i18n( self::SEND_STOCK_FREE_DAILY ), self::said_ids( $said[ $list ] ) );
+			} else {
+				$lines[] = sprintf( $words[ $list ], $count, self::said_ids( $said[ $list ] ) );
+			}
+		}
+
+		if ( ! empty( $said['staging'] ) ) {
+			$lines[] = __( 'This is a staging copy: each push stops before it reaches eBay, and nothing is sent.', 'tcgiant-sync' );
+		} elseif ( $n > 0 && '' === $stopped ) {
+			$lines[] = __( 'A push eBay refuses is tried again. Once today\'s eBay calls are used up, a push above 0 waits until tomorrow.', 'tcgiant-sync' );
+		}
+		$lines[] = self::send_stock_today_line();
+
+		return $lines;
+	}
+
+	/**
+	 * The action's one log line (3.40.0): the pushes queued, by the call
+	 * each makes, and each list of products not sent, with their IDs; and,
+	 * when it stopped, why (fix round 1).
+	 *
+	 * @param array  $said    Its lists.
+	 * @param string $where   'products list' or 'Listings page'.
+	 * @param int    $user_id The user.
+	 * @param string $how     Words after the head: "cancelled after 100 of
+	 *                        150 products: ", say.
+	 * @return void
+	 */
+	public static function log_send_stock( array $said, $where, $user_id, $how = '' ) {
+		$head    = sprintf( 'Send stock to eBay (%s, user #%d): ', $where, (int) $user_id ) . $how;
+		$stopped = (string) ( $said['stopped'] ?? '' );
+		$why     = 'off' === $stopped ? '"Send website stock changes to eBay?" is No' : 'this site is not connected to eBay';
+
+		if ( '' !== $stopped && self::send_stock_queued( $said ) < 1 ) {
+			TCGiant_Sync_Logger::log( $head . 'nothing queued - ' . $why . '.' );
+			return;
+		}
+
+		$names   = array(
+			'revise'     => 'ReviseInventoryStatus',
+			'end'        => 'at 0, EndItem if eBay shows stock',
+			'zero'       => 'at 0, set to 0 if eBay shows stock',
+			'pool'       => 'shared stock (GetItem, ReviseInventoryStatus, GetItem)',
+			'pool_zero'  => 'shared stock at 0',
+			'none'       => 'auction at 0 with auto-end off, no call',
+			'not_linked' => 'not on eBay',
+			'no_stock'   => 'stock not managed',
+			'auction'    => 'auction above 0',
+			'ended'      => 'listing ended',
+			'on_way'     => 'already on its way',
+			'denied'     => 'no permission',
+			'capped'     => 'today\'s limit reached',
+			'not_sent'   => 'cannot be sent, logged',
+		);
+		$queued  = array();
+		$skipped = array();
+		foreach ( self::SEND_STOCK_LISTS as $list ) {
+			$n = (int) $said[ $list ]['n'];
+			if ( $n < 1 ) {
+				continue;
+			}
+			$part = sprintf( '%s %d: %s', $names[ $list ], $n, self::said_ids( $said[ $list ] ) );
+			if ( in_array( $list, self::SEND_STOCK_QUEUED, true ) ) {
+				$queued[] = $part;
+			} else {
+				$skipped[] = $part;
+			}
+		}
+
+		TCGiant_Sync_Logger::log( $head . sprintf(
+			'%d queued%s; skipped %d%s.%s%s',
+			self::send_stock_queued( $said ),
+			$queued ? ' (' . implode( '; ', $queued ) . ')' : '',
+			self::send_stock_skipped( $said ),
+			$skipped ? ' (' . implode( '; ', $skipped ) . ')' : '',
+			'' !== $stopped ? ' Then it stopped - ' . $why . ', so those still waiting will not be sent; send stock to eBay again once ' . ( 'off' === $stopped ? 'it is Yes' : 'it is connected' ) . '.' : '',
+			! empty( $said['staging'] ) ? ' A staging copy: each push stops before eBay.' : ''
+		) );
 	}
 
 	/**
@@ -3381,7 +4193,9 @@ class TCGiant_Sync_Inventory {
 			}
 		}
 
-		foreach ( array( 'ended_try', 'tomorrow', 'ebay_sale', 'own_queued', 'e518' ) as $key ) {
+		// asked: queued by "Send stock to eBay" (3.40.0 fix round 1), which
+		// reads eBay first at 0. Not an input of is_priority().
+		foreach ( array( 'ended_try', 'tomorrow', 'ebay_sale', 'own_queued', 'e518', 'asked' ) as $key ) {
 			if ( ! empty( $job[ $key ] ) ) {
 				$out[ $key ] = 1;
 			}
@@ -4056,9 +4870,14 @@ class TCGiant_Sync_Inventory {
 		// that way loses its bids) - unless the product says fixed-price and
 		// the shop has no auction at all, where asking would only double the
 		// calls of a CSV that sets thousands to 0.
+		//
+		// "Send stock to eBay" at 0 reads first too (3.40.0 fix round 1, the
+		// owner's decision): a listing, or a variation, eBay already shows at
+		// 0 is left as it is; one showing more goes on as a stock change to 0.
 		$reads_first = 'edit' !== $reason
 			|| (int) $job['attempt'] > 1
 			|| ! empty( $job['check_ended'] )
+			|| ( ! empty( $job['asked'] ) && (int) $wc <= 0 )
 			|| ( (int) $wc <= 0 && ! $target['variation'] && $auto_end && ! self::type_confirmed_fixed( $target['owner_id'], $item_id )
 				&& ( ! self::type_says_fixed( $target['owner_id'] ) || self::shop_may_have_auctions() ) );
 
@@ -4098,7 +4917,11 @@ class TCGiant_Sync_Inventory {
 				$job  = self::record_once_landed( $job, $item_id, $target['variation'] ? $sku : '', (int) $read['sold'], $want, $wc );
 
 				if ( $want === $avail ) {
-					TCGiant_Sync_Logger::log( sprintf( 'Stock push for WC #%d: %s already shows %d available, so nothing was sent.', $product_id, self::listing_words( $target, $sku ), $avail ) );
+					if ( ! empty( $job['asked'] ) && 0 === $want ) {
+						TCGiant_Sync_Logger::log( sprintf( 'Stock push for WC #%d (Send stock to eBay): %s already shows 0 available, so it was left as it is.', $product_id, self::listing_words( $target, $sku ) ) );
+					} else {
+						TCGiant_Sync_Logger::log( sprintf( 'Stock push for WC #%d: %s already shows %d available, so nothing was sent.', $product_id, self::listing_words( $target, $sku ), $avail ) );
+					}
 					self::landed( $job );
 					return self::push_outcome( 'manual' === $reason ? 'skipped' : 'success', sprintf( 'eBay already shows %d', $avail ) );
 				}
@@ -6376,6 +7199,18 @@ class TCGiant_Sync_Inventory {
 				$bids
 			) );
 			return self::push_outcome( 'skipped', sprintf( 'eBay auction has %d bid(s) - left running; end it in Seller Hub if the item has gone', $bids ) );
+		}
+
+		// "Send stock to eBay" (3.40.0 fix round 1): an auction eBay shows
+		// with nothing left is left as it is, from the same read.
+		if ( ! empty( $job['asked'] ) ) {
+			$listed = TCGiant_Sync_API::scalar_value( $item['Quantity'] ?? '' );
+			$sold   = TCGiant_Sync_API::scalar_value( $item['SellingStatus']['QuantitySold'] ?? '0' );
+			if ( is_numeric( $listed ) && (int) $listed - (int) $sold <= 0 ) {
+				TCGiant_Sync_Logger::log( sprintf( 'Stock push for WC #%d (Send stock to eBay): eBay auction %s already shows 0 available, so it was left as it is.', $product_id, $item_id ) );
+				self::landed( $job );
+				return self::push_outcome( 'success', 'eBay already shows 0' );
+			}
 		}
 
 		TCGiant_Sync_Logger::log( sprintf(

@@ -215,6 +215,8 @@ $follow_labels = TCGiant_Sync_Admin::follow_action_labels();
 					<option value="bulk_relist"><?php esc_html_e( 'Relist', 'tcgiant-sync' ); ?></option>
 				<?php endif; ?>
 				<option value="bulk_set_format"><?php esc_html_e( 'Change listing format', 'tcgiant-sync' ); ?></option>
+				<?php // Each product's stock now, queued as a stock change of it would be (3.40.0). ?>
+				<option value="bulk_send_stock"><?php esc_html_e( 'Send stock to eBay', 'tcgiant-sync' ); ?></option>
 				<?php // Whose values each listing's Updates send (3.29.1): saved on the products, nothing sent to eBay. ?>
 				<optgroup label="<?php esc_attr_e( 'What an Update sends eBay', 'tcgiant-sync' ); ?>">
 					<option value="bulk_follow_send"><?php echo esc_html( $follow_labels['tcgiant_follow_send'] ); ?></option>
@@ -240,6 +242,9 @@ $follow_labels = TCGiant_Sync_Admin::follow_action_labels();
 			</span>
 
 			<button type="button" id="tc-bulk-apply" class="button"><?php esc_html_e( 'Apply', 'tcgiant-sync' ); ?></button>
+
+			<?php // What "Send stock to eBay" costs, said before it is chosen (3.40.0). ?>
+			<span id="tc-send-stock-help" class="description" style="display:none;margin-left:8px;color:#646970;"><?php echo esc_html( TCGiant_Sync_Admin::send_stock_cost_words() . ' ' . TCGiant_Sync_Inventory::send_stock_today_line() ); ?></span>
 
 			<?php // A bulk Push here counts against the site's daily limit, as the products list's does. ?>
 			<?php if ( class_exists( 'TCGiant_Sync_Exporter' ) ) : ?>
@@ -499,6 +504,7 @@ $follow_labels = TCGiant_Sync_Admin::follow_action_labels();
 	// The format selects belong to one action only.
 	$('#tc-bulk-action').on('change',function(){
 		$('#tc-format-fields').toggle($(this).val()==='bulk_set_format');
+		$('#tc-send-stock-help').toggle($(this).val()==='bulk_send_stock');
 	}).trigger('change');
 
 	// Only durations eBay honours for the chosen format. Offering the rest is
@@ -525,7 +531,7 @@ $follow_labels = TCGiant_Sync_Admin::follow_action_labels();
 		$('.tc-listing-cb:checked').each(function(){ ids.push(parseInt($(this).val())); });
 		if (!all && !ids.length) { alert('Select at least one listing, or tick the box to apply to everything matching.'); return; }
 
-		var labels = { bulk_push:'Push to eBay', bulk_verify:'Check push settings only (eBay is not asked)', bulk_end:'End Listing', bulk_relist:'Relist', bulk_set_format:'Change listing format', bulk_follow_send:<?php echo wp_json_encode( $follow_labels['tcgiant_follow_send'] ); ?>, bulk_follow_keep:<?php echo wp_json_encode( $follow_labels['tcgiant_follow_keep'] ); ?>, bulk_follow_origin:<?php echo wp_json_encode( $follow_labels['tcgiant_follow_origin'] ); ?> };
+		var labels = { bulk_push:'Push to eBay', bulk_verify:'Check push settings only (eBay is not asked)', bulk_end:'End Listing', bulk_relist:'Relist', bulk_set_format:'Change listing format', bulk_follow_send:<?php echo wp_json_encode( $follow_labels['tcgiant_follow_send'] ); ?>, bulk_follow_keep:<?php echo wp_json_encode( $follow_labels['tcgiant_follow_keep'] ); ?>, bulk_follow_origin:<?php echo wp_json_encode( $follow_labels['tcgiant_follow_origin'] ); ?>, bulk_send_stock:<?php echo wp_json_encode( __( 'Send stock to eBay', 'tcgiant-sync' ) ); ?> };
 		var payload = { action:'tcgiant_job_start', type:action, product_ids:ids, _ajax_nonce:nonce };
 
 		if (action === 'bulk_set_format') {
@@ -546,7 +552,8 @@ $follow_labels = TCGiant_Sync_Admin::follow_action_labels();
 		}
 
 		var howMany = all ? <?php echo (int) $total; ?> : ids.length;
-		if (!confirm('Run "' + labels[action] + '" on ' + howMany + ' listing(s)?')) return;
+		var cost = action === 'bulk_send_stock' ? ' ' + <?php echo wp_json_encode( TCGiant_Sync_Admin::send_stock_cost_words() ); ?> : '';
+		if (!confirm('Run "' + labels[action] + '" on ' + howMany + ' listing(s)?' + cost)) return;
 
 		// Start the job.
 		$.post(ajaxUrl, payload, function(r){
@@ -589,6 +596,10 @@ $follow_labels = TCGiant_Sync_Admin::follow_action_labels();
 				$('#tc-job-cancel').hide();
 				$('#tc-job-done').show();
 				$('#tc-job-status').text('Complete! ' + jobCounts(d) + '.' + (followJob(d) ? ' ' + <?php echo wp_json_encode( __( 'Nothing has been sent to eBay: each listing gets it at its next Update.', 'tcgiant-sync' ) ); ?> : ''));
+				// "Send stock to eBay" (3.40.0): its notice, what each push sends and what was not sent.
+				if (d.lines && d.lines.length) {
+					$('#tc-job-status').text('Complete! ' + d.lines.join(' '));
+				}
 			}
 		});
 	}
@@ -609,6 +620,10 @@ $follow_labels = TCGiant_Sync_Admin::follow_action_labels();
 				said += ', ' + <?php echo wp_json_encode( __( '%d left as they are (no eBay listing, or not yours to edit)', 'tcgiant-sync' ) ); ?>.replace('%d', d.failed);
 			}
 			return said;
+		}
+		// "Send stock to eBay" (3.40.0): what it queued, and what it did not send.
+		if (d.type === 'bulk_send_stock') {
+			return <?php echo wp_json_encode( __( '%1$d queued, %2$d not sent', 'tcgiant-sync' ) ); ?>.replace('%1$d', d.queued || 0).replace('%2$d', d.kept || 0);
 		}
 		if (!d.is_async) {
 			return d.succeeded + ' succeeded, ' + d.failed + ' failed';

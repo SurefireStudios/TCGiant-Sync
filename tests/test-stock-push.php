@@ -687,8 +687,9 @@ function wc_increase_stock_levels( $order ) {
 
 // Action Scheduler: a queue, run through the hooks the plugin registered.
 function as_enqueue_async_action( $hook, $args = array(), $group = '' ) {
-	if ( isset( $GLOBALS['ON_QUEUE'] ) ) {
-		( $GLOBALS['ON_QUEUE'] )( $hook );
+	// ON_QUEUE answering false: Action Scheduler saved nothing (0).
+	if ( isset( $GLOBALS['ON_QUEUE'] ) && false === ( $GLOBALS['ON_QUEUE'] )( $hook ) ) {
+		return 0;
 	}
 	$GLOBALS['QUEUE'][] = array( 'hook' => $hook, 'args' => $args, 'group' => $group, 'when' => time() );
 	return count( $GLOBALS['QUEUE'] );
@@ -4784,7 +4785,7 @@ function request_end() {
 // Fix round 2 (review 2's M-1): the line names what sends the stock - a
 // change of it, or an Update - and what the weekly check does: it logs.
 $unchanged_line = function ( $n, $named ) {
-	return sprintf( 'Real-time stock sync: %s left WooCommerce\'s stock as it was (WC %s), so no eBay update was queued for them. If eBay shows a different quantity, change the stock or Update the listing to send it; the weekly stock check logs listings that differ.', 1 === $n ? '1 stock save of a product on eBay' : $n . ' stock saves of products on eBay', $named );
+	return sprintf( 'Real-time stock sync: %s left WooCommerce\'s stock as it was (WC %s), so no eBay update was queued for them. If eBay shows a different quantity, send it with Send stock to eBay (Bulk actions); the weekly stock check logs listings that differ.', 1 === $n ? '1 stock save of a product on eBay' : $n . ' stock saves of products on eBay', $named );
 };
 
 check( 'the record is made at WooCommerce\'s before-set-stock actions, product and variation', array( $registered( 'woocommerce_product_before_set_stock', 'note_stock_before' ), $registered( 'woocommerce_variation_before_set_stock', 'note_stock_before' ) ), array( array( 1, 10 ), array( 1, 10 ) ) );

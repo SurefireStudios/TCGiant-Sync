@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.39.0
+Stable tag: 3.40.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -148,6 +148,13 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.40.0 - 2026-11-16 =
+* NEW: "Send stock to eBay", a bulk action on Products, All Products (Bulk actions) and on TCGiant Sync, Listings (Bulk Actions). It sends each chosen product's stock, as WooCommerce has it now, to its eBay listing as a stock change of the product would - the same push, the same request to eBay - and nothing else: no price, title or other field. Use it when eBay shows a different quantity and WooCommerce's stock has not changed: after an edit in Seller Hub, while "Send website stock changes to eBay?" was No, or after a push eBay refused (Stock Review lists those). Since 3.39.0 a stock save that changes nothing no longer sends it; this does.
+* NEW: It costs about one eBay call a listing, sent in the background. At 0, eBay is read first: a listing, or a variation, that eBay already shows at 0 is left alone. Otherwise it goes on as a stock change to 0: with "Auto-end listing when stock reaches 0" on, the listing is ended (an auction only if nobody has bid); with it off, eBay is set to 0, and the listing is ended if eBay will not take 0 (Out-of-Stock control off). A variation at 0 ends the listing only when it is eBay's last with stock and eBay will not take 0. A stock a product keeps for its variations is read, set four variations a call, and read again. A variable product sends each enabled variation that keeps its own stock, and the stock it keeps for its variations once.
+* NEW: On the free plan, Send stock to eBay sends up to 200 pushes a day (UTC; each listing, or each variation keeping its own stock, is one); the rest are named, to send tomorrow. The Listings page shows today's count beside the action, and the notice says it after. No limit on a paid plan.
+* NEW: Not sent, and named in the notice and the log (up to five of each): a product not on eBay (a disabled variation included), one whose stock WooCommerce does not manage, an auction with stock (one item: there is nothing to send), a listing that has ended (relist it), one whose push is already on its way, and one you cannot edit. With "Send website stock changes to eBay?" at No, or no eBay connection, nothing is sent and the notice says why. The notice names the products at 0, and those whose listing will be ended. A push eBay refuses is tried again, and once today's eBay calls are used up, a push above 0 waits until tomorrow, as a stock change's push does. A staging copy sends nothing.
+* NOTE: Where TCGiant Sync said to change the stock or Update the listing to send a quantity eBay shows wrongly - the log line after stock saves that changed nothing - and in the bulk edit's words and Stock Review's list of pushes eBay refused, it now names Send stock to eBay.
 
 = 3.39.0 - 2026-11-13 =
 * NEW: Bulk edit of eBay fields, in WooCommerce's own Bulk Edit. On Products, All Products, select products, choose Bulk actions, Edit: an "eBay (TCGiant Sync)" group sits beside WooCommerce's own fields, with Item type, eBay category (from your category list, or an ID typed), Graded or Ungraded, Professional grader, Condition (for All Other items), Listing type, Listing duration, Shipping policy, eBay price, No UPC, EAN or ISBN, and 3.38.0's Subtitle, Condition note, Second category, Buy It Now price, Reserve price, Brand and MPN. WooCommerce's filters, search and selection pick the products, as for its own fields: a bulk edit changes the products ticked on one page of the list, and Screen Options sets how many a page shows. The Listings page links to it, "Edit eBay fields in the products list", which opens the products list filtered to products listed on eBay (from its Ended and Sold views, to those whose listing ended).
@@ -1716,6 +1723,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.40.0 =
+New: Send stock to eBay, a bulk action on the products list and the Listings page, sends each chosen product's stock to its eBay listing as a stock change would, and nothing else: about one eBay call a listing. At 0, eBay is read first. Up to 200 pushes a day on the free plan.
 
 = 3.39.0 =
 New: change the eBay fields of many products at once, in WooCommerce's own Bulk Edit (Products, Bulk actions, Edit), in an "eBay (TCGiant Sync)" group. Every field starts at No change, a value a product cannot take is skipped and said, and nothing is sent to eBay until each product's next push or Update. Fixed: a bulk edit, or any other stock write that leaves a product's stock as it was, no longer sends the stock to eBay again; if eBay shows a different quantity, change the stock or Update the listing to send it.

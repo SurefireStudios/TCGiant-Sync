@@ -585,7 +585,7 @@ $tc_nonce    = wp_create_nonce( 'tcgiant_sync_ajax' );
 			<p style="margin:0 0 6px;">
 				<strong><?php printf( esc_html( _n( '%s stock change never reached eBay.', '%s stock changes never reached eBay.', count( $push_failures ), 'tcgiant-sync' ) ), esc_html( number_format_i18n( count( $push_failures ) ) ) ); ?></strong>
 			</p>
-			<p style="margin:0 0 10px;"><?php esc_html_e( 'eBay refused each of these every time it was tried, over about 10 hours (longer when eBay was down or out of calls), so the listing on eBay may still show more than your website holds. Check each listing in Seller Hub and set its quantity there if it is wrong. Your website\'s stock was not changed. The most recent are first.', 'tcgiant-sync' ); ?></p>
+			<p style="margin:0 0 10px;"><?php esc_html_e( 'eBay refused each of these every time it was tried, over about 10 hours (longer when eBay was down or out of calls), so the listing on eBay may still show more than your website holds. Check each listing in Seller Hub and set its quantity there if it is wrong. Once the cause is fixed, Send stock to eBay (Bulk actions) sends your website\'s stock again. Your website\'s stock was not changed. The most recent are first.', 'tcgiant-sync' ); ?></p>
 			<table class="widefat striped" style="margin-bottom:10px;">
 				<thead><tr><th><?php esc_html_e( 'When', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'Product', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'eBay item', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'What changed', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'Your stock then', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'eBay\'s last answer', 'tcgiant-sync' ); ?></th></tr></thead>
 				<tbody>

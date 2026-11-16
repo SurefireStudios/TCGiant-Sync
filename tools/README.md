@@ -101,6 +101,24 @@ node tools/check-bulk-edit-js.js <node_modules/jsdom> <wordpress dir> <dir holdi
 It draws the group with `php tests/test-bulk-edit.php --panel`, ends
 "N passed, M failed", and exits 1 on a failure.
 
+`check-listings-js.js` runs the Listings page's Bulk Actions script for "Send
+stock to eBay" (3.40.0) in jsdom, with WordPress's own jQuery: the option's
+cost and today's count on the free plan shown beside Apply only while it is
+chosen, the confirm naming the cost,
+the job started and each batch asked for, its counts while it runs and its
+notice when it is done, a job refused at its start, and another action's
+confirm as it was. `admin-ajax.php` is played: each post is answered by the
+check. `tests/test-send-stock.php` pins the script's source; this runs it. It
+is not in `tests/run.php`, for the same reasons, and it installs nothing:
+
+```
+node tools/check-listings-js.js <node_modules/jsdom> <wordpress dir> [php]
+```
+
+It draws the page's pieces from `admin/views/listings.php` with
+`php tests/test-send-stock.php --listings-page`, ends "N passed, M failed", and
+exits 1 on a failure.
+
 `check-archive-parity.php` is not part of the routine run, because it needs a
 committed tree. There are two ways a customer receives this plugin — the
 uploaded zip, from the allowlist in `build-manifest.php`, and the GitHub source

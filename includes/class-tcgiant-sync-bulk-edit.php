@@ -859,7 +859,7 @@ class TCGiant_Sync_Bulk_Edit {
 	 */
 	public static function log_line( array $said ) {
 		return sprintf(
-			'Bulk edit of eBay fields (WooCommerce Bulk Edit, user #%1$d): %2$d of %3$d products changed. %4$s These fields were not sent to eBay. A stock left at No change is sent only for a product whose last stock change or website sale never reached eBay.',
+			'Bulk edit of eBay fields (WooCommerce Bulk Edit, user #%1$d): %2$d of %3$d products changed. %4$s These fields were not sent to eBay. A stock left at No change is sent only for a product whose last stock change or website sale never reached eBay; to send a stock as it is, use Send stock to eBay.',
 			get_current_user_id(),
 			$said['changed'],
 			$said['products'],
@@ -900,7 +900,7 @@ class TCGiant_Sync_Bulk_Edit {
 		foreach ( self::lines( $said ) as $line ) {
 			echo '<li>' . esc_html( $line ) . '</li>';
 		}
-		echo '</ul><p>' . esc_html__( 'These fields were not sent to eBay: a product linked to an eBay listing takes the change there at its next push or Update. A stock left at No change is sent only for a product whose last stock change or website sale never reached eBay.', 'tcgiant-sync' )
+		echo '</ul><p>' . esc_html__( 'These fields were not sent to eBay: a product linked to an eBay listing takes the change there at its next push or Update. A stock left at No change is sent only for a product whose last stock change or website sale never reached eBay. To send a stock as it is, use Bulk actions, Send stock to eBay.', 'tcgiant-sync' )
 			. ' <a href="' . esc_url( admin_url( 'admin.php?page=tcgiant-listings' ) ) . '">' . esc_html__( 'Listings', 'tcgiant-sync' ) . '</a></p></div>';
 	}
 
@@ -927,7 +927,7 @@ class TCGiant_Sync_Bulk_Edit {
 		<div id="tcgiant-bulk-edit" class="tcgiant-bulk-edit" style="clear:both;padding-top:6px;">
 			<h4><?php esc_html_e( 'eBay (TCGiant Sync)', 'tcgiant-sync' ); ?></h4>
 			<p class="tcgiant-bulk-intro" style="margin:0 0 6px;font-size:12px;color:#555;"><?php esc_html_e( 'Each field set here changes the selected products\' eBay tab; one left at No change keeps each product\'s own. A value a product cannot take is skipped for it, and the notice after says which. This group sends nothing to eBay: a product linked to an eBay listing takes the change at its next push or Update.', 'tcgiant-sync' ); ?></p>
-			<p class="tcgiant-bulk-scope" style="margin:0 0 6px;font-size:12px;color:#555;"><?php esc_html_e( 'A bulk edit changes the products ticked on this page of the list (Screen Options sets how many a page shows). WooCommerce\'s own Stock field, when it changes a stock, sends it to a linked listing as any stock change does; at No change it sends nothing, unless the product\'s last stock change or website sale never reached eBay: then its stock is sent.', 'tcgiant-sync' ); ?></p>
+			<p class="tcgiant-bulk-scope" style="margin:0 0 6px;font-size:12px;color:#555;"><?php esc_html_e( 'A bulk edit changes the products ticked on this page of the list (Screen Options sets how many a page shows). WooCommerce\'s own Stock field, when it changes a stock, sends it to a linked listing as any stock change does; at No change it sends nothing, unless the product\'s last stock change or website sale never reached eBay: then its stock is sent. To send a stock as it is, use Bulk actions, Send stock to eBay.', 'tcgiant-sync' ); ?></p>
 			<?php foreach ( self::fields() as $field => $def ) : ?>
 				<?php $name = self::PREFIX . $field; ?>
 				<div class="inline-edit-group tcgiant-bulk-field">

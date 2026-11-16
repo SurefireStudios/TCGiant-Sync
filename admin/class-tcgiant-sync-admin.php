@@ -204,6 +204,10 @@ class TCGiant_Sync_Admin {
 		add_filter( 'bulk_actions-edit-product', array( $this, 'register_follow_bulk_actions' ) );
 		add_filter( 'handle_bulk_actions-edit-product', array( $this, 'handle_follow_bulk_action' ), 10, 3 );
 		add_action( 'admin_notices', array( $this, 'follow_bulk_notice' ) );
+		// Send each chosen product's stock to eBay, as a stock change would (3.40.0).
+		add_filter( 'bulk_actions-edit-product', array( $this, 'register_send_stock_bulk_action' ) );
+		add_filter( 'handle_bulk_actions-edit-product', array( $this, 'handle_send_stock_bulk_action' ), 10, 3 );
+		add_action( 'admin_notices', array( $this, 'send_stock_notice' ) );
 		// Products judged imported at 3.28.8's upgrade with a push on record (3.29.1).
 		add_action( 'admin_notices', array( $this, 'origin_upgrade_notice' ) );
 		add_action( 'admin_post_tcgiant_dismiss_origin_notice', array( $this, 'handle_dismiss_origin_notice' ) );
@@ -2740,6 +2744,96 @@ class TCGiant_Sync_Admin {
 		$lines[] = __( 'Nothing has been sent to eBay: each listing gets it at its next Update.', 'tcgiant-sync' );
 
 		echo '<div class="notice ' . ( $counts['left'] > 0 || $counts['denied'] > 0 ? 'notice-warning' : 'notice-success' ) . ' is-dismissible"><p>' . esc_html( implode( ' ', $lines ) ) . '</p></div>';
+	}
+
+	/**
+	 * Transient, per user, that keeps what the products list's "Send stock
+	 * to eBay" did for the notice after it (3.40.0), for five minutes, and
+	 * is shown once: as FOLLOW_SAID, the counts never travel in the address.
+	 */
+	const SEND_STOCK_SAID = 'tcgiant_sync_send_stock_said_';
+
+	/**
+	 * "Send stock to eBay" on the products list (3.40.0), in a group of its
+	 * own whose label says what it costs before it is chosen.
+	 *
+	 * @param array $actions Bulk actions.
+	 * @return array
+	 */
+	public function register_send_stock_bulk_action( $actions ) {
+		$actions[ __( 'TCGiant Sync: about one eBay call a listing', 'tcgiant-sync' ) ] = array(
+			'tcgiant_send_stock' => __( 'Send stock to eBay', 'tcgiant-sync' ),
+		);
+		return $actions;
+	}
+
+	/**
+	 * Send the stock of the products chosen on the products list to their
+	 * eBay listings (3.40.0): TCGiant_Sync_Inventory::send_stock_to_ebay(),
+	 * which only queues the pushes a stock change of each would. WordPress
+	 * has checked the list's nonce before it runs a bulk action; it is
+	 * checked again here, with the capability, as handle_follow_bulk_action()
+	 * does. What it did is logged once and kept for the user's next page
+	 * (SEND_STOCK_SAID), never put in the address.
+	 *
+	 * @param string $redirect_to Redirect URL.
+	 * @param string $action      Action name.
+	 * @param int[]  $post_ids    Products chosen.
+	 * @return string
+	 */
+	public function handle_send_stock_bulk_action( $redirect_to, $action, $post_ids ) {
+		if ( 'tcgiant_send_stock' !== (string) $action ) {
+			return $redirect_to;
+		}
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		$nonce = isset( $_REQUEST['_wpnonce'] ) ? sanitize_text_field( wp_unslash( $_REQUEST['_wpnonce'] ) ) : '';
+		if ( ! wp_verify_nonce( $nonce, 'bulk-posts' ) || ! current_user_can( 'edit_products' ) ) {
+			return $redirect_to;
+		}
+
+		$said = TCGiant_Sync_Inventory::send_stock_to_ebay( (array) $post_ids );
+		TCGiant_Sync_Inventory::log_send_stock( $said, 'products list', get_current_user_id() );
+		set_transient( self::SEND_STOCK_SAID . get_current_user_id(), $said, 5 * MINUTE_IN_SECONDS );
+
+		return $redirect_to;
+	}
+
+	/**
+	 * What the products list's "Send stock to eBay" did (3.40.0), on the
+	 * products list: from the user's own record of it (SEND_STOCK_SAID),
+	 * once.
+	 */
+	public function send_stock_notice() {
+		if ( ! current_user_can( 'edit_products' ) ) {
+			return;
+		}
+		$screen = get_current_screen();
+		if ( ! $screen || 'edit-product' !== $screen->id ) {
+			return;
+		}
+		$said = get_transient( self::SEND_STOCK_SAID . get_current_user_id() );
+		if ( ! is_array( $said ) ) {
+			return;
+		}
+		// Shown once.
+		delete_transient( self::SEND_STOCK_SAID . get_current_user_id() );
+
+		$said    = TCGiant_Sync_Inventory::merge_send_stock( null, $said );
+		$warning = TCGiant_Sync_Inventory::send_stock_warns( $said );
+
+		echo '<div class="notice ' . ( $warning ? 'notice-warning' : 'notice-success' ) . ' is-dismissible"><p>' . esc_html( implode( ' ', TCGiant_Sync_Inventory::send_stock_lines( $said ) ) ) . '</p></div>';
+	}
+
+	/**
+	 * What "Send stock to eBay" costs (3.40.0), said before it runs: on the
+	 * Listings page, beside Apply and in its confirm. Short (fix round 1):
+	 * about one call a listing; at 0 the push reads eBay first, and ends a
+	 * listing only where eBay still shows stock.
+	 *
+	 * @return string
+	 */
+	public static function send_stock_cost_words() {
+		return __( 'Sends each listing the stock WooCommerce has now, in the background, as a stock change would: about one eBay call a listing. At 0, eBay is read first: a listing eBay already shows at 0 is left alone; otherwise, with auto-end on, it is ended.', 'tcgiant-sync' );
 	}
 
 	/**
