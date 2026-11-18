@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.40.0
+Stable tag: 3.41.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -148,6 +148,14 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.41.0 - 2026-11-18 =
+* NEW: Your Pro licence is now checked with TCGiant's own licence server, at tcgiant.com, in place of Lemon Squeezy, which stops on 31 March 2027. There is nothing to do: the next check sends the key and activation this site already holds, the server takes them as they are, and Pro stays on. No key to type again, nothing to activate again.
+* NEW: The server's answers are signed, and the plugin checks each signature with a key built into it. Only a signed answer about this key, this site and this check can take Pro away, or, when the server cannot be reached, Lemon Squeezy saying the key has expired or is disabled. Anything else - no answer, an error page, a bad signature - changes nothing, as since 3.36.0.
+* CHANGE: When Lemon Squeezy is asked, only its word that the key has expired or is disabled takes Pro away. "Not found", or any other "not valid", now changes nothing: Lemon Squeezy is closing, and may forget its keys before it stops answering. Activating a key with Lemon Squeezy still needs it to say the key is activated.
+* NEW: If the server cannot be reached, its last signed answer is trusted for up to 7 days. After that, a Lemon Squeezy key is checked with Lemon Squeezy directly, as before, while Lemon Squeezy still answers. Activating and deactivating a key go to the server, and to Lemon Squeezy only when the server cannot be reached.
+* NEW: The licence card on Settings says who gave the last answer, TCGiant's licence server or Lemon Squeezy, and until when its signed answer holds. Re-check asks the server to ask Lemon Squeezy again at once, so a renewal shows straight away.
+* NOTE: From 1 April 2027 the plugin never asks Lemon Squeezy directly; anything the server cannot answer then changes nothing. A lifetime key is never taken away by Lemon Squeezy saying it has expired, only by a refund (disabled).
 
 = 3.40.0 - 2026-11-16 =
 * NEW: "Send stock to eBay", a bulk action on Products, All Products (Bulk actions) and on TCGiant Sync, Listings (Bulk Actions). It sends each chosen product's stock, as WooCommerce has it now, to its eBay listing as a stock change of the product would - the same push, the same request to eBay - and nothing else: no price, title or other field. Use it when eBay shows a different quantity and WooCommerce's stock has not changed: after an edit in Seller Hub, while "Send website stock changes to eBay?" was No, or after a push eBay refused (Stock Review lists those). Since 3.39.0 a stock save that changes nothing no longer sends it; this does.
@@ -1723,6 +1731,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.41.0 =
+Your Pro licence is now checked with TCGiant's own licence server at tcgiant.com, as Lemon Squeezy closes on 31 March 2027. Nothing to do: the key and activation you have carry over by themselves, and Pro stays on.
 
 = 3.40.0 =
 New: Send stock to eBay, a bulk action on the products list and the Listings page, sends each chosen product's stock to its eBay listing as a stock change would, and nothing else: about one eBay call a listing. At 0, eBay is read first. Up to 200 pushes a day on the free plan.

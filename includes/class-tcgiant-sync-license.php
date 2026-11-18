@@ -2,7 +2,9 @@
 /**
  * License Manager
  *
- * Handles freemium licensing via LemonSqueezy.
+ * Handles freemium licensing: since 3.41.0 with TCGiant's licence server
+ * (SERVER_BASE), whose answers are signed, and with Lemon Squeezy only when
+ * the server cannot be asked (check(), may_ask_ls()).
  * Free tier: 50 active synced products.
  * Pro tier:  Unlimited (valid license key required).
  *
@@ -135,6 +137,58 @@ class TCGiant_Sync_License extends TCGiant_Sync_Entitlements
 	const ANSWER_CODES = array(200, 400, 404, 422);
 
 	/**
+	 * TCGiant's licence server (3.41.0), asked first: activate.php,
+	 * validate.php and deactivate.php under this. Its contract is the
+	 * website's licence/PROTOCOL.md.
+	 */
+	const SERVER_BASE = 'https://tcgiant.com/licence/v1';
+
+	/**
+	 * What the server signs: this, then the payload as sent (PROTOCOL.md 3.1).
+	 */
+	const SERVER_SIGN_PREFIX = 'tcgiant-ent-v1.';
+
+	/**
+	 * The licence server's Ed25519 public keys, by key ID, base64. An answer
+	 * signed with a key not here is unclear, never a "no". To rotate, ship
+	 * both keys, then drop the old one (PROTOCOL.md 6).
+	 *
+	 * k2026a: generated on tcgiant.com's licence admin page on 2026-11-17
+	 * and checked against a live signed answer. tools/check-version.php
+	 * stops a release while a "test-" key is here; the tests add their own
+	 * test key to a copy of this class.
+	 */
+	const SERVER_KEYS = array(
+		'k2026a' => 'KPnvTXgiIDc6ImElc0nx8IL6HYO86tG2N3M29/bTK6c=',
+	);
+
+	/**
+	 * How far ahead of this site's clock an answer's issue time may be.
+	 */
+	const SERVER_CLOCK_SKEW = 86400;
+
+	/**
+	 * A Lemon Squeezy key: a UUID. Only such a key is ever asked of Lemon
+	 * Squeezy directly (PROTOCOL.md 4.4).
+	 */
+	const LS_KEY_PATTERN = '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i';
+
+	/**
+	 * From this moment (UTC) Lemon Squeezy is never asked directly (fix round
+	 * 2): it stops processing on 31 March 2027. The server's own LS_SUNSET is
+	 * the same day.
+	 */
+	const LS_FALLBACK_UNTIL = '2027-04-01T00:00:00Z';
+
+	/**
+	 * LS_FALLBACK_UNTIL in Unix seconds, worked out once (the tests set their
+	 * own).
+	 *
+	 * @var int|null
+	 */
+	private static $ls_fallback_until = null;
+
+	/**
 	 * Main instance.
 	 *
 	 * @return self
@@ -199,6 +253,17 @@ class TCGiant_Sync_License extends TCGiant_Sync_Entitlements
 			'variant_id' => '',
 			'ids_noted' => '',     // a store or product mismatch already logged
 			'lapse_noted' => 0,    // the grace's end already logged
+			// 3.41.0: TCGiant's licence server. Each may be absent from a
+			// licence stored before; absent, the instance is Lemon Squeezy's.
+			'instance_from' => '', // 'tcgiant' when the server issued it, else Lemon Squeezy's
+			'answered_by' => '',   // who gave the last definitive answer: 'tcgiant' or 'ls'
+			'server_status' => '', // the server's last status for the key
+			'server_reason' => '', // and its reason code
+			'server_msg' => '',    // and its sentence
+			'key_source' => '',    // what backs the key there: 'ls' or 'stripe'
+			'fallback' => '',      // 'none': the server says not to ask Lemon Squeezy
+			'token' => array(),    // its last signed answer: kid, payload, sig
+			'token_until' => 0,    // until when that answer may be trusted offline
 		));
 	}
 
@@ -445,6 +510,57 @@ class TCGiant_Sync_License extends TCGiant_Sync_Entitlements
 			return new WP_Error('empty_key', __('Please enter a license key.', 'tcgiant-sync'));
 		}
 
+		// TCGiant's licence server first (3.41.0). Lemon Squeezy only when it
+		// gives no answer, or one that says nothing for sure, and only for a
+		// Lemon Squeezy key (PROTOCOL.md 4.4).
+		$nonce    = self::new_nonce();
+		$site     = $this->site_url();
+		$response = $this->post_server('activate', array(
+			'key' => $key,
+			'site' => $site,
+			'version' => self::plugin_version(),
+			'edition' => 'pro',
+			'nonce' => $nonce,
+			'instance_name' => $this->get_instance_name(),
+		), 15);
+
+		$answer = self::read_server_answer($response, array(
+			'key' => $key,
+			'instance' => null,
+			'nonce' => $nonce,
+			'site' => self::norm_site($site),
+		));
+
+		if ('unclear' !== $answer['verdict']) {
+			return $this->activated_by_server($key, $answer);
+		}
+
+		if (409 === $answer['code']) {
+			// Every seat taken: the server's own words, as text.
+			$msg = sanitize_text_field((string) ($answer['body']['message'] ?? ''));
+			TCGiant_Sync_Logger::error('License activation rejected by TCGiant\'s licence server: every site this key allows is in use.');
+			return new WP_Error('activation_limit', '' !== $msg ? $msg : __('This key is already active on as many sites as it allows. Deactivate it on one of them first.', 'tcgiant-sync'));
+		}
+
+		if (!self::is_ls_key($key) || !self::ls_fallback_open(time())) {
+			TCGiant_Sync_Logger::error('License activation failed: TCGiant\'s licence server could not be asked (' . $answer['why'] . ').');
+			return new WP_Error('api_error', __('Could not reach TCGiant\'s licence server. Please try again.', 'tcgiant-sync'));
+		}
+
+		TCGiant_Sync_Logger::log('Licence: TCGiant\'s licence server could not be asked (' . $answer['why'] . '), so the key is activated with Lemon Squeezy; the next check moves it to the server.', 'warning');
+
+		return $this->activate_with_ls($key);
+	}
+
+	/**
+	 * Activate a Lemon Squeezy key with Lemon Squeezy itself, as 3.36.0 did:
+	 * the fallback when TCGiant's licence server cannot be asked.
+	 *
+	 * @param string $key License key.
+	 * @return array|WP_Error
+	 */
+	private function activate_with_ls($key)
+	{
 		// Call LemonSqueezy license activation endpoint.
 		$response = wp_remote_post(self::LS_API_BASE . '/licenses/activate', array(
 			'timeout' => 15,
@@ -466,10 +582,16 @@ class TCGiant_Sync_License extends TCGiant_Sync_Entitlements
 		$code = wp_remote_retrieve_response_code($response);
 		$body = json_decode(wp_remote_retrieve_body($response), true);
 
-		// Handle API errors.
-		if ($code !== 200 || empty($body['activated'])) {
-			$error_msg = $body['error'] ?? __('Invalid license key.', 'tcgiant-sync');
-			TCGiant_Sync_Logger::error('License activation rejected: ' . $error_msg);
+		// Handle API errors. Only a real activation activates (3.41.0 fix
+		// round 1): a key Lemon Squeezy does not know is simply not
+		// activated, with its words.
+		if ($code !== 200 || true !== ($body['activated'] ?? null)) {
+			$ls_error  = is_array($body) && is_string($body['error'] ?? null) ? sanitize_text_field(substr($body['error'], 0, 200)) : '';
+			$error_msg = '' !== $ls_error
+				/* translators: %s: what Lemon Squeezy said */
+				? sprintf(__('Not activated: Lemon Squeezy says "%s". Check the key and try again.', 'tcgiant-sync'), $ls_error)
+				: __('Not activated: the key could not be confirmed with Lemon Squeezy. Check the key and try again.', 'tcgiant-sync');
+			TCGiant_Sync_Logger::error('License activation rejected: ' . ('' !== $ls_error ? $ls_error : 'HTTP ' . (int) $code));
 			return new WP_Error('invalid_key', $error_msg);
 		}
 
@@ -492,6 +614,11 @@ class TCGiant_Sync_License extends TCGiant_Sync_Entitlements
 			'key' => $key,
 			'status' => 'active',
 			'instance_id' => $instance['id'] ?? '',
+			'instance_from' => 'ls',
+			'answered_by' => 'ls',
+			'token' => array(),
+			'token_until' => 0,
+			'fallback' => '',
 			'customer_name' => $meta['customer_name'] ?? '',
 			'customer_email' => $meta['customer_email'] ?? '',
 			'variant' => $variant,
@@ -522,6 +649,72 @@ class TCGiant_Sync_License extends TCGiant_Sync_Entitlements
 		}
 
 		TCGiant_Sync_Logger::log('License activated successfully! Plan: ' . ucfirst($variant ?: 'unknown'), 'success');
+
+		if (!$was_pro && $this->is_pro()) {
+			TCGiant_Sync_Limit_Held::start('a licence key activated');
+		}
+
+		return array(
+			'success' => true,
+			'message' => __('License activated! You now have unlimited imports.', 'tcgiant-sync'),
+			'variant' => $variant,
+		);
+	}
+
+	/**
+	 * A definitive answer to an activation from TCGiant's licence server:
+	 * the key stored with the instance it issued (or this site's own, re-used),
+	 * or the refusal's words.
+	 *
+	 * @param string $key    License key.
+	 * @param array  $answer read_server_answer()'s.
+	 * @return array|WP_Error
+	 */
+	private function activated_by_server($key, $answer)
+	{
+		$p        = $answer['payload'];
+		$body     = $answer['body'];
+		$instance = is_string($body['instance'] ?? null) ? $body['instance'] : '';
+
+		if ('valid' !== $answer['verdict'] || true !== ($body['activated'] ?? null) || '' === $instance || $instance !== (string) ($p['instance'] ?? '')) {
+			$msg = sanitize_text_field((string) ($body['message'] ?? ($p['msg'] ?? '')));
+			TCGiant_Sync_Logger::error(sprintf('License activation rejected by TCGiant\'s licence server: %s.', $answer['why']));
+			return new WP_Error('invalid_key', '' !== $msg ? $msg : __('Invalid license key.', 'tcgiant-sync'));
+		}
+
+		$this->forget_cached_record();
+		$was_pro = $this->is_pro();
+		$now     = time();
+
+		$this->update_license_data(array_merge(self::server_fields($answer, $now), array(
+			'key' => $key,
+			'status' => 'active',
+			'instance_id' => $instance,
+			// The server re-uses this site's own instance when it holds one:
+			// Lemon Squeezy's, when it says so (fix round 1).
+			'instance_from' => 'ls' === ($body['instance_origin'] ?? '') ? 'ls' : 'tcgiant',
+			'customer_name' => '',
+			'customer_email' => '',
+			'variant' => self::plan_of($p),
+			'expires_at' => self::paid_through_of($p),
+			'activated_at' => current_time('mysql'),
+			'valid_at' => $now,
+			'next_check' => $now + self::RECHECK_VALID,
+			'lapse_noted' => 0,
+			// What Lemon Squeezy said of a key before this one.
+			'ls_status' => '',
+			'ls_error' => '',
+			'store_id' => '',
+			'product_id' => '',
+			'variant_id' => '',
+			'ids_noted' => '',
+		)));
+
+		set_transient(self::VALIDATION_TRANSIENT, 'valid', DAY_IN_SECONDS);
+		$this->schedule_check();
+
+		$variant = self::plan_of($p);
+		TCGiant_Sync_Logger::log('License activated successfully with TCGiant\'s licence server! Plan: ' . ucfirst($variant ?: 'unknown'), 'success');
 
 		if (!$was_pro && $this->is_pro()) {
 			TCGiant_Sync_Limit_Held::start('a licence key activated');
@@ -619,23 +812,43 @@ class TCGiant_Sync_License extends TCGiant_Sync_Entitlements
 			return new WP_Error('no_license', __('No license key to deactivate.', 'tcgiant-sync'));
 		}
 
-		// Call LemonSqueezy deactivation endpoint.
-		$response = wp_remote_post(self::LS_API_BASE . '/licenses/deactivate', array(
-			'timeout' => 15,
-			'headers' => array(
-				'Content-Type' => 'application/json',
-				'Accept' => 'application/json',
-			),
-			'body' => wp_json_encode(array(
-				'license_key' => $data['key'],
-				'instance_id' => $data['instance_id'],
-			)),
-		));
+		// TCGiant's licence server releases the instance (3.41.0). Lemon
+		// Squeezy is asked as well only when the server could not be, and the
+		// instance is Lemon Squeezy's own.
+		$response = $this->post_server('deactivate', array(
+			'key' => (string) $data['key'],
+			'instance' => (string) $data['instance_id'],
+			'site' => $this->site_url(),
+			'version' => self::plugin_version(),
+			'edition' => 'pro',
+		), 15);
+
+		// Released by the server only when it says so: a key or instance it
+		// does not hold ("not_found") is released at Lemon Squeezy too (fix
+		// round 1).
+		$code     = is_wp_error($response) ? 0 : (int) wp_remote_retrieve_response_code($response);
+		$released = 200 === $code ? json_decode((string) wp_remote_retrieve_body($response), true) : null;
+		$answered = is_array($released) && true === ($released['deactivated'] ?? null);
+
+		if (!$answered && 'tcgiant' !== ($data['instance_from'] ?? '')) {
+			// Call LemonSqueezy deactivation endpoint.
+			wp_remote_post(self::LS_API_BASE . '/licenses/deactivate', array(
+				'timeout' => 15,
+				'headers' => array(
+					'Content-Type' => 'application/json',
+					'Accept' => 'application/json',
+				),
+				'body' => wp_json_encode(array(
+					'license_key' => $data['key'],
+					'instance_id' => $data['instance_id'],
+				)),
+			));
+		}
 
 		// Another key activated here while the request was out keeps its
 		// record (3.36.0 fix round 1, changed_meanwhile()).
 		if ($this->changed_meanwhile($data)) {
-			TCGiant_Sync_Logger::log('Licence: the key was released at Lemon Squeezy, but another key was activated on this site while that was asked, so the new key and its record are kept.', 'warning');
+			TCGiant_Sync_Logger::log('Licence: the key was released, but another key was activated on this site while that was asked, so the new key and its record are kept.', 'warning');
 			return array(
 				'success' => true,
 				'message' => __('That key was released. Another key activated on this site meanwhile is kept.', 'tcgiant-sync'),
@@ -662,6 +875,16 @@ class TCGiant_Sync_License extends TCGiant_Sync_Entitlements
 			'variant_id' => '',
 			'ids_noted' => '',
 			'lapse_noted' => 0,
+			// And what TCGiant's licence server said of it (3.41.0).
+			'instance_from' => '',
+			'answered_by' => '',
+			'server_status' => '',
+			'server_reason' => '',
+			'server_msg' => '',
+			'key_source' => '',
+			'fallback' => '',
+			'token' => array(),
+			'token_until' => 0,
 		)));
 		if (function_exists('as_unschedule_all_actions')) {
 			as_unschedule_all_actions(self::CHECK_HOOK);
@@ -832,12 +1055,89 @@ class TCGiant_Sync_License extends TCGiant_Sync_Entitlements
 	 * Before, a background check of a lapsed key that finished just after a
 	 * new key was activated wrote its "not valid" onto the new key.
 	 *
+	 * Since 3.41.0 TCGiant's licence server is asked first, by the same rule
+	 * (read_server_answer()): only its signed answer is definitive. Lemon
+	 * Squeezy is asked, as above, only when the server's answer is unclear,
+	 * the site holds no signed answer still to be trusted offline, the last
+	 * one did not forbid it, and the key is a Lemon Squeezy key
+	 * (may_ask_ls()). A site upgrading from any earlier version sends the
+	 * Lemon Squeezy key and instance_id it holds, and the server takes them
+	 * as they are: nothing is asked of anybody.
+	 *
 	 * @return string 'valid', 'invalid', 'unclear' or 'dropped'.
 	 */
-	private function check()
+	private function check($recheck = false)
+	{
+		$data  = $this->get_license_data();
+		$now   = time();
+		$nonce = self::new_nonce();
+		$site  = $this->site_url();
+
+		$fields = array(
+			'key' => (string) $data['key'],
+			'instance' => (string) $data['instance_id'],
+			'site' => $site,
+			'version' => self::plugin_version(),
+			'edition' => 'pro',
+			'nonce' => $nonce,
+		);
+
+		// A Re-check from the Settings screen asks the server to ask Lemon
+		// Squeezy again now, so a renewal shows at once (fix round 2; the
+		// server limits it per key).
+		if ($recheck) {
+			$fields['recheck'] = 1;
+		}
+
+		$response = $this->post_server('validate', $fields, self::CHECK_TIMEOUT);
+
+		if ($this->changed_meanwhile($data)) {
+			TCGiant_Sync_Logger::log('Licence: the key on this site changed while TCGiant\'s licence server was being asked about the one before, so that answer is dropped and nothing is written.', 'warning');
+			return 'dropped';
+		}
+
+		$answer = self::read_server_answer($response, array(
+			'key' => (string) $data['key'],
+			'instance' => (string) $data['instance_id'],
+			'nonce' => $nonce,
+			'site' => self::norm_site($site),
+		));
+
+		if ('unclear' !== $answer['verdict']) {
+			return $this->apply_server_answer($answer, $now);
+		}
+
+		// The record as the table holds it now (changed_meanwhile()).
+		$data = $this->get_license_data();
+		$why  = 'TCGiant\'s licence server: ' . $answer['why'];
+
+		if (!$this->may_ask_ls($data, $now)) {
+			$this->unclear_answer($data, $why, $now);
+			return 'unclear';
+		}
+
+		return $this->check_with_ls($why);
+	}
+
+	/**
+	 * Lemon Squeezy asked directly, as 3.36.0 does (check()'s fallback):
+	 * only its definitive answer changes anything. The instance_id is sent
+	 * only when it is Lemon Squeezy's: one TCGiant's licence server issued
+	 * is not known there.
+	 *
+	 * @param string $server_why What the licence server's answer was.
+	 * @return string 'valid', 'invalid', 'unclear' or 'dropped'.
+	 */
+	private function check_with_ls($server_why)
 	{
 		$data = $this->get_license_data();
 		$now  = time();
+
+		$fields = array('license_key' => $data['key']);
+
+		if ('tcgiant' !== ($data['instance_from'] ?? '')) {
+			$fields['instance_id'] = $data['instance_id'];
+		}
 
 		$response = wp_remote_post(self::LS_API_BASE . '/licenses/validate', array(
 			'timeout' => self::CHECK_TIMEOUT,
@@ -845,10 +1145,7 @@ class TCGiant_Sync_License extends TCGiant_Sync_Entitlements
 				'Content-Type' => 'application/json',
 				'Accept' => 'application/json',
 			),
-			'body' => wp_json_encode(array(
-				'license_key' => $data['key'],
-				'instance_id' => $data['instance_id'],
-			)),
+			'body' => wp_json_encode($fields),
 		));
 
 		if ($this->changed_meanwhile($data)) {
@@ -865,8 +1162,14 @@ class TCGiant_Sync_License extends TCGiant_Sync_Entitlements
 
 		$answer = self::read_answer($response);
 
+		// A lifetime key has no subscription to expire: only Lemon Squeezy's
+		// "disabled" (a refund) takes it, as on the server (fix round 2).
+		if ('invalid' === $answer['verdict'] && self::lifetime_kept($data, $answer['body'])) {
+			$answer = array('verdict' => 'unclear', 'why' => $answer['why'] . ', a lifetime key (only "disabled" changes it)', 'body' => $answer['body']);
+		}
+
 		if ('unclear' === $answer['verdict']) {
-			$this->unclear_answer($data, $answer['why'], $now);
+			$this->unclear_answer($data, $server_why . '; Lemon Squeezy: ' . $answer['why'], $now);
 			return 'unclear';
 		}
 
@@ -945,6 +1248,28 @@ class TCGiant_Sync_License extends TCGiant_Sync_Entitlements
 	}
 
 	/**
+	 * Whether Lemon Squeezy's "not valid" leaves a lifetime key as it is: the
+	 * key is a lifetime one (by what is stored, or the answer's variant name)
+	 * and Lemon Squeezy does not call it disabled.
+	 *
+	 * @param array $data License data.
+	 * @param array $body The answer.
+	 * @return bool
+	 */
+	private static function lifetime_kept($data, $body)
+	{
+		$status = is_array($body['license_key'] ?? null) && is_scalar($body['license_key']['status'] ?? null) ? strtolower((string) $body['license_key']['status']) : '';
+
+		if ('disabled' === $status) {
+			return false;
+		}
+
+		$name = is_array($body['meta'] ?? null) && is_scalar($body['meta']['variant_name'] ?? null) ? strtolower((string) $body['meta']['variant_name']) : '';
+
+		return 'lifetime' === ($data['variant'] ?? '') || false !== strpos($name, 'lifetime') || false !== strpos($name, 'founder');
+	}
+
+	/**
 	 * Whether a definitive "not valid" was about this site's activation of
 	 * the key rather than the key (3.36.0 fix round 1): the key's own status
 	 * at Lemon Squeezy is active or inactive, or its error names the
@@ -958,6 +1283,11 @@ class TCGiant_Sync_License extends TCGiant_Sync_Entitlements
 	 */
 	private static function activation_released($data)
 	{
+		// TCGiant's licence server says which it is (3.41.0): its reason.
+		if ('tcgiant' === ($data['answered_by'] ?? '')) {
+			return in_array((string) ($data['server_reason'] ?? ''), array('instance_unknown', 'instance_released'), true);
+		}
+
 		$status = strtolower((string) ($data['ls_status'] ?? ''));
 
 		if (in_array($status, array('expired', 'disabled'), true)) {
@@ -982,15 +1312,21 @@ class TCGiant_Sync_License extends TCGiant_Sync_Entitlements
 	 *
 	 * Definitive only as a JSON object with an HTTP code in ANSWER_CODES:
 	 * - license_key.status expired or disabled: not valid;
-	 * - "valid": true, on a 200: valid;
-	 * - "valid": false, on a 200, 400 or 404: not valid.
+	 * - "valid": true, on a 200: valid.
 	 *
 	 * Everything else says nothing for sure, and changes nothing stored: no
 	 * answer (a WP_Error, a timeout), a 429, any 5xx, an HTML page, an empty
 	 * or non-JSON body, JSON without "valid" or with neither true nor false
-	 * in it, "valid": true on anything but a 200 - and a 422 that says no
-	 * more than "valid": false. Lemon Squeezy documents 422 as "A required
-	 * field was invalid or missing": our request, not the key. And this
+	 * in it, "valid": true on anything but a 200 - and, since 3.41.0 (the
+	 * owner's decision, fix round 1), a "valid": false on any code without
+	 * the key expired or disabled: "not found", an instance not found, a
+	 * bare false. Lemon Squeezy is closing, and may forget its keys before
+	 * it stops answering ("customers may lose access to their license
+	 * keys"): its "not found" says nothing about a licence. Until 3.41.0 a
+	 * "valid": false on a 200, 400 or 404 took Pro away too.
+	 *
+	 * A 422 never did: Lemon Squeezy documents it as "A required field was
+	 * invalid or missing": our request, not the key. And this
 	 * plugin sends its fields as JSON, where the License API documents a
 	 * form: should Lemon Squeezy ever stop reading JSON, every check would
 	 * come back 422, and taken as the key's answer that would put every
@@ -1036,11 +1372,483 @@ class TCGiant_Sync_License extends TCGiant_Sync_Entitlements
 			return array('verdict' => 'valid', 'why' => $why, 'body' => $body);
 		}
 
-		if (false === $body['valid'] && 422 !== $code) {
-			return array('verdict' => 'invalid', 'why' => $why, 'body' => $body);
+		if (false === $body['valid']) {
+			return array('verdict' => 'unclear', 'why' => $why . (422 === $code ? ', about the request rather than the key' : ', "valid": false without the key expired or disabled'), 'body' => $body);
 		}
 
-		return array('verdict' => 'unclear', 'why' => $why . (422 === $code ? ', about the request rather than the key' : ', "valid" not clear'), 'body' => $body);
+		return array('verdict' => 'unclear', 'why' => $why . ', "valid" not clear', 'body' => $body);
+	}
+
+	/**
+	 * What an answer from TCGiant's licence server says for sure, if
+	 * anything (3.41.0; PROTOCOL.md 4.1): 3.36.0's rule, with a signature.
+	 *
+	 * Definitive only as HTTP 200, a JSON object, and an entitlement that
+	 * verify_entitlement() accepts for this request: valid when its status is
+	 * active; not valid when it is expired, disabled or unknown. Everything
+	 * else - no answer, any other code, HTML, no entitlement, a key ID not
+	 * built in, a bad signature, an answer about another key, instance,
+	 * request or site - says nothing for sure, and changes nothing.
+	 *
+	 * @param array|WP_Error $response wp_remote_post()'s.
+	 * @param array          $expect   key, instance (null: not compared), nonce, site.
+	 * @return array{verdict: string, why: string, code: int, body: array, payload: array, token: array}
+	 */
+	public static function read_server_answer($response, $expect)
+	{
+		$out = array('verdict' => 'unclear', 'why' => '', 'code' => 0, 'body' => array(), 'payload' => array(), 'token' => array());
+
+		if (is_wp_error($response)) {
+			$out['why'] = 'no answer: ' . $response->get_error_message();
+			return $out;
+		}
+
+		$code = (int) wp_remote_retrieve_response_code($response);
+		$raw  = trim((string) wp_remote_retrieve_body($response));
+		$body = '' === $raw ? null : json_decode($raw, true);
+
+		$out['code'] = $code;
+
+		if (!is_array($body)) {
+			$out['why'] = sprintf('HTTP %d, %s', $code, '' === $raw ? 'an empty reply' : 'not a JSON object');
+			return $out;
+		}
+
+		$out['body'] = $body;
+		$error       = is_string($body['error'] ?? null) ? substr($body['error'], 0, 60) : '';
+
+		if (200 !== $code) {
+			$out['why'] = sprintf('HTTP %d%s', $code, '' !== $error ? ': ' . $error : '');
+			return $out;
+		}
+
+		$ent = $body['entitlement'] ?? null;
+
+		if (!is_array($ent)) {
+			$out['why'] = 'HTTP 200, with no signed answer in it';
+			return $out;
+		}
+
+		$checked = self::verify_entitlement($ent, $expect);
+
+		if (!is_array($checked['payload'])) {
+			$out['why'] = 'HTTP 200, ' . $checked['why'];
+			return $out;
+		}
+
+		$p      = $checked['payload'];
+		$status = (string) $p['status'];
+
+		$out['payload'] = $p;
+		$out['token']   = array('kid' => (string) $ent['kid'], 'payload' => (string) $ent['payload'], 'sig' => (string) $ent['sig']);
+		$out['why']     = 'HTTP 200: ' . $status . ('' !== (string) ($p['reason'] ?? '') ? ', ' . substr((string) $p['reason'], 0, 40) : '');
+		$out['verdict'] = 'active' === $status ? 'valid' : 'invalid';
+
+		return $out;
+	}
+
+	/**
+	 * A signed answer from TCGiant's licence server, checked (PROTOCOL.md
+	 * 4.1, checks 1 to 8): its key ID built in, its signature over the
+	 * payload as sent, protocol 1, and about this key, instance, request and
+	 * site. The signature is checked before the payload is read.
+	 *
+	 * @param mixed $ent    The entitlement: kid, payload, sig.
+	 * @param array $expect key; instance and nonce (null: not compared); site.
+	 * @return array{payload: array|null, why: string}
+	 */
+	public static function verify_entitlement($ent, $expect)
+	{
+		$no = function ($why) {
+			return array('payload' => null, 'why' => $why);
+		};
+
+		if (!is_array($ent) || !is_string($ent['kid'] ?? null) || !is_string($ent['payload'] ?? null) || !is_string($ent['sig'] ?? null)) {
+			return $no('a signed answer not readable');
+		}
+
+		$keys = self::server_keys();
+
+		if (!isset($keys[$ent['kid']])) {
+			return $no('signed with a key this version does not know (' . substr(preg_replace('/[^a-z0-9-]/i', '', $ent['kid']), 0, 32) . ')');
+		}
+
+		$pk  = base64_decode($keys[$ent['kid']], true);
+		$sig = self::b64url_decode($ent['sig']);
+
+		if (!is_string($pk) || 32 !== strlen($pk) || !is_string($sig) || 64 !== strlen($sig)) {
+			return $no('a signature not readable');
+		}
+
+		$ok = self::ed25519_verify($sig, self::SERVER_SIGN_PREFIX . $ent['payload'], $pk);
+
+		if (null === $ok) {
+			return $no('this site cannot check signatures (no sodium)');
+		}
+
+		if (true !== $ok) {
+			return $no('a bad signature');
+		}
+
+		$json = self::b64url_decode($ent['payload']);
+		$p    = is_string($json) ? json_decode($json, true) : null;
+
+		if (!is_array($p) || 1 !== ($p['v'] ?? null) || (string) ($p['kid'] ?? '') !== $ent['kid']) {
+			return $no('a signed answer of another version');
+		}
+
+		if (!in_array($p['status'] ?? null, array('active', 'expired', 'disabled', 'unknown'), true)) {
+			return $no('a status not known');
+		}
+
+		if (!is_string($p['hint'] ?? null) || !hash_equals(strtolower(substr(trim((string) $expect['key']), -4)), $p['hint'])) {
+			return $no('an answer about another key');
+		}
+
+		if (null !== ($expect['instance'] ?? null) && (string) ($p['instance'] ?? '') !== (string) $expect['instance']) {
+			return $no('an answer about another instance');
+		}
+
+		if (null !== ($expect['nonce'] ?? null) && !hash_equals((string) $expect['nonce'], (string) ($p['nonce'] ?? ''))) {
+			return $no('an answer to another request');
+		}
+
+		if ((string) ($p['site'] ?? '') !== (string) $expect['site']) {
+			return $no('an answer about another site');
+		}
+
+		if (!is_int($p['iat'] ?? null) || $p['iat'] > time() + self::SERVER_CLOCK_SKEW || !is_int($p['valid_until'] ?? null)) {
+			return $no('an answer whose dates do not fit this site\'s clock');
+		}
+
+		return array('payload' => $p, 'why' => '');
+	}
+
+	/**
+	 * The licence server's public keys built in, by key ID.
+	 *
+	 * @return array<string, string>
+	 */
+	public static function server_keys()
+	{
+		// A key ID starting "test-" is trusted only where the tests say so
+		// (3.41.0 fix round 2): a release that slipped out with the test key
+		// trusts nothing signed with it, so every answer is unclear, never
+		// Pro from a key anyone can derive.
+		if (defined('TCGIANT_SYNC_LICENCE_TEST_KEYS') && TCGIANT_SYNC_LICENCE_TEST_KEYS) {
+			return self::SERVER_KEYS;
+		}
+
+		return array_filter(self::SERVER_KEYS, function ($kid) {
+			return 0 !== stripos((string) $kid, 'test-');
+		}, ARRAY_FILTER_USE_KEY);
+	}
+
+	/**
+	 * Whether Lemon Squeezy may still be asked directly (fix round 2): until
+	 * LS_FALLBACK_UNTIL, the day after Lemon Squeezy stops processing. From
+	 * then on the fallback and the activation with Lemon Squeezy are never
+	 * used, and what the server cannot answer is unclear.
+	 *
+	 * @param int $now When.
+	 * @return bool
+	 */
+	public static function ls_fallback_open($now)
+	{
+		if (null === self::$ls_fallback_until) {
+			self::$ls_fallback_until = (int) strtotime(self::LS_FALLBACK_UNTIL);
+		}
+		$until = (int) self::$ls_fallback_until;
+
+		return $until > 0 && (int) $now < $until;
+	}
+
+	/**
+	 * An Ed25519 signature checked, with libsodium or, without it, the
+	 * sodium_compat WordPress ships.
+	 *
+	 * @param string $sig Signature.
+	 * @param string $msg What was signed.
+	 * @param string $pk  Public key.
+	 * @return bool|null Null: no Ed25519 on this site.
+	 */
+	private static function ed25519_verify($sig, $msg, $pk)
+	{
+		if (!function_exists('sodium_crypto_sign_verify_detached') && defined('ABSPATH') && is_readable(ABSPATH . 'wp-includes/sodium_compat/autoload.php')) {
+			require_once ABSPATH . 'wp-includes/sodium_compat/autoload.php';
+		}
+
+		if (!function_exists('sodium_crypto_sign_verify_detached')) {
+			return null;
+		}
+
+		try {
+			return true === sodium_crypto_sign_verify_detached($sig, $msg, $pk);
+		} catch (\Throwable $e) {
+			return false;
+		}
+	}
+
+	/**
+	 * Base64url, unpadded, decoded strictly.
+	 *
+	 * @param string $s Encoded.
+	 * @return string|false
+	 */
+	private static function b64url_decode($s)
+	{
+		if (!is_string($s) || '' === $s || 1 !== preg_match('/^[A-Za-z0-9_-]+$/', $s)) {
+			return false;
+		}
+
+		$b = strtr($s, '-_', '+/');
+		$r = strlen($b) % 4;
+
+		return base64_decode($r > 0 ? $b . str_repeat('=', 4 - $r) : $b, true);
+	}
+
+	/**
+	 * What a definitive answer from TCGiant's licence server leaves in the
+	 * record: when, its status, reason and words, what backs the key, and the
+	 * signed answer itself with until when it may be trusted offline.
+	 *
+	 * @param array $answer read_server_answer()'s.
+	 * @param int   $now    When.
+	 * @return array
+	 */
+	private static function server_fields($answer, $now)
+	{
+		$p = $answer['payload'];
+
+		return array(
+			'checked_at' => (int) $now,
+			'asked_at' => (int) $now,
+			'unclear_count' => 0,
+			'unclear_since' => 0,
+			'unclear_reason' => '',
+			'answered_by' => 'tcgiant',
+			'server_status' => (string) $p['status'],
+			'server_reason' => substr(preg_replace('/[^a-z_]/', '', (string) ($p['reason'] ?? '')), 0, 40),
+			'server_msg' => substr(sanitize_text_field((string) ($p['msg'] ?? '')), 0, 200),
+			'key_source' => in_array($p['source'] ?? null, array('ls', 'stripe'), true) ? (string) $p['source'] : '',
+			'fallback' => 'none' === ($p['fallback'] ?? '') ? 'none' : 'ls',
+			'token' => $answer['token'],
+			'token_until' => (int) $p['valid_until'],
+		);
+	}
+
+	/**
+	 * The plan an answer names: monthly, annual, lifetime, or '' when none.
+	 *
+	 * @param array $p Payload.
+	 * @return string
+	 */
+	private static function plan_of($p)
+	{
+		return in_array($p['plan'] ?? null, array('monthly', 'annual', 'lifetime'), true) ? (string) $p['plan'] : '';
+	}
+
+	/**
+	 * The paid-through date an answer names, as stored ('' for none).
+	 *
+	 * @param array $p Payload.
+	 * @return string
+	 */
+	private static function paid_through_of($p)
+	{
+		$at = is_string($p['paid_through'] ?? null) ? $p['paid_through'] : '';
+
+		return '' !== $at && false !== strtotime($at) ? $at : '';
+	}
+
+	/**
+	 * A definitive answer from TCGiant's licence server, acted on as 3.36.0
+	 * acts on Lemon Squeezy's: valid, Pro with the plan and the paid-through
+	 * date and the next check a day on; not valid, the free tier and the next
+	 * check 6 hours on.
+	 *
+	 * @param array $answer read_server_answer()'s.
+	 * @param int   $now    When.
+	 * @return string 'valid' or 'invalid'.
+	 */
+	private function apply_server_answer($answer, $now)
+	{
+		// The record as the table holds it now (changed_meanwhile()).
+		$data    = $this->get_license_data();
+		$was_pro = $this->is_pro();
+		$p       = $answer['payload'];
+		$fresh   = self::server_fields($answer, $now);
+
+		if ((int) ($data['unclear_count'] ?? 0) > 0) {
+			TCGiant_Sync_Logger::log(sprintf(
+				'Licence: TCGiant\'s licence server answered again, after %1$d checks since %2$s UTC whose answers said nothing for sure.',
+				(int) $data['unclear_count'],
+				gmdate('Y-m-d H:i', (int) ($data['unclear_since'] ?? $now))
+			));
+		}
+
+		if ('valid' === $answer['verdict']) {
+			$fresh['status']     = 'active';
+			$fresh['valid_at']   = $now;
+			$fresh['next_check'] = $now + self::RECHECK_VALID;
+			$fresh['expires_at'] = self::paid_through_of($p);
+
+			if ('' !== self::plan_of($p)) {
+				$fresh['variant'] = self::plan_of($p);
+			}
+
+			$this->update_license_data($fresh);
+			set_transient(self::VALIDATION_TRANSIENT, 'valid', DAY_IN_SECONDS);
+			$this->schedule_check();
+
+			if (!$was_pro && $this->is_pro()) {
+				TCGiant_Sync_Logger::log('Licence: TCGiant\'s licence server says this licence is valid, so the site is on Pro again.', 'success');
+				TCGiant_Sync_Limit_Held::start('a licence check found it valid');
+			}
+
+			return 'valid';
+		}
+
+		$fresh['status']     = 'expired';
+		$fresh['next_check'] = $now + self::RECHECK_EXPIRED;
+		$this->update_license_data($fresh);
+		delete_transient(self::VALIDATION_TRANSIENT);
+		$this->schedule_check();
+
+		if ('active' === ($data['status'] ?? '')) {
+			TCGiant_Sync_Logger::log(sprintf(
+				self::activation_released($fresh)
+					? 'Licence: TCGiant\'s licence server says this site\'s activation of the key is not valid (%s), though the key itself is not expired or disabled, so the site is on the free tier: new eBay listings are held back from import, and products already imported keep syncing. Enter the key again on the Settings screen to activate it here.'
+					: (in_array($fresh['server_reason'], array('key_unknown', 'foreign'), true)
+						? 'Licence: TCGiant\'s licence server does not know this key as a TCGiant Sync licence (%s), so the site is on the free tier: new eBay listings are held back from import, and products already imported keep syncing. Check the key on the Settings screen.'
+						: 'Licence: TCGiant\'s licence server says this licence is not valid (%s), so the site is on the free tier: new eBay listings are held back from import, and products already imported keep syncing. It is checked again every 6 hours, so a renewal brings Pro back.'),
+				$answer['why']
+			), 'warning');
+		}
+
+		return 'invalid';
+	}
+
+	/**
+	 * Whether Lemon Squeezy may be asked directly, after an unclear answer
+	 * from TCGiant's licence server (PROTOCOL.md 4.4): a Lemon Squeezy key,
+	 * the server's last answer did not forbid it, and the site holds no
+	 * signed answer from the server still to be trusted offline. The stored
+	 * answer is checked again, signature and all, not taken on its word.
+	 *
+	 * @param array $data License data.
+	 * @param int   $now  When.
+	 * @return bool
+	 */
+	private function may_ask_ls($data, $now)
+	{
+		if (!self::is_ls_key((string) ($data['key'] ?? '')) || 'none' === ($data['fallback'] ?? '') || !self::ls_fallback_open($now)) {
+			return false;
+		}
+
+		$token = $data['token'] ?? array();
+
+		if (!is_array($token) || empty($token)) {
+			return true;
+		}
+
+		$held = self::verify_entitlement($token, array(
+			'key' => (string) $data['key'],
+			'instance' => (string) ($data['instance_id'] ?? ''),
+			'nonce' => null,
+			'site' => self::norm_site($this->site_url()),
+		));
+
+		return !is_array($held['payload']) || (int) $held['payload']['valid_until'] <= $now;
+	}
+
+	/**
+	 * Whether a key is a Lemon Squeezy key: a UUID.
+	 *
+	 * @param string $key Key.
+	 * @return bool
+	 */
+	public static function is_ls_key($key)
+	{
+		return 1 === preg_match(self::LS_KEY_PATTERN, trim((string) $key));
+	}
+
+	/**
+	 * Post to TCGiant's licence server, as JSON.
+	 *
+	 * @param string $op      activate, validate or deactivate.
+	 * @param array  $fields  What is sent.
+	 * @param int    $timeout Seconds.
+	 * @return array|WP_Error
+	 */
+	private function post_server($op, $fields, $timeout)
+	{
+		return wp_remote_post(self::SERVER_BASE . '/' . $op . '.php', array(
+			'timeout' => $timeout,
+			'headers' => array(
+				'Content-Type' => 'application/json',
+				'Accept' => 'application/json',
+			),
+			'body' => wp_json_encode($fields),
+		));
+	}
+
+	/**
+	 * This site's home URL, as sent to the licence server.
+	 *
+	 * @return string
+	 */
+	private function site_url()
+	{
+		return (string) home_url();
+	}
+
+	/**
+	 * A site as both sides compare it (PROTOCOL.md 2): the host in lower
+	 * case, :port when given, the path without a trailing slash.
+	 *
+	 * @param string $url URL.
+	 * @return string
+	 */
+	public static function norm_site($url)
+	{
+		$url = trim((string) $url);
+
+		if ('' === $url) {
+			return '';
+		}
+
+		if (!preg_match('#^[a-z][a-z0-9+.-]*://#i', $url)) {
+			$url = 'http://' . $url;
+		}
+
+		$p = wp_parse_url($url);
+
+		if (!is_array($p) || empty($p['host'])) {
+			return '';
+		}
+
+		return strtolower($p['host']) . (!empty($p['port']) ? ':' . (int) $p['port'] : '') . (isset($p['path']) ? rtrim($p['path'], '/') : '');
+	}
+
+	/**
+	 * A nonce for one request: 16 random bytes, hex.
+	 *
+	 * @return string
+	 */
+	private static function new_nonce()
+	{
+		return bin2hex(random_bytes(16));
+	}
+
+	/**
+	 * This plugin's version, as sent.
+	 *
+	 * @return string
+	 */
+	private static function plugin_version()
+	{
+		return defined('TCGIANT_SYNC_VERSION') ? (string) TCGIANT_SYNC_VERSION : '';
 	}
 
 	/**
@@ -1065,6 +1873,7 @@ class TCGiant_Sync_License extends TCGiant_Sync_Entitlements
 			'unclear_count' => 0,
 			'unclear_since' => 0,
 			'unclear_reason' => '',
+			'answered_by' => 'ls',
 			'ls_status' => is_scalar($key['status'] ?? null) ? (string) $key['status'] : '',
 			'ls_error' => is_string($body['error'] ?? null) ? substr($body['error'], 0, 200) : '',
 		);
@@ -1105,7 +1914,7 @@ class TCGiant_Sync_License extends TCGiant_Sync_Entitlements
 
 		if (1 === $count) {
 			TCGiant_Sync_Logger::log(sprintf(
-				'Licence: Lemon Squeezy\'s answer said nothing for sure (%1$s), so nothing changes: the site stays on %2$s. It asks again in %3$d minutes, then less often, up to every 6 hours, and says no more here until Lemon Squeezy answers.',
+				'Licence: the licence check said nothing for sure (%1$s), so nothing changes: the site stays on %2$s. It asks again in %3$d minutes, then less often, up to every 6 hours, and says no more here until there is an answer.',
 				$why,
 				$this->is_pro() ? 'Pro' : 'the free tier',
 				(int) round($delay / MINUTE_IN_SECONDS)
@@ -1250,7 +2059,7 @@ class TCGiant_Sync_License extends TCGiant_Sync_Entitlements
 		$this->update_license_data(array('lapse_noted' => $until));
 
 		TCGiant_Sync_Logger::log(sprintf(
-			'Licence: Lemon Squeezy has not said this licence is valid in the %1$d days since its renewal date (%2$s UTC), and could not be asked, so the site is on the free tier until it says so: new eBay listings are held back from import, and products already imported keep syncing. Press Re-check on the Settings screen, or wait for the next check.',
+			'Licence: no licence check has said this licence is valid in the %1$d days since its renewal date (%2$s UTC), and none could be made, so the site is on the free tier until one does: new eBay listings are held back from import, and products already imported keep syncing. Press Re-check on the Settings screen, or wait for the next check.',
 			(int) (self::GRACE_SECONDS / DAY_IN_SECONDS),
 			gmdate('Y-m-d H:i', $this->expires_ts($data))
 		), 'warning');
@@ -1275,7 +2084,7 @@ class TCGiant_Sync_License extends TCGiant_Sync_Entitlements
 
 		if (!empty($data['key'])) {
 			delete_transient(self::QUEUED_TRANSIENT);
-			$verdict = $this->check();
+			$verdict = $this->check(true);
 			if ('dropped' !== $verdict) {
 				$this->note_lapse();
 			}
@@ -1312,7 +2121,7 @@ class TCGiant_Sync_License extends TCGiant_Sync_Entitlements
 				<?php
 				printf(
 					/* translators: 1: a date, 2: a number of days */
-					esc_html__('Lemon Squeezy, which checks TCGiant Sync Pro licences, has not confirmed this licence since its renewal date, %1$s, and could not be asked for %2$d days, so this site is on the free tier until it can be: new eBay listings are held back from import, and products already imported keep syncing. Once the licence is confirmed, Pro comes back and the listings held back are imported.', 'tcgiant-sync'),
+					esc_html__('TCGiant\'s licence server, which checks TCGiant Sync Pro licences, has not confirmed this licence since its renewal date, %1$s, and could not be asked for %2$d days, so this site is on the free tier until it can be: new eBay listings are held back from import, and products already imported keep syncing. Once the licence is confirmed, Pro comes back and the listings held back are imported.', 'tcgiant-sync'),
 					esc_html(gmdate('Y-m-d', $this->expires_ts($data))),
 					(int) (self::GRACE_SECONDS / DAY_IN_SECONDS)
 				);
@@ -1424,6 +2233,14 @@ class TCGiant_Sync_License extends TCGiant_Sync_Entitlements
 			'variant_id' => (string) ($data['variant_id'] ?? ''),
 			'ids' => $ids,
 			'ids_noted' => (string) ($data['ids_noted'] ?? ''),
+			// 3.41.0: who gave the last definitive answer - TCGiant's
+			// licence server, or Lemon Squeezy (before 3.41.0, always) - and
+			// what the server said.
+			'answered_by' => 'tcgiant' === ($data['answered_by'] ?? '') ? 'tcgiant' : 'ls',
+			'server_status' => (string) ($data['server_status'] ?? ''),
+			'server_reason' => (string) ($data['server_reason'] ?? ''),
+			'server_msg' => (string) ($data['server_msg'] ?? ''),
+			'token_until' => (int) ($data['token_until'] ?? 0),
 		);
 	}
 

@@ -160,5 +160,51 @@ if ( $errors ) {
 	exit( 1 );
 }
 
+// The licence server's public key (3.41.0). Built and tested with a test
+// key, whose secret anyone can make from the tests: a release still carrying
+// it would trust any answer signed with it. Read only where the licence class
+// is, which the Lite and Standard editions do not carry.
+$licence = $root . '/includes/class-tcgiant-sync-license.php';
+
+if ( is_readable( $licence ) ) {
+	$src = (string) file_get_contents( $licence );
+
+	if ( ! preg_match( '/const\s+SERVER_KEYS\s*=\s*array\s*\((.*?)\);/s', $src, $m ) ) {
+		fwrite( STDERR, "check-version: could not find the licence server's keys (SERVER_KEYS) in class-tcgiant-sync-license.php.\n" );
+		exit( 1 );
+	}
+
+	if ( preg_match( '/[\'"]test-[^\'"]*[\'"]\s*=>/i', $m[1] ) ) {
+		fwrite( STDERR, "check-version: the licence server's public key is still the test key ('test-' in SERVER_KEYS).\n" );
+		fwrite( STDERR, "  Paste the real public key, shown by the server's admin page, under its own key ID before tagging a release.\n" );
+		exit( 1 );
+	}
+
+	// At least one key, and every one an Ed25519 public key (fix round 1):
+	// an empty list, or a key pasted short, would make every answer from the
+	// server unclear on every site, and the move to it would silently not
+	// happen.
+	// Only a comment on a line of its own, or after a comma: a key's base64
+	// may hold "//" (fix round 2).
+	$body = trim( preg_replace( array( '#^\s*//[^\n]*$#m', '#,\s*//[^\n]*$#m' ), array( '', ',' ), $m[1] ) );
+	preg_match_all( '/[\'"]([^\'"]*)[\'"]\s*=>\s*[\'"]([^\'"]*)[\'"]\s*,?/', $body, $keys, PREG_SET_ORDER );
+	$left = trim( preg_replace( '/[\'"]([^\'"]*)[\'"]\s*=>\s*[\'"]([^\'"]*)[\'"]\s*,?/', '', $body ) );
+	$bad  = array();
+
+	foreach ( $keys as $k ) {
+		$raw = base64_decode( $k[2], true );
+		if ( '' === $k[1] || ! preg_match( '/^[a-z0-9][a-z0-9-]{0,31}$/', $k[1] ) || false === $raw || 32 !== strlen( $raw ) ) {
+			$bad[] = '' === $k[1] ? '(no key ID)' : $k[1];
+		}
+	}
+
+	if ( ! $keys || '' !== $left || $bad ) {
+		fwrite( STDERR, "check-version: the licence server's public keys (SERVER_KEYS) are not all real ones.\n" );
+		fwrite( STDERR, '  ' . ( $keys ? ( $bad ? 'Not a key ID with the base64 of 32 bytes: ' . implode( ', ', $bad ) : 'Something there is not a key ID and a key.' ) : 'There is none.' ) . "\n" );
+		fwrite( STDERR, "  Each is 'key-id' => 'the base64 public key the server's admin page shows'.\n" );
+		exit( 1 );
+	}
+}
+
 printf( "OK - version %s, and all %d places agree. Both changelogs have a dated entry for it.\n", $version, count( $found ) );
 exit( 0 );

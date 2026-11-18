@@ -241,10 +241,15 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 
 		<!-- License -->
 		<?php
-		// Where the checks with Lemon Squeezy stand (3.36.0). An edition with
-		// no licence has none, and shows nothing of them.
+		// Where the licence checks stand (3.36.0). An edition with no licence
+		// has none, and shows nothing of them.
 		$tc_check    = isset( $license_ui['check'] ) && is_array( $license_ui['check'] ) ? $license_ui['check'] : array();
 		$tc_lstate   = (string) ( $tc_check['state'] ?? '' );
+		// Who gave the last definitive answer (3.41.0): TCGiant's licence
+		// server, or Lemon Squeezy, still asked when the server cannot be.
+		$tc_lserver  = 'tcgiant' === ( $tc_check['answered_by'] ?? '' );
+		$tc_lwho     = $tc_lserver ? __( 'TCGiant\'s licence server', 'tcgiant-sync' ) : __( 'Lemon Squeezy', 'tcgiant-sync' );
+		$tc_lwords   = $tc_lserver ? (string) ( $tc_check['server_msg'] ?? '' ) : (string) ( $tc_check['ls_error'] ?? '' );
 		$tc_lformat  = get_option( 'date_format' ) . ' ' . get_option( 'time_format' );
 		$tc_lwhen    = function ( $ts ) use ( $tc_lformat ) {
 			return (int) $ts > 0 ? wp_date( $tc_lformat, (int) $ts ) : __( 'never', 'tcgiant-sync' );
@@ -265,7 +270,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 							<p class="tc-license-meta" id="tc-license-unclear">
 								<?php
 								printf(
-									/* translators: 1: date and time, 2: what Lemon Squeezy's answer was, 3: date and time */
+									/* translators: 1: date and time, 2: what the answer was, 3: date and time */
 									esc_html__( 'Could not be checked since %1$s (%2$s), so it is still Pro. Next try: %3$s.', 'tcgiant-sync' ),
 									esc_html( $tc_lwhen( $tc_check['unclear_since'] ?? 0 ) ),
 									esc_html( (string) ( $tc_check['unclear_reason'] ?? '' ) ),
@@ -288,7 +293,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 								<?php
 								printf(
 									/* translators: 1: date and time, 2: date and time */
-									esc_html__( 'Its renewal date, %1$s, has passed, and it is being checked with Lemon Squeezy. It is still Pro meanwhile, until %2$s at the latest.', 'tcgiant-sync' ),
+									esc_html__( 'Its renewal date, %1$s, has passed, and it is being checked. It is still Pro meanwhile, until %2$s at the latest.', 'tcgiant-sync' ),
 									esc_html( $tc_lwhen( $tc_check['expires'] ?? 0 ) ),
 									esc_html( $tc_lwhen( $tc_check['grace_until'] ?? 0 ) )
 								);
@@ -308,11 +313,22 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						<?php elseif ( 'expired' === $tc_lstate ) : ?>
 							<p class="tc-license-meta" id="tc-license-expired">
 								<?php
-								printf(
-									/* translators: %s: what Lemon Squeezy said */
-									esc_html__( 'Expired: Lemon Squeezy says this licence is not valid (%s). Renew it, then press Re-check; it is also checked every 6 hours.', 'tcgiant-sync' ),
-									esc_html( '' !== (string) ( $tc_check['ls_error'] ?? '' ) ? (string) $tc_check['ls_error'] : ( '' !== (string) ( $tc_check['ls_status'] ?? '' ) ? (string) $tc_check['ls_status'] : __( 'no reason given', 'tcgiant-sync' ) ) )
-								);
+								// A key the server does not know as this plugin's is not a
+								// renewal's to fix (3.41.0 fix round 1).
+								if ( $tc_lserver && in_array( (string) ( $tc_check['server_reason'] ?? '' ), array( 'key_unknown', 'foreign' ), true ) ) {
+									printf(
+										/* translators: %s: what the server said */
+										esc_html__( 'Not valid: TCGiant\'s licence server does not know this key as a TCGiant Sync licence (%s). Check the key, then press Re-check.', 'tcgiant-sync' ),
+										esc_html( '' !== $tc_lwords ? $tc_lwords : __( 'no reason given', 'tcgiant-sync' ) )
+									);
+								} else {
+									printf(
+										/* translators: 1: TCGiant's licence server, or Lemon Squeezy, 2: what it said */
+										esc_html__( 'Expired: %1$s says this licence is not valid (%2$s). Renew it, then press Re-check; it is also checked every 6 hours.', 'tcgiant-sync' ),
+										esc_html( $tc_lwho ),
+										esc_html( '' !== $tc_lwords ? $tc_lwords : ( ! $tc_lserver && '' !== (string) ( $tc_check['ls_status'] ?? '' ) ? (string) $tc_check['ls_status'] : __( 'no reason given', 'tcgiant-sync' ) ) )
+									);
+								}
 								?>
 							</p>
 						<?php elseif ( 'released' === $tc_lstate ) : ?>
@@ -321,9 +337,11 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 								// This site's activation, not the key (fix round 1):
 								// renewing would not bring it back.
 								printf(
-									/* translators: %s: what Lemon Squeezy said */
-									esc_html__( 'This site\'s activation of the key is no longer valid at Lemon Squeezy (%s), though the key itself has not expired. It may have been released, for example from your order page. Enter the key again, beside this, to activate it on this site.', 'tcgiant-sync' ),
-									esc_html( '' !== (string) ( $tc_check['ls_error'] ?? '' ) ? (string) $tc_check['ls_error'] : __( 'no reason given', 'tcgiant-sync' ) )
+									/* translators: 1: TCGiant's licence server, or Lemon Squeezy, 2: what it said, 3: how it may have been released */
+									esc_html__( 'This site\'s activation of the key is no longer valid at %1$s (%2$s), though the key itself has not expired. %3$s Enter the key again, beside this, to activate it on this site.', 'tcgiant-sync' ),
+									esc_html( $tc_lwho ),
+									esc_html( '' !== $tc_lwords ? $tc_lwords : __( 'no reason given', 'tcgiant-sync' ) ),
+									esc_html( $tc_lserver ? __( 'It may have been released from another site, or by TCGiant support.', 'tcgiant-sync' ) : __( 'It may have been released, for example from your order page.', 'tcgiant-sync' ) )
 								);
 								?>
 							</p>
@@ -332,7 +350,7 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 								<?php
 								printf(
 									/* translators: %s: date and time */
-									esc_html__( 'Could not be checked: Lemon Squeezy has not confirmed this licence since its renewal date, %s, more than 14 days ago, so the site is on the free tier until it can be. Press Re-check.', 'tcgiant-sync' ),
+									esc_html__( 'Could not be checked: nothing has confirmed this licence since its renewal date, %s, more than 14 days ago, so the site is on the free tier until it can be. Press Re-check.', 'tcgiant-sync' ),
 									esc_html( $tc_lwhen( $tc_check['expires'] ?? 0 ) )
 								);
 								?>
@@ -355,13 +373,21 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						<p class="tc-license-meta" id="tc-license-rechecked">
 							<?php
 							if ( 'valid' === $tc_rechecked ) {
-								esc_html_e( 'Re-checked: Lemon Squeezy says this licence is valid.', 'tcgiant-sync' );
+								/* translators: %s: TCGiant's licence server, or Lemon Squeezy */
+								printf( esc_html__( 'Re-checked: %s says this licence is valid.', 'tcgiant-sync' ), esc_html( $tc_lwho ) );
 							} elseif ( 'invalid' === $tc_rechecked && 'released' === $tc_lstate ) {
-								esc_html_e( 'Re-checked: Lemon Squeezy says this site\'s activation of the key is not valid.', 'tcgiant-sync' );
+								/* translators: %s: TCGiant's licence server, or Lemon Squeezy */
+								printf( esc_html__( 'Re-checked: %s says this site\'s activation of the key is not valid.', 'tcgiant-sync' ), esc_html( $tc_lwho ) );
 							} elseif ( 'invalid' === $tc_rechecked ) {
-								esc_html_e( 'Re-checked: Lemon Squeezy says this licence is not valid.', 'tcgiant-sync' );
+								/* translators: %s: TCGiant's licence server, or Lemon Squeezy */
+								printf( esc_html__( 'Re-checked: %s says this licence is not valid.', 'tcgiant-sync' ), esc_html( $tc_lwho ) );
 							} else {
-								esc_html_e( 'Re-checked: Lemon Squeezy could not be asked, or its answer said nothing for sure, so nothing changed.', 'tcgiant-sync' );
+								// Name Lemon Squeezy too when it was asked as well (fix round 1).
+								if ( false !== strpos( (string) ( $tc_check['unclear_reason'] ?? '' ), '; Lemon Squeezy: ' ) ) {
+									esc_html_e( 'Re-checked: neither TCGiant\'s licence server nor Lemon Squeezy could be asked, or said anything for sure, so nothing changed.', 'tcgiant-sync' );
+								} else {
+									esc_html_e( 'Re-checked: TCGiant\'s licence server could not be asked, or its answer said nothing for sure, so nothing changed.', 'tcgiant-sync' );
+								}
 							}
 							?>
 						</p>
@@ -370,13 +396,29 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						<details class="tc-license-meta" id="tc-license-details">
 							<summary><?php esc_html_e( 'Licence details', 'tcgiant-sync' ); ?></summary>
 							<?php
+							// The server's status for the key ("active"), with its reason
+							// when that says more ("expired (admin_disabled)"); "ok" adds nothing.
+							$tc_server_word   = '' !== (string) ( $tc_check['server_status'] ?? '' ) ? (string) $tc_check['server_status'] : '-';
+							$tc_server_reason = (string) ( $tc_check['server_reason'] ?? '' );
+							if ( '' !== $tc_server_reason && 'ok' !== $tc_server_reason && $tc_server_reason !== $tc_server_word ) {
+								$tc_server_word .= ' (' . $tc_server_reason . ')';
+							}
 							printf(
-								/* translators: 1: date and time, 2: date and time, 3: Lemon Squeezy's status of the key */
-								esc_html__( 'Last answer from Lemon Squeezy: %1$s. Next check: %2$s. Its status for the key: %3$s.', 'tcgiant-sync' ),
+								/* translators: 1: TCGiant's licence server, or Lemon Squeezy, 2: date and time, 3: date and time, 4: its status of the key */
+								esc_html__( 'Last answer from %1$s: %2$s. Next check: %3$s. Its status for the key: %4$s.', 'tcgiant-sync' ),
+								esc_html( $tc_lwho ),
 								esc_html( $tc_lwhen( $tc_check['checked_at'] ?? 0 ) ),
 								esc_html( $tc_lwhen( $tc_check['next_check'] ?? 0 ) ),
-								esc_html( '' !== (string) ( $tc_check['ls_status'] ?? '' ) ? (string) $tc_check['ls_status'] : '-' )
+								esc_html( $tc_lserver ? $tc_server_word : ( '' !== (string) ( $tc_check['ls_status'] ?? '' ) ? (string) $tc_check['ls_status'] : '-' ) )
 							);
+							if ( (int) ( $tc_check['token_until'] ?? 0 ) > 0 ) {
+								echo ' ';
+								printf(
+									/* translators: %s: date and time */
+									esc_html__( 'Its signed answer holds offline until %s.', 'tcgiant-sync' ),
+									esc_html( $tc_lwhen( $tc_check['token_until'] ) )
+								);
+							}
 							echo ' ';
 							// The renewal date the 14 days count from, for support (fix round 1).
 							if ( (int) ( $tc_check['expires'] ?? 0 ) > 0 ) {
@@ -388,15 +430,19 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 							} else {
 								esc_html_e( 'No end date.', 'tcgiant-sync' );
 							}
-							echo '<br>';
-							printf(
-								/* translators: 1: store ID, 2: product ID, 3: variant ID */
-								esc_html__( 'Lemon Squeezy store %1$s, product %2$s, variant %3$s.', 'tcgiant-sync' ),
-								esc_html( '' !== (string) ( $tc_check['store_id'] ?? '' ) ? (string) $tc_check['store_id'] : '-' ),
-								esc_html( '' !== (string) ( $tc_check['product_id'] ?? '' ) ? (string) $tc_check['product_id'] : '-' ),
-								esc_html( '' !== (string) ( $tc_check['variant_id'] ?? '' ) ? (string) $tc_check['variant_id'] : '-' )
-							);
-							if ( 'mismatch' === ( $tc_check['ids'] ?? '' ) ) {
+							// Lemon Squeezy's IDs only when Lemon Squeezy gave the
+							// answer (3.41.0): the server checks them itself.
+							if ( ! $tc_lserver ) {
+								echo '<br>';
+								printf(
+									/* translators: 1: store ID, 2: product ID, 3: variant ID */
+									esc_html__( 'Lemon Squeezy store %1$s, product %2$s, variant %3$s.', 'tcgiant-sync' ),
+									esc_html( '' !== (string) ( $tc_check['store_id'] ?? '' ) ? (string) $tc_check['store_id'] : '-' ),
+									esc_html( '' !== (string) ( $tc_check['product_id'] ?? '' ) ? (string) $tc_check['product_id'] : '-' ),
+									esc_html( '' !== (string) ( $tc_check['variant_id'] ?? '' ) ? (string) $tc_check['variant_id'] : '-' )
+								);
+							}
+							if ( ! $tc_lserver && 'mismatch' === ( $tc_check['ids'] ?? '' ) ) {
 								echo ' ';
 								printf(
 									/* translators: %s: which store or product differs */

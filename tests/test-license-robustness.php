@@ -63,6 +63,8 @@ $QUEUE      = array();
 $RUNNING    = array();
 $REPLIES    = array();
 $HTTP       = array();
+$SERVER_HTTP    = array();
+$SERVER_REPLIES = array();
 $LOG        = array();
 $IS_ADMIN   = true;
 $ACTIVE     = 50;
@@ -87,6 +89,7 @@ function sanitize_title( $t ) { return trim( preg_replace( '/[^a-z0-9]+/', '-', 
 function wp_json_encode( $v ) { return json_encode( $v ); }
 function current_time( $type ) { return gmdate( 'Y-m-d H:i:s' ); }
 function get_site_url() { return 'https://shop.example'; }
+function home_url() { return 'https://shop.example'; }
 function wp_parse_url( $u ) { return parse_url( $u ); }
 function add_action( $hook, $cb, $prio = 10, $args = 1 ) { $GLOBALS['HOOKS'][ $hook ][] = array( $cb, $args ); return true; }
 function add_filter( $hook, $cb, $prio = 10, $args = 1 ) { return add_action( $hook, $cb, $prio, $args ); }
@@ -139,8 +142,22 @@ function add_query_arg( $k, $v, $url ) { return $url . ( false === strpos( $url,
 function wp_safe_redirect( $url ) { throw new Harness_Redirect( $url ); }
 function wp_die( $m ) { throw new RuntimeException( (string) $m ); }
 
-/** Lemon Squeezy: every request recorded; answered from the script, in order. */
+/**
+ * Lemon Squeezy: every request recorded; answered from the script, in order.
+ *
+ * 3.41.0 asks TCGiant's licence server first. Its requests are kept apart,
+ * and it is not reached unless a case scripts it (SERVER_REPLIES): so every
+ * case here runs the Lemon Squeezy fallback, 3.36.0's path, as it ran. The
+ * server's own cases are tests/test-license-server.php's.
+ */
 function wp_remote_post( $url, $args ) {
+	if ( 0 === strpos( $url, 'https://tcgiant.com/licence/' ) ) {
+		$GLOBALS['SERVER_HTTP'][] = array( 'url' => $url, 'args' => $args );
+		if ( empty( $GLOBALS['SERVER_REPLIES'] ) ) {
+			return new WP_Error( 'http_request_failed', 'cURL error 7: Failed to connect to tcgiant.com port 443' );
+		}
+		return array_shift( $GLOBALS['SERVER_REPLIES'] );
+	}
 	$GLOBALS['HTTP'][] = array( 'url' => $url, 'args' => $args );
 	if ( is_callable( $GLOBALS['DURING'] ) ) {
 		call_user_func( $GLOBALS['DURING'] );
@@ -266,6 +283,8 @@ function fresh( array $over = array() ) {
 	$GLOBALS['QUEUE']      = array();
 	$GLOBALS['REPLIES']    = array();
 	$GLOBALS['HTTP']       = array();
+	$GLOBALS['SERVER_HTTP']    = array();
+	$GLOBALS['SERVER_REPLIES'] = array();
 	$GLOBALS['LOG']        = array();
 	$GLOBALS['FILTERS']    = array();
 	$GLOBALS['SPECIFIC']   = array();
@@ -337,9 +356,11 @@ $shapes = array(
 	// label => array( reply, verdict wanted )
 	'200 valid'                                   => array( reply( 200, valid_body() ), 'valid' ),
 	'200 "valid": false (an expired key)'         => array( reply( 200, valid_body( array( 'valid' => false, 'error' => 'This license key has expired.', 'license_key' => array( 'status' => 'expired' ) ) ) ), 'invalid' ),
-	'200 "valid": false, nothing more'            => array( reply( 200, array( 'valid' => false, 'error' => 'license_key is not valid.' ) ), 'invalid' ),
-	'404 "valid": false (not found)'              => array( reply( 404, array( 'valid' => false, 'error' => 'license_key not found.', 'license_key' => null, 'instance' => null, 'meta' => null ) ), 'invalid' ),
-	'400 "valid": false'                          => array( reply( 400, array( 'valid' => false, 'error' => 'This license key is disabled.' ) ), 'invalid' ),
+	// 3.41.0 fix round 1 (H1, the owner's decision): a "valid": false without
+	// the key expired or disabled is unclear. 3.36.0 read these three as "no".
+	'200 "valid": false, nothing more'            => array( reply( 200, array( 'valid' => false, 'error' => 'license_key is not valid.' ) ), 'unclear' ),
+	'404 "valid": false (not found)'              => array( reply( 404, array( 'valid' => false, 'error' => 'license_key not found.', 'license_key' => null, 'instance' => null, 'meta' => null ) ), 'unclear' ),
+	'400 "valid": false'                          => array( reply( 400, array( 'valid' => false, 'error' => 'This license key is disabled.' ) ), 'unclear' ),
 	'422 with the key expired'                    => array( reply( 422, array( 'valid' => false, 'error' => 'Expired.', 'license_key' => array( 'status' => 'expired' ) ) ), 'invalid' ),
 	'200 key disabled, even saying valid'         => array( reply( 200, valid_body( array( 'license_key' => array( 'status' => 'disabled' ) ) ) ), 'invalid' ),
 	'422 "valid": false, a field of the request'  => array( reply( 422, array( 'valid' => false, 'error' => 'The license key field is required.' ) ), 'unclear' ),
@@ -404,9 +425,10 @@ check( '  its record: when, status, no run of unclear answers', array( near( dat
 
 echo "\n   What a definitive no records\n";
 fresh();
-ask( reply( 404, array( 'valid' => false, 'error' => 'license_key not found.', 'license_key' => null, 'meta' => null ) ) );
-check( 'status "expired", Lemon Squeezy\'s words kept', array( data()['status'], data()['ls_error'] ), array( 'expired', 'license_key not found.' ) );
-check( '  logged once, naming what it said', lines(), array( 'Licence: Lemon Squeezy says this licence is not valid (HTTP 404: license_key not found.), so the site is on the free tier: new eBay listings are held back from import, and products already imported keep syncing. It is checked again every 6 hours, so a renewal brings Pro back.' ) );
+// 3.41.0 fix round 1 (H1): the key expired, as 3.36.0's "not found" was.
+ask( reply( 200, array( 'valid' => false, 'error' => 'This license key has expired.', 'license_key' => array( 'status' => 'expired' ), 'meta' => null ) ) );
+check( 'status "expired", Lemon Squeezy\'s words kept', array( data()['status'], data()['ls_error'] ), array( 'expired', 'This license key has expired.' ) );
+check( '  logged once, naming what it said', lines(), array( 'Licence: Lemon Squeezy says this licence is not valid (HTTP 200: This license key has expired., the key expired), so the site is on the free tier: new eBay listings are held back from import, and products already imported keep syncing. It is checked again every 6 hours, so a renewal brings Pro back.' ) );
 check( '  the plan and the date are left as they were', array( data()['variant'], data()['expires_at'] ), array( 'annual', iso( time() + 200 * DAY_IN_SECONDS ) ) );
 
 // =======================================================================================
@@ -427,8 +449,8 @@ foreach ( array( 503, 429, 500, 502, 504 ) as $n => $code ) {
 check( 'five in a row: 60, 120, 240, 360 and 360 minutes', $waits, array( 60, 120, 240, 360, 360 ) );
 check( '  still Pro throughout, and counted', array( lic()->is_pro(), data()['unclear_count'], near( data()['unclear_since'], $start ) ), array( true, 5, true ) );
 check( '  one log line for the five', count( lines() ), 1 );
-check( '  which says so', lines()[0] ?? null, 'Licence: Lemon Squeezy\'s answer said nothing for sure (HTTP 503, not a JSON object), so nothing changes: the site stays on Pro. It asks again in 60 minutes, then less often, up to every 6 hours, and says no more here until Lemon Squeezy answers.' );
-check( '  the card says why, and since when', array( ui()['check']['unclear_reason'], ui()['check']['unclear_count'] ), array( 'HTTP 504, not a JSON object', 5 ) );
+check( '  which says so', lines()[0] ?? null, 'Licence: the licence check said nothing for sure (TCGiant\'s licence server: no answer: cURL error 7: Failed to connect to tcgiant.com port 443; Lemon Squeezy: HTTP 503, not a JSON object), so nothing changes: the site stays on Pro. It asks again in 60 minutes, then less often, up to every 6 hours, and says no more here until there is an answer.' );
+check( '  the card says why, and since when', array( ui()['check']['unclear_reason'], ui()['check']['unclear_count'] ), array( 'TCGiant\'s licence server: no answer: cURL error 7: Failed to connect to tcgiant.com port 443; Lemon Squeezy: HTTP 504, not a JSON object', 5 ) );
 $LOG = array();
 ask( reply( 200, valid_body() ) );
 check( 'then a valid answer: the run ends, one line to say so', array( count( lines() ), 0 === strpos( lines()[0] ?? '', 'Licence: Lemon Squeezy answered again, after 5 checks since ' ) ), array( 1, true ) );
@@ -552,12 +574,12 @@ do_action( 'admin_init' );
 $REPLIES = array( reply( 503, '' ) );
 run_due();
 check( 'an unclear answer leaves it on the free tier', array( lic()->is_pro(), data()['status'] ), array( false, 'active' ) );
-$lapse = array_values( array_filter( lines(), function ( $l ) { return false !== strpos( $l, 'has not said this licence is valid in the 14 days' ); } ) );
+$lapse = array_values( array_filter( lines(), function ( $l ) { return false !== strpos( $l, 'has said this licence is valid in the 14 days' ); } ) );
 check( '  the lapse said, once', count( $lapse ), 1 );
 make_due();
 $REPLIES = array( reply( 503, '' ) );
 run_due();
-$lapse = array_values( array_filter( lines(), function ( $l ) { return false !== strpos( $l, 'has not said this licence is valid in the 14 days' ); } ) );
+$lapse = array_values( array_filter( lines(), function ( $l ) { return false !== strpos( $l, 'has said this licence is valid in the 14 days' ); } ) );
 check( '  and not again at the next check', count( $lapse ), 1 );
 $SCREEN = (object) array( 'id' => 'tcgiant-sync_page_tcgiant-settings' );
 ob_start();
@@ -674,8 +696,8 @@ check( 'a key of another store and product, by the shipped IDs: logged, Pro kept
 // review4's H3: the same on activation.
 fresh( array( 'key' => '', 'status' => '', 'instance_id' => '' ) );
 $REPLIES = array( reply( 200, array( 'activated' => true, 'error' => null, 'license_key' => array( 'status' => 'active', 'expires_at' => null ), 'instance' => array( 'id' => 'other-store-instance' ), 'meta' => array( 'store_id' => 1234, 'product_id' => 5678, 'variant_id' => 1, 'variant_name' => 'Annual Plan', 'customer_name' => 'A', 'customer_email' => 'a@example.com' ) ) ) );
-$res = lic()->activate_license( 'OTHER-STORE-KEY' );
-check( 'activating a key of another store and product: activated, Pro, status active, one line', array( $res['success'] ?? null, lic()->is_pro(), data()['status'], lines(), ui()['check']['ids'] ), array( true, true, 'active', array( 'Licence: this key belongs to Lemon Squeezy store 1234, not 335114; product 5678, not 958193. Pro is kept on: this version only records it.' ), 'mismatch' ) );
+$res = lic()->activate_license( '0a1b2c3d-5678-4abc-8def-0000000057e0' );
+check( 'activating a key of another store and product: activated, Pro, status active, one line (and 3.41.0\'s, the server not reached)', array( $res['success'] ?? null, lic()->is_pro(), data()['status'], lines(), ui()['check']['ids'] ), array( true, true, 'active', array( 'Licence: TCGiant\'s licence server could not be asked (no answer: cURL error 7: Failed to connect to tcgiant.com port 443), so the key is activated with Lemon Squeezy; the next check moves it to the server.', 'Licence: this key belongs to Lemon Squeezy store 1234, not 335114; product 5678, not 958193. Pro is kept on: this version only records it.' ), 'mismatch' ) );
 fresh();
 $FILTERS['tcgiant_sync_license_ids'] = function () { return array( 'store_id' => 0, 'product_ids' => array() ); };
 ask( reply( 200, valid_body( array( 'meta' => array( 'store_id' => 1234, 'product_id' => 5678 ) ) ) ) );
@@ -780,8 +802,8 @@ check( 'three runs: all of them queued, nothing left, no run after', array( arra
 free_with_held( 3 );
 $REPLIES = array( reply( 200, array( 'activated' => true, 'error' => null, 'license_key' => array( 'status' => 'active', 'expires_at' => null ), 'instance' => array( 'id' => 'new-instance' ), 'meta' => array( 'store_id' => 335114, 'product_id' => 958193, 'variant_id' => 91011, 'variant_name' => 'Annual Plan', 'customer_name' => 'A', 'customer_email' => 'a@example.com' ) ) ) );
 $HTTP = array();
-lic()->activate_license( 'NEW-KEY-1234' );
-check( 'activation: the same endpoint and body as before', array( $HTTP[0]['url'], $HTTP[0]['args']['body'], $HTTP[0]['args']['timeout'] ), array( 'https://api.lemonsqueezy.com/v1/licenses/activate', '{"license_key":"NEW-KEY-1234","instance_name":"shop-example"}', 15 ) );
+lic()->activate_license( '0a1b2c3d-1234-4abc-8def-000000001234' );
+check( 'activation: the same endpoint and body as before', array( $HTTP[0]['url'], $HTTP[0]['args']['body'], $HTTP[0]['args']['timeout'] ), array( 'https://api.lemonsqueezy.com/v1/licenses/activate', '{"license_key":"0a1b2c3d-1234-4abc-8def-000000001234","instance_name":"shop-example"}', 15 ) );
 check( '  a move to Pro: the replay queued', array( lic()->is_pro(), count( queued( TCGiant_Sync_Limit_Held::REPLAY_HOOK ) ) ), array( true, 1 ) );
 check( '  its IDs recorded, its next check a day on', array( data()['store_id'], near( data()['next_check'], time() + DAY_IN_SECONDS ), count( queued( TCGiant_Sync_License::CHECK_HOOK ) ) ), array( '335114', true, 1 ) );
 $QUEUE = array();
@@ -875,8 +897,8 @@ $settings_view = (string) file_get_contents( $ROOT . '/admin/views/settings.php'
 check( 'the licence card: each state its own words', array(
 	false !== strpos( $settings_view, "'unclear' === \$tc_lstate" ) && false !== strpos( $settings_view, 'Could not be checked since %1$s (%2$s), so it is still Pro. Next try: %3$s.' ),
 	false !== strpos( $settings_view, "'renewing' === \$tc_lstate" ),
-	false !== strpos( $settings_view, "'expired' === \$tc_lstate" ) && false !== strpos( $settings_view, 'Expired: Lemon Squeezy says this licence is not valid (%s).' ),
-	false !== strpos( $settings_view, "'lapsed' === \$tc_lstate" ) && false !== strpos( $settings_view, 'Could not be checked: Lemon Squeezy has not confirmed this licence since its renewal date' ),
+	false !== strpos( $settings_view, "'expired' === \$tc_lstate" ) && false !== strpos( $settings_view, 'Expired: %1$s says this licence is not valid (%2$s).' ),
+	false !== strpos( $settings_view, "'lapsed' === \$tc_lstate" ) && false !== strpos( $settings_view, 'Could not be checked: nothing has confirmed this licence since its renewal date' ),
 ), array( true, true, true, true ) );
 check( '  a Re-check button, with its nonce, when there is a key', array( false !== strpos( $settings_view, '<input type="hidden" name="action" value="tcgiant_recheck_license">' ), false !== strpos( $settings_view, "wp_nonce_field( 'tcgiant_recheck_license' )" ), false !== strpos( $settings_view, "! empty( \$license_ui['has_key'] ) && '' !== \$tc_lstate" ) ), array( true, true, true ) );
 check( '  the details: the store, product and variant for support', false !== strpos( $settings_view, 'Lemon Squeezy store %1$s, product %2$s, variant %3$s.' ), true );
@@ -997,7 +1019,7 @@ $REPLIES = array( reply( 200, array( 'deactivated' => true ) ) );
 $LOG = array();
 $res = lic()->deactivate_license();
 check( 'key B activated while key A was being released: key B and its record kept', array( table(), $res['success'] ?? null, $res['message'] ?? null ), array( $b, true, 'That key was released. Another key activated on this site meanwhile is kept.' ) );
-check( '  its next check still queued, one line said', array( count( queued( TCGiant_Sync_License::CHECK_HOOK ) ), lines() ), array( 1, array( 'Licence: the key was released at Lemon Squeezy, but another key was activated on this site while that was asked, so the new key and its record are kept.' ) ) );
+check( '  its next check still queued, one line said', array( count( queued( TCGiant_Sync_License::CHECK_HOOK ) ), lines() ), array( 1, array( 'Licence: the key was released, but another key was activated on this site while that was asked, so the new key and its record are kept.' ) ) );
 check( 'activation reads nothing of the record before its request (its own key is what it writes)', 1 === preg_match( '/public function activate_license\(\$key\)\s*\{(?:(?!get_license_data).)*?wp_remote_post/s', (string) file_get_contents( $ROOT . '/includes/class-tcgiant-sync-license.php' ) ), true );
 
 // =======================================================================================
@@ -1007,14 +1029,18 @@ $released = reply( 404, array( 'valid' => false, 'error' => 'license_key instanc
 fresh();
 $LOG = array();
 ask( $released );
-check( 'the key active, this site\'s activation gone: the free tier, "released"', array( lic()->is_pro(), data()['status'], state() ), array( false, 'expired', 'released' ) );
-check( '  the log says so, and to enter the key again', lines(), array( 'Licence: Lemon Squeezy says this site\'s activation of the key is no longer valid (HTTP 404: license_key instance not found.), though the key itself is not expired or disabled, so the site is on the free tier: new eBay listings are held back from import, and products already imported keep syncing. Enter the key again on the Settings screen to activate it here.' ) );
+// 3.41.0 fix round 1 (H1): Lemon Squeezy's "instance not found", the key
+// active, is unclear: nothing changes. 3.36.0 put the site on the free tier
+// ("released").
+check( 'the key active, this site\'s activation gone at Lemon Squeezy: unclear, still Pro (3.36.0: "released")', array( lic()->is_pro(), data()['status'], state() ), array( true, 'active', 'unclear' ) );
+check( '  the log says nothing for sure was said (3.36.0: "enter the key again")', 0 === strpos( lines()[0] ?? '', 'Licence: the licence check said nothing for sure (' ), true );
+$h1_old_line = array( 'Licence: Lemon Squeezy says this site\'s activation of the key is no longer valid (HTTP 404: license_key instance not found.), though the key itself is not expired or disabled, so the site is on the free tier: new eBay listings are held back from import, and products already imported keep syncing. Enter the key again on the Settings screen to activate it here.' );
 fresh();
 ask( reply( 404, array( 'valid' => false, 'error' => 'Not found.', 'license_key' => array( 'status' => 'inactive' ) ) ) );
-check( 'the key "inactive" (no activations left), whatever the error says: "released"', state(), 'released' );
+check( 'the key "inactive" (no activations left), whatever the error says: unclear (3.36.0: "released")', state(), 'unclear' );
 fresh();
 ask( reply( 404, array( 'valid' => false, 'error' => 'license_key instance not found.', 'license_key' => null ) ) );
-check( 'no key object, but the error names the instance: "released"', state(), 'released' );
+check( 'no key object, but the error names the instance: unclear (3.36.0: "released")', state(), 'unclear' );
 fresh();
 ask( reply( 200, array( 'valid' => false, 'error' => 'This license key instance has expired.', 'license_key' => array( 'status' => 'expired' ) ) ) );
 check( 'a key Lemon Squeezy calls expired: "expired", whatever its error says', state(), 'expired' );
@@ -1027,7 +1053,7 @@ check( '  disabled: "expired"', state(), 'expired' );
 fresh();
 $LOG = array();
 ask( $not_found );
-check( 'an unknown key, no key object: "expired", the renewal wording', array( state(), false !== strpos( lines()[0] ?? '', 'so a renewal brings Pro back' ) ), array( 'expired', true ) );
+check( 'an unknown key, no key object: unclear, nothing changes (3.36.0: "expired")', array( state(), lic()->is_pro(), false !== strpos( lines()[0] ?? '', 'said nothing for sure' ) ), array( 'unclear', true, true ) );
 
 /** The licence card from admin/views/settings.php, drawn alone as it is now. */
 function card( array $get = array() ) {
@@ -1044,8 +1070,9 @@ function card( array $get = array() ) {
 	$GLOBALS['CARD_ASKED'] = count( $GLOBALS['HTTP'] ) - $before;
 	return trim( preg_replace( '/\s+/', ' ', html_entity_decode( strip_tags( $html ), ENT_QUOTES ) ) );
 }
-fresh();
-ask( $released );
+// 3.41.0 fix round 1 (H1): Lemon Squeezy no longer releases a site; the
+// card is drawn from a record 3.36.0 left released.
+fresh( array( 'status' => 'expired', 'ls_status' => 'active', 'ls_error' => 'license_key instance not found.', 'checked_at' => time() - 60, 'asked_at' => time() - 60 ) );
 $c = card( array( 'license_rechecked' => 'invalid' ) );
 check( 'the card, released: this site\'s activation, enter the key again, no "Renew it"', array(
 	false !== strpos( $c, 'This site\'s activation of the key is no longer valid at Lemon Squeezy (license_key instance not found.), though the key itself has not expired.' ),
@@ -1163,8 +1190,8 @@ $OPTIONS[ OPT ] = array_merge( data(), array( 'ids_noted' => 'store 1, not 2' ) 
 // The IDs unset, so check_ids() writes nothing and only the merge decides.
 $FILTERS['tcgiant_sync_license_ids'] = function () { return array( 'store_id' => 0, 'product_ids' => array() ); };
 $REPLIES = array( reply( 200, array( 'activated' => true, 'error' => null, 'license_key' => array( 'status' => 'active' ), 'instance' => array( 'id' => 'i-new' ), 'meta' => array( 'variant_name' => 'Pro Annual' ) ) ) );
-lic()->activate_license( 'KEY-AFTER' );
-check( 'activation merges onto the table\'s record, not an older copy', array( table()['key'], table()['ids_noted'] ), array( 'KEY-AFTER', '' ) );
+lic()->activate_license( '0a1b2c3d-9999-4abc-8def-0000000af7e2' );
+check( 'activation merges onto the table\'s record, not an older copy', array( table()['key'], table()['ids_noted'] ), array( '0a1b2c3d-9999-4abc-8def-0000000af7e2', '' ) );
 
 // =======================================================================================
 echo "\nFIX ROUND 2: THE SMALL ITEMS\n" . str_repeat( '=', 140 ) . "\n";
@@ -1172,10 +1199,10 @@ echo "\nFIX ROUND 2: THE SMALL ITEMS\n" . str_repeat( '=', 140 ) . "\n";
 fresh();
 $LOG = array();
 ask( reply( 404, array( 'valid' => false, 'error' => 'This license key has expired.', 'license_key' => array( 'status' => 'active' ) ) ) );
-check( 'the error says the key expired, its status "active": "expired", and the renewal wording', array( state(), false !== strpos( lines()[0] ?? '', 'so a renewal brings Pro back' ) ), array( 'expired', true ) );
+check( 'the error says the key expired, its status "active": unclear, by its status (3.36.0: "expired")', array( state(), lic()->is_pro() ), array( 'unclear', true ) );
 fresh();
 ask( reply( 400, array( 'valid' => false, 'error' => 'This license key is disabled.', 'license_key' => array( 'status' => 'inactive' ) ) ) );
-check( '  disabled, its status "inactive": "expired"', state(), 'expired' );
+check( '  disabled, its status "inactive": unclear (3.36.0: "expired")', state(), 'unclear' );
 
 /** A licence 3.34.0 left: its eight keys and no more. */
 function legacy( array $over = array() ) {
@@ -1234,12 +1261,12 @@ check( '  and the site is on Pro', lic()->is_pro(), true );
 fresh();
 ask( reply( 400, array( 'valid' => false ) ) );
 $c = card();
-check( 'a bare {"valid": false} on a 400: "Expired" (Lemon Squeezy answered), not "not checked since the update"', array(
-	ui()['check']['reason_known'],
-	data()['ls_status'] . '|' . data()['ls_error'],
-	false !== strpos( $c, 'Expired: Lemon Squeezy says this licence is not valid (no reason given).' ),
+check( 'a bare {"valid": false} on a 400: unclear, still Pro, neither "Expired" nor "not checked since the update" (3.36.0: "Expired")', array(
+	state(),
+	lic()->is_pro(),
+	false === strpos( $c, 'Expired:' ),
 	false === strpos( $c, 'Not checked since this version was installed' ),
-), array( true, '|', true, true ) );
+), array( 'unclear', true, true, true ) );
 
 echo "\nLITE AND STANDARD: UNCHANGED\n" . str_repeat( '=', 140 ) . "\n";
 

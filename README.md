@@ -151,7 +151,11 @@ Nothing changes until you choose a template: the default is **None**, the plain 
 
 The free tier imports up to 50 active products; **Pro** removes the cap and adds priority support. Push to eBay is not limited in either. → [tcgiant.com/pro](https://tcgiant.com/pro/)
 
-A Pro licence is checked with Lemon Squeezy in the background, about once a day; no page waits on it. A clear answer from Lemon Squeezy that a key is not valid ends Pro. When Lemon Squeezy cannot be reached or answers unclearly, nothing changes and the check is tried again later; only a key whose renewal date passed more than 14 days ago with no clear answer since goes to the free tier until it can be checked. New listings the free limit held back are imported when a shop moves to Pro.
+A Pro licence is checked with TCGiant's own licence server at tcgiant.com (since 3.41.0) in the background, about once a day; no page waits on it. Its answers are signed, and only a signed answer that a key is not valid ends Pro, or, when only Lemon Squeezy can be asked, its word that the key has expired or is disabled ("not found" changes nothing). When the server cannot be reached or answers unclearly, nothing changes and the check is tried again later; its last signed answer holds for 7 days, after which a Lemon Squeezy key is checked with Lemon Squeezy directly while Lemon Squeezy still answers. Only a key whose renewal date passed more than 14 days ago with no clear answer since goes to the free tier until it can be checked. A site that activated its key with Lemon Squeezy keeps its key and activation: nothing to type again. New listings the free limit held back are imported when a shop moves to Pro.
+
+| Licence | |
+|---|---|
+| **TCGiant's licence server** (3.41.0): signed answers checked against a key built into the plugin; a key and activation from Lemon Squeezy carry over with no action; Lemon Squeezy asked only when the server cannot be, and its signed answer is more than 7 days old | ✅ |
 
 ## Demo
 

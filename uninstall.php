@@ -65,7 +65,7 @@ if ( function_exists( 'as_unschedule_all_actions' ) ) {
 		'tcgiant_sync_scan_all_pages',
 		'tcgiant_sync_fetch_delta_events',
 		'tcgiant_sync_process_item_import',
-		'tcgiant_sync_license_check',      // The licence's checks with Lemon Squeezy, 3.36.0.
+		'tcgiant_sync_license_check',      // The licence's checks, 3.36.0 (with TCGiant's licence server since 3.41.0).
 		'tcgiant_sync_limit_replay',       // Listings the free limit held back, imported on a move to Pro, 3.36.0.
 		'tcgiant_sync_prune_orphans',
 		'tcgiant_sync_update_ebay_stock',  // Stock pushes queued before 3.28.0.
@@ -279,7 +279,7 @@ $tcgiant_options = array(
 	'tcgiant_sync_call_count_tidied',  // The day the eBay call counts were last tidied, 3.28.0.
 	'tcgiant_sync_reconcile_pass',     // Where the weekly check has got to, 3.28.0.
 	'tcgiant_postmeta_index_version',
-	'tcgiant_sync_license',
+	'tcgiant_sync_license',            // The licence, and since 3.41.0 the licence server's last signed answer in it.
 	'tcgiant_sync_limit_held',         // New listings the free limit held back, for a move to Pro, 3.36.0.
 	'tcgiant_sync_limit_replay',       // Their replay's own record, 3.36.0.
 	'tcgiant_sync_settings',           // Legacy name, harmless if absent.
