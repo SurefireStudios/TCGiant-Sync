@@ -221,6 +221,7 @@ $tcgiant_options = array(
 	'tcgiant_sync_bound_address',      // The addresses the eBay connection belongs to, 3.31.0.
 	'tcgiant_sync_orders_follow',      // Open eBay orders followed by their OrderID, 3.31.0.
 	'tcgiant_sync_push_failures',      // Stock pushes eBay never took, 3.28.0.
+	'tcgiant_sync_sent_again',         // Stock Review: products a row's Send stock to eBay sent, 3.42.0.
 	'tcgiant_sync_push_switch',        // What the 3.28.0 upgrade did about stock pushes, and its notice.
 	'tcgiant_sync_tax_default',        // "eBay Prices Include Tax" never saved: new install or not, and its notice, 3.31.1.
 	'tcgiant_sync_gtin_req_forgotten', // 3.30.3's GetCategoryFeatures answers deleted, 3.31.1.
@@ -437,7 +438,10 @@ $wpdb->query(
 // (3.39.0, tcgiant_sync_bulk_edit_said_<user ID>), and of their last "Send
 // stock to eBay" on the products list (3.40.0,
 // tcgiant_sync_send_stock_said_<user ID>; its day's count on the free plan,
-// tcgiant_sync_send_stock_today, is in the list above). The bulk edit keeps nothing
+// tcgiant_sync_send_stock_today, is in the list above) and on a row of Stock
+// Review's list of pushes eBay refused (3.42.0,
+// tcgiant_sync_send_stock_row_said_<user ID>; what it sent, for its
+// "Sent again", is tcgiant_sync_sent_again, above). The bulk edit keeps nothing
 // else: what it changes are the products' own _ebay_export_ choices, which
 // stay, as above. The Listings page's "Send stock to eBay" keeps its counts
 // on its job, in tcgiant_sync_jobs, deleted above.

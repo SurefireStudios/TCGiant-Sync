@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.41.0
+Stable tag: 3.42.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -148,6 +148,11 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.42.0 - 2026-11-19 =
+* NEW: On Stock Review's list of stock changes that never reached eBay, a row has a "Send stock to eBay" button while its product is still on that row's eBay listing. Once the cause is fixed, it sends that product's stock, as WooCommerce has it now, to that listing - the push Send stock to eBay (Bulk actions, 3.40.0) queues, with every one of its rules: at 0 eBay is read first, up to 200 pushes a day on the free plan, nothing while "Send website stock changes to eBay?" is No. For a variable product keeping a stock its variations share, each of its variations keeping its own stock is sent too, and each push counts. A notice at the list says what was queued.
+* NEW: A row whose product has moved to another eBay listing, is no longer on eBay or on your website, whose stock its variable product now keeps, whose variations now keep their own stock, or whose stock cannot be sent to that listing (a variation with no SKU, say), says so in place of the button: check that row's listing in Seller Hub.
+* NEW: While the push a row's button sent waits, the row says "Sent again" with the time, waiting for eBay; while another push of the product waits (a stock change still being tried, say), it says a push is waiting, with no button. Once eBay takes it, the row leaves the list, as a row already did after any later push of the product eBay took. Once no push waits and the row is still there, the button is back, and the log says why.
 
 = 3.41.0 - 2026-11-18 =
 * NEW: Your Pro licence is now checked with TCGiant's own licence server, at tcgiant.com, in place of Lemon Squeezy, which stops on 31 March 2027. There is nothing to do: the next check sends the key and activation this site already holds, the server takes them as they are, and Pro stays on. No key to type again, nothing to activate again.
@@ -1731,6 +1736,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.42.0 =
+New: a Send stock to eBay button on the rows of Stock Review's list of stock changes that never reached eBay, while a row's product is still on its listing. It sends that product's stock as the bulk action does, and the row leaves the list once eBay takes it.
 
 = 3.41.0 =
 Your Pro licence is now checked with TCGiant's own licence server at tcgiant.com, as Lemon Squeezy closes on 31 March 2027. Nothing to do: the key and activation you have carry over by themselves, and Pro stays on.

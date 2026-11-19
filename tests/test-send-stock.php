@@ -1,7 +1,8 @@
 <?php
 /**
  * Harness: "Send stock to eBay" (3.40.0), on the products list's Bulk actions
- * and the Listings page's.
+ * and the Listings page's; and (3.42.0) on a row of Stock Review's list of
+ * stock pushes eBay refused, through wp-admin/admin-post.php.
  *
  * 3.39.0 stopped a stock write that leaves the stock as it was - WooCommerce's
  * own Bulk Edit writes every product's stock again - from sending it to eBay.
@@ -357,6 +358,130 @@ function notice_of( $said ) {
 }
 /** A job's status as the database holds it. */
 function job_status( $id ) { $j = TCGiant_Sync_Jobs::get_job_fresh( $id ); return is_array( $j ) ? $j['status'] : null; }
+
+// --- Stock Review's row (3.42.0) ---------------------------------------------
+
+/** The handler's exit after wp_safe_redirect(): the request ends there. */
+class Harness_Exited extends Exception {}
+
+/**
+ * WordPress 7.1.3's wp_safe_redirect() (wp-includes/pluggable.php): the
+ * location checked against this site's host, else admin_url(), then
+ * wp_redirect(). The handler's exit after it is played as the end of the
+ * request (Harness_Exited): the next statement in the handler is exit.
+ */
+function wp_safe_redirect( $location, $status = 302, $x_redirect_by = 'WordPress' ) {
+	$host = parse_url( (string) $location, PHP_URL_HOST );
+	if ( null !== $host && false !== $host && 'coinshop.example.com' !== strtolower( (string) $host ) ) {
+		$location = admin_url();
+	}
+	wp_redirect( $location );
+	throw new Harness_Exited( 'exit' );
+}
+
+/**
+ * wp-admin/admin-post.php for a logged-in user. The scratch copy of
+ * WordPress 7.1.3 (SP\tmp-r3330\wp\wordpress) has no admin-post.php; this is
+ * its body as WordPress ships it (since 5.x; the action sanitised and
+ * checked scalar since 6.x): the action from $_REQUEST, sanitize_text_field()
+ * of it, wp_die( '', 400 ) when it is not scalar or nothing is hooked on
+ * admin_post_{action}, else do_action( "admin_post_{action}" ). Its
+ * do_action( 'admin_init' ) is not run, as admin_ajax() does not run it.
+ */
+function admin_post( array $post ) {
+	$_POST                = $post;
+	$_REQUEST             = $post;
+	$GLOBALS['REDIRECTS'] = array();
+	try {
+		$action = ! empty( $_REQUEST['action'] ) ? sanitize_text_field( $_REQUEST['action'] ) : '';
+		if ( ! is_scalar( $action ) ) {
+			wp_die( '', 400 );
+		}
+		if ( ! is_user_logged_in() ) {
+			if ( empty( $action ) ) {
+				do_action( 'admin_post_nopriv' );
+			} else {
+				if ( ! has_action( "admin_post_nopriv_{$action}" ) ) {
+					wp_die( '', 400 );
+				}
+				do_action( "admin_post_nopriv_{$action}" );
+			}
+		} elseif ( empty( $action ) ) {
+			do_action( 'admin_post' );
+		} else {
+			if ( ! has_action( "admin_post_{$action}" ) ) {
+				wp_die( '', 400 );
+			}
+			do_action( "admin_post_{$action}" );
+		}
+		return array( 'redirect' => null, 'died' => null );
+	} catch ( Harness_Exited $e ) {
+		return array( 'redirect' => end( $GLOBALS['REDIRECTS'] ), 'died' => null );
+	} catch ( Harness_Died $e ) {
+		return array( 'redirect' => null, 'died' => $e->getMessage() );
+	}
+}
+
+/**
+ * A row's "Send stock to eBay", posted as its form posts it: the product, the
+ * row's listing (the first row of the product on the list, unless given) and
+ * its own nonce for both (fix round 1), unless another is given.
+ */
+function row_post( $id, $nonce = null, $item = null ) {
+	if ( null === $item ) {
+		$item = '';
+		foreach ( refused_rows() as $r ) {
+			if ( (int) $r['product_id'] === (int) $id ) {
+				$item = (string) ( $r['item_id'] ?? '' );
+				break;
+			}
+		}
+	}
+	return admin_post( array(
+		'action'     => 'tcgiant_send_stock_one',
+		'product_id' => (string) $id,
+		'item_id'    => (string) $item,
+		'_wpnonce'   => null === $nonce ? wp_create_nonce( 'tcgiant_send_stock_one_' . $id . '_' . $item ) : $nonce,
+	) );
+}
+/** A row of the list, as record_push_failure() writes one. */
+function failure_row( $id, $item, array $more = array() ) {
+	return $more + array( 'time' => time() - HOUR_IN_SECONDS, 'product_id' => (int) $id, 'item_id' => (string) $item, 'sku' => '', 'reason' => 'edit', 'qty' => 0, 'order' => 0, 'stock' => 4, 'code' => '518', 'message' => 'Call usage limit' );
+}
+function refused_list( array $rows ) { $GLOBALS['OPTIONS'][ TCGiant_Sync_Inventory::PUSH_FAILURES_OPTION ] = $rows; }
+function refused_rows() { return get_option( TCGiant_Sync_Inventory::PUSH_FAILURES_OPTION, array() ); }
+/**
+ * Each row as product/listing/sent, or - when no mark of its product
+ * (SENT_AGAIN_OPTION, fix round 1) names its listing, or it names none.
+ */
+function row_marks() {
+	$marks = TCGiant_Sync_Inventory::sent_again_marks();
+	return array_map( function ( $r ) use ( $marks ) {
+		$item = (string) ( $r['item_id'] ?? '' );
+		$mark = $marks[ (int) $r['product_id'] ] ?? null;
+		return (int) $r['product_id'] . '/' . $item . '/' . ( is_array( $mark ) && ( '' === $item || $item === (string) $mark['item'] ) ? 'sent' : '-' );
+	}, refused_rows() );
+}
+/** What the row's action kept for its notice. */
+function row_said() { return get_transient( TCGiant_Sync_Admin::SEND_STOCK_ROW_SAID . get_current_user_id() ); }
+/**
+ * A row's "Send stock to eBay" on a shop whose list holds $rows, then the
+ * queue run: what was queued and every request sent, as by_action() does.
+ */
+function by_row( callable $shop, $id, array $rows, array $settings = array() ) {
+	fresh_shop( $settings );
+	$shop();
+	refused_list( $rows );
+	$GLOBALS['LAST_CLICK']    = row_post( $id );
+	$GLOBALS['LAST_ROW_SAID'] = row_said();
+	$GLOBALS['CLICK_WIRE']    = wire();
+	$GLOBALS['CLICK_HOOKS']   = queued_hooks();
+	$GLOBALS['ROWS_CLICKED']  = row_marks();
+	$jobs  = push_jobs();
+	$asked = asked_flags();
+	run_queue( true, 200 );
+	return array( 'jobs' => $jobs, 'asked' => $asked, 'wire' => wire() );
+}
 
 
 if ( $STAGING_CHILD ) {
@@ -1203,12 +1328,561 @@ $by_action = $after();
 check( 'this site\'s own daily allowance (1,000) used: the 3 waits for tomorrow, as a stock change\'s', $by_action[1], $by_change[1] );
 check( '  the 0: GetItem and EndItem past it (a stock change\'s: EndItem)', array( $by_action[0], $by_change[0], $by_action[1][0][1] ?? null, $by_action[1][0][2] ?? null ), array( array( 'GetItem', 'EndItem' ), array( 'EndItem' ), 6510, true ) );
 
+echo "\nSTOCK REVIEW: SEND STOCK TO EBAY ON A ROW OF THE PUSHES EBAY REFUSED (3.42.0)\n" . str_repeat( '=', 132 ) . "\n";
+
+// What Stock Review draws of the list: the view's own lines, cut from it and
+// run as the page runs them, with what render_stock_review_page() hands it.
+// The rest of the page is test-sold-view.php's (it draws the whole view).
+if ( ! function_exists( 'esc_html_e' ) ) {
+	function esc_html_e( $text ) { echo esc_html( $text ); }
+}
+if ( ! function_exists( 'wp_date' ) ) {
+	function wp_date( $format, $ts = null ) { return gmdate( 'Y-m-d H:i', (int) $ts ); }
+}
+if ( ! function_exists( 'wp_nonce_field' ) ) {
+	function wp_nonce_field( $action = -1, $name = '_wpnonce' ) { echo '<input type="hidden" id="' . esc_attr( $name ) . '" name="' . esc_attr( $name ) . '" value="' . esc_attr( wp_create_nonce( $action ) ) . '" />'; }
+}
+if ( ! function_exists( 'get_edit_post_link' ) ) {
+	function get_edit_post_link( $id ) { return admin_url( 'post.php?post=' . (int) $id . '&action=edit' ); }
+}
+if ( ! function_exists( 'get_the_title' ) ) {
+	function get_the_title( $id ) { return 'Card ' . (int) $id; }
+}
+if ( ! function_exists( '_prime_post_caches' ) ) {
+	/** WordPress's, recorded: the IDs and what it is asked to prime. */
+	function _prime_post_caches( $ids, $update_term_cache = true, $update_meta_cache = true ) { $GLOBALS['PRIMED'][] = array( $ids, $update_term_cache, $update_meta_cache ); }
+}
+$VIEW_SRC    = (string) file_get_contents( $ROOT . '/admin/views/stock-review.php' );
+$cut_review  = function ( $from, $to ) use ( $VIEW_SRC ) {
+	$a = strpos( $VIEW_SRC, $from );
+	$b = false === $a ? false : strpos( $VIEW_SRC, $to, $a );
+	return ( false === $a || false === $b ) ? null : substr( $VIEW_SRC, $a, $b - $a );
+};
+$REVIEW_TOP  = $cut_review( '// What a row\'s "Send stock to eBay" did (3.42.0)', '// A product imported from a relist' );
+$REVIEW_LIST = $cut_review( "\t<?php if ( ! empty( \$push_failures ) ) : ?>", "\t<?php if ( ! \$tc_pairs_asked ) : ?>" );
+check( 'the list\'s part of Stock Review, cut from the view to be drawn as the page draws it', array( null !== $REVIEW_TOP, null !== $REVIEW_LIST ), array( true, true ) );
+
+/** Stock Review's list as the page draws it after the redirect: render_stock_review_page()'s hand-over, then the view's lines. */
+function review_list() {
+	$push_failures = TCGiant_Sync_Inventory::push_failures();
+	$tc_send_said  = $GLOBALS['ADMIN']->take_send_stock_row_said();
+	ob_start();
+	eval( $GLOBALS['REVIEW_TOP'] . ' ?>' . $GLOBALS['REVIEW_LIST'] );
+	return (string) ob_get_clean();
+}
+/** The rows' forms: "product:listing:nonce", in the order drawn. */
+function row_buttons( $html ) {
+	preg_match_all( '#<input type="hidden" name="action" value="tcgiant_send_stock_one" />\s*<input type="hidden" name="product_id" value="(\d+)" />\s*<input type="hidden" name="item_id" value="([^"]*)" />\s*<input type="hidden" name="_wpnonce" value="([^"]*)" />\s*<button type="submit" class="button button-small">Send stock to eBay</button>#', $html, $m, PREG_SET_ORDER );
+	return array_map( function ( $x ) { return $x[1] . ':' . $x[2] . ':' . $x[3]; }, $m );
+}
+/** A row's own nonce, as the view makes it (fix round 1): product and listing. */
+function row_nonce( $id, $item ) { return wp_create_nonce( 'tcgiant_send_stock_one_' . $id . '_' . $item ); }
+/** A row's text, found by a word in it, as it reads (fix round 2: entities decoded). */
+function row_text( $html, $needle ) {
+	foreach ( (array) preg_split( '#</tr>#', $html ) as $row ) {
+		if ( false !== strpos( (string) $row, $needle ) ) {
+			return trim( (string) preg_replace( '/\s+/', ' ', html_entity_decode( strip_tags( (string) $row ), ENT_QUOTES ) ) );
+		}
+	}
+	return '';
+}
+/** The notice the row's action left: where it is drawn, its kind, its words. */
+function list_said( $html ) {
+	if ( preg_match( '#<div class="notice (notice-[a-z]+) inline"[^>]*><p>(.*?)</p></div>#s', $html, $m ) ) {
+		return array( 'in the list', $m[1], html_entity_decode( $m[2], ENT_QUOTES ) );
+	}
+	if ( preg_match( '#<div class="notice (notice-success|notice-warning)" id="tc-push-failures"[^>]*>\s*<p[^>]*>(.*?)</p>#s', $html, $m ) ) {
+		return array( 'in its place', $m[1], html_entity_decode( $m[2], ENT_QUOTES ) );
+	}
+	return array();
+}
+$BACK = 'https://coinshop.example.com/wp-admin/admin.php?page=tcgiant-stock-review#tc-push-failures';
+
+check( 'registered for its form: admin_post_tcgiant_send_stock_one; nothing for a visitor not logged in', array( $reg( 'admin_post_tcgiant_send_stock_one', 'handle_send_stock_one' ), has_action( 'admin_post_nopriv_tcgiant_send_stock_one' ) ), array( array( 1, 10 ), false ) );
+$admin_src = (string) file_get_contents( $ROOT . '/admin/class-tcgiant-sync-admin.php' );
+check( '  Stock Review\'s page hands the view the row\'s record, taken once, before it is drawn', 1 === preg_match( '/function render_stock_review_page\(\) \{\s*(?:\/\/[^\n]*\n\s*)*\$tc_send_said = \$this->take_send_stock_row_said\(\);\s*include_once TCGIANT_SYNC_PATH \. \'admin\/views\/stock-review\.php\';/', $admin_src ), true );
+
+// The button on each row.
+fresh_shop();
+product( 6700, 3, '670000006700' );
+product( 6701, 2, '670100006701' );
+product( 6702, 2, '670200006702' );
+$POSTS[6702]['status'] = 'trash';
+refused_list( array(
+	failure_row( 6700, '670000006700', array( 'time' => time() - 3 * HOUR_IN_SECONDS, 'message' => 'An earlier one' ) ),
+	failure_row( 6701, '670100006701', array( 'time' => time() - 2 * HOUR_IN_SECONDS ) ),
+	failure_row( 6700, '670000006700' ),
+	failure_row( 6799, '679900006799' ),
+	failure_row( 6702, '670200006702' ),
+) );
+$html = review_list();
+$n0   = '6700:670000006700:' . row_nonce( 6700, '670000006700' );
+check( 'a button on each row whose product is on that row\'s listing: "Send stock to eBay", posting its product, the row\'s listing and a nonce of its own for both', row_buttons( $html ), array( $n0, '6701:670100006701:' . row_nonce( 6701, '670100006701' ), $n0 ) );
+check( '  none on the row of a product gone since, nor of one in the trash: they say so instead (fix round 1)', array( false !== strpos( row_text( $html, '679900006799' ), '#6799 679900006799 A stock change on your website 4 Call usage limit (518) No longer on your website.' ), false !== strpos( row_text( $html, '679900006799' ), 'Send stock to eBay' ), false !== strpos( row_text( $html, '670200006702' ), 'Send stock to eBay' ), false !== strpos( row_text( $html, '670200006702' ), 'No longer on your website.' ) ), array( true, false, false, true ) );
+check( '  each a form of its own, posted to admin-post.php; and Clear this list, as before', array( substr_count( $html, '<form method="post" action="https://coinshop.example.com/wp-admin/admin-post.php" style="margin:0;">' ), substr_count( $html, 'value="tcgiant_forget_push_failures"' ) ), array( 4, 1 ) );
+check( '  in a column of its own', 1 === substr_count( $html, '<th>eBay&#039;s last answer</th><th>Send again</th></tr></thead>' ), true );
+check( '  the list\'s words: once the cause is fixed, the row\'s button sends the stock again, and the row goes once eBay takes it', false !== strpos( html_entity_decode( $html, ENT_QUOTES ), 'Check each listing in Seller Hub and set its quantity there if it is wrong. Once the cause is fixed, the row\'s Send stock to eBay button sends your website\'s stock again, and the row goes once eBay takes it. Your website\'s stock was not changed. The most recent are first.' ), true );
+check( '  nothing sent yet: no notice at the list', list_said( $html ), array() );
+
+// A linked product, sent from its row: the push a stock change queues.
+$shop = function () {
+	product( 6710, 4, '671000006710' );
+};
+$rows   = array(
+	failure_row( 6710, '671000006710' ),
+	failure_row( 6711, '671100006711' ),
+	failure_row( 6710, '670000000001', array( 'message' => 'Its earlier listing' ) ),
+	failure_row( 6710, '', array( 'message' => 'No listing named' ) ),
+	failure_row( 6712, '671000006710', array( 'message' => 'Another product on the same listing' ) ),
+);
+$change = by_change( $shop, 6710, 4 );
+$t0     = time();
+$row    = by_row( $shop, 6710, $rows );
+check( 'a linked product sent from its row: the push a stock change to its stock queues - product, reason, listing', $row['jobs'], $change['jobs'] );
+check( '  and asked, as the bulk action\'s push is; a stock change\'s is not', array( $row['asked'], $change['asked'] ), array( array( 1 ), array( null ) ) );
+check( '  its request IDENTICAL, byte for byte, to the stock change\'s (ReviseInventoryStatus 4, no read)', array( $row['wire'] === $change['wire'], calls_of( $row ), qty_sent( sent( 'ReviseInventoryStatus' ) ) ), array( true, array( 'ReviseInventoryStatus' ), 4 ) );
+check( '  the click itself: no eBay call, no HTTP request, nothing queued but the stock push', $NOW_SENT(), array( array(), array( 'tcgiant_sync_push_stock' ) ) );
+check( '  the redirect: back to Stock Review, at the list; nothing added to the address', $LAST_CLICK, array( 'redirect' => $BACK, 'died' => null ) );
+check( '  the log: one line, from Stock Review, with the user', send_lines(), array( 'Send stock to eBay (Stock Review, user #1): 1 queued (ReviseInventoryStatus 1: #6710); skipped 0.' ) );
+check( '  its rows for the listing it went to, and one naming none, said sent again; its row for another listing, and other products\' (one on the same listing), not', $ROWS_CLICKED, array( '6710/671000006710/sent', '6711/671100006711/-', '6710/670000000001/-', '6710//sent', '6712/671000006710/-' ) );
+check( '  eBay took it: those two rows leave the list, as a push eBay takes takes them (as since 3.28.3); the other three stay, unmarked', row_marks(), array( '6711/671100006711/-', '6710/670000000001/-', '6712/671000006710/-' ) );
+check( '  the mark, in its own option and not in the list (fix round 1), gone with the push', array( TCGiant_Sync_Inventory::sent_again_marks(), array_filter( array_map( function ( $r ) { return isset( $r['sent_again'] ); }, refused_rows() ) ) ), array( array(), array() ) );
+check( '  the record is kept for Stock Review alone: the products list draws nothing from it', array( notice_drawn(), is_array( row_said() ) ), array( array( '', '' ), true ) );
+$html = review_list();
+check( '  the notice at the list after the redirect: what was queued, in the bulk action\'s words, and today\'s count', list_said( $html ), array( 'in the list', 'notice-success', first_line( 1 ) . ' 1 sets eBay\'s quantity to its stock. ' . $CLOSE . ' ' . today_line( 1 ) ) );
+check( '  shown once', array( row_said(), list_said( review_list() ) ), array( false, array() ) );
+
+// While its push waits.
+fresh_shop();
+product( 6720, 3, '672000006720' );
+product( 6721, 2, '672100006721' );
+refused_list( array( failure_row( 6720, '672000006720' ), failure_row( 6721, '672100006721' ) ) );
+$t0 = time();
+row_post( 6720 );
+$t1   = time();
+$at   = (int) ( TCGiant_Sync_Inventory::sent_again_marks()[6720]['at'] ?? 0 );
+$html = review_list();
+check( 'while its push waits: the row keeps the time it was sent again', $at >= $t0 && $at <= $t1, true );
+$txt  = row_text( $html, '672000006720' );
+$want = '#6720 672000006720 A stock change on your website 4 Call usage limit (518) Sent again ' . gmdate( 'Y-m-d H:i', $at ) . '; waiting for eBay';
+check( '  and says it, and that it waits for eBay, in place of its button; the other row keeps its button', array( substr( $txt, -strlen( $want ) ) === $want, false !== strpos( $txt, 'Send stock to eBay' ), row_buttons( $html ) ), array( true, false, array( '6721:672100006721:' . row_nonce( 6721, '672100006721' ) ) ) );
+check( '  the mark in its own option: the listing and the time', TCGiant_Sync_Inventory::sent_again_marks(), array( 6720 => array( 'item' => '672000006720', 'at' => $at ) ) );
+check( '  the notice drawn in the list, above it', list_said( $html )[0] ?? null, 'in the list' );
+
+// Its push already landed when the page is drawn, and the list is empty.
+fresh_shop();
+product( 6705, 3, '670500006705' );
+refused_list( array( failure_row( 6705, '670500006705' ) ) );
+row_post( 6705 );
+run_queue( true, 20 );
+$html = review_list();
+check( 'its push landed before the page was drawn, the list now empty: the notice is drawn in its place, where the redirect lands', array( refused_rows(), list_said( $html ), substr_count( $html, 'id="tc-push-failures"' ), substr_count( $html, 'never reached eBay' ) ), array( array(), array( 'in its place', 'notice-success', first_line( 1 ) . ' 1 sets eBay\'s quantity to its stock. ' . $CLOSE . ' ' . today_line( 1 ) ), 1, 0 ) );
+
+// eBay refuses it again, every try: given up again.
+$shop = function () {
+	product( 6730, 3, '673000006730' );
+	ebay_has( '673000006730', listing( '673000006730', 5, 0 ) );
+	$r = array();
+	for ( $i = 0; $i < 12; $i++ ) {
+		$r[] = refused( 21919999, 'Something about the listing.' );
+	}
+	ebay_answers( 'ReviseInventoryStatus', ...$r );
+};
+by_row( $shop, 6730, array( failure_row( 6730, '673000006730' ) ) );
+check( 'eBay refuses it again, every try: given up again - a new row listed; the old one no longer says sent again', array( $ROWS_CLICKED, row_marks(), logged( 'Stock push for WC #6730 to eBay listing 673000006730 gave up', 'error' ) ), array( array( '6730/673000006730/sent' ), array( '6730/673000006730/-', '6730/673000006730/-' ), true ) );
+check( '  both rows have the button again', count( row_buttons( review_list() ) ), 2 );
+
+// Switched off before its push ran: the push comes to nothing.
+fresh_shop();
+product( 6740, 3, '674000006740' );
+refused_list( array( failure_row( 6740, '674000006740' ) ) );
+row_post( 6740 );
+$marked = row_marks();
+$OPTIONS['tcgiant_sync_ebay_settings']['push_stock_to_ebay'] = '0';
+run_queue( true, 20 );
+check( 'switched off before its push ran: nothing sent; the row no longer says sent again, and its button is back', array( $marked, calls(), row_marks(), logged( 'Stock push for WC #6740 not sent: "Send website stock changes to eBay?" is No.' ), row_buttons( review_list() ) ), array( array( '6740/674000006740/sent' ), array(), array( '6740/674000006740/-' ), true, array( '6740:674000006740:' . row_nonce( 6740, '674000006740' ) ) ) );
+
+// A try eBay does not answer, at any of the API's three attempts: tried
+// again later, still waiting.
+fresh_shop();
+product( 6750, 3, '675000006750' );
+ebay_has( '675000006750', listing( '675000006750', 5, 0 ) );
+$gone = new WP_Error( 'http_request_failed', 'cURL error 28: Operation timed out' );
+ebay_answers( 'ReviseInventoryStatus', $gone, $gone, $gone );
+refused_list( array( failure_row( 6750, '675000006750' ) ) );
+row_post( 6750 );
+run_queue( false, 5 );
+check( 'a try eBay does not answer: tried again later, and the row still says sent again', array( count( pushes() ) > 0, row_marks() ), array( true, array( '6750/675000006750/sent' ) ) );
+run_queue( true, 20 );
+check( '  its try again reaches eBay: the row leaves the list', array( row_marks(), in_array( 'ReviseInventoryStatus', calls(), true ) ), array( array(), true ) );
+
+// Only the asked push takes the time off.
+fresh_shop();
+product( 6760, null, '676000006760' );
+refused_list( array( failure_row( 6760, '676000006760' ), failure_row( 6761, '676100006761' ) ) );
+$OPTIONS[ TCGiant_Sync_Inventory::SENT_AGAIN_OPTION ] = array( 6760 => array( 'item' => '676000006760', 'at' => time() - 60 ), 6761 => array( 'item' => '676100006761', 'at' => time() - 60 ) );
+do_action( TCGiant_Sync_Inventory::PUSH_HOOK, array( 'product_id' => 6760, 'reason' => 'edit', 'item' => '676000006760' ) );
+check( 'a push not asked for coming to nothing (stock not tracked): the row still says sent again - that is the asked push\'s to end', row_marks(), array( '6760/676000006760/sent', '6761/676100006761/sent' ) );
+do_action( TCGiant_Sync_Inventory::PUSH_HOOK, array( 'product_id' => 6760, 'reason' => 'edit', 'item' => '676000006760', 'asked' => 1 ) );
+check( '  the asked push coming to nothing: it no longer does; another product\'s row still does', row_marks(), array( '6760/676000006760/-', '6761/676100006761/sent' ) );
+
+// A shared stock's row, and a row a variation taking it had.
+$shop = function () {
+	variable( 6770, '677000006770', array( '_manage_stock' => 'yes', '_stock' => 5 ) );
+	variation( 6771, 6770, 'RW-A', null, array( 'size' => 'S' ) );
+	variation( 6772, 6770, 'RW-B', null, array( 'size' => 'M' ) );
+	ebay_has( '677000006770', variation_listing( '677000006770', array( ev( 'RW-A', 6, 0, array( 'size' => 'S' ) ), ev( 'RW-B', 6, 0, array( 'size' => 'M' ) ) ) ), variation_listing( '677000006770', array( ev( 'RW-A', 5, 0, array( 'size' => 'S' ) ), ev( 'RW-B', 5, 0, array( 'size' => 'M' ) ) ) ) );
+};
+$rows   = array( failure_row( 6770, '677000006770' ), failure_row( 6771, '677000006770', array( 'sku' => 'RW-A' ) ) );
+$change = by_change( $shop, 6770, 5 );
+$row    = by_row( $shop, 6770, $rows );
+check( 'a shared stock\'s row (the parent\'s): its one pool push, IDENTICAL to a stock change\'s; its row said sent again, and gone once eBay took it', array( $row['jobs'], $row['wire'] === $change['wire'], $ROWS_CLICKED, row_marks() ), array( $change['jobs'], true, array( '6770/677000006770/sent', '6771/677000006770/-' ), array( '6771/677000006770/-' ) ) );
+fresh_shop();
+$shop();
+refused_list( $rows );
+$html = review_list();
+check( '  a row a variation taking it had (from before): no button - its push would be the parent\'s pool, which does not end it (M-1); it says so', array( row_buttons( $html ), false !== strpos( row_text( $html, 'RW-A' ), 'Its stock is kept by #6770 now. Check this listing in Seller Hub.' ) ), array( array( '6770:677000006770:' . row_nonce( 6770, '677000006770' ) ), true ) );
+$row = by_row( $shop, 6771, $rows );
+check( '  posted anyway: refused - nothing queued or sent, nothing marked; the notice and the log say why', array( $row['jobs'], $row['wire'], $ROWS_CLICKED, list_said( review_list() ), send_lines() ), array( array(), array(), array( '6770/677000006770/-', '6771/677000006770/-' ), array( 'in the list', 'notice-warning', 'Send stock to eBay: nothing was queued for #6771. Its stock is kept by #6770 now. Check this listing in Seller Hub.' ), array( 'Send stock to eBay (Stock Review, user #1): nothing queued for WC #6771, its row naming eBay listing 677000006770 - held (its stock is kept by WC #6770).' ) ) );
+
+// Each skip: nothing queued, said, the row not said sent again.
+$skips = array(
+	array( 'stock not managed', function () { product( 6781, null, '678100006781' ); }, 6781, 'stock not managed 1: #6781', '1 not sent: WooCommerce does not manage its stock, or has no figure for it: #6781.' ),
+	array( 'an auction with stock', function () { product( 6782, 1, '678200006782', array( '_ebay_listing_type' => 'Chinese' ) ); }, 6782, 'auction above 0 1: #6782', '1 not sent: an auction with stock is one item, so there is no quantity to send: #6782.' ),
+	array( 'its listing ended, its sales in', function () { product( 6783, 0, '678300006783', array( '_ebay_listing_status' => 'Ended', '_ebay_stock_settled_at' => '2026-11-01 10:00:00', '_ebay_stock_settled_item' => '678300006783', '_ebay_end_reason' => 'stock_zero' ) ); }, 6783, 'listing ended 1: #6783', '1 not sent: the eBay listing has ended - relist it to sell it again: #6783.' ),
+	array( 'a push already on its way', function () { product( 6784, 3, '678400006784' ); set_transient( 'tcgiant_stock_pending_6784', 1, 60 ); }, 6784, 'already on its way 1: #6784', '1 not sent: a push of its stock is already on its way, or eBay\'s own figure was just brought in: #6784.' ),
+);
+foreach ( $skips as $s ) {
+	fresh_shop();
+	( $s[1] )();
+	$item = (string) meta( $s[2], '_ebay_item_id' );
+	refused_list( array( failure_row( $s[2], $item ) ) );
+	$click = row_post( $s[2] );
+	check( 'a row whose product is skipped, ' . $s[0] . ': nothing queued; the log, the notice (a warning), the row not said sent again', array( $click, count( pushes() ), send_lines(), list_said( review_list() ), row_marks() ), array( array( 'redirect' => $BACK, 'died' => null ), 0, array( 'Send stock to eBay (Stock Review, user #1): 0 queued; skipped 1 (' . $s[3] . ').' ), array( 'in the list', 'notice-warning', first_line( 0 ) . ' ' . $s[4] . ' ' . today_line( 0 ) ), array( $s[2] . '/' . $item . '/-' ) ) );
+}
+
+// Pushes off, and no connection.
+fresh_shop( array( 'push_stock_to_ebay' => '0' ) );
+product( 6790, 3, '679000006790' );
+refused_list( array( failure_row( 6790, '679000006790' ) ) );
+row_post( 6790 );
+check( 'pushes off ("Send website stock changes to eBay?" No): nothing queued; the log and the notice say why and where to change it; the row not said sent again', array( count( pushes() ), send_lines(), list_said( review_list() ), row_marks() ), array( 0, array( 'Send stock to eBay (Stock Review, user #1): nothing queued - "Send website stock changes to eBay?" is No.' ), array( 'in the list', 'notice-warning', 'Send stock to eBay: nothing was queued, because "Send website stock changes to eBay?" is No in TCGiant Sync, Settings. Set it to Yes to send stock to eBay.' ), array( '6790/679000006790/-' ) ) );
+fresh_shop( array( 'access_token' => '', 'refresh_token' => '' ) );
+product( 6791, 3, '679100006791' );
+refused_list( array( failure_row( 6791, '679100006791' ) ) );
+row_post( 6791 );
+check( 'not connected to eBay: nothing queued; said; the row not said sent again', array( count( pushes() ), send_lines(), list_said( review_list() )[2] ?? null, row_marks() ), array( 0, array( 'Send stock to eBay (Stock Review, user #1): nothing queued - this site is not connected to eBay.' ), 'Send stock to eBay: nothing was queued, because this site is not connected to eBay. Connect it in TCGiant Sync, Settings, then send the stock again.', array( '6791/679100006791/-' ) ) );
+
+// The free plan's 200 a day.
+fresh_shop();
+product( 6795, 3, '679500006795' );
+product( 6796, 3, '679600006796' );
+refused_list( array( failure_row( 6795, '679500006795' ), failure_row( 6796, '679600006796' ) ) );
+$OPTIONS[ TCGiant_Sync_Inventory::SEND_STOCK_TODAY_OPTION ] = array( 'day' => gmdate( 'Y-m-d' ), 'count' => 199 );
+row_post( 6795 );
+check( 'the free plan\'s 200 pushes a day: a row\'s send takes one of today\'s (199 to 200)', array( push_args(), TCGiant_Sync_Inventory::send_stock_today() ), array( array( array( 6795, 'edit', null ) ), 200 ) );
+review_list();
+row_post( 6796 );
+check( '  past it: not sent, said as today\'s limit in the log and the notice; that row not said sent again', array( count( pushes() ), end( $LOG )[1], list_said( review_list() ), row_marks() ), array( 1, 'Send stock to eBay (Stock Review, user #1): 0 queued; skipped 1 (today\'s limit reached 1: #6796).', array( 'in the list', 'notice-warning', first_line( 0 ) . ' 1 not sent: today\'s limit for Send stock to eBay (200 on the free plan) is reached - select it again tomorrow, or upgrade: #6796. ' . today_line( 200 ) ), array( '6795/679500006795/sent', '6796/679600006796/-' ) ) );
+
+// The nonce: the row's own, for its own product.
+fresh_shop();
+product( 6797, 3, '679700006797' );
+product( 6798, 3, '679800006798' );
+refused_list( array( failure_row( 6797, '679700006797' ), failure_row( 6798, '679800006798' ) ) );
+$none = array( 'The link you followed has expired.', 0, array(), false, array( '6797/679700006797/-', '6798/679800006798/-' ) );
+$click = row_post( 6797, 'not-the-nonce' );
+check( 'a wrong nonce: WordPress stops it first - nothing queued, logged, kept or marked', array( $click['died'], count( pushes() ), send_lines(), row_said(), row_marks() ), $none );
+$click = row_post( 6797, row_nonce( 6798, '679800006798' ) );
+check( '  another row\'s nonce: the same - each row\'s nonce is for its own product', array( $click['died'], count( pushes() ), send_lines(), row_said(), row_marks() ), $none );
+$click = row_post( 6797, row_nonce( 6797, '679800006798' ), '679700006797' );
+check( '  its own product\'s nonce for another listing, posting the row\'s: the same - the nonce binds the row\'s listing (fix round 1)', array( $click['died'], count( pushes() ), send_lines(), row_said(), row_marks() ), $none );
+$click = row_post( 6797, row_nonce( 6797, '679700006797' ), '679800006798' );
+check( '  its own nonce, another listing posted: the same', array( $click['died'], count( pushes() ), send_lines(), row_said(), row_marks() ), $none );
+$click = row_post( 6797, wp_create_nonce( 'tcgiant_send_stock_one_6797' ) );
+check( '  the nonce before fix round 1, for the product alone: the same', array( $click['died'], count( pushes() ), send_lines(), row_said(), row_marks() ), $none );
+$click = row_post( 6797, wp_create_nonce( 'bulk-posts' ) );
+check( '  the products list\'s bulk-posts nonce: the same', array( $click['died'], count( pushes() ), send_lines(), row_said(), row_marks() ), $none );
+$click = admin_post( array( 'action' => 'tcgiant_send_stock_one', 'product_id' => '6797' ) );
+check( '  no nonce: the same', array( $click['died'], count( pushes() ), send_lines(), row_said(), row_marks() ), $none );
+$theirs  = row_nonce( 6797, '679700006797' );
+$USER_ID = 2;
+$click   = row_post( 6797, $theirs );
+$USER_ID = 1;
+check( '  another user\'s nonce for the same row: the same', array( $click['died'], count( pushes() ), send_lines(), row_said(), row_marks() ), $none );
+$click = admin_post( array( 'action' => 'tcgiant_send_stock_two', 'product_id' => '6797', '_wpnonce' => $theirs ) );
+check( '  an action nothing is hooked on: admin-post.php answers 400, nothing done', array( $click['died'], count( pushes() ) ), array( '', 0 ) );
+
+// The capability, per product.
+$CAN   = function ( $cap ) { return 'edit_products' !== $cap; };
+$click = row_post( 6797 );
+$CAN   = null;
+check( 'a user without edit_products, the row\'s good nonce: Unauthorized - nothing queued, logged, kept or marked', array( $click['died'], count( pushes() ), send_lines(), row_said(), row_marks() ), array( 'Unauthorized.', 0, array(), false, array( '6797/679700006797/-', '6798/679800006798/-' ) ) );
+$CAN   = function ( $cap, ...$args ) { return ! ( 'edit_post' === $cap && 6797 === (int) ( $args[0] ?? 0 ) ); };
+$click = row_post( 6797 );
+$CAN   = null;
+check( '  edit_post refused for this product: not sent, said as one you cannot edit; the row not said sent again', array( $click['redirect'], count( pushes() ), send_lines(), list_said( review_list() )[2] ?? null, row_marks() ), array( $BACK, 0, array( 'Send stock to eBay (Stock Review, user #1): 0 queued; skipped 1 (no permission 1: #6797).' ), first_line( 0 ) . ' 1 not sent: you cannot edit it: #6797. ' . today_line( 0 ), array( '6797/679700006797/-', '6798/679800006798/-' ) ) );
+$CAN = function ( $cap, ...$args ) { return ! ( 'edit_post' === $cap && 6798 === (int) ( $args[0] ?? 0 ) ); };
+row_post( 6797 );
+$CAN = null;
+check( '  edit_post refused for another product only: this one sent, its row said sent again', array( push_args(), row_marks() ), array( array( array( 6797, 'edit', null ) ), array( '6797/679700006797/sent', '6798/679800006798/-' ) ) );
+$CAN   = function ( $cap ) { return 'edit_products' !== $cap; };
+$taken = $ADMIN->take_send_stock_row_said();
+$CAN   = null;
+check( '  no notice drawn for a user without edit_products; the record left as it is', array( $taken, is_array( row_said() ) ), array( null, true ) );
+delete_transient( TCGiant_Sync_Admin::SEND_STOCK_ROW_SAID . 1 );
+
+// A product that no longer exists.
+fresh_shop();
+refused_list( array( failure_row( 6799, '679900006799' ) ) );
+// As WordPress's map_meta_cap(): edit_post of a post that is not there is do_not_allow.
+$CAN   = function ( $cap, ...$args ) { return ! ( 'edit_post' === $cap && ! get_post_status( (int) ( $args[0] ?? 0 ) ) ); };
+$html  = review_list();
+$click = row_post( 6799 );
+$CAN   = null;
+check( 'a product that no longer exists: no button on its row', row_buttons( $html ), array() );
+check( '  posted anyway (a page drawn before it went): refused before the action - not "you cannot edit it"; nothing queued, none of today\'s taken; the notice and the log say why', array( $click['redirect'], count( pushes() ), send_lines(), list_said( review_list() ), row_marks(), TCGiant_Sync_Inventory::send_stock_today() ), array( $BACK, 0, array( 'Send stock to eBay (Stock Review, user #1): nothing queued for WC #6799, its row naming eBay listing 679900006799 - gone.' ), array( 'in the list', 'notice-warning', 'Send stock to eBay: nothing was queued for #6799. No longer on your website.' ), array( '6799/679900006799/-' ), 0 ) );
+fresh_shop();
+product( 6702, 3, '670200006702' );
+$POSTS[6702]['status'] = 'trash';
+refused_list( array( failure_row( 6702, '670200006702' ) ) );
+row_post( 6702 );
+check( '  one in the trash: the same - not queued (its push would find it gone), none of today\'s taken', array( count( pushes() ), send_lines(), TCGiant_Sync_Inventory::send_stock_today() ), array( 0, array( 'Send stock to eBay (Stock Review, user #1): nothing queued for WC #6702, its row naming eBay listing 670200006702 - gone.' ), 0 ) );
+
+echo "\nFIX ROUND 1: THE BUTTON ONLY WHERE ITS PUSH ENDS THE ROW (M-1), \"SENT AGAIN\" ONLY WHILE A PUSH WAITS (M-2)\n" . str_repeat( '=', 132 ) . "\n";
+
+/** Each M-1 shape: no button, its words on the row; posted anyway with the row's own nonce, refused - nothing queued, sent or marked, none of today's taken; the notice says why, the log by its code (fix round 2). */
+function refused_row( $label, callable $shop, $id, $item, $words, $code ) {
+	fresh_shop();
+	$shop();
+	refused_list( array( failure_row( $id, $item ) ) );
+	$html  = review_list();
+	$click = row_post( $id );
+	run_queue( true, 20 );
+	check( $label, array( row_buttons( $html ), false !== strpos( row_text( $html, '#' . $id . '<' ), $words ), $click['redirect'], count( pushes() ), calls(), TCGiant_Sync_Inventory::send_stock_today(), row_marks(), list_said( review_list() ), send_lines() ), array( array(), true, $GLOBALS['BACK'], 0, array(), 0, array( $id . '/' . $item . '/-' ), array( 'in the list', 'notice-warning', 'Send stock to eBay: nothing was queued for #' . $id . '. ' . $words ), array( 'Send stock to eBay (Stock Review, user #1): nothing queued for WC #' . $id . ', its row naming eBay listing ' . ( '' !== $item ? $item : '(none)' ) . ' - ' . $code . '.' ) ) );
+}
+
+// P1: the product follows another listing now (a relist it followed).
+refused_row( 'P1 a row naming a listing its product no longer follows (relisted): no button, "Now on eBay listing ..."; posted anyway, refused - nothing sent to the new listing, no allowance spent', function () {
+	product( 7100, 3, '710000007100' );
+	ebay_has( '710000007100', listing( '710000007100', 3, 0 ) );
+}, 7100, '700000000001', 'Now on eBay listing 710000007100; check this row\'s listing in Seller Hub.', 'moved (it follows eBay listing 710000007100 now)' );
+
+// P6: the product is not on eBay now.
+refused_row( 'P6 a row whose product is not on eBay now (unlinked): no button, "Not on eBay now."; posted anyway, refused', function () {
+	product( 7700, 3 );
+}, 7700, '770000007700', 'Not on eBay now.', 'not_linked' );
+
+// P2b: a variable product whose variations keep their own stock now.
+refused_row( 'P2b a variable product\'s row, its variations keeping their own stock now: no button - each variation would be sent, none ending the row; posted anyway, refused (no 2 of today\'s 200 spent)', function () {
+	variable( 7210, '721000007210', array( '_manage_stock' => 'yes', '_stock' => 5 ) );
+	variation( 7211, 7210, 'PW-A', 2, array( 'size' => 'S' ) );
+	variation( 7212, 7210, 'PW-B', 3, array( 'size' => 'M' ) );
+}, 7210, '721000007210', 'Its variations keep their own stock now. Check this listing in Seller Hub.', 'variations' );
+
+// A variation its push cannot send (no SKU): push_target() refuses it.
+refused_row( 'a variation\'s row whose stock cannot be sent (no SKU): no button; posted anyway, refused', function () {
+	variable( 6785, '678500006785' );
+	variation( 6786, 6785, '', 2, array( 'size' => 'S' ) );
+}, 6786, '678500006785', 'Its stock cannot be sent to this listing now. Check it in Seller Hub.', 'other' );
+
+// A row naming no listing: the one the product follows.
+fresh_shop();
+product( 7110, 3, '711000007110' );
+refused_list( array( failure_row( 7110, '' ) ) );
+check( 'a row naming no listing (an old row): a button, posting no listing, its nonce for that', row_buttons( review_list() ), array( '7110::' . row_nonce( 7110, '' ) ) );
+row_post( 7110 );
+run_queue( true, 20 );
+check( '  sent: its push goes to the listing the product follows, and its success takes the row off', array( push_args(), item_in( sent( 'ReviseInventoryStatus' ) ), refused_rows() ), array( array(), '711000007110', array() ) );
+
+// P2: a variable product keeping a stock its variations share, beside a variation keeping its own (L-2).
+fresh_shop();
+variable( 7200, '720000007200', array( '_manage_stock' => 'yes', '_stock' => 5 ) );
+variation( 7201, 7200, 'PV-A', null, array( 'size' => 'S' ) );
+variation( 7202, 7200, 'PV-B', 3, array( 'size' => 'M' ), array( '_ebay_variation_sku' => 'PV-B' ) );
+$l = variation_listing( '720000007200', array( ev( 'PV-A', 6, 0, array( 'size' => 'S' ) ), ev( 'PV-B', 6, 0, array( 'size' => 'M' ) ) ) );
+$m = variation_listing( '720000007200', array( ev( 'PV-A', 5, 0, array( 'size' => 'S' ) ), ev( 'PV-B', 3, 0, array( 'size' => 'M' ) ) ) );
+ebay_has( '720000007200', $l, $m, $m );
+refused_list( array( failure_row( 7200, '720000007200' ) ) );
+check( 'P2 the shared stock\'s row: a button (its pool push ends the row)', count( row_buttons( review_list() ) ), 1 );
+row_post( 7200 );
+check( '  the click sends what the bulk action sends for that product: the pool and the variation keeping its own stock - two pushes, two of today\'s 200, both said (the readme says so, L-2)', array( push_args(), TCGiant_Sync_Inventory::send_stock_today(), send_lines(), row_marks() ), array( array( array( 7200, 'edit', null ), array( 7202, 'edit', null ) ), 2, array( 'Send stock to eBay (Stock Review, user #1): 2 queued (ReviseInventoryStatus 1: #7202; shared stock (GetItem, ReviseInventoryStatus, GetItem) 1: #7200); skipped 0.' ), array( '7200/720000007200/sent' ) ) );
+run_queue( true, 20 );
+check( '  once eBay takes the pool, the row leaves the list', refused_rows(), array() );
+
+// P3: the host stops every try of the asked push, the last one too: it is
+// given up through push_died(), which process_stock_push() never sees end.
+fresh_shop();
+product( 7300, 3, '730000007300' );
+ebay_has( '730000007300', listing( '730000007300', 5, 0 ) );
+refused_list( array( failure_row( 7300, '730000007300' ) ) );
+row_post( 7300 );
+check( 'P3 the row\'s push queued: "Sent again", waiting for eBay', array( row_marks(), false !== strpos( row_text( review_list(), '730000007300' ), 'waiting for eBay' ) ), array( array( '7300/730000007300/sent' ), true ) );
+$stopped = 0;
+for ( $i = 0; $i < 30 && pushes(); $i++ ) {
+	$KILL_ON = 'ReviseInventoryStatus';
+	try {
+		run_queue( true, 1 );
+	} catch ( Error $e ) {
+		$stopped++;
+	}
+}
+$KILL_ON = null;
+$html    = review_list();
+check( '  the host stopped every try, the last one too: given up, a new row; its mark left (that path never reaches the clearing)', array( $stopped > 1, count( pushes() ), logged( 'Stock push for WC #7300 to eBay listing 730000007300 gave up', 'error' ), row_marks() ), array( true, 0, true, array( '7300/730000007300/sent', '7300/730000007300/sent' ) ) );
+check( '  but no push of it waits, so neither row says "Sent again": both have the button (M-2)', array( TCGiant_Sync_Inventory::push_waiting( 7300 ), substr_count( $html, 'waiting for eBay' ), count( row_buttons( $html ) ) ), array( false, 0, 2 ) );
+
+// P4: the asked push handed to a push of the product already waiting for
+// tomorrow (the fleet past 80%), which then comes to nothing.
+fresh_shop();
+fleet_used( 0.85 );
+product( 7400, 3, '740000007400' );
+ebay_has( '740000007400', listing( '740000007400', 5, 0 ) );
+hand_edit( 7400, 4 );
+run_queue( false, 5 );
+refused_list( array( failure_row( 7400, '740000007400' ) ) );
+row_post( 7400 );
+run_queue( false, 5 );
+$waits = array_map( function ( $a ) { return array( ! empty( $a['args'][0]['tomorrow'] ), ! empty( $a['args'][0]['asked'] ) ); }, pushes() );
+check( 'P4 the asked push finds a push of the product waiting for tomorrow, and leaves it to that one: "Sent again", waiting for eBay, while that one waits', array( $waits, row_marks(), TCGiant_Sync_Inventory::push_waiting( 7400 ), false !== strpos( row_text( review_list(), '740000007400' ), 'waiting for eBay' ) ), array( array( array( true, false ) ), array( '7400/740000007400/sent' ), true, true ) );
+$OPTIONS['tcgiant_sync_ebay_settings']['push_stock_to_ebay'] = '0';
+run_queue( true, 5 );
+$html = review_list();
+check( '  that push not sent (switched off): no push waits, so the row has its button again, though its mark was never cleared (M-2)', array( count( pushes() ), row_marks(), TCGiant_Sync_Inventory::push_waiting( 7400 ), substr_count( $html, 'waiting for eBay' ), row_buttons( $html ) ), array( 0, array( '7400/740000007400/sent' ), false, 0, array( '7400:740000007400:' . row_nonce( 7400, '740000007400' ) ) ) );
+
+// M-2's rule: what counts as waiting.
+fresh_shop();
+product( 7500, 3, '750000007500' );
+$META[7500][ TCGiant_Sync_Inventory::PUSH_PENDING_KEY ] = array( 'unsent' => time() + DAY_IN_SECONDS, 'done' => time() + 600 );
+$a = TCGiant_Sync_Inventory::push_waiting( 7500 );
+$META[7500][ TCGiant_Sync_Inventory::PUSH_PENDING_KEY ]['q'] = array( 'until' => time() - 1, 'queued_at' => time() - 3 * DAY_IN_SECONDS );
+$b = TCGiant_Sync_Inventory::push_waiting( 7500 );
+$META[7500][ TCGiant_Sync_Inventory::PUSH_PENDING_KEY ]['q'] = array( 'until' => time() + HOUR_IN_SECONDS, 'queued_at' => time() );
+$c = TCGiant_Sync_Inventory::push_waiting( 7500 );
+check( 'waiting: a push queued and not over (its entry as queued); not a sale\'s unsent mark, a push over (its tail), nor one queued two days ago and lost', array( $a, $b, $c ), array( false, false, true ) );
+refused_list( array( failure_row( 7500, '750000007500' ) ) );
+$OPTIONS[ TCGiant_Sync_Inventory::SENT_AGAIN_OPTION ] = array( 7500 => array( 'item' => '799900007999', 'at' => time() ) );
+check( '  a mark naming another listing than the product follows now, a push waiting: not "Sent again" - a push is waiting, no button', array( count( row_buttons( review_list() ) ), substr_count( review_list(), 'Sent again' ), substr_count( review_list(), 'A push of it is waiting for eBay.' ) ), array( 0, 0, 1 ) );
+
+echo "\nFIX ROUND 2: THE CELL DECIDED ON A WAITING PUSH ALONE; CLEAR THIS LIST; THE NITS\n" . str_repeat( '=', 132 ) . "\n";
+
+// push_waiting_since(): the oldest push waiting.
+fresh_shop();
+product( 7510, 3, '751000007510' );
+$META[7510][ TCGiant_Sync_Inventory::PUSH_PENDING_KEY ] = array( 'unsent' => time() + DAY_IN_SECONDS, 'done' => time() + 600, 'a' => array( 'until' => time() + HOUR_IN_SECONDS, 'queued_at' => time() - 300 ), 'b' => array( 'until' => time() + HOUR_IN_SECONDS, 'queued_at' => time() - 60 ) );
+check( 'push_waiting_since(): the queue time of the oldest push still waiting; 0 with none (an unsent sale and a tail only)', array( TCGiant_Sync_Inventory::push_waiting_since( 7510 ), TCGiant_Sync_Inventory::push_waiting_since( 7511 ) ), array( time() - 300, 0 ) );
+
+// Review 2's R2: a mark left by a push that ended where its clearing never
+// saw it (the tomorrow hand-off), and later a stock change's push: its time
+// is not shown for that push.
+fresh_shop();
+fleet_used( 0.85 );
+product( 8200, 3, '820000008200' );
+ebay_has( '820000008200', listing( '820000008200', 5, 0 ) );
+hand_edit( 8200, 4 );
+run_queue( false, 5 );
+refused_list( array( failure_row( 8200, '820000008200' ) ) );
+row_post( 8200 );
+run_queue( false, 5 );
+$OPTIONS['tcgiant_sync_ebay_settings']['push_stock_to_ebay'] = '0';
+run_queue( true, 5 );
+$OPTIONS['tcgiant_sync_ebay_settings']['push_stock_to_ebay'] = '1';
+$OPTIONS[ TCGiant_Sync_Inventory::SENT_AGAIN_OPTION ][8200]['at'] = time() - 3 * DAY_IN_SECONDS;
+$stale = array( isset( TCGiant_Sync_Inventory::sent_again_marks()[8200] ), TCGiant_Sync_Inventory::push_waiting( 8200 ), count( row_buttons( review_list() ) ) );
+fleet_used( 0.10 );
+delete_transient( 'tcgiant_stock_pending_8200' );
+hand_edit( 8200, 2 );
+$html = review_list();
+check( 'R2 a stale mark (three days old, its push handed off and dropped): the button while nothing waits', $stale, array( true, false, 1 ) );
+check( '  a later stock change queued: a push is waiting - said so, no button; not "Sent again <three days ago>"', array( TCGiant_Sync_Inventory::push_waiting( 8200 ), substr_count( $html, 'Sent again' ), false !== strpos( row_text( $html, '820000008200' ), 'A push of it is waiting for eBay.' ), row_buttons( $html ) ), array( true, 0, true, array() ) );
+
+// Review 2's R3: a stock change's push in its tries, no mark: no button.
+fresh_shop();
+product( 8300, 3, '830000008300' );
+ebay_has( '830000008300', listing( '830000008300', 5, 0 ) );
+ebay_answers( 'ReviseInventoryStatus', refused( 21919003, 'Refused.' ) );
+hand_edit( 8300, 4 );
+run_queue( true, 1 );
+refused_list( array( failure_row( 8300, '830000008300' ) ) );
+$html = review_list();
+check( 'R3 a stock change\'s push being tried again, no mark: a push is waiting - said so, no button (no second push, none of today\'s 200)', array( TCGiant_Sync_Inventory::push_waiting( 8300 ), count( pushes() ), row_buttons( $html ), false !== strpos( row_text( $html, '830000008300' ), 'A push of it is waiting for eBay.' ), substr_count( $html, 'Sent again' ) ), array( true, 1, array(), true, 0 ) );
+run_queue( true, 20 );
+check( '  its try again lands: the row leaves the list', refused_rows(), array() );
+
+// The row's own push waiting, and a later stock change's beside it: the
+// mark is no older than the oldest waiting, so "Sent again" with its time.
+fresh_shop();
+product( 8310, 3, '831000008310' );
+refused_list( array( failure_row( 8310, '831000008310' ) ) );
+row_post( 8310 );
+$at = (int) TCGiant_Sync_Inventory::sent_again_marks()[8310]['at'];
+delete_transient( 'tcgiant_stock_pending_8310' );
+hand_edit( 8310, 2 );
+$html = review_list();
+check( 'the row\'s own push waiting, a stock change\'s queued after it: "Sent again <its time>; waiting for eBay"', array( count( pushes() ), false !== strpos( row_text( $html, '831000008310' ), 'Sent again ' . gmdate( 'Y-m-d H:i', $at ) . '; waiting for eBay' ), substr_count( $html, 'A push of it is waiting' ) ), array( 2, true, 0 ) );
+
+// A row its push would not end, with a push of the product waiting (to the
+// listing it follows now): its words, not "a push is waiting" - that push
+// will not end this row.
+fresh_shop();
+product( 8320, 3, '832000008320' );
+hand_edit( 8320, 2 );
+refused_list( array( failure_row( 8320, '800000000002' ) ) );
+$html = review_list();
+check( 'a moved row with a push of its product waiting: its own words (the push goes to the other listing), no button', array( TCGiant_Sync_Inventory::push_waiting( 8320 ), false !== strpos( row_text( $html, '800000000002' ), 'Now on eBay listing 832000008320; check this row\'s listing in Seller Hub.' ), substr_count( $html, 'A push of it is waiting' ), row_buttons( $html ) ), array( true, true, 0, array() ) );
+
+// Review 2's R5: Clear this list deletes the marks too.
+fresh_shop();
+product( 8500, 3, '850000008500' );
+refused_list( array( failure_row( 8500, '850000008500' ) ) );
+row_post( 8500 );
+$before = TCGiant_Sync_Inventory::sent_again_marks();
+TCGiant_Sync_Inventory::forget_push_failures();
+check( 'R5 Clear this list: the list and the marks gone', array( count( $before ), array_key_exists( TCGiant_Sync_Inventory::PUSH_FAILURES_OPTION, $OPTIONS ), array_key_exists( TCGiant_Sync_Inventory::SENT_AGAIN_OPTION, $OPTIONS ) ), array( 1, false, false ) );
+
+// An item_id posted as an array: no warning, stopped at the nonce.
+fresh_shop();
+product( 8400, 3, '840000008400' );
+refused_list( array( failure_row( 8400, '840000008400' ) ) );
+$warned = array();
+set_error_handler( function ( $no, $str ) use ( &$warned ) { $warned[] = $str; return true; } );
+$click = admin_post( array( 'action' => 'tcgiant_send_stock_one', 'product_id' => '8400', 'item_id' => array( '840000008400' ), '_wpnonce' => row_nonce( 8400, '840000008400' ) ) );
+restore_error_handler();
+check( 'an item_id posted as an array: taken as none - no "Array to string conversion"; the nonce for the row\'s listing does not pass; nothing queued', array( $warned, $click['died'], count( pushes() ) ), array( array(), 'The link you followed has expired.', 0 ) );
+
+// The list's products' posts and meta read in one go.
+fresh_shop();
+product( 8600, 3, '860000008600' );
+product( 8601, 3, '860100008601' );
+refused_list( array( failure_row( 8600, '860000008600' ), failure_row( 8601, '860100008601' ), failure_row( 8600, '' ), failure_row( 9999, '999900009999' ) ) );
+$PRIMED = array();
+review_list();
+check( 'the list drawn: its products\' caches primed once, each product once (posts and meta, not terms)', $PRIMED, array( array( array( 9999, 8600, 8601 ), false, true ) ) );
+fresh_shop();
+$PRIMED = array();
+review_list();
+check( '  an empty list: nothing primed', $PRIMED, array() );
+
+
 echo "\nWHAT IS STORED, AND THE WORDS ELSEWHERE\n" . str_repeat( '=', 132 ) . "\n";
 
 $uninstall = (string) file_get_contents( $ROOT . '/uninstall.php' );
 check( 'the notice\'s record: a per-user transient under the plugin\'s prefix, which uninstall deletes with the others', array( TCGiant_Sync_Admin::SEND_STOCK_SAID, 0 === strpos( TCGiant_Sync_Admin::SEND_STOCK_SAID, 'tcgiant_' ), false !== strpos( $uninstall, 'tcgiant_sync_send_stock_said_<user ID>' ) ), array( 'tcgiant_sync_send_stock_said_', true, true ) );
+check( 'the "Sent again" marks (fix round 1): an option of their own, not autoloaded, which uninstall deletes', array( TCGiant_Sync_Inventory::SENT_AGAIN_OPTION, 1 === substr_count( $uninstall, "\t'tcgiant_sync_sent_again',         // Stock Review: products a row's Send stock to eBay sent, 3.42.0.\n" ) ), array( 'tcgiant_sync_sent_again', true ) );
+$readme = (string) file_get_contents( $ROOT . '/readme.txt' );
+check( 'the readme (fix round 1, L-2 and L-3): which rows have the button; a variable product\'s variations keeping their own stock sent too, each counted; the button back once no push waits', array(
+	substr_count( $readme, 'a row has a "Send stock to eBay" button while its product is still on that row\'s eBay listing.' ),
+	substr_count( $readme, 'For a variable product keeping a stock its variations share, each of its variations keeping its own stock is sent too, and each push counts.' ),
+	substr_count( $readme, 'Once no push waits and the row is still there, the button is back, and the log says why.' ),
+	substr_count( $readme, 'Each row of Stock Review\'s list' ),
+	substr_count( $readme, 'If the push ends without reaching eBay, the button comes back' ),
+	substr_count( (string) file_get_contents( $ROOT . '/README.md' ), 'a button on each row of the list of stock changes that never reached eBay whose product is still on that row\'s listing' ),
+	substr_count( $readme, 'whose stock its variable product now keeps, whose variations now keep their own stock, or whose stock cannot be sent to that listing (a variation with no SKU, say), says so in place of the button: check that row\'s listing in Seller Hub.' ),
+	substr_count( $readme, 'while another push of the product waits (a stock change still being tried, say), it says a push is waiting, with no button.' ),
+), array( 1, 1, 1, 0, 0, 1, 1, 1 ) );
+check( 'a Stock Review row\'s record (3.42.0): a sibling transient under the plugin\'s prefix, which uninstall deletes with the others', array( TCGiant_Sync_Admin::SEND_STOCK_ROW_SAID, 0 === strpos( TCGiant_Sync_Admin::SEND_STOCK_ROW_SAID, 'tcgiant_' ), false !== strpos( $uninstall, 'tcgiant_sync_send_stock_row_said_<user ID>' ) ), array( 'tcgiant_sync_send_stock_row_said_', true, true ) );
 check( 'today\'s count: its own option, which uninstall deletes', array( TCGiant_Sync_Inventory::SEND_STOCK_TODAY_OPTION, 1 === substr_count( $uninstall, "\t'tcgiant_sync_send_stock_today',   // Send stock to eBay: pushes counted today on the free plan, 3.40.0.\n" ) ), array( 'tcgiant_sync_send_stock_today', true ) );
-check( 'Stock Review\'s list of pushes eBay refused names the action, once the cause is fixed', false !== strpos( (string) file_get_contents( $ROOT . '/admin/views/stock-review.php' ), 'set its quantity there if it is wrong. Once the cause is fixed, Send stock to eBay (Bulk actions) sends your website\\\'s stock again.' ), true );
+check( 'Stock Review\'s list of pushes eBay refused names the row\'s button, once the cause is fixed (3.42.0)', false !== strpos( (string) file_get_contents( $ROOT . '/admin/views/stock-review.php' ), 'set its quantity there if it is wrong. Once the cause is fixed, the row\\\'s Send stock to eBay button sends your website\\\'s stock again, and the row goes once eBay takes it.' ), true );
 $readme = (string) file_get_contents( $ROOT . '/readme.txt' );
 $md     = (string) file_get_contents( $ROOT . '/README.md' );
 check( 'the readme and README.md count the free plan\'s 200 in pushes; with auto-end off a listing is ended if eBay will not take 0 (fix round 2, review 2\'s L-5)', array(
@@ -1253,5 +1927,13 @@ check( '  the log line says so', send_lines(), array( 'Send stock to eBay (produ
 set_transient( TCGiant_Sync_Admin::SEND_STOCK_SAID . 1, $LAST_SAID, 300 );
 check( '  the notice says so, a warning', notice_drawn(), array( 'notice-warning', first_line( 1 ) . ' 1 sets eBay\'s quantity to its stock. This is a staging copy: each push stops before it reaches eBay, and nothing is sent. ' . today_line( 1 ) ) );
 check( '  the push\'s block noted it, as it notes a stock change\'s', logged( 'Stock change for WC #6600' ) || is_array( get_transient( TCGiant_Sync_Environment::BLOCKED_TRANSIENT ) ), true );
+// 3.42.0: a Stock Review row on a staging copy.
+$shop = function () {
+	product( 6610, 3, '661000006610' );
+	ebay_has( '661000006610', listing( '661000006610', 5, 0 ) );
+};
+$row = by_row( $shop, 6610, array( failure_row( 6610, '661000006610' ) ) );
+check( 'a Stock Review row: queued as the bulk action queues it, said sent again; the push\'s own block stops it - no call', array( count( $row['jobs'] ), $row['wire'], $ROWS_CLICKED, $LAST_CLICK['redirect'] ), array( 1, array(), array( '6610/661000006610/sent' ), 'https://coinshop.example.com/wp-admin/admin.php?page=tcgiant-stock-review#tc-push-failures' ) );
+check( '  the push came to nothing, so the row no longer says sent again; the log line and the notice say a staging copy', array( row_marks(), send_lines(), TCGiant_Sync_Inventory::send_stock_lines( $LAST_ROW_SAID ) ), array( array( '6610/661000006610/-' ), array( 'Send stock to eBay (Stock Review, user #1): 1 queued (ReviseInventoryStatus 1: #6610); skipped 0. A staging copy: each push stops before eBay.' ), array( first_line( 1 ), '1 sets eBay\'s quantity to its stock.', 'This is a staging copy: each push stops before it reaches eBay, and nothing is sent.', today_line( 1 ) ) ) );
 printf( "\n  %d passed, %d failed\n\n", $pass, $fail );
 exit( $fail > 0 ? 1 : 0 );

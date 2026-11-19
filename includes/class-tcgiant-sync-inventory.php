@@ -4138,7 +4138,19 @@ class TCGiant_Sync_Inventory {
 			delete_transient( 'tcgiant_push_tomorrow_' . $job['product_id'] );
 		}
 
-		$this->run_push( $job, true );
+		$result = $this->run_push( $job, true );
+
+		// Stock Review's list (3.42.0): a push "Send stock to eBay" queued
+		// that is over - sent, not sent, or given up - is no longer waiting
+		// for eBay, and its mark goes (fix round 1: whatever its end). One
+		// eBay took has taken its rows off the list (run_push()). A try
+		// again keeps it. Stock Review shows the mark only while a push of
+		// the product waits (push_waiting()), so an end this misses - the
+		// host stopping a last try, a push handed to another - leaves no
+		// row without its button.
+		if ( ! empty( $job['asked'] ) && 'retry' !== $result['status'] ) {
+			self::sent_again_over( $job['product_id'] );
+		}
 	}
 
 	/**
@@ -8187,12 +8199,14 @@ class TCGiant_Sync_Inventory {
 	}
 
 	/**
-	 * Clear that list, when the shop has dealt with it. Nothing else changes.
+	 * Clear that list, when the shop has dealt with it, and the "Sent again"
+	 * marks with it (fix round 2). Nothing else changes.
 	 *
 	 * @return void
 	 */
 	public static function forget_push_failures() {
 		delete_option( self::PUSH_FAILURES_OPTION );
+		delete_option( self::SENT_AGAIN_OPTION );
 	}
 
 	/**
@@ -8224,6 +8238,203 @@ class TCGiant_Sync_Inventory {
 
 		if ( count( $kept ) !== count( $failures ) ) {
 			update_option( self::PUSH_FAILURES_OPTION, $kept, false );
+		}
+	}
+
+	/**
+	 * Stock Review's "Sent again" marks (3.42.0; fix round 1, in an option
+	 * of their own, so that the pushes stay the only writers of
+	 * PUSH_FAILURES_OPTION besides Clear): product ID => array( item, at ),
+	 * the listing its row's push went to and when. Not autoloaded.
+	 */
+	const SENT_AGAIN_OPTION = 'tcgiant_sync_sent_again';
+
+	/**
+	 * Whether a row of Stock Review's list of pushes eBay refused can be
+	 * sent from its button (3.42.0 fix round 1), as the push would find it
+	 * now: its product there and not in the trash, on eBay, and its stock
+	 * push going to that product and that row's listing (push_target()) -
+	 * so that the push, once eBay takes it, takes the row off the list
+	 * (forget_push_failure()). A row naming no listing takes the one the
+	 * product follows. Local reads only.
+	 *
+	 * @param array $row product_id and item_id, as record_push_failure()
+	 *                   wrote them.
+	 * @return array why - '' when it can be sent; else 'gone', 'not_linked',
+	 *               'moved' (another listing now), 'held' (its stock now kept
+	 *               by its variable product), 'variations' (a variable
+	 *               product whose variations keep their own stock now) or
+	 *               'other' (push_target() refuses it); item, the listing
+	 *               it follows now; holder, the product whose stock a push
+	 *               would send.
+	 */
+	public static function row_push_target( array $row ) {
+		$product_id = (int) ( $row['product_id'] ?? 0 );
+		$item_id    = (string) ( $row['item_id'] ?? '' );
+		$product    = $product_id > 0 ? wc_get_product( $product_id ) : false;
+
+		if ( ! $product || 'trash' === get_post_status( $product_id ) ) {
+			return array( 'why' => 'gone', 'item' => '', 'holder' => 0 );
+		}
+
+		$target = self::instance()->push_target( $product, false );
+		if ( is_wp_error( $target ) ) {
+			$why = array(
+				'not_linked'      => 'not_linked',
+				'variable_parent' => 'variations',
+			);
+			return array( 'why' => $why[ $target->get_error_code() ] ?? 'other', 'item' => '', 'holder' => 0 );
+		}
+
+		$out = array(
+			'why'    => '',
+			'item'   => (string) $target['item_id'],
+			'holder' => (int) $target['product_id'],
+		);
+		if ( $out['holder'] !== $product_id ) {
+			$out['why'] = 'held';
+		} elseif ( '' !== $item_id && $item_id !== $out['item'] ) {
+			$out['why'] = 'moved';
+		}
+
+		return $out;
+	}
+
+	/**
+	 * Why a row of Stock Review's list has no button (3.42.0 fix round 1):
+	 * short, for the row and for the notice when one is posted anyway.
+	 *
+	 * @param array $check From row_push_target().
+	 * @return string
+	 */
+	public static function row_push_words( array $check ) {
+		switch ( (string) ( $check['why'] ?? '' ) ) {
+			case 'gone':
+				return __( 'No longer on your website.', 'tcgiant-sync' );
+			case 'not_linked':
+				return __( 'Not on eBay now.', 'tcgiant-sync' );
+			case 'moved':
+				/* translators: %s: eBay item ID */
+				return sprintf( __( 'Now on eBay listing %s; check this row\'s listing in Seller Hub.', 'tcgiant-sync' ), (string) $check['item'] );
+			case 'held':
+				/* translators: %d: product ID */
+				return sprintf( __( 'Its stock is kept by #%d now. Check this listing in Seller Hub.', 'tcgiant-sync' ), (int) $check['holder'] );
+			case 'variations':
+				return __( 'Its variations keep their own stock now. Check this listing in Seller Hub.', 'tcgiant-sync' );
+		}
+		return __( 'Its stock cannot be sent to this listing now. Check it in Seller Hub.', 'tcgiant-sync' );
+	}
+
+	/**
+	 * Whether a push of this product is queued and not over (3.42.0 fix
+	 * round 1), as its pending mark says: an entry written when it was
+	 * queued, array( until, queued_at ), still counting - through its tries
+	 * and its waits (hold_pending_until()), for two days at most when its
+	 * action is lost. A push that is over keeps a plain time, its tail
+	 * (push_done()), and so does a sale that never reached eBay
+	 * (UNSENT_TOKEN): neither counts.
+	 *
+	 * @param int $product_id The product whose stock is pushed.
+	 * @return bool
+	 */
+	public static function push_waiting( $product_id ) {
+		return self::push_waiting_since( $product_id ) > 0;
+	}
+
+	/**
+	 * When the oldest push of this product still waiting was queued
+	 * (push_waiting()'s entries; fix round 2), or 0 when none waits. Stock
+	 * Review says "Sent again <time>" only for a mark no older than it: a
+	 * mark older than every waiting push is not theirs (review 2's R2).
+	 *
+	 * @param int $product_id The product whose stock is pushed.
+	 * @return int
+	 */
+	public static function push_waiting_since( $product_id ) {
+		$since = 0;
+		foreach ( self::pending_entries( $product_id ) as $entry ) {
+			if ( is_array( $entry ) ) {
+				$at    = max( 1, self::pending_queued_at( $entry ) );
+				$since = 0 === $since ? $at : min( $since, $at );
+			}
+		}
+		return $since;
+	}
+
+	/**
+	 * Stock Review's "Sent again" marks (SENT_AGAIN_OPTION).
+	 *
+	 * @return array product ID => array( item, at ).
+	 */
+	public static function sent_again_marks() {
+		$marks = get_option( self::SENT_AGAIN_OPTION, array() );
+		return is_array( $marks ) ? $marks : array();
+	}
+
+	/**
+	 * A Stock Review row's "Send stock to eBay" (3.42.0) queued a push of
+	 * its product: mark it, with the listing the push goes to and the time
+	 * (SENT_AGAIN_OPTION), so that the product's rows for that listing, and
+	 * a row naming none, say "Sent again" while a push of it waits
+	 * (push_waiting()). A push eBay takes takes those rows off the list
+	 * (forget_push_failure()); the asked push's end takes the mark off
+	 * (sent_again_over()). Fix round 1: kept apart from the list, which only
+	 * the pushes write. Local reads only; nothing is sent.
+	 *
+	 * @param int   $product_id The row's product.
+	 * @param array $said       What send_stock_to_ebay() said of it.
+	 * @param int   $when       When it was sent.
+	 * @return bool Marked.
+	 */
+	public static function note_sent_again( $product_id, array $said, $when ) {
+		$product_id = (int) $product_id;
+		$queued     = false;
+		foreach ( self::SEND_STOCK_QUEUED as $list ) {
+			if ( in_array( $product_id, array_map( 'intval', (array) ( $said[ $list ]['ids'] ?? array() ) ), true ) ) {
+				$queued = true;
+				break;
+			}
+		}
+		if ( ! $queued ) {
+			return false;
+		}
+
+		// The listing the push went to, as the push finds it.
+		$check = self::row_push_target( array( 'product_id' => $product_id ) );
+		if ( '' !== $check['why'] ) {
+			return false;
+		}
+
+		$marks                = self::sent_again_marks();
+		$marks[ $product_id ] = array(
+			'item' => $check['item'],
+			'at'   => (int) $when,
+		);
+		update_option( self::SENT_AGAIN_OPTION, $marks, false );
+
+		return true;
+	}
+
+	/**
+	 * A push "Send stock to eBay" queued is over (3.42.0): the product's
+	 * rows on Stock Review's list no longer say it was sent again. Written
+	 * only when there was a mark.
+	 *
+	 * @param int $product_id The push's product.
+	 * @return void
+	 */
+	private static function sent_again_over( $product_id ) {
+		$marks = self::sent_again_marks();
+
+		if ( ! isset( $marks[ (int) $product_id ] ) ) {
+			return;
+		}
+
+		unset( $marks[ (int) $product_id ] );
+		if ( $marks ) {
+			update_option( self::SENT_AGAIN_OPTION, $marks, false );
+		} else {
+			delete_option( self::SENT_AGAIN_OPTION );
 		}
 	}
 

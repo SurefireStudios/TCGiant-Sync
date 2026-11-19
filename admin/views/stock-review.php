@@ -48,6 +48,14 @@ $tc_unverified_ids   = $tc_unverified_total > 0 ? TCGiant_Sync_Inventory::find_s
 // Stock pushes eBay still refused once every try was spent.
 $push_failures = TCGiant_Sync_Inventory::push_failures();
 
+// What a row's "Send stock to eBay" did (3.42.0), handed over by
+// render_stock_review_page() and shown once, at the list: the action's
+// lines, or the one sentence of a row refused (fix round 1).
+$tc_send_said  = isset( $tc_send_said ) && is_array( $tc_send_said ) ? $tc_send_said : null;
+$tc_send_row   = null !== $tc_send_said && isset( $tc_send_said['row'] );
+$tc_send_lines = null === $tc_send_said ? array() : ( $tc_send_row ? array( (string) $tc_send_said['row'] ) : TCGiant_Sync_Inventory::send_stock_lines( $tc_send_said ) );
+$tc_send_kind  = null !== $tc_send_said && ( $tc_send_row || TCGiant_Sync_Inventory::send_stock_warns( $tc_send_said ) ) ? 'notice-warning' : 'notice-success';
+
 // A product imported from a relist beside another still on the listing it
 // was relisted from: possibly the same item twice. Only when the shop asks:
 // it is the heaviest question on this page, and the answer changes rarely.
@@ -580,17 +588,39 @@ $tc_nonce    = wp_create_nonce( 'tcgiant_sync_ajax' );
 			'manual' => __( 'Push to eBay, by hand', 'tcgiant-sync' ),
 			'edit'   => __( 'A stock change on your website', 'tcgiant-sync' ),
 		);
+		// Products a row's button sent (3.42.0; fix round 1, their own option).
+		$tc_sent_again = TCGiant_Sync_Inventory::sent_again_marks();
+		// Each row reads its product: their posts and meta in one go (fix
+		// round 2).
+		if ( function_exists( '_prime_post_caches' ) ) {
+			_prime_post_caches( array_values( array_unique( array_map( 'intval', array_column( $push_failures, 'product_id' ) ) ) ), false, true );
+		}
 		?>
 		<div class="notice notice-error" id="tc-push-failures" style="margin-top:16px;padding:12px 14px;">
+			<?php if ( $tc_send_lines ) : ?>
+				<div class="notice <?php echo esc_attr( $tc_send_kind ); ?> inline" style="margin:0 0 10px;"><p><?php echo esc_html( implode( ' ', $tc_send_lines ) ); ?></p></div>
+			<?php endif; ?>
 			<p style="margin:0 0 6px;">
 				<strong><?php printf( esc_html( _n( '%s stock change never reached eBay.', '%s stock changes never reached eBay.', count( $push_failures ), 'tcgiant-sync' ) ), esc_html( number_format_i18n( count( $push_failures ) ) ) ); ?></strong>
 			</p>
-			<p style="margin:0 0 10px;"><?php esc_html_e( 'eBay refused each of these every time it was tried, over about 10 hours (longer when eBay was down or out of calls), so the listing on eBay may still show more than your website holds. Check each listing in Seller Hub and set its quantity there if it is wrong. Once the cause is fixed, Send stock to eBay (Bulk actions) sends your website\'s stock again. Your website\'s stock was not changed. The most recent are first.', 'tcgiant-sync' ); ?></p>
+			<p style="margin:0 0 10px;"><?php esc_html_e( 'eBay refused each of these every time it was tried, over about 10 hours (longer when eBay was down or out of calls), so the listing on eBay may still show more than your website holds. Check each listing in Seller Hub and set its quantity there if it is wrong. Once the cause is fixed, the row\'s Send stock to eBay button sends your website\'s stock again, and the row goes once eBay takes it. Your website\'s stock was not changed. The most recent are first.', 'tcgiant-sync' ); ?></p>
 			<table class="widefat striped" style="margin-bottom:10px;">
-				<thead><tr><th><?php esc_html_e( 'When', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'Product', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'eBay item', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'What changed', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'Your stock then', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'eBay\'s last answer', 'tcgiant-sync' ); ?></th></tr></thead>
+				<thead><tr><th><?php esc_html_e( 'When', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'Product', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'eBay item', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'What changed', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'Your stock then', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'eBay\'s last answer', 'tcgiant-sync' ); ?></th><th><?php esc_html_e( 'Send again', 'tcgiant-sync' ); ?></th></tr></thead>
 				<tbody>
 				<?php foreach ( $push_failures as $push_row ) : ?>
-					<?php $push_pid = (int) $push_row['product_id']; ?>
+					<?php
+					$push_pid  = (int) $push_row['product_id'];
+					$push_item = (string) ( $push_row['item_id'] ?? '' );
+					// A button only where its push would end the row (fix round
+					// 1), and none while a push of the product waits (fix
+					// round 2): "Sent again <time>" when the row's button
+					// sent it - a mark for that listing no older than the
+					// oldest push waiting - else that a push is waiting.
+					$push_check = TCGiant_Sync_Inventory::row_push_target( $push_row );
+					$push_since = '' === $push_check['why'] ? TCGiant_Sync_Inventory::push_waiting_since( $push_pid ) : 0;
+					$push_mark  = $tc_sent_again[ $push_pid ] ?? null;
+					$push_ours  = $push_since > 0 && is_array( $push_mark ) && (string) ( $push_mark['item'] ?? '' ) === $push_check['item'] && (int) ( $push_mark['at'] ?? 0 ) >= $push_since;
+					?>
 					<tr>
 						<td><?php echo esc_html( wp_date( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), (int) ( $push_row['time'] ?? 0 ) ) ); ?></td>
 						<td>
@@ -616,6 +646,23 @@ $tc_nonce    = wp_create_nonce( 'tcgiant_sync_ajax' );
 								<span style="color:#777;">(<?php echo esc_html( (string) $push_row['code'] ); ?>)</span>
 							<?php endif; ?>
 						</td>
+						<td>
+							<?php if ( $push_ours ) : ?>
+								<span style="color:#555;"><?php echo esc_html( sprintf( /* translators: %s: when it was sent again */ __( 'Sent again %s; waiting for eBay', 'tcgiant-sync' ), wp_date( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), (int) ( $push_mark['at'] ?? 0 ) ) ) ); ?></span>
+							<?php elseif ( $push_since > 0 ) : ?>
+								<span style="color:#555;"><?php esc_html_e( 'A push of it is waiting for eBay.', 'tcgiant-sync' ); ?></span>
+							<?php elseif ( '' === $push_check['why'] ) : ?>
+								<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin:0;">
+									<input type="hidden" name="action" value="tcgiant_send_stock_one" />
+									<input type="hidden" name="product_id" value="<?php echo esc_attr( (string) $push_pid ); ?>" />
+									<input type="hidden" name="item_id" value="<?php echo esc_attr( $push_item ); ?>" />
+									<input type="hidden" name="_wpnonce" value="<?php echo esc_attr( wp_create_nonce( 'tcgiant_send_stock_one_' . $push_pid . '_' . $push_item ) ); ?>" />
+									<button type="submit" class="button button-small"><?php esc_html_e( 'Send stock to eBay', 'tcgiant-sync' ); ?></button>
+								</form>
+							<?php else : ?>
+								<span style="color:#777;"><?php echo esc_html( TCGiant_Sync_Inventory::row_push_words( $push_check ) ); ?></span>
+							<?php endif; ?>
+						</td>
 					</tr>
 				<?php endforeach; ?>
 				</tbody>
@@ -626,6 +673,10 @@ $tc_nonce    = wp_create_nonce( 'tcgiant_sync_ajax' );
 				<button type="submit" class="button"><?php esc_html_e( 'Clear this list', 'tcgiant-sync' ); ?></button>
 				<span style="margin-left:8px;color:#555;"><?php esc_html_e( 'Only the list is cleared. Nothing is sent to eBay.', 'tcgiant-sync' ); ?></span>
 			</form>
+		</div>
+	<?php elseif ( $tc_send_lines ) : ?>
+		<div class="notice <?php echo esc_attr( $tc_send_kind ); ?>" id="tc-push-failures" style="margin-top:16px;padding:12px 14px;">
+			<p style="margin:0;"><?php echo esc_html( implode( ' ', $tc_send_lines ) ); ?></p>
 		</div>
 	<?php endif; ?>
 

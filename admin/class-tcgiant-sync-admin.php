@@ -208,6 +208,8 @@ class TCGiant_Sync_Admin {
 		add_filter( 'bulk_actions-edit-product', array( $this, 'register_send_stock_bulk_action' ) );
 		add_filter( 'handle_bulk_actions-edit-product', array( $this, 'handle_send_stock_bulk_action' ), 10, 3 );
 		add_action( 'admin_notices', array( $this, 'send_stock_notice' ) );
+		// And one product's, from its row on Stock Review's list of pushes eBay refused (3.42.0).
+		add_action( 'admin_post_tcgiant_send_stock_one', array( $this, 'handle_send_stock_one' ) );
 		// Products judged imported at 3.28.8's upgrade with a push on record (3.29.1).
 		add_action( 'admin_notices', array( $this, 'origin_upgrade_notice' ) );
 		add_action( 'admin_post_tcgiant_dismiss_origin_notice', array( $this, 'handle_dismiss_origin_notice' ) );
@@ -956,6 +958,9 @@ class TCGiant_Sync_Admin {
 	}
 
 	public function render_stock_review_page() {
+		// What a row's "Send stock to eBay" did, for the notice at the list
+		// (3.42.0): shown once.
+		$tc_send_said = $this->take_send_stock_row_said();
 		include_once TCGIANT_SYNC_PATH . 'admin/views/stock-review.php';
 	}
 
@@ -2834,6 +2839,97 @@ class TCGiant_Sync_Admin {
 	 */
 	public static function send_stock_cost_words() {
 		return __( 'Sends each listing the stock WooCommerce has now, in the background, as a stock change would: about one eBay call a listing. At 0, eBay is read first: a listing eBay already shows at 0 is left alone; otherwise, with auto-end on, it is ended.', 'tcgiant-sync' );
+	}
+
+	/**
+	 * Transient, per user, that keeps what a Stock Review row's "Send stock
+	 * to eBay" did, for the notice at the list after it (3.42.0): a sibling
+	 * of SEND_STOCK_SAID, kept five minutes and shown once, on Stock Review
+	 * only.
+	 */
+	const SEND_STOCK_ROW_SAID = 'tcgiant_sync_send_stock_row_said_';
+
+	/**
+	 * "Send stock to eBay" on a row of Stock Review's list of stock pushes
+	 * eBay refused (3.42.0): the row's product, sent as the products list's
+	 * action sends it - TCGiant_Sync_Inventory::send_stock_to_ebay(), which
+	 * only queues the push a stock change of it would, every rule of it
+	 * unchanged, edit_post for the product among them. The row's own nonce,
+	 * for its product and listing, and edit_products are checked first.
+	 *
+	 * Fix round 1: only a row the push would end -
+	 * TCGiant_Sync_Inventory::row_push_target(), as the view asks it: the
+	 * product there, on eBay, and its push going to that product and that
+	 * row's listing. Any other (moved to another listing, unlinked, its
+	 * stock kept by its variable product now, deleted or in the trash) is
+	 * refused, in the notice and the log, with nothing queued; a product
+	 * not there never reaches the action, whose edit_post WordPress refuses
+	 * for a post that is not there.
+	 *
+	 * What it did is logged once; the product is marked as sent again while
+	 * a push of it waits (note_sent_again()); and it is kept for the notice
+	 * at the list (SEND_STOCK_ROW_SAID), never put in the address.
+	 *
+	 * @return void
+	 */
+	public function handle_send_stock_one() {
+		// phpcs:disable WordPress.Security.NonceVerification.Missing -- checked next, by its own nonce for this product and listing.
+		$product_id = isset( $_POST['product_id'] ) ? absint( wp_unslash( $_POST['product_id'] ) ) : 0;
+		$item_id    = isset( $_POST['item_id'] ) && is_scalar( $_POST['item_id'] ) ? sanitize_text_field( wp_unslash( (string) $_POST['item_id'] ) ) : '';
+		// phpcs:enable WordPress.Security.NonceVerification.Missing
+		check_admin_referer( 'tcgiant_send_stock_one_' . $product_id . '_' . $item_id );
+		if ( ! current_user_can( 'edit_products' ) ) {
+			wp_die( esc_html__( 'Unauthorized.', 'tcgiant-sync' ), '', array( 'response' => 403 ) );
+		}
+
+		$check = TCGiant_Sync_Inventory::row_push_target( array( 'product_id' => $product_id, 'item_id' => $item_id ) );
+		if ( '' !== $check['why'] ) {
+			$words = TCGiant_Sync_Inventory::row_push_words( $check );
+			/* translators: 1: product ID, 2: why */
+			$said = array( 'row' => sprintf( __( 'Send stock to eBay: nothing was queued for #%1$d. %2$s', 'tcgiant-sync' ), $product_id, $words ) );
+			// The log in English, by the refusal's code (fix round 2).
+			$why = $check['why'];
+			if ( 'moved' === $why ) {
+				$why .= ' (it follows eBay listing ' . $check['item'] . ' now)';
+			} elseif ( 'held' === $why ) {
+				$why .= ' (its stock is kept by WC #' . $check['holder'] . ')';
+			}
+			TCGiant_Sync_Logger::log( sprintf( 'Send stock to eBay (Stock Review, user #%d): nothing queued for WC #%d, its row naming eBay listing %s - %s.', get_current_user_id(), $product_id, '' !== $item_id ? $item_id : '(none)', $why ) );
+		} else {
+			$said = TCGiant_Sync_Inventory::send_stock_to_ebay( array( $product_id ) );
+			TCGiant_Sync_Inventory::note_sent_again( $product_id, $said, time() );
+			TCGiant_Sync_Inventory::log_send_stock( $said, 'Stock Review', get_current_user_id() );
+		}
+		set_transient( self::SEND_STOCK_ROW_SAID . get_current_user_id(), $said, 5 * MINUTE_IN_SECONDS );
+
+		wp_safe_redirect( admin_url( 'admin.php?page=tcgiant-stock-review' ) . '#tc-push-failures' );
+		exit;
+	}
+
+	/**
+	 * What a Stock Review row's "Send stock to eBay" did (3.42.0), for the
+	 * notice at the list: from the user's own record of it
+	 * (SEND_STOCK_ROW_SAID), once, and only for a user who can send it.
+	 * A row refused (fix round 1) keeps its one sentence, as 'row'.
+	 *
+	 * @return array|null Its lists, or array( 'row' => words ), or null
+	 *                    when there is none.
+	 */
+	public function take_send_stock_row_said() {
+		if ( ! current_user_can( 'edit_products' ) ) {
+			return null;
+		}
+		$said = get_transient( self::SEND_STOCK_ROW_SAID . get_current_user_id() );
+		if ( ! is_array( $said ) ) {
+			return null;
+		}
+		// Shown once.
+		delete_transient( self::SEND_STOCK_ROW_SAID . get_current_user_id() );
+
+		if ( isset( $said['row'] ) ) {
+			return array( 'row' => (string) $said['row'] );
+		}
+		return TCGiant_Sync_Inventory::merge_send_stock( null, $said );
 	}
 
 	/**
