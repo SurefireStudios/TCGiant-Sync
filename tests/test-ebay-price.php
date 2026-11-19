@@ -1009,4 +1009,24 @@ check( '  the item\'s and each variation\'s from TCGiant_Sync_Ebay_Price::for_pr
 check( '  a relist\'s from for_product() too, by relist_price(), only where it is not the price eBay last had; eBay\'s own otherwise', array( substr_count( $exporter_src, '$price = TCGiant_Sync_Ebay_Price::for_product( $product );' ), substr_count( $exporter_src, '$seen = TCGiant_Sync_Ebay_Price::seen( $product );' ), substr_count( $exporter_src, '$price = $ev[\'start_price\'];' ), substr_count( $exporter_src, 'self::relist_price(' ) ), array( 1, 1, 1, 2 ) );
 check( '  the one regular price read left is the Listings row\'s, where no price was sent', false !== strpos( $exporter_src, '$price = $result[\'prices\'][ $product_id ] ?? $product->get_regular_price();' ), true );
 
+echo "\n3.43.0 FIX ROUND 1 (REVIEW 1'S M3): AN UPDATE ADDS BACK A VARIATION EBAY REMOVED AT 0\n" . str_repeat( '=', 124 ) . "\n";
+
+// A variable product keeping 4 for its sizes: S on eBay; L, once disabled,
+// sent 0 and removed by eBay (never sold, Out-of-Stock control off), now
+// enabled again; XL still disabled. An Update (the product pushed to eBay)
+// is what lists L again: the exporter sends every published variation, with
+// what WooCommerce says it has - for one taking the parent's stock, the
+// shared figure (played: this world's variation answers its own 'stock').
+part_shop();
+$variable = product( 436, array( 'type' => 'variable', 'sku' => 'POLO-436' ), PUSHED + array( '_ebay_item_id' => '110000000436' ), 'Price_Variable' );
+$variable->variation_attributes = array( 'size' => array( 'Small', 'Large', 'XL' ) );
+$variable->children             = array( 4361, 4362, 4363 );
+product( 4361, array( 'sku' => 'PO-S', 'size' => 'Small', 'regular_price' => '10', 'stock' => 4 ), array(), 'Price_Variation' );
+product( 4362, array( 'sku' => 'PO-L', 'size' => 'Large', 'regular_price' => '10', 'stock' => 4 ), array( '_ebay_variation_zeroed' => array( 'item' => '110000000436', 'at' => time(), 'said' => time() ) ), 'Price_Variation' );
+product( 4363, array( 'sku' => 'PO-XL', 'size' => 'XL', 'regular_price' => '10', 'stock' => 4, 'status' => 'private' ), array(), 'Price_Variation' );
+$calls = push( $variable );
+$body  = (string) ( end( $calls )[1] ?? '' );
+preg_match_all( '#<Variation>\s*<SKU>([^<]*)</SKU>.*?<Quantity>(\d+)</Quantity>#s', $body, $tcg_v );
+check( 'an Update of the product: ReviseFixedPriceItem with S and L, the enabled ones, each at the shared 4 - L listed again; XL, still disabled, not sent', array( end( $calls )[0] ?? null, array_combine( $tcg_v[1], $tcg_v[2] ) ), array( 'ReviseFixedPriceItem', array( 'PO-S' => '4', 'PO-L' => '4' ) ) );
+
 done();

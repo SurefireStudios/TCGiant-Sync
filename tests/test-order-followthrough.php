@@ -703,7 +703,9 @@ check( 'never stopped: the Import page has no such line', $tcg_held_view(), '' )
 
 echo "\n  Feedback: on a staging copy\n";
 
-$tcg_copy  = rtrim( (string) getenv( 'TMP' ), '\/' ) . '/followthrough-copy-' . getmypid() . '.ser';
+// The harness's own TMP when set, else PHP's temp folder (CI sets no TMP).
+$tcg_tmp   = (string) getenv( 'TMP' );
+$tcg_copy  = rtrim( '' !== $tcg_tmp ? $tcg_tmp : sys_get_temp_dir(), '\/' ) . '/followthrough-copy-' . getmypid() . '.ser';
 $stage = json_decode( (string) shell_exec( escapeshellarg( PHP_BINARY ) . ' ' . escapeshellarg( __DIR__ . '/support/followthrough-staging.php' ) . ' ' . escapeshellarg( $tcg_copy ) ), true );
 check( 'staging: two orders completed there queue nothing, said once a day', array( $stage['queued'] ?? null, $stage['noted'] ?? null ), array( 0, 1 ) );
 check( '  a feedback run there sends nothing, reads nothing, and no run spins', array( $stage['complete'] ?? null, $stage['feedback_reads'] ?? null, $stage['pending'] ?? null ), array( 0, 0, 0 ) );

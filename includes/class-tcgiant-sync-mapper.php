@@ -40,6 +40,32 @@ if ( ! class_exists( 'TCGiant_Sync_Shop_Categories', false ) ) {
 class TCGiant_Sync_Mapper {
 
 	/**
+	 * On a variation the import retired - no longer on eBay, so set private
+	 * and out of stock (save_variations()) - when it did (3.43.0). Should
+	 * eBay list it again, the import publishes it again, as before; a
+	 * variation whose stock its parent keeps that is disabled with no such
+	 * mark was disabled by the shop, and stays disabled. Taken off once the
+	 * import publishes it. Kept with the product's other eBay records on
+	 * uninstall.
+	 */
+	const RETIRED_META = '_ebay_variation_retired';
+
+	/**
+	 * On a variation (fix round 1, review 1's M3, the owner's ruling): a
+	 * disabled variation the shared stock's push sent 0 that had never sold
+	 * on that listing - eBay removes it from the listing when Out-of-Stock
+	 * control is off; written whatever the cached preference says, which can
+	 * be months old (fix round 2), by TCGiant_Sync_Inventory::push_pool().
+	 * A mark eBay did not need (the control on, or a sale landing before the
+	 * 0) goes at the next import, which finds the variation still listed. array( item, at, said ). The
+	 * import never disables it again once the shop enables it, but leaves
+	 * it enabled and says once that it is not on eBay any more and that an
+	 * Update adds it back (save_variations()); taken off once eBay lists it
+	 * again. Kept with the product's eBay records on uninstall.
+	 */
+	const ZEROED_META = '_ebay_variation_zeroed';
+
+	/**
 	 * Whether the last save_as_product() call skipped on purpose.
 	 *
 	 * A deliberate skip is not a failure, and counting it as one would inflate
@@ -4701,7 +4727,16 @@ class TCGiant_Sync_Mapper {
 				$variation->set_manage_stock( true );
 				$variation->set_stock_quantity( $var_data['stock_quantity'] );
 			}
-			$variation->set_status( 'publish' );
+			// A variation whose stock the parent keeps, disabled here (3.43.0):
+			// left as the shop set it. Published again, the import put it back
+			// on sale, and the shared stock's push sent eBay the shared figure
+			// for it. Only one the import itself retired, eBay listing it again,
+			// is published again (RETIRED_META).
+			$keep_off = $pooled_var && 'publish' !== (string) $variation->get_status()
+				&& '' === (string) get_post_meta( (int) $variation_id, self::RETIRED_META, true );
+			if ( ! $keep_off ) {
+				$variation->set_status( 'publish' );
+			}
 			
 			$variation->set_attributes( $var_attrs );
 			
@@ -4730,6 +4765,13 @@ class TCGiant_Sync_Mapper {
 			if ( $saved_var_id ) {
 				$processed_ids[] = $saved_var_id;
 				$var_data['variation_id'] = $saved_var_id;
+
+				// Published, on eBay: no longer one the import retired.
+				if ( ! $keep_off ) {
+					delete_post_meta( $saved_var_id, self::RETIRED_META );
+				}
+				// On eBay again: no longer one eBay removed at 0 (fix round 1).
+				delete_post_meta( $saved_var_id, self::ZEROED_META );
 
 				if ( '' !== $ebay_var_sku ) {
 					update_post_meta( $saved_var_id, '_ebay_variation_sku', $ebay_var_sku );
@@ -4777,6 +4819,26 @@ class TCGiant_Sync_Mapper {
 				continue;
 			}
 
+			// Removed by eBay when the shared stock's push sent it 0 before
+			// it had sold (fix round 1, the owner's ruling): the shop's to
+			// enable, and never disabled again by the import. Enabled, it is
+			// left so, and said once: an Update lists it again. Still
+			// disabled, it is left as the shop set it.
+			$zeroed = get_post_meta( (int) $existing_id, self::ZEROED_META, true );
+			if ( is_array( $zeroed ) ) {
+				if ( 'publish' === (string) $var_to_retire->get_status() && empty( $zeroed['said'] ) ) {
+					$zeroed['said'] = time();
+					update_post_meta( (int) $existing_id, self::ZEROED_META, $zeroed );
+					TCGiant_Sync_Logger::warning( sprintf(
+						'Variation #%d of WC #%d is not on eBay listing %s any more: eBay removed it when it was set to 0 before it had ever sold (Out-of-Stock control off). It stays enabled here; Update the listing to add it back.',
+						(int) $existing_id,
+						(int) $parent_id,
+						(string) get_post_meta( $parent_id, '_ebay_item_id', true )
+					) );
+				}
+				continue;
+			}
+
 			TCGiant_Sync_Inventory::begin_ebay_origin();
 			try {
 				$var_to_retire->set_stock_quantity( 0 );
@@ -4786,6 +4848,9 @@ class TCGiant_Sync_Mapper {
 			} finally {
 				TCGiant_Sync_Inventory::end_ebay_origin();
 			}
+			// Retired by the import, not disabled by the shop: published again
+			// should eBay list it again (3.43.0).
+			update_post_meta( (int) $existing_id, self::RETIRED_META, time() );
 
 			TCGiant_Sync_Logger::log( sprintf(
 				'Variation #%d is no longer on eBay — set to private and out of stock (not deleted).',

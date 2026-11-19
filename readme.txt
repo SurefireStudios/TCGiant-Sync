@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.42.0
+Stable tag: 3.43.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -148,6 +148,13 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.43.0 - 2026-11-19 =
+* CHANGE: Buyers of eBay orders no longer get WooCommerce's emails as well as eBay's. eBay already emails the buyer of an eBay order about the purchase, the payment, the shipping and any refund, and the address an eBay order gives is eBay's. A new setting with the order settings, "Send WooCommerce's emails to eBay buyers?", is No, on new installs and updates alike: WooCommerce's emails to the customer - Processing, Completed, On hold, Failed, Cancelled and Customer note, and the review request and fulfilment emails where those WooCommerce features are on - are not sent for orders imported from eBay. To send them, set it to Yes.
+* NOTE: What you send by hand still goes: Order details (WooCommerce only ever sends it by hand), a note to the customer added on the order screen or through WooCommerce's app or REST API, and an email sent again from the order screen or the app - with WooCommerce's "Deferred emails" on or off. Where "by hand" ends: another plugin's resend button, and a deferred note sent more than an hour late, are held back; any REST client adding a note to the customer or using "send email" (a fulfilment service, Zapier) counts as by hand and reaches the eBay buyer. Emails to your shop (New order, Cancelled order, Failed order) go as WooCommerce's own email settings say, website orders are not affected, and the Refunded order email stays off for eBay orders, as since 3.37.0. It applies to every order imported from eBay, even with order import off. TCGiant Sync's log says once a day when an email was held back, naming the email and the order; WooCommerce's own log (WooCommerce, Status, Logs) notes each as not sent, its "email type is disabled" - that is this setting, not WooCommerce's email settings.
+* CHANGE: A variation you disabled in WooCommerce, whose stock its variable product keeps for all its variations, is no longer sent that shared stock on eBay. While eBay still shows it with stock, the next change of the shared stock sends it 0, once, so it stops selling on eBay as it has on your website, and eBay never shows more of it than the shared stock holds; after that it is left out, and the log names it. Enabled again, the next stock edit, or Send stock to eBay, sends it the shared stock - but with eBay's Out-of-Stock control off, eBay removes a variation set to 0 before it has ever sold: enable it and Update the listing (push the product to eBay) to add it back, and the import leaves it enabled meanwhile and says so once. It is never set to 0 while it is the listing's only variation with stock - that would leave the listing nothing to sell - and is then kept no higher than the shared stock, and the log says what to do. When the shared stock runs out, every variation goes to 0, as before. With Out-of-Stock control off, a listing whose only stock left is in disabled variations ends when its last enabled variation with its own stock sells out.
+* FIX: The import no longer turns such a variation back on. A disabled variation whose stock its variable product keeps stays disabled when its eBay listing is imported again, unless the import itself took it off your website when eBay dropped it, and eBay lists it again.
+* CHANGE: Send stock to eBay (Bulk actions) does what a stock change of a variable product does: its shared stock is sent whenever any of its variations takes it, a disabled one included, which that push sets to 0 as above; the notice names such a variation. A disabled variation keeping its own stock is still not sent.
 
 = 3.42.0 - 2026-11-19 =
 * NEW: On Stock Review's list of stock changes that never reached eBay, a row has a "Send stock to eBay" button while its product is still on that row's eBay listing. Once the cause is fixed, it sends that product's stock, as WooCommerce has it now, to that listing - the push Send stock to eBay (Bulk actions, 3.40.0) queues, with every one of its rules: at 0 eBay is read first, up to 200 pushes a day on the free plan, nothing while "Send website stock changes to eBay?" is No. For a variable product keeping a stock its variations share, each of its variations keeping its own stock is sent too, and each push counts. A notice at the list says what was queued.
@@ -1736,6 +1743,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.43.0 =
+Buyers of eBay orders no longer get WooCommerce's emails as well as eBay's. To send them, set "Send WooCommerce's emails to eBay buyers?" (Settings, with the order settings) to Yes. Emails to your shop are unchanged. A variation you disabled that shares its product's stock is now set to 0 on eBay, not sent that stock.
 
 = 3.42.0 =
 New: a Send stock to eBay button on the rows of Stock Review's list of stock changes that never reached eBay, while a row's product is still on its listing. It sends that product's stock as the bulk action does, and the row leaves the list once eBay takes it.

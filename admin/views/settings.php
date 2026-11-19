@@ -852,6 +852,15 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						</div>
 						<p class="tc-hint"><?php esc_html_e( 'When enabled, eBay orders are imported as WooCommerce orders every 15 minutes: one the buyer has not paid for yet as Pending payment, a paid one as Processing. Each follows eBay when it is paid or cancelled, unless you have changed its status yourself. Tracking numbers are pushed back to eBay when orders are marked "Completed".', 'tcgiant-sync' ); ?></p>
 					</div>
+					<?php // WooCommerce's emails to eBay buyers (3.43.0): No unless chosen - TCGiant_Sync_Order_Followthrough::EMAILS_SETTING and BUYER_EMAILS. ?>
+					<div class="tc-field">
+						<label class="tc-label"><?php esc_html_e( 'Send WooCommerce\'s emails to eBay buyers?', 'tcgiant-sync' ); ?></label>
+						<div class="tc-radio-group">
+							<label><input type="radio" name="tcgiant_sync_ebay_settings[ebay_buyer_emails]" value="1" <?php checked( $settings['ebay_buyer_emails'] ?? '0', '1' ); ?>> Yes</label>
+							<label><input type="radio" name="tcgiant_sync_ebay_settings[ebay_buyer_emails]" value="0" <?php checked( $settings['ebay_buyer_emails'] ?? '0', '0' ); ?>> No</label>
+						</div>
+						<p class="tc-hint"><?php esc_html_e( 'eBay already emails the buyer of an eBay order about the purchase, the payment, the shipping and any refund. With No, WooCommerce\'s own emails to the customer - Processing, Completed, On hold, Failed, Cancelled and Customer note, and the review request and fulfilment emails where those WooCommerce features are on - are not sent for orders imported from eBay; WooCommerce\'s log notes each as not sent, its "email type is disabled". What you send by hand still goes: Order details, a note to the customer, or an email sent again from the order screen or WooCommerce\'s app. Emails to your shop and website orders are not affected, and the Refunded order email is never sent for an eBay order. It applies to every order imported from eBay, even with order import off.', 'tcgiant-sync' ); ?></p>
+					</div>
 					<?php // Feedback for eBay buyers, and eBay's refunds (3.37.0): the values TCGiant_Sync_Order_Followthrough reads (TRIGGERS, COMMENT_MAX, DEFAULT_COMMENT). ?>
 					<?php $tc_feedback = in_array( (string) ( $settings['feedback_buyers'] ?? '' ), array( 'paid', 'completed' ), true ) ? (string) $settings['feedback_buyers'] : 'off'; ?>
 					<?php $tc_comment = trim( (string) ( $settings['feedback_comment'] ?? '' ) ); ?>

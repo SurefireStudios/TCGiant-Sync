@@ -18,6 +18,12 @@
  * woocommerce_email_enabled_<id>, the id being customer_partially_refunded_
  * order for a partial one, as WC_Email_Customer_Refunded_Order names itself.
  *
+ * 3.43.0: an order keeps its billing email, as WC_Order does, and a note
+ * added as a note to the customer fires woocommerce_new_customer_note with
+ * the order's ID and the note, as WC_Order::add_order_note() does; eBay's
+ * answer carries the buyer's email (Transaction.Buyer.Email) only for an
+ * order a case gives one, so every answer before 3.43.0 is as it was.
+ *
  * eBay ($EBAY, orders by ID) answers GetOrders by CreateTime, ModTime and
  * OrderIDArray as its reference says - ModTime with OutputSelector honoured,
  * each order cut to the paths selected - and CompleteSale from $COMPLETE, a
@@ -285,11 +291,19 @@ class WC_Order extends WC_Abstract_Order {
 		}
 		$this->meta[ $key ] = $value;
 	}
-	public function add_order_note( $note ) { $this->notes[] = $note; return count( $this->notes ); }
+	public function add_order_note( $note, $is_customer_note = 0, $added_by_user = false ) {
+		$this->notes[] = $note;
+		if ( $is_customer_note ) {
+			do_action( 'woocommerce_new_customer_note', array( 'order_id' => $this->id, 'customer_note' => $note ) );
+		}
+		return count( $this->notes );
+	}
 	public function get_items( $type = 'line_item' ) { return $this->items; }
 	public function add_item( $item ) { $item->order = $this; $this->items[] = $item; }
 	public function set_address( $a, $t = 'billing' ) {}
-	public function set_billing_email( $e ) {}
+	public $billing_email = '';
+	public function set_billing_email( $e ) { $this->billing_email = (string) $e; }
+	public function get_billing_email() { return $this->billing_email; }
 	public function set_customer_id( $id ) {}
 	public function set_total( $t ) { $this->total = (float) $t; }
 	public function get_total() { return $this->total; }
@@ -514,7 +528,8 @@ function ebay_order_xml( array $o, $only = null ) {
 		$tx .= '<Transaction><CreatedDate>' . ebay_time( $l['created'] ) . '</CreatedDate><TransactionID>' . $l['tx'] . '</TransactionID>'
 			. ( '' !== (string) $l['line'] ? '<OrderLineItemID>' . $l['line'] . '</OrderLineItemID>' : '' )
 			. '<QuantityPurchased>1</QuantityPurchased><TransactionPrice currencyID="USD">' . number_format( $l['price'], 2, '.', '' ) . '</TransactionPrice>'
-			. '<Item><ItemID>' . $l['item'] . '</ItemID><Title>Card ' . $l['item'] . '</Title></Item></Transaction>';
+			. '<Item><ItemID>' . $l['item'] . '</ItemID><Title>Card ' . $l['item'] . '</Title></Item>'
+			. ( isset( $o['email'] ) ? '<Buyer><Email>' . $o['email'] . '</Email></Buyer>' : '' ) . '</Transaction>';
 	}
 	$parts['TransactionArray'] = $tx . '</TransactionArray>';
 	if ( null !== $only ) {

@@ -861,11 +861,18 @@ $child = function () use ( $fake, $case, $ROOT ) {
 	return json_decode( (string) shell_exec( $cmd ), true );
 };
 $r = $child();
-check( 'no sodium and no sodium_compat: unclear, "cannot check signatures"', array( $r['sodium_before'] ?? null, is_array( $r ) && array_key_exists( 'status', $r ) ? $r['status'] : 'x', $r['why'] ?? null ), array( false, null, 'this site cannot check signatures (no sodium)' ) );
-// The stand-in for WordPress's autoload.php: the sodium functions, from the test shim.
-file_put_contents( $fake . '/wp-includes/sodium_compat/autoload.php', "<?php\nrequire " . var_export( __DIR__ . '/support/ed25519-shim.php', true ) . ";\n" );
-$r = $child();
-check( 'no sodium, WordPress\'s wp-includes/sodium_compat/autoload.php there: loaded, the signature checked', array( $r['sodium_before'] ?? null, $r['loaded'] ?? null, $r['sodium_after'] ?? null, $r['status'] ?? null, $r['why'] ?? null ), array( false, true, true, 'active', '' ) );
+if ( true === ( $r['sodium_before'] ?? null ) ) {
+	// -n turns off a shared sodium extension, not one built into PHP (as on
+	// CI's PHP). The two checks need a PHP with no sodium function, so they run
+	// where sodium is a shared extension (the local PHP 7.4 and 8.4 runs).
+	echo "  (this PHP has sodium built in, so -n cannot turn it off: the two no-sodium checks skipped)\n";
+} else {
+	check( 'no sodium and no sodium_compat: unclear, "cannot check signatures"', array( $r['sodium_before'] ?? null, is_array( $r ) && array_key_exists( 'status', $r ) ? $r['status'] : 'x', $r['why'] ?? null ), array( false, null, 'this site cannot check signatures (no sodium)' ) );
+	// The stand-in for WordPress's autoload.php: the sodium functions, from the test shim.
+	file_put_contents( $fake . '/wp-includes/sodium_compat/autoload.php', "<?php\nrequire " . var_export( __DIR__ . '/support/ed25519-shim.php', true ) . ";\n" );
+	$r = $child();
+	check( 'no sodium, WordPress\'s wp-includes/sodium_compat/autoload.php there: loaded, the signature checked', array( $r['sodium_before'] ?? null, $r['loaded'] ?? null, $r['sodium_after'] ?? null, $r['status'] ?? null, $r['why'] ?? null ), array( false, true, true, 'active', '' ) );
+}
 @unlink( $fake . '/wp-includes/sodium_compat/autoload.php' );
 @unlink( $case );
 @rmdir( $fake . '/wp-includes/sodium_compat' );

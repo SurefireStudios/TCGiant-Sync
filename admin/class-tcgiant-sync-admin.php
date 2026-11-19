@@ -79,6 +79,9 @@ class TCGiant_Sync_Admin {
 			// Feedback for eBay buyers, and eBay's refunds recorded on their
 			// orders (3.37.0, TCGiant_Sync_Order_Followthrough).
 			'feedback_buyers', 'feedback_comment', 'record_ebay_refunds',
+			// WooCommerce's emails to eBay buyers (3.43.0,
+			// TCGiant_Sync_Order_Followthrough::EMAILS_SETTING).
+			'ebay_buyer_emails',
 		),
 		'export' => array(
 			'export_category_id', 'export_category_name', 'export_category_typed', 'export_condition_type', 'export_grader_id', 'export_grade_value',

@@ -677,8 +677,12 @@ edit_php( 'tcgiant_send_stock', array( 6095 ) );
 check( '  every variation disabled: each named, the product itself not said again', array( count( pushes() ), send_lines() ), array( 0, array( 'Send stock to eBay (products list, user #1): 0 queued; skipped 1 (not on eBay 1: #6096).' ) ) );
 // Fix round 2 (review 2's L-2, its C9b): the parent keeps 4 for its only
 // variation, which is disabled - and eBay, listing it from before, still
-// shows it. The pool is not sent: it would put the disabled variation on
-// sale with 4.
+// shows it. 3.43.0: the action does what a stock change of the parent does
+// - the shared stock's push, which sends a disabled variation 0, but not
+// the listing's only stock: that one is kept no higher than the shared
+// stock, never raised (eBay shows 2 of the 4 here, so nothing is sent),
+// and the push's log says so. (Until 3.43.0 nothing was queued, and eBay's
+// figure for it stayed whatever it was, the shared stock lower or not.)
 $shop = function () {
 	variable( 6097, '609700006097', array( '_manage_stock' => 'yes', '_stock' => 4 ) );
 	variation( 6098, 6097, 'PD-A', null, array( 'size' => 'S' ) );
@@ -686,16 +690,17 @@ $shop = function () {
 	$l = variation_listing( '609700006097', array( ev( 'PD-A', 2, 0, array( 'size' => 'S' ) ) ) );
 	ebay_has( '609700006097', $l, $l, $l );
 };
+$change = by_change( $shop, 6097, 4 );
 $action = by_action( $shop, array( 6097 ) );
-check( 'the parent keeps the stock of its only variation, which is disabled (C9b): not queued, nothing sent, the variation named as not on eBay', array( count( $action['jobs'] ), calls_of( $action ), send_lines() ), array( 0, array(), array( 'Send stock to eBay (products list, user #1): 0 queued; skipped 1 (not on eBay 1: #6098).' ) ) );
-check( '  the notice says so', notice_of( $LAST_SAID ), array( 'notice-warning', first_line( 0 ) . ' 1 not sent: not on eBay: #6098. ' . today_line( 0 ) ) );
+check( 'the parent keeps the stock of its only variation, which is disabled (C9b), 3.43.0: the shared stock\'s push queued, as a stock change of it: eBay read, nothing raised; the variation named', array( count( $action['jobs'] ), $action['jobs'] === $change['jobs'], $action['wire'] === $change['wire'], calls_of( $action ), send_lines() ), array( 1, true, true, array( 'GetItem' ), array( 'Send stock to eBay (products list, user #1): 1 queued (shared stock (GetItem, ReviseInventoryStatus, GetItem) 1: #6097; disabled, sent 0 by the shared stock\'s push unless the listing\'s only stock 1: #6098); skipped 0.' ) ) );
+check( '  the notice says so', notice_of( $LAST_SAID ), array( 'notice-success', first_line( 1 ) . ' 1 shared stock: eBay is read, the variations set (four a call), then read again. 1 disabled variation taking a shared stock: the shared stock\'s push sets it to 0 on eBay if eBay still shows it with stock, unless it is the listing\'s last variation with stock, when the log says so: #6098. ' . $CLOSE . ' ' . today_line( 1 ) ) );
 fresh_shop();
 variable( 6085, '608500006085', array( '_manage_stock' => 'yes', '_stock' => 4 ) );
 variation( 6086, 6085, 'PE-A', null, array( 'size' => 'S' ) );
 variation( 6087, 6085, 'PE-OFF', null, array( 'size' => 'M' ) );
 $GLOBALS['POSTS'][6087]['status'] = 'private';
 edit_php( 'tcgiant_send_stock', array( 6085 ) );
-check( '  an enabled variation taking it too: the pool sent once, the disabled one named', array( push_args(), send_lines() ), array( array( array( 6085, 'edit', null ) ), array( 'Send stock to eBay (products list, user #1): 1 queued (shared stock (GetItem, ReviseInventoryStatus, GetItem) 1: #6085); skipped 1 (not on eBay 1: #6087).' ) ) );
+check( '  an enabled variation taking it too: the pool sent once, the disabled one named as the push\'s to set to 0 (3.43.0)', array( push_args(), send_lines() ), array( array( array( 6085, 'edit', null ) ), array( 'Send stock to eBay (products list, user #1): 1 queued (shared stock (GetItem, ReviseInventoryStatus, GetItem) 1: #6085; disabled, sent 0 by the shared stock\'s push unless the listing\'s only stock 1: #6087); skipped 0.' ) ) );
 
 echo "\nAT 0: EBAY IS READ FIRST (FIX ROUND 1, THE OWNER'S DECISION), EACH SHAPE\n" . str_repeat( '=', 132 ) . "\n";
 

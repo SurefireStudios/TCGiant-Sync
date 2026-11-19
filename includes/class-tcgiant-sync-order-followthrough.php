@@ -36,6 +36,35 @@
  *   no stock; WooCommerce's "Refunded order" email to the customer is not
  *   sent for an eBay order, whose buyer eBay itself tells.
  *
+ * - Emails (3.43.0). "Send WooCommerce's emails to eBay buyers?", No unless
+ *   the shop says Yes - new installs and upgrades alike. While it is No,
+ *   WooCommerce's own emails to the customer about an order imported from
+ *   eBay (BUYER_EMAILS: processing, completed, on hold, failed, cancelled,
+ *   note, and the review request and fulfilment emails of WooCommerce's
+ *   optional features) are held back: eBay already emails its buyer about
+ *   the purchase, the payment, the shipping and any refund, and the address
+ *   an eBay order gives is eBay's relay. WooCommerce asks
+ *   woocommerce_email_enabled_<email ID> with the order before each; the
+ *   answer is No only for an order this plugin imported from eBay
+ *   (ebay_order(), no_refund_email()'s test), one with an address to send
+ *   to. A send the shop asks for by hand still goes (fix round 1): anything
+ *   sent from the order screen's order actions (between WooCommerce's
+ *   woocommerce_before_resend_order_emails and ..._after_resend_order_email
+ *   for that order) or by WooCommerce's REST order actions (send_email,
+ *   send_order_details), and a note added as "Note to customer" on the
+ *   order screen or through WooCommerce's REST API for notes (v1-v3 and
+ *   v4) - told by the REST request itself, and, when WooCommerce's
+ *   "Deferred emails" sends the note later, by the note: its order and a
+ *   hash of its text, kept an hour while WooCommerce defers it
+ *   (HAND_NOTES; fix round 2). Order details
+ *   (customer_invoice) is only ever sent by hand, and WooCommerce 11.2.2
+ *   does not ask the filter for it; it is listed so that a later
+ *   WooCommerce that asks still sends it by hand only. Emails to the shop
+ *   (new, cancelled and failed order) are not touched, nor is any website
+ *   order. The "Refunded order" emails stay 3.37.0's, off for an
+ *   eBay order whatever the setting. One log line a day at most says an
+ *   email was held back, naming it and the order, never the address.
+ *
  * Both respect the day's eBay calls: they wait while this site has used half
  * of its own allowance, while every shop together has less than a quarter
  * of the day's ceiling left, or while the day's figure is not known
@@ -93,6 +122,52 @@ class TCGiant_Sync_Order_Followthrough {
 	 * than eBay's own form allows is not one to try on a real buyer.
 	 */
 	const COMMENT_MAX = 80;
+
+	/**
+	 * "Send WooCommerce's emails to eBay buyers?" (3.43.0), with the order
+	 * settings: '1' sends them; anything else - never chosen included, so
+	 * new installs and upgrades alike - is No.
+	 */
+	const EMAILS_SETTING = 'ebay_buyer_emails';
+
+	/**
+	 * WooCommerce's emails to the customer about an order, by ID, held back
+	 * for an order imported from eBay while that setting is No (3.43.0):
+	 * Processing order, Completed order, Order on-hold, Failed order and
+	 * Cancelled order (to the customer), Customer note, and - fix round 1,
+	 * review 1's M1, from WooCommerce 11.2.2's source - the review request
+	 * (its "Customer review request" feature) and the three fulfilment
+	 * emails (its "Order Fulfillments" feature). Order details
+	 * (customer_invoice) is listed too, though 11.2.2 never asks the filter
+	 * for it: it is only sent by hand, which passes. An ID a site's
+	 * WooCommerce does not have is never asked. The Refunded order emails
+	 * (customer_refunded_order and customer_partially_refunded_order) are
+	 * 3.37.0's no_refund_email(), off for an eBay order whatever the
+	 * setting. Not here: the shop's emails (New order, Cancelled order,
+	 * Failed order), the POS emails (an order paid at a point of sale is
+	 * never an eBay order), and the account emails (no order).
+	 */
+	const BUYER_EMAILS = array( 'customer_processing_order', 'customer_completed_order', 'customer_on_hold_order', 'customer_failed_order', 'customer_cancelled_order', 'customer_invoice', 'customer_note', 'customer_review_request', 'customer_fulfillment_created', 'customer_fulfillment_updated', 'customer_fulfillment_deleted' );
+
+	/**
+	 * A transient holding the UTC day an email held back was last logged
+	 * (3.43.0): one line a day at most.
+	 */
+	const EMAILS_SAID = 'tcgiant_followthrough_emails_held';
+
+	/**
+	 * A transient (fix round 1, review 1's M2): the notes to the customer the
+	 * shop added by hand to an eBay order in the last hour while WooCommerce
+	 * deferred their email (fix round 2), order ID => md5 of the note =>
+	 * when it stops counting. With WooCommerce's "Deferred emails" on, the
+	 * note's email is sent in a later request, where nothing else says it
+	 * was by hand; it passes when its note is one of these, which it uses
+	 * up.
+	 */
+	const HAND_NOTES = 'tcgiant_followthrough_hand_notes';
+
+	/** How long a note added by hand waits for its email: an hour. */
+	const HAND_NOTE_SECONDS = 3600;
 
 	/**
 	 * Orders waiting for feedback: WooCommerce order ID => array( 'ebay' =>
@@ -255,6 +330,27 @@ class TCGiant_Sync_Order_Followthrough {
 	private static $recording = '';
 
 	/**
+	 * Orders WooCommerce is sending emails for from the order screen's order
+	 * actions now, by the shop's hand (3.43.0): order ID => true, between
+	 * woocommerce_before_resend_order_emails and
+	 * woocommerce_after_resend_order_email.
+	 *
+	 * @var array<int, bool>
+	 */
+	private static $by_hand = array();
+
+	/**
+	 * Orders a REST request of WooCommerce's is sending by the shop's hand
+	 * now (fix round 1): order ID => 'send' (its order actions, send_email
+	 * or send_order_details: any email for the order) or 'note' (its notes
+	 * routes: the customer note), from rest_request_before_callbacks to
+	 * rest_request_after_callbacks.
+	 *
+	 * @var array<int, string>
+	 */
+	private static $rest_hand = array();
+
+	/**
 	 * The hooks, on every request: Action Scheduler runs them from WP-Cron
 	 * and its own requests, and an order is completed from the admin, the
 	 * REST API and other plugins.
@@ -277,6 +373,22 @@ class TCGiant_Sync_Order_Followthrough {
 		// WooCommerce names the email by which it is.
 		add_filter( 'woocommerce_email_enabled_customer_refunded_order', array( __CLASS__, 'no_refund_email' ), 10, 2 );
 		add_filter( 'woocommerce_email_enabled_customer_partially_refunded_order', array( __CLASS__, 'no_refund_email' ), 10, 2 );
+
+		// WooCommerce's other emails to an eBay buyer (3.43.0): held back
+		// while "Send WooCommerce's emails to eBay buyers?" is No, but for a
+		// send the shop asks for by hand on the order screen.
+		foreach ( self::BUYER_EMAILS as $email_id ) {
+			add_filter( 'woocommerce_email_enabled_' . $email_id, array( __CLASS__, 'buyer_email' ), 20, 3 );
+		}
+		add_action( 'woocommerce_before_resend_order_emails', array( __CLASS__, 'resend_begins' ), 10, 2 );
+		add_action( 'woocommerce_after_resend_order_email', array( __CLASS__, 'resend_ends' ), 10, 2 );
+		// Fix round 1 (review 1's M2): WooCommerce's REST order actions and
+		// notes, by the request; and a note added by hand, kept for its
+		// email should WooCommerce's "Deferred emails" send it later (before
+		// WooCommerce's own handler, at 10).
+		add_filter( 'rest_request_before_callbacks', array( __CLASS__, 'rest_begins' ), 10, 3 );
+		add_filter( 'rest_request_after_callbacks', array( __CLASS__, 'rest_ends' ), 10, 3 );
+		add_action( 'woocommerce_new_customer_note', array( __CLASS__, 'note_by_hand' ), 5 );
 	}
 
 	// -------------------------------------------------------------------------
@@ -335,6 +447,19 @@ class TCGiant_Sync_Order_Followthrough {
 	public static function records_refunds( $settings = null ) {
 		$settings = is_array( $settings ) ? $settings : self::settings();
 		return ! empty( $settings['enable_order_import'] ) && '0' !== (string) ( $settings[ self::REFUNDS_SETTING ] ?? '1' );
+	}
+
+	/**
+	 * Whether WooCommerce's emails go to eBay buyers (3.43.0): only when the
+	 * shop said Yes. Whether or not eBay orders are imported now: the orders
+	 * imported before are still eBay's.
+	 *
+	 * @param array|null $settings The settings; the stored ones when null.
+	 * @return bool
+	 */
+	public static function buyer_emails_on( $settings = null ) {
+		$settings = is_array( $settings ) ? $settings : self::settings();
+		return '1' === (string) ( $settings[ self::EMAILS_SETTING ] ?? '0' );
 	}
 
 	// -------------------------------------------------------------------------
@@ -1715,6 +1840,310 @@ class TCGiant_Sync_Order_Followthrough {
 			return false;
 		}
 		return $enabled;
+	}
+
+	// -------------------------------------------------------------------------
+	// WooCommerce's emails to eBay buyers (3.43.0)
+	// -------------------------------------------------------------------------
+
+	/**
+	 * Whether an order is one this plugin imported from eBay:
+	 * no_refund_email()'s test, the same for every email.
+	 *
+	 * @param mixed $order What WooCommerce hands the email filter.
+	 * @return bool
+	 */
+	public static function ebay_order( $order ) {
+		return is_object( $order ) && method_exists( $order, 'get_meta' ) && 'ebay' === $order->get_meta( '_ebay_order_source' );
+	}
+
+	/**
+	 * Hooks: woocommerce_email_enabled_<ID> for each of BUYER_EMAILS, as
+	 * WC_Email::is_enabled() asks it - whether the email is on, the email's
+	 * object (the order), the email. Held back (false) only for an order
+	 * imported from eBay, with an address to send to, while "Send
+	 * WooCommerce's emails to eBay buyers?" is No, and not sent by the
+	 * shop's hand (by_hand()). Anything else is answered as it came.
+	 *
+	 * @param bool          $enabled Whether WooCommerce would send it.
+	 * @param mixed         $order   The email's object: the order.
+	 * @param WC_Email|null $email   The email.
+	 * @return bool
+	 */
+	public static function buyer_email( $enabled, $order = null, $email = null ) {
+		if ( ! $enabled || ! self::ebay_order( $order ) || self::buyer_emails_on() ) {
+			return $enabled;
+		}
+
+		// No address: WooCommerce sends nothing, and nothing is said.
+		if ( ! method_exists( $order, 'get_billing_email' ) || '' === trim( (string) $order->get_billing_email() ) ) {
+			return $enabled;
+		}
+
+		// The email's own ID (WC_Email's public id), else the filter's.
+		$vars = is_object( $email ) ? get_object_vars( $email ) : array();
+		$id   = isset( $vars['id'] ) && is_string( $vars['id'] ) && '' !== $vars['id'] ? $vars['id'] : self::email_id_now();
+		if ( self::by_hand( $id, $order, $email ) ) {
+			return $enabled;
+		}
+
+		self::say_held( $id, $order, $email );
+		return false;
+	}
+
+	/**
+	 * The email ID of the woocommerce_email_enabled_<ID> filter running now,
+	 * for a caller that hands no email.
+	 *
+	 * @return string
+	 */
+	private static function email_id_now() {
+		$hook = function_exists( 'current_filter' ) ? (string) current_filter() : '';
+		return 0 === strpos( $hook, 'woocommerce_email_enabled_' ) ? substr( $hook, strlen( 'woocommerce_email_enabled_' ) ) : $hook;
+	}
+
+	/**
+	 * Whether the shop asked for this email by hand: anything WooCommerce
+	 * sends for this order from the order screen's order actions ("Send
+	 * order details to customer"), or from its REST order actions
+	 * (send_email, send_order_details: its app); and a note added as "Note
+	 * to customer" - on the order screen (WooCommerce's admin-ajax action
+	 * woocommerce_add_order_note), through its REST API for notes (v1-v3
+	 * orders/<ID>/notes, v4 order-notes), or either of those sent later by
+	 * WooCommerce's "Deferred emails" (HAND_NOTES).
+	 *
+	 * @param string   $id    The email's ID.
+	 * @param WC_Order $order The order.
+	 * @param mixed    $email The email.
+	 * @return bool
+	 */
+	private static function by_hand( $id, $order, $email = null ) {
+		$order_id = (int) $order->get_id();
+		if ( isset( self::$by_hand[ $order_id ] ) || 'send' === ( self::$rest_hand[ $order_id ] ?? '' ) ) {
+			return true;
+		}
+		if ( 'customer_note' !== $id ) {
+			return false;
+		}
+		// The note kept when it was added is used up, whichever way it passes.
+		$kept = self::take_hand_note( $order_id, $email );
+		return $kept || self::note_now_by_hand( $order_id );
+	}
+
+	/**
+	 * Whether a note added to this order now is the shop's by hand: inside
+	 * WooCommerce's admin-ajax Add note, or a REST request to its notes.
+	 *
+	 * @param int $order_id The order.
+	 * @return bool
+	 */
+	private static function note_now_by_hand( $order_id ) {
+		if ( function_exists( 'doing_action' ) && doing_action( 'wp_ajax_woocommerce_add_order_note' ) ) {
+			return true;
+		}
+		return 'note' === ( self::$rest_hand[ (int) $order_id ] ?? '' );
+	}
+
+	/**
+	 * Which order a REST request of WooCommerce's sends by the shop's hand,
+	 * and how: array( order ID, 'send' or 'note' ), or null. By its route,
+	 * as WordPress's REST server matched it - so a request dispatched inside
+	 * WordPress (rest_do_request()) too:
+	 * /wc/v<N>/orders/<ID>/actions/(send_email|send_order_details),
+	 * /wc/v<N>/orders/<ID>/notes, and /wc/v4/order-notes (order_id a
+	 * parameter).
+	 *
+	 * @param mixed $request WP_REST_Request.
+	 * @return array|null
+	 */
+	private static function rest_hand_of( $request ) {
+		if ( ! is_object( $request ) || ! method_exists( $request, 'get_route' ) ) {
+			return null;
+		}
+		$route = (string) $request->get_route();
+		if ( preg_match( '#^/wc/v[0-9]+/orders/([0-9]+)/actions/(send_email|send_order_details)/?$#', $route, $m ) ) {
+			return array( (int) $m[1], 'send' );
+		}
+		if ( preg_match( '#^/wc/v[0-9]+/orders/([0-9]+)/notes/?$#', $route, $m ) ) {
+			return array( (int) $m[1], 'note' );
+		}
+		if ( preg_match( '#^/wc/v4/order-notes/?$#', $route ) && method_exists( $request, 'get_param' ) ) {
+			$order_id = $request->get_param( 'order_id' );
+			return is_numeric( $order_id ) && (int) $order_id > 0 ? array( (int) $order_id, 'note' ) : null;
+		}
+		return null;
+	}
+
+	/**
+	 * Hook: rest_request_before_callbacks. A REST request of WooCommerce's
+	 * sending by hand (rest_hand_of()) marks its order.
+	 *
+	 * @param mixed $response What the request answers so far.
+	 * @param mixed $handler  The route's handler.
+	 * @param mixed $request  WP_REST_Request.
+	 * @return mixed $response, unchanged.
+	 */
+	public static function rest_begins( $response, $handler = null, $request = null ) {
+		$hand = self::rest_hand_of( $request );
+		if ( null !== $hand ) {
+			self::$rest_hand[ $hand[0] ] = $hand[1];
+		}
+		return $response;
+	}
+
+	/**
+	 * Hook: rest_request_after_callbacks. That request is over.
+	 *
+	 * @param mixed $response Its answer.
+	 * @param mixed $handler  The route's handler.
+	 * @param mixed $request  WP_REST_Request.
+	 * @return mixed $response, unchanged.
+	 */
+	public static function rest_ends( $response, $handler = null, $request = null ) {
+		$hand = self::rest_hand_of( $request );
+		if ( null !== $hand ) {
+			unset( self::$rest_hand[ $hand[0] ] );
+		}
+		return $response;
+	}
+
+	/**
+	 * Hook: woocommerce_new_customer_note, at 5. A note to the customer the
+	 * shop adds by hand to an eBay order is kept (HAND_NOTES), so that its
+	 * email passes when WooCommerce's "Deferred emails" sends it in a later
+	 * request - only while WooCommerce does defer it (its
+	 * WC_Emails::queue_transactional_email() on this action; fix round 2,
+	 * review 2's LOW 2). Sent at once, the email passes in this request
+	 * (note_now_by_hand()), and a copy would only linger: an email that
+	 * never asks the filter (WooCommerce's note email off, the setting Yes,
+	 * no address) never uses it up.
+	 *
+	 * @param mixed $args order_id and customer_note, as WooCommerce gives them.
+	 * @return void
+	 */
+	public static function note_by_hand( $args = array() ) {
+		$order_id = is_array( $args ) ? (int) ( $args['order_id'] ?? 0 ) : 0;
+		if ( $order_id < 1 || ! self::notes_deferred() || ! self::note_now_by_hand( $order_id ) || ! function_exists( 'wc_get_order' ) || ! self::ebay_order( wc_get_order( $order_id ) ) ) {
+			return;
+		}
+		$notes = self::hand_notes();
+		$notes[ $order_id ][ md5( (string) ( $args['customer_note'] ?? '' ) ) ] = time() + self::HAND_NOTE_SECONDS;
+		set_transient( self::HAND_NOTES, $notes, self::HAND_NOTE_SECONDS );
+	}
+
+	/**
+	 * Whether WooCommerce defers the customer note's email now: its
+	 * "Deferred emails" hooks WC_Emails::queue_transactional_email() on
+	 * woocommerce_new_customer_note in place of sending it.
+	 *
+	 * @return bool
+	 */
+	private static function notes_deferred() {
+		return function_exists( 'has_action' ) && false !== has_action( 'woocommerce_new_customer_note', array( 'WC_Emails', 'queue_transactional_email' ) );
+	}
+
+	/**
+	 * The notes kept, those past their hour dropped.
+	 *
+	 * @return array
+	 */
+	private static function hand_notes() {
+		$notes = get_transient( self::HAND_NOTES );
+		$out   = array();
+		foreach ( is_array( $notes ) ? $notes : array() as $order_id => $hashes ) {
+			foreach ( is_array( $hashes ) ? $hashes : array() as $hash => $until ) {
+				if ( (int) $until > time() ) {
+					$out[ (int) $order_id ][ (string) $hash ] = (int) $until;
+				}
+			}
+		}
+		return $out;
+	}
+
+	/**
+	 * Use up the note kept for this order that this customer-note email
+	 * sends (its public customer_note, hashed - set before WooCommerce asks
+	 * the filter). No text matches nothing (fix round 2, review 2's LOW 2:
+	 * it took the order's oldest, so a note added by code with no text could
+	 * go out in a by-hand one's place). Whether one was there.
+	 *
+	 * @param int   $order_id The order.
+	 * @param mixed $email    WC_Email_Customer_Note.
+	 * @return bool
+	 */
+	private static function take_hand_note( $order_id, $email ) {
+		$notes = self::hand_notes();
+		if ( empty( $notes[ $order_id ] ) ) {
+			return false;
+		}
+		$vars = is_object( $email ) ? get_object_vars( $email ) : array();
+		$text = isset( $vars['customer_note'] ) && is_scalar( $vars['customer_note'] ) ? (string) $vars['customer_note'] : '';
+		$hash = md5( $text );
+		if ( '' === $text || ! isset( $notes[ $order_id ][ $hash ] ) ) {
+			return false;
+		}
+		unset( $notes[ $order_id ][ $hash ] );
+		if ( ! $notes[ $order_id ] ) {
+			unset( $notes[ $order_id ] );
+		}
+		if ( $notes ) {
+			set_transient( self::HAND_NOTES, $notes, self::HAND_NOTE_SECONDS );
+		} else {
+			delete_transient( self::HAND_NOTES );
+		}
+		return true;
+	}
+
+	/**
+	 * Hook: woocommerce_before_resend_order_emails. The order screen's order
+	 * actions are about to send an email for this order: by the shop's hand.
+	 *
+	 * @param WC_Order|mixed $order    The order.
+	 * @param string         $email_id The email.
+	 * @return void
+	 */
+	public static function resend_begins( $order = null, $email_id = '' ) {
+		if ( is_object( $order ) && method_exists( $order, 'get_id' ) ) {
+			self::$by_hand[ (int) $order->get_id() ] = true;
+		}
+	}
+
+	/**
+	 * Hook: woocommerce_after_resend_order_email. That send is over.
+	 *
+	 * @param WC_Order|mixed $order    The order.
+	 * @param string         $email_id The email.
+	 * @return void
+	 */
+	public static function resend_ends( $order = null, $email_id = '' ) {
+		if ( is_object( $order ) && method_exists( $order, 'get_id' ) ) {
+			unset( self::$by_hand[ (int) $order->get_id() ] );
+		}
+	}
+
+	/**
+	 * One log line a UTC day at most: an email held back, naming it and the
+	 * order, never the address.
+	 *
+	 * @param string        $id    The email's ID.
+	 * @param WC_Order      $order The order.
+	 * @param WC_Email|null $email The email.
+	 * @return void
+	 */
+	private static function say_held( $id, $order, $email ) {
+		$day = gmdate( 'Y-m-d' );
+		if ( get_transient( self::EMAILS_SAID ) === $day ) {
+			return;
+		}
+		set_transient( self::EMAILS_SAID, $day, DAY_IN_SECONDS );
+
+		$title = is_object( $email ) && method_exists( $email, 'get_title' ) ? trim( (string) $email->get_title() ) : '';
+		TCGiant_Sync_Logger::log( sprintf(
+			'WooCommerce\'s %s email for WC Order #%d (eBay order %s) was not sent to the buyer: eBay emails the buyers of eBay orders itself, and "Send WooCommerce\'s emails to eBay buyers?" is No in TCGiant Sync, Settings. Set it to Yes to send them. Emails to your shop still go. This is said once a day; others held back today are not logged.',
+			'' !== $title ? '"' . $title . '" (' . $id . ')' : $id,
+			(int) $order->get_id(),
+			(string) $order->get_meta( '_ebay_order_id' )
+		) );
 	}
 
 	// -------------------------------------------------------------------------
