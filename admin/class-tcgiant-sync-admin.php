@@ -192,6 +192,9 @@ class TCGiant_Sync_Admin {
 		// Warn when several products claim one eBay listing (duplicated products).
 		add_action( 'admin_notices', array( $this, 'shared_listing_admin_notice' ) );
 
+		// A variation enabled again that eBay no longer lists (3.44.0).
+		add_action( 'admin_notices', array( $this, 'zeroed_variation_notice' ) );
+
 		// eBay column on WooCommerce Orders list (HPOS-compatible).
 		add_filter( 'manage_woocommerce_page_wc-orders_columns', array( $this, 'add_order_ebay_column' ) );
 		add_action( 'manage_woocommerce_page_wc-orders_custom_column', array( $this, 'render_order_ebay_column' ), 10, 2 );
@@ -1107,6 +1110,40 @@ class TCGiant_Sync_Admin {
 				? sprintf( __( 'Unlinked from eBay listing %s. The eBay listing itself was not changed.', 'tcgiant-sync' ), $was )
 				: __( 'This product was not linked to an eBay listing.', 'tcgiant-sync' ),
 		) );
+	}
+
+	/**
+	 * On a product's edit screen (3.44.0): each of its variations the shop
+	 * has enabled that eBay no longer lists - removed when it was set to 0
+	 * before it had ever sold, with Out-of-Stock control off
+	 * (TCGiant_Sync_Mapper::ZEROED_META) - is named, with what adds it back.
+	 * No stock push can reach it until then
+	 * (TCGiant_Sync_Inventory::zeroed_variation_lines()).
+	 *
+	 * @return void
+	 */
+	public function zeroed_variation_notice() {
+		if ( ! current_user_can( 'edit_products' ) ) {
+			return;
+		}
+
+		$screen = get_current_screen();
+		if ( ! $screen || 'product' !== $screen->id ) {
+			return;
+		}
+
+		$post       = $GLOBALS['post'] ?? null;
+		$product_id = is_object( $post ) && isset( $post->ID ) ? (int) $post->ID : absint( $_GET['post'] ?? 0 ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- which product's screen, read only.
+		$lines      = $product_id > 0 ? TCGiant_Sync_Inventory::zeroed_variation_lines( $product_id ) : array();
+		if ( ! $lines ) {
+			return;
+		}
+
+		echo '<div class="notice notice-warning">';
+		foreach ( $lines as $line ) {
+			echo '<p><strong>' . esc_html__( 'TCGiant Sync:', 'tcgiant-sync' ) . '</strong> ' . esc_html( $line ) . '</p>';
+		}
+		echo '</div>';
 	}
 
 	/**

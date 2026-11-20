@@ -271,14 +271,16 @@ polo_shop( 4 );
 set_transient( 'tcgiant_stock_pending_7100', 1, 60 );
 $tcg_said = TCGiant_Sync_Inventory::send_stock_to_ebay( array( 7100 ) );
 check( '  a push of the shared stock already on its way: L not named, the parent said as on its way', array( $tcg_said['off_pool']['n'], $tcg_said['on_way']['ids'] ), array( 0, array( 7100 ) ) );
-// A disabled variation keeping its own stock: as 3.40.0, not on eBay.
+// A disabled variation keeping its own stock: as 3.40.0 to 3.43.0 named as
+// not on eBay; since 3.44.0 its own push is queued, which sets it to 0 on
+// eBay while eBay shows it with stock (tests/test-disabled-variations.php).
 fresh_shop();
 variable( 7300, '730000007300' );
 variation( 7301, 7300, 'KO-A', 2, array( 'size' => 'S' ), array( '_ebay_variation_sku' => 'KO-A' ) );
 variation( 7302, 7300, 'KO-B', 3, array( 'size' => 'M' ), array( '_ebay_variation_sku' => 'KO-B' ) );
 $POSTS[7302]['status'] = 'private';
 $tcg_said = TCGiant_Sync_Inventory::send_stock_to_ebay( array( 7300 ) );
-check( '  a disabled variation keeping its own stock: as 3.40.0 - named as not on eBay, not sent', array( array_column( array_map( function ( $a ) { return $a['args'][0]; }, pushes() ), 'product_id' ), $tcg_said['not_linked']['ids'], $tcg_said['off_pool']['n'] ), array( array( 7301 ), array( 7302 ), 0 ) );
+check( '  a disabled variation keeping its own stock (3.44.0): its own push queued, said apart - no longer named as not on eBay', array( array_column( array_map( function ( $a ) { return $a['args'][0]; }, pushes() ), 'product_id' ), $tcg_said['not_linked']['ids'], $tcg_said['off_own']['ids'], $tcg_said['off_pool']['n'] ), array( array( 7301, 7302 ), array(), array( 7302 ), 0 ) );
 check( '  merged batches keep the new list (the Listings page\'s job)', TCGiant_Sync_Inventory::merge_send_stock( null, TCGiant_Sync_Inventory::send_stock_said() )['off_pool'], array( 'n' => 0, 'ids' => array() ) );
 
 echo "\nTHE IMPORT AFTERWARDS: L STAYS DISABLED, AND ITS 0 IS LEFT ALONE\n" . str_repeat( '=', 132 ) . "\n";
@@ -303,7 +305,8 @@ check( 'I3 eBay drops L: the import retires it, as before (private, out of stock
 import_listing( polo( 5, 5, 5 ) );
 check( '  eBay lists L again: published again, as before - the mark taken off', array( status_of( 7103 ), meta( 7103, TCGiant_Sync_Mapper::RETIRED_META ) ), array( 'publish', null ) );
 // I4: enabled variations stay enabled; a variation keeping its own stock,
-// disabled, is published again as before (3.32.0's rule, kept).
+// disabled, was published again until 3.44.0 (3.32.0's rule); now it stays
+// disabled too (tests/test-disabled-variations.php).
 polo_shop( 5, 'publish' );
 import_listing( polo( 5, 5, 5 ) );
 check( 'I4 enabled variations stay enabled through an import', array( status_of( 7101 ), status_of( 7102 ), status_of( 7103 ) ), array( 'publish', 'publish', 'publish' ) );
@@ -313,7 +316,7 @@ variation( 7401, 7400, 'KS-S', 2, array( 'size' => 'S' ), array( '_ebay_variatio
 variation( 7402, 7400, 'KS-M', 3, array( 'size' => 'M' ), array( '_ebay_variation_sku' => 'KS-M' ) );
 $POSTS[7402]['status'] = 'private';
 import_listing( variation_listing( '740000007400', array( ev( 'KS-S', 2, 0, array( 'size' => 'S' ) ), ev( 'KS-M', 3, 0, array( 'size' => 'M' ) ) ) ) + array( 'Title' => 'Kit', 'SKU' => 'KS' ) );
-check( '  a disabled variation keeping its own stock: published again by the import, as before 3.43.0 (open question)', status_of( 7402 ), 'publish' );
+check( '  a disabled variation keeping its own stock: left disabled by the import (3.44.0; until then published again)', status_of( 7402 ), 'private' );
 
 echo "\nFIX ROUND 1 (REVIEW 1'S M3): A NEVER-SOLD DISABLED VARIATION, OUT-OF-STOCK CONTROL OFF\n" . str_repeat( '=', 132 ) . "\n";
 

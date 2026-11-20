@@ -607,17 +607,42 @@ echo "\nA PRODUCT 3.30 HAD ALREADY DUPLICATED\n" . str_repeat( '=', 124 ) . "\n"
 
 // What the old import left: the shop's two variations retired, and two of
 // its own made under a custom key the product does not have - "Any Color".
-fresh();
-$c = global_attribute( 'pa_color', 'Color', array( 'Red', 'Blue' ) );
-shop_product( 800, '5014', array( array( 'pa_color', array( $c['Red'], $c['Blue'] ), true ) ) );
-shop_variation( 801, 800, '', 0, array( 'pa_color' => 'red' ), 'private' );
-shop_variation( 802, 800, '', 0, array( 'pa_color' => 'blue' ), 'private' );
-shop_variation( 803, 800, '', 2, array( 'color' => 'Red' ) );
-shop_variation( 804, 800, '', 5, array( 'color' => 'Blue' ) );
+// 3.32.0 published the shop's two again, as it did any disabled variation it
+// found. Since 3.44.0 the import publishes again only a variation an import
+// retired: one carrying _ebay_variation_retired (every retire since 3.43.0
+// writes it), or (fix round 1, review 1's M2) one that keeps its own stock,
+// is at 0, and has no record of what eBay calls it - which every import
+// since 3.32.0 writes on each variation it finds - as 3.30's retired
+// originals are on a product no import of 3.32.0 on has read. Both are
+// restored; a sold-out variation the shop disabled, which an import since
+// 3.32.0 found, stays disabled.
+$tcg_dup = function ( $marked ) {
+	fresh();
+	$c = global_attribute( 'pa_color', 'Color', array( 'Red', 'Blue' ) );
+	shop_product( 800, '5014', array( array( 'pa_color', array( $c['Red'], $c['Blue'] ), true ) ) );
+	$mark = $marked ? array( '_ebay_variation_retired' => (string) ( time() - DAY_IN_SECONDS ) ) : array();
+	shop_variation( 801, 800, '', 0, array( 'pa_color' => 'red' ), 'private', $mark );
+	shop_variation( 802, 800, '', 0, array( 'pa_color' => 'blue' ), 'private', $mark );
+	shop_variation( 803, 800, '', 2, array( 'color' => 'Red' ) );
+	shop_variation( 804, 800, '', 5, array( 'color' => 'Blue' ) );
+};
+$tcg_dup( true );
 check( 'before: the website sees the old import\'s two as "Any Color"', offered( 800 ), array( 'ANY', 'ANY' ) );
 import( var_listing( '5014', array( array( array( 'Color' => 'Red' ), 2 ), array( array( 'Color' => 'Blue' ), 5 ) ) ) );
-check( 'the shop\'s own two found and published again with eBay\'s stock; the "Any" ones retired', array( children_of( 800 ), meta( 801, '_stock' ), meta( 802, '_stock' ), meta( 803, '_stock' ) ), array( array( 801 => 'publish', 802 => 'publish', 803 => 'private', 804 => 'private' ), 2, 5, 0 ) );
+check( 'the shop\'s own two, retired by an import (its mark on them), found and published again with eBay\'s stock; the "Any" ones retired', array( children_of( 800 ), meta( 801, '_stock' ), meta( 802, '_stock' ), meta( 803, '_stock' ) ), array( array( 801 => 'publish', 802 => 'publish', 803 => 'private', 804 => 'private' ), 2, 5, 0 ) );
 check( '  the website offers Red and Blue again', offered( 800 ), array( 'pa_color=blue', 'pa_color=red' ) );
+$tcg_dup( false );
+import( var_listing( '5014', array( array( array( 'Color' => 'Red' ), 2 ), array( array( 'Color' => 'Blue' ), 5 ) ) ) );
+check( '  with no mark - only 3.30\'s import ever ran on it (3.44.0 fix round 1): restored all the same, as 3.32.0 did; the "Any" ones retired', array( children_of( 800 ), meta( 801, '_stock' ), meta( 802, '_stock' ), offered( 800 ) ), array( array( 801 => 'publish', 802 => 'publish', 803 => 'private', 804 => 'private' ), 2, 5, array( 'pa_color=blue', 'pa_color=red' ) ) );
+// A sold-out variation the shop disabled, found before by an import since
+// 3.32.0 (what eBay calls it recorded on it): left disabled, at its 0.
+fresh();
+$c = global_attribute( 'pa_color', 'Color', array( 'Red', 'Blue' ) );
+shop_product( 805, '5040', array( array( 'pa_color', array( $c['Red'], $c['Blue'] ), true ) ) );
+shop_variation( 806, 805, '', 3, array( 'pa_color' => 'red' ), 'publish', array( '_ebay_variation_specifics' => array( 'Color' => 'Red' ) ) );
+shop_variation( 807, 805, '', 0, array( 'pa_color' => 'blue' ), 'private', array( '_ebay_variation_specifics' => array( 'Color' => 'Blue' ) ) );
+import( var_listing( '5040', array( array( array( 'Color' => 'Red' ), 3 ), array( array( 'Color' => 'Blue' ), 0 ) ) ) );
+check( '  a sold-out variation the shop disabled, found by an import since 3.32.0: stays disabled', array( children_of( 805 ), meta( 807, '_ebay_variation_retired' ) ), array( array( 806 => 'publish', 807 => 'private' ), null ) );
 
 // One of 3.30's copies the shop then put right by hand - pa_color red,
 // published, with its own photo - while the variation it stood in for is

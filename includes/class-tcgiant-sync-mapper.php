@@ -43,10 +43,10 @@ class TCGiant_Sync_Mapper {
 	 * On a variation the import retired - no longer on eBay, so set private
 	 * and out of stock (save_variations()) - when it did (3.43.0). Should
 	 * eBay list it again, the import publishes it again, as before; a
-	 * variation whose stock its parent keeps that is disabled with no such
-	 * mark was disabled by the shop, and stays disabled. Taken off once the
-	 * import publishes it. Kept with the product's other eBay records on
-	 * uninstall.
+	 * variation that is disabled with no such mark was disabled by the shop,
+	 * and stays disabled - one whose stock its parent keeps since 3.43.0, one
+	 * keeping its own since 3.44.0. Taken off once the import publishes it.
+	 * Kept with the product's other eBay records on uninstall.
 	 */
 	const RETIRED_META = '_ebay_variation_retired';
 
@@ -57,13 +57,53 @@ class TCGiant_Sync_Mapper {
 	 * control is off; written whatever the cached preference says, which can
 	 * be months old (fix round 2), by TCGiant_Sync_Inventory::push_pool().
 	 * A mark eBay did not need (the control on, or a sale landing before the
-	 * 0) goes at the next import, which finds the variation still listed. array( item, at, said ). The
+	 * 0) goes at the next import, which finds the variation still listed.
+	 * A disabled variation keeping its own stock gets it too, from its own
+	 * push's 0 (3.44.0, TCGiant_Sync_Inventory::push_fixed_price()).
+	 * array( item, at, said, gone ). The
 	 * import never disables it again once the shop enables it, but leaves
 	 * it enabled and says once that it is not on eBay any more and that an
 	 * Update adds it back (save_variations()); taken off once eBay lists it
-	 * again. Kept with the product's eBay records on uninstall.
+	 * again. 3.44.0 fix round 1 (review 1's M1): 'gone' is when the import
+	 * first found it gone from the listing - only then does anything say
+	 * eBay removed it. Enabled again with the mark (3.44.0), its push is
+	 * queued as any other when Out-of-Stock control is known to be on (eBay
+	 * keeps it at 0); otherwise none - the log says eBay removed it, or may
+	 * have, and the product's edit screen says an Update adds it back
+	 * (TCGiant_Sync_Inventory::on_status_saved()). An enabled variation eBay
+	 * still lists at 0 when the import takes the mark off, with stock here,
+	 * has its push queued then. Kept with the product's eBay records on
+	 * uninstall.
 	 */
 	const ZEROED_META = '_ebay_variation_zeroed';
+
+	/**
+	 * On a variation keeping its own stock (3.44.0): a push sent it 0 on
+	 * eBay while it was disabled (TCGiant_Sync_Inventory::push_fixed_price()),
+	 * so eBay's figure for it is that 0, not its stock. array( item, sku,
+	 * at, nudged ). While it is on the variation for the listing the import
+	 * or order sync reads, they take off only eBay's sales since its record
+	 * (written before the 0), never setting its stock to eBay's figure -
+	 * enabled again too, until a push of its own figure lands on eBay, or
+	 * eBay shows exactly its stock (fix round 1, review 1's LOW 1: not merely
+	 * a figure above 0, which a cancelled eBay sale gives back;
+	 * TCGiant_Sync_Inventory::ebay_figure_not_stock()). Enabled, at 0 on eBay
+	 * with stock here, the import queues its push once ('nudged'). Kept with
+	 * the product's eBay records on uninstall.
+	 */
+	const OFF_META = '_ebay_variation_off';
+
+	/**
+	 * On a variation the shop disabled itself (3.44.0 fix round 2, review
+	 * 2's LOW 3): when, written by TCGiant_Sync_Inventory::on_status_saved()
+	 * at each disable made through WooCommerce's save of the variation -
+	 * never the import's own writes, nor the plugin's - and taken off when
+	 * the shop enables it again. 3.32.0's restore, kept narrowly
+	 * (save_variations()), never takes a variation carrying it for one an
+	 * import before 3.32.0 retired. Kept on unlink, as the shop's choice,
+	 * and with the product's eBay records on uninstall.
+	 */
+	const SHOP_OFF_META = '_ebay_variation_shop_off';
 
 	/**
 	 * Whether the last save_as_product() call skipped on purpose.
@@ -4681,7 +4721,60 @@ class TCGiant_Sync_Mapper {
 			$var_hold        = ! $pooled_var && ! $is_new_variation && $variation->managing_stock() && null !== $variation->get_stock_quantity()
 				? self::sale_hold( $variation_id )
 				: null;
-			if ( null !== $var_hold ) {
+			// A variation keeping its own stock whose eBay figure is not its
+			// stock (3.44.0): disabled - not one the import retired - or sent
+			// 0 on eBay while it was. eBay's figure is never written as its
+			// stock: only eBay's sales since its record come off, and a
+			// website sale is already in it. With no record, as before.
+			$var_item      = (string) get_post_meta( $parent_id, '_ebay_item_id', true );
+			// eBay's own figure for it, and its marks, as the import found
+			// them - for the push an enabled one at 0 on eBay may need after
+			// the save (fix round 1, review 1's M1).
+			$var_ebay_avail = (int) $var_data['stock_quantity'];
+			$var_zeroed     = $is_new_variation ? '' : get_post_meta( (int) $variation_id, self::ZEROED_META, true );
+			$var_zeroed     = is_array( $var_zeroed ) && (string) ( $var_zeroed['item'] ?? '' ) === $var_item;
+			// 3.32.0's restore, kept narrowly (fix round 1, review 1's M2): a
+			// disabled variation keeping its own stock, at 0, with no mark of
+			// an import's retire and no record of what eBay calls it - which
+			// every import since 3.32.0 writes on every variation it finds -
+			// was retired by an import before 3.32.0, when 3.30's copies
+			// stood in for it. It is taken as one the import retired, and
+			// published again with eBay's figure, as 3.32.0's first import
+			// of it would have. Any variation an import since 3.32.0 found
+			// carries that record, and one the shop disabled under 3.44.0 its
+			// note of that (SHOP_OFF_META, fix round 2, review 2's LOW 3: a
+			// product relinked, or a variation disabled before any import read
+			// it), so neither is taken.
+			if ( ! $pooled_var && ! $is_new_variation && 'publish' !== (string) $variation->get_status()
+				&& ! get_post_meta( (int) $variation_id, self::RETIRED_META, true )
+				&& $variation->managing_stock() && null !== $variation->get_stock_quantity() && (int) $variation->get_stock_quantity() <= 0
+				&& ! get_post_meta( (int) $variation_id, TCGiant_Sync_Variations::SPECIFICS_META, true )
+				&& ! get_post_meta( (int) $variation_id, self::SHOP_OFF_META, true ) ) {
+				update_post_meta( (int) $variation_id, self::RETIRED_META, (string) time() );
+				TCGiant_Sync_Logger::log( sprintf(
+					'Variation #%d of WC #%d: no import since 3.32.0 had found it, and it was off your website at 0 with no word of who took it off - as an import before 3.32.0 left the variations it made copies of - so it is published again with eBay\'s figure, as 3.32.0 did.',
+					$variation_id,
+					$parent_id
+				) );
+			}
+			$var_off_since = ! $pooled_var && ! $is_new_variation && '' !== $ebay_var_sku && null !== ( $var_data['sold'] ?? null )
+				&& $variation->managing_stock() && null !== $variation->get_stock_quantity()
+				&& TCGiant_Sync_Inventory::ebay_figure_not_stock( $variation, $var_item, (int) $var_data['stock_quantity'] )
+				? TCGiant_Sync_Inventory::sales_since_record( $variation_id, $var_item, $ebay_var_sku, (int) $var_data['stock_quantity'], (int) $var_data['sold'] )
+				: null;
+			if ( null !== $var_off_since ) {
+				$var_off_kept = max( 0, (int) $variation->get_stock_quantity() - $var_off_since );
+				if ( $var_off_since > 0 ) {
+					TCGiant_Sync_Logger::log( sprintf(
+						'Variation #%d set to %d: eBay sold %d of it since its record, taken off its own stock - not eBay\'s %d, which is not its stock while it is disabled, or was sent 0 on eBay while it was.',
+						$variation_id,
+						$var_off_kept,
+						$var_off_since,
+						(int) $var_data['stock_quantity']
+					) );
+				}
+				$var_data['stock_quantity'] = $var_off_kept;
+			} elseif ( null !== $var_hold ) {
 				$figure = self::held_figure( $var_hold, (int) $variation->get_stock_quantity(), (int) $var_data['stock_quantity'] );
 				if ( 'sale' === $var_hold ) {
 					TCGiant_Sync_Logger::log( sprintf(
@@ -4727,12 +4820,16 @@ class TCGiant_Sync_Mapper {
 				$variation->set_manage_stock( true );
 				$variation->set_stock_quantity( $var_data['stock_quantity'] );
 			}
-			// A variation whose stock the parent keeps, disabled here (3.43.0):
-			// left as the shop set it. Published again, the import put it back
-			// on sale, and the shared stock's push sent eBay the shared figure
-			// for it. Only one the import itself retired, eBay listing it again,
-			// is published again (RETIRED_META).
-			$keep_off = $pooled_var && 'publish' !== (string) $variation->get_status()
+			// A variation disabled here - one whose stock the parent keeps
+			// (3.43.0), or one keeping its own (3.44.0): left as the shop set
+			// it. Published again, the import put it back on sale, and its push
+			// sent eBay its stock. Only one the import itself retired, eBay
+			// listing it again, is published again (RETIRED_META). Until
+			// 3.44.0 one keeping its own stock was published again, as 3.32.0
+			// had it restore the variations 3.30 retired when it made copies
+			// of them: every import since 3.32.0 has done that, and since
+			// 3.43.0 each retires with its mark.
+			$keep_off = ! $is_new_variation && 'publish' !== (string) $variation->get_status()
 				&& '' === (string) get_post_meta( (int) $variation_id, self::RETIRED_META, true );
 			if ( ! $keep_off ) {
 				$variation->set_status( 'publish' );
@@ -4800,6 +4897,35 @@ class TCGiant_Sync_Mapper {
 					&& (int) get_post_meta( $saved_var_id, '_stock', true ) === (int) $var_data['stock_quantity'] ) {
 					update_post_meta( $saved_var_id, '_ebay_sold_seen', array( 'item' => (string) get_post_meta( $parent_id, '_ebay_item_id', true ), 'sku' => $ebay_var_sku, 'sold' => (int) $var_data['sold'] ) );
 				}
+
+				// Enabled, eBay still listing it at 0, with stock here, where
+				// only a 0 sent while it was disabled reached eBay (fix round
+				// 1, review 1's M1): the removal mark just taken off - eBay
+				// kept it, Out-of-Stock control on - or the "sent 0" mark
+				// still on, its own figure never got there. Its push is
+				// queued, once a mark, so eBay gets the stock without a hand
+				// edit.
+				if ( ! $keep_off && ! $is_new_variation && 0 === $var_ebay_avail ) {
+					$var_off    = get_post_meta( $saved_var_id, self::OFF_META, true );
+					$var_off_on = is_array( $var_off ) && (string) ( $var_off['item'] ?? '' ) === $var_item;
+					$var_parent = $pooled_var ? wc_get_product( $parent_id ) : null;
+					$var_here   = $pooled_var
+						? ( $var_parent && $var_parent->managing_stock() ? (int) $var_parent->get_stock_quantity() : 0 )
+						: (int) get_post_meta( $saved_var_id, '_stock', true );
+					if ( ( $var_zeroed || ( $var_off_on && empty( $var_off['nudged'] ) ) ) && $var_here > 0
+						&& TCGiant_Sync_Inventory::queue_after_import( (int) $saved_var_id ) ) {
+						if ( $var_off_on ) {
+							$var_off['nudged'] = time();
+							update_post_meta( $saved_var_id, self::OFF_META, $var_off );
+						}
+						TCGiant_Sync_Logger::log( sprintf(
+							'Variation #%d of WC #%d is enabled, and eBay listing %s still shows it at 0 - only the 0 sent while it was disabled reached eBay: its stock push is queued.',
+							$saved_var_id,
+							$parent_id,
+							$var_item
+						) );
+					}
+				}
 			}
 		}
 		
@@ -4824,8 +4950,14 @@ class TCGiant_Sync_Mapper {
 			// enable, and never disabled again by the import. Enabled, it is
 			// left so, and said once: an Update lists it again. Still
 			// disabled, it is left as the shop set it.
+			// 3.44.0 fix round 1 (review 1's M1): when it was first found
+			// gone ('gone') - only then does anything say eBay removed it.
 			$zeroed = get_post_meta( (int) $existing_id, self::ZEROED_META, true );
 			if ( is_array( $zeroed ) ) {
+				if ( empty( $zeroed['gone'] ) && (string) ( $zeroed['item'] ?? '' ) === (string) get_post_meta( $parent_id, '_ebay_item_id', true ) ) {
+					$zeroed['gone'] = time();
+					update_post_meta( (int) $existing_id, self::ZEROED_META, $zeroed );
+				}
 				if ( 'publish' === (string) $var_to_retire->get_status() && empty( $zeroed['said'] ) ) {
 					$zeroed['said'] = time();
 					update_post_meta( (int) $existing_id, self::ZEROED_META, $zeroed );
@@ -4836,6 +4968,17 @@ class TCGiant_Sync_Mapper {
 						(string) get_post_meta( $parent_id, '_ebay_item_id', true )
 					) );
 				}
+				continue;
+			}
+
+			// Disabled by the shop, still holding stock of its own here (3.44.0
+			// fix round 1, review 1's LOW 3): not on sale on the website, and
+			// its stock is the shop's - left as it is, unmarked, so neither
+			// wiped to 0 nor published again should eBay list it again. One an
+			// older import retired is at 0, and is marked below as ever.
+			if ( 'publish' !== (string) $var_to_retire->get_status() && ! get_post_meta( (int) $existing_id, self::RETIRED_META, true )
+				&& ! TCGiant_Sync_Inventory::stock_held_by_parent( $var_to_retire )
+				&& $var_to_retire->managing_stock() && (int) $var_to_retire->get_stock_quantity() > 0 ) {
 				continue;
 			}
 

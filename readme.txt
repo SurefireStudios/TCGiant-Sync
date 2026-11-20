@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.43.0
+Stable tag: 3.44.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -148,6 +148,13 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.44.0 - 2026-11-20 =
+* CHANGE: A variation you enable again in WooCommerce has its stock sent to eBay, as a stock change of it would send it: one sharing its variable product's stock gets the shared stock again (until now it stayed at 0 on eBay until the next stock edit), and one keeping its own stock gets its own. A variation you disable is sent 0 on eBay the same way, unless it is the listing's only variation with stock and still has stock of its own here (or, sharing its product's stock, the shared stock). However you enable or disable it - the variation's Enabled box, the variations' bulk action "Toggle "Enabled"", or WooCommerce's REST API - the usual rules of a stock change apply, and the log says what each queued.
+* NOTE: A variation set to 0 on eBay before it had ever sold is removed by eBay when Out-of-Stock control is off. Enabled again, it is sent its stock if TCGiant Sync last heard that Out-of-Stock control is on; otherwise nothing is sent until the next import of the listing tells: still listed, its stock is sent then; gone, the product's edit screen says so, and Update eBay Listing adds it back.
+* CHANGE: A variation you disabled that keeps its own stock is no longer sent that stock on eBay. Disabling it, its next stock change, or Send stock to eBay reads eBay and, while eBay still shows it with stock, sends it 0, once; after that it is left out. As for one sharing its product's stock (3.43.0), it is never set to 0 while it is the listing's only variation with stock and still has stock of its own here: it is then kept no higher than that stock, never raised, and the log says what to do. When its own stock runs out, it goes to 0 as any variation does, by the same rules.
+* FIX: The import no longer turns a disabled variation keeping its own stock back on, and no longer sets its stock to eBay's 0: only eBay's own sales of it come off, so the stock you keep for it here stays yours - enabled again too, until its own figure is back on eBay. One that leaves the eBay listing with stock here keeps it and stays disabled. The import still turns back on a variation an import took off your website itself, before 3.32.0 too, once eBay lists it again.
+* CHANGE: Send stock to eBay (Bulk actions) now sends a disabled variation keeping its own stock too, as its stock change does; until now it was named as not on eBay.
 
 = 3.43.0 - 2026-11-19 =
 * CHANGE: Buyers of eBay orders no longer get WooCommerce's emails as well as eBay's. eBay already emails the buyer of an eBay order about the purchase, the payment, the shipping and any refund, and the address an eBay order gives is eBay's. A new setting with the order settings, "Send WooCommerce's emails to eBay buyers?", is No, on new installs and updates alike: WooCommerce's emails to the customer - Processing, Completed, On hold, Failed, Cancelled and Customer note, and the review request and fulfilment emails where those WooCommerce features are on - are not sent for orders imported from eBay. To send them, set it to Yes.
@@ -1743,6 +1750,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.44.0 =
+A variation you disable is now set to 0 on eBay, and one you enable again has its stock sent, as a stock change would - one keeping its own stock included, which is no longer sent its stock while disabled. The import leaves a disabled variation disabled.
 
 = 3.43.0 =
 Buyers of eBay orders no longer get WooCommerce's emails as well as eBay's. To send them, set "Send WooCommerce's emails to eBay buyers?" (Settings, with the order settings) to Yes. Emails to your shop are unchanged. A variation you disabled that shares its product's stock is now set to 0 on eBay, not sent that stock.

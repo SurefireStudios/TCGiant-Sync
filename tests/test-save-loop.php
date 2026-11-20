@@ -1460,15 +1460,17 @@ check( 'the hooks a product save fires that a save can go round on', TCGiant_Syn
 ) );
 
 // The plugin cannot be the one going round: it registers nothing on any of
-// these but the breaker, and its own stock listeners save nothing.
+// these but the breaker, its own stock listeners, and (3.44.0) its listeners
+// for a variation enabled again - and they save nothing.
 $registered = array();
 foreach ( file( $ROOT . '/tools/hooks.txt' ) as $row ) {
 	if ( preg_match( '/^add_(?:action|filter)\s+(\S+) => (\S+)/', $row, $m ) && in_array( $m[1], TCGiant_Sync_Runtime::LOOP_HOOKS, true ) ) {
 		$registered[] = $m[1] . ' => ' . $m[2];
 	}
 }
-check( 'the plugin\'s own callbacks on those hooks: the stock listeners only', $registered, array( 'woocommerce_product_set_stock => on_product_stock_change', 'woocommerce_variation_set_stock => on_variation_stock_change' ) );
-$listeners = method_body( $inventory, 'on_product_stock_change' ) . method_body( $inventory, 'on_variation_stock_change' ) . method_body( $inventory, 'queue_stock_update_for_product' );
+check( 'the plugin\'s own callbacks on those hooks: the stock listeners, and the enable and disable\'s two (3.44.0)', $registered, array( 'woocommerce_after_product_object_save => on_status_saved', 'woocommerce_before_product_object_save => note_status_change', 'woocommerce_product_set_stock => on_product_stock_change', 'woocommerce_variation_set_stock => on_variation_stock_change' ) );
+$listeners = method_body( $inventory, 'on_product_stock_change' ) . method_body( $inventory, 'on_variation_stock_change' ) . method_body( $inventory, 'queue_stock_update_for_product' ) . method_body( $inventory, 'note_status_change' ) . method_body( $inventory, 'on_status_saved' );
+check( '  the enable and disable\'s two read in full', array( false !== strpos( $listeners, "self::\$changing[ \$id ] = 'disable';" ), false !== strpos( $listeners, "TCGiant_Sync_Logger::log( \$line );" ) ), array( true, true ) );
 check( '  which save nothing: they queue a push to eBay, at most', array( false === strpos( $listeners, '->save(' ), false === strpos( $listeners, 'wc_update_product_stock' ), false === strpos( $listeners, 'wp_update_post' ), false !== strpos( $listeners, 'as_enqueue_async_action' ) ), array( true, true, true, true ) );
 
 harness_remove( $SITE );

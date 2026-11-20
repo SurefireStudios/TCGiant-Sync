@@ -658,7 +658,10 @@ variable( 6070, '607000006070' );
 edit_php( 'tcgiant_send_stock', array( 6070 ) );
 check( 'a linked variable product with nothing to send: named, the stock change\'s own warning logged', array( count( pushes() ), send_lines(), logged( 'WC #6070 is a variable product', 'warning' ) ), array( 0, array( 'Send stock to eBay (products list, user #1): 0 queued; skipped 1 (cannot be sent, logged 1: #6070).' ), true ) );
 
-// Fix round 1 (M4, review 1's R7): a disabled variation is not on eBay.
+// Fix round 1 (M4, review 1's R7): a disabled variation was not on eBay -
+// named, not sent. Since 3.44.0 its own push is queued, as its stock change
+// queues it, and sets it to 0 on eBay while eBay shows it with stock: here eBay
+// has no variation of it, so the push reads, and sends nothing.
 $shop = function () {
 	variable( 6090, '609000006090' );
 	variation( 6091, 6090, 'P-A', 2, array( 'size' => 'S' ), array( '_ebay_variation_sku' => 'P-A' ) );
@@ -668,13 +671,13 @@ $shop = function () {
 	ebay_has( '609000006090', $l, $l, $l );
 };
 $action = by_action( $shop, array( 6090 ) );
-check( 'a disabled (private) variation keeping its own stock: not sent, named as not on eBay; the enabled one sent', array( array_column( $action['jobs'], 'product_id' ), calls_of( $action ), send_lines(), logged( 'P-OFF' ) ), array( array( 6091 ), array( 'ReviseInventoryStatus' ), array( 'Send stock to eBay (products list, user #1): 1 queued (ReviseInventoryStatus 1: #6091); skipped 1 (not on eBay 1: #6092).' ), false ) );
+check( 'a disabled (private) variation keeping its own stock (3.44.0): its push queued, said apart; it reads eBay, which has no variation of it, and sends nothing; the enabled one sent', array( array_column( $action['jobs'], 'product_id' ), calls_of( $action ), send_lines(), logged( 'Stock push for WC #6092: disabled variation P-OFF is not on eBay listing 609000006090 with a SKU and a quantity, so nothing was sent' ) ), array( array( 6091, 6092 ), array( 'ReviseInventoryStatus', 'GetItem' ), array( 'Send stock to eBay (products list, user #1): 2 queued (ReviseInventoryStatus 1: #6091; disabled, keeping its own stock, sent 0 unless the listing\'s only stock 1: #6092); skipped 0.' ), true ) );
 fresh_shop();
 variable( 6095, '609500006095' );
 variation( 6096, 6095, 'Q-OFF', 3, array( 'size' => 'S' ) );
 $GLOBALS['POSTS'][6096]['status'] = 'private';
 edit_php( 'tcgiant_send_stock', array( 6095 ) );
-check( '  every variation disabled: each named, the product itself not said again', array( count( pushes() ), send_lines() ), array( 0, array( 'Send stock to eBay (products list, user #1): 0 queued; skipped 1 (not on eBay 1: #6096).' ) ) );
+check( '  every variation disabled (3.44.0): each one\'s push queued, said apart; the product itself not said', array( count( pushes() ), send_lines() ), array( 1, array( 'Send stock to eBay (products list, user #1): 1 queued (disabled, keeping its own stock, sent 0 unless the listing\'s only stock 1: #6096); skipped 0.' ) ) );
 // Fix round 2 (review 2's L-2, its C9b): the parent keeps 4 for its only
 // variation, which is disabled - and eBay, listing it from before, still
 // shows it. 3.43.0: the action does what a stock change of the parent does

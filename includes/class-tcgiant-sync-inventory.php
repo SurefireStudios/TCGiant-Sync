@@ -271,6 +271,39 @@ class TCGiant_Sync_Inventory {
 	const AUCTION_LISTED_KEY = '_ebay_auction_listed_item';
 
 	/**
+	 * The variations whose save under way enables or disables them (3.44.0),
+	 * by ID: 'enable' or 'disable', noted as WooCommerce begins the outermost
+	 * save of the variation (note_status_change()), acted on and taken off as
+	 * that save ends (on_status_saved()).
+	 *
+	 * @var array<int,string>
+	 */
+	private static $changing = array();
+
+	/**
+	 * How deep each variation's saves are nested in this request (3.44.0
+	 * fix round 1): another plugin may save it again from inside its save
+	 * (on woocommerce_update_product_variation, save_post or wp_insert_post),
+	 * and that inner save neither notes nor clears the outer one's change.
+	 *
+	 * @var array<int,int>
+	 */
+	private static $saving = array();
+
+	/**
+	 * The product object of each variation's outermost save under way
+	 * (3.44.0 fix round 2, review 2's LOW 2): a save that throws between
+	 * WooCommerce's two actions never reaches the second, and leaves its
+	 * count behind; the next save of that variation finds this object's
+	 * save() no longer running (save_under_way()) and starts afresh, so a
+	 * later change in the same process (an Action Scheduler run, a WP-CLI
+	 * loop, a REST batch) is not taken for a nested save.
+	 *
+	 * @var array<int,object>
+	 */
+	private static $saving_obj = array();
+
+	/**
 	 * Instance.
 	 *
 	 * @var self|null
@@ -378,6 +411,15 @@ class TCGiant_Sync_Inventory {
 		add_action( 'woocommerce_variation_before_set_stock', array( __CLASS__, 'note_stock_before' ) );
 		add_action( 'woocommerce_product_set_stock', array( $this, 'on_product_stock_change' ) );
 		add_action( 'woocommerce_variation_set_stock', array( $this, 'on_variation_stock_change' ) );
+
+		// A variation enabled again (3.44.0): its stock is sent, as a stock
+		// change of it or its parent would send it; disabled (fix round 1),
+		// its 0. WooCommerce's own actions round every save of a product
+		// object, a variation's too (its object type is 'product'): the
+		// variation's save, the variations panel's "Enabled", its bulk
+		// "Toggle Enabled" and the REST API all save through it.
+		add_action( 'woocommerce_before_product_object_save', array( __CLASS__, 'note_status_change' ) );
+		add_action( 'woocommerce_after_product_object_save', array( $this, 'on_status_saved' ) );
 
 		// Background task for eBay update: one product, by its own listing.
 		add_action( self::PUSH_HOOK, array( $this, 'process_stock_push' ), 10, 1 );
@@ -1014,6 +1056,9 @@ class TCGiant_Sync_Inventory {
 	 * alone left a variation eBay had sold out in stock here, and the website
 	 * sold it again. Variations are paired by TCGiant_Sync_Variations::match().
 	 * One eBay has that this product has not is left alone, and said once.
+	 * One keeping its own stock whose eBay figure is not its stock - disabled,
+	 * or sent 0 while it was (3.44.0, ebay_figure_not_stock()) - is lowered
+	 * only by eBay's sales since its record.
 	 *
 	 * @param int    $parent_id     Variable product linked to the listing.
 	 * @param array  $item          eBay's Item, with its Variations.
@@ -1094,6 +1139,21 @@ class TCGiant_Sync_Inventory {
 				$units = is_int( $hold ) ? max( 0, $hold ) : 0;
 
 				$before = $variation->get_stock_quantity();
+				$to     = max( 0, (int) $available - $units );
+
+				// Disabled, or sent 0 while it was (3.44.0): eBay's figure is
+				// not its stock. Only eBay's sales since its record come off;
+				// a website sale is already in the stock. With no record, as
+				// before. A website sale of it that never reached eBay still
+				// queues its push below, while eBay shows more than its stock
+				// (fix round 1, review 1's R2): disabled, that push sets it
+				// to 0.
+				$since = null !== $before && self::ebay_figure_not_stock( $variation, $item_id, $available )
+					? self::unseen( (int) $variation_id, $item_id, (string) $ebay[ $i ]['sku'], (int) $available, (int) $ebay[ $i ]['sold'], null )
+					: null;
+				if ( null !== $since ) {
+					$to = max( 0, (int) $before - $since );
+				}
 				// What this takes off is eBay's sales reaching the stock: the
 				// stock push must not take them off again (sold_seen()).
 				// Written with the stock (lower_stock_to()), and once:
@@ -1105,7 +1165,7 @@ class TCGiant_Sync_Inventory {
 					$done->absorbed = true;
 					self::absorb_sold( $variation_id, $item_id, $sku_i, $sold_i, (int) $before - (int) $now, $available );
 				};
-				$now    = self::lower_stock_to( $variation_id, max( 0, (int) $available - $units ), null === $before ? null : $absorb );
+				$now    = self::lower_stock_to( $variation_id, $to, null === $before ? null : $absorb );
 
 				// Nothing to lower: the record moves on all the same.
 				if ( null !== $now && null !== $before && ! $done->absorbed ) {
@@ -1387,6 +1447,50 @@ class TCGiant_Sync_Inventory {
 	}
 
 	/**
+	 * The import found an enabled variation still listed at 0 on eBay with
+	 * stock here, where a 0 sent while it was disabled is all eBay has heard
+	 * (3.44.0 fix round 1, review 1's M1): queue the push that sends its
+	 * stock - the shared stock's for one taking its parent's, its own
+	 * otherwise - as a stock change of it would (no sale's priority past the
+	 * 80% ceiling). Not while a push of it that sends the full figure is
+	 * waiting (the 60-second mark) or on its way (live_edit_push()): that one
+	 * sends it. A website sale's push of it on its way is no reason to wait
+	 * (fix round 2, review 2's LOW 1): it only lowers eBay's figure, never
+	 * raises it, and the variation the import found at 0 would stay there.
+	 *
+	 * @param int $variation_id The variation.
+	 * @return bool Whether a push was queued.
+	 */
+	public static function queue_after_import( $variation_id ) {
+		$product  = wc_get_product( (int) $variation_id );
+		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
+		if ( ! $product || ! self::pushes_enabled( $settings ) || ! self::may_queue( $settings ) ) {
+			return false;
+		}
+
+		$target = self::instance()->push_target( $product, false );
+		if ( is_wp_error( $target ) ) {
+			return false;
+		}
+
+		$holder_id = (int) $target['product_id'];
+		$dedup_key = 'tcgiant_stock_pending_' . $holder_id;
+		if ( get_transient( $dedup_key ) || self::live_edit_push( $holder_id ) ) {
+			return false;
+		}
+		set_transient( $dedup_key, 1, 60 );
+
+		as_enqueue_async_action( self::PUSH_HOOK, array( array(
+			'product_id' => $holder_id,
+			'reason'     => 'edit',
+			'item'       => (string) $target['item_id'],
+			'token'      => self::mark_push_pending( $holder_id ),
+		) ), self::PUSH_GROUP );
+
+		return true;
+	}
+
+	/**
 	 * Whether this ended listing's variations are already in the stock.
 	 *
 	 * @param int    $parent_id    Variable product.
@@ -1487,6 +1591,212 @@ class TCGiant_Sync_Inventory {
 		}
 
 		$this->queue_stock_update_for_product( $variation );
+	}
+
+	/**
+	 * Hook: woocommerce_before_product_object_save (3.44.0), which
+	 * WooCommerce fires at the start of WC_Product::save() for every
+	 * product object, a variation included (its object type is 'product'),
+	 * before its data store writes anything. Notes a variation this save
+	 * enables - the status the database holds now is not 'publish', and the
+	 * status being saved is - or (fix round 1, the owner's decision)
+	 * disables: 'publish' now, anything but 'publish' or 'trash' saved. A new
+	 * variation (no ID yet) is neither, and so is a move between two
+	 * statuses that are not 'publish' (private to draft, say: it was off the
+	 * website already, and its 0 was queued when it was disabled - fix
+	 * round 2, review 2's S3). Only the outermost save of a variation notes
+	 * or clears: another plugin saving it again from inside its save (fix
+	 * round 1, review 1's LOW 2) reads the status already written, and must
+	 * not take the outer save's change away. A count an earlier save left
+	 * behind by throwing between WooCommerce's two actions is let go (fix
+	 * round 2, review 2's LOW 2; save_under_way()).
+	 *
+	 * @param WC_Product $product The product being saved.
+	 * @return void
+	 */
+	public static function note_status_change( $product ) {
+		if ( ! is_object( $product ) || ! method_exists( $product, 'is_type' ) || ! $product->is_type( 'variation' ) ) {
+			return;
+		}
+
+		$id = (int) $product->get_id();
+		if ( $id < 1 ) {
+			return;
+		}
+
+		if ( ! empty( self::$saving[ $id ] ) && ! self::save_under_way( $id ) ) {
+			unset( self::$saving[ $id ], self::$changing[ $id ], self::$saving_obj[ $id ] );
+		}
+
+		self::$saving[ $id ] = ( self::$saving[ $id ] ?? 0 ) + 1;
+		if ( self::$saving[ $id ] > 1 ) {
+			return;
+		}
+		self::$saving_obj[ $id ] = $product;
+
+		unset( self::$changing[ $id ] );
+		$was = (string) get_post_status( $id );
+		$now = (string) $product->get_status( 'edit' );
+		if ( '' === $was || 'trash' === $was || 'trash' === $now || $was === $now ) {
+			return;
+		}
+		if ( 'publish' === $now ) {
+			self::$changing[ $id ] = 'enable';
+		} elseif ( 'publish' === $was ) {
+			self::$changing[ $id ] = 'disable';
+		}
+	}
+
+	/**
+	 * Whether the save that began counting this variation's saves is still
+	 * running (3.44.0 fix round 2, review 2's LOW 2): its product object's
+	 * save() is on the call stack. Asked only when a save of the variation
+	 * begins while its count is above 0 - a save nested inside another, or
+	 * one after a save that threw between WooCommerce's two actions, whose
+	 * count is then let go. Neither a clock (a later change within seconds
+	 * was still dropped) nor Action Scheduler's own hook (WP-CLI loops and
+	 * REST batches run on) would tell those apart.
+	 *
+	 * @param int $id The variation.
+	 * @return bool
+	 */
+	private static function save_under_way( $id ) {
+		$outer = self::$saving_obj[ $id ] ?? null;
+		if ( ! is_object( $outer ) ) {
+			return false;
+		}
+
+		foreach ( debug_backtrace( DEBUG_BACKTRACE_PROVIDE_OBJECT | DEBUG_BACKTRACE_IGNORE_ARGS ) as $frame ) {
+			if ( 'save' === $frame['function'] && ( $frame['object'] ?? null ) === $outer ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Hook: woocommerce_after_product_object_save (3.44.0), the end of the
+	 * save note_status_change() saw begin - the outermost one. A variation of
+	 * a variable product on eBay that the shop enabled again, or (fix round
+	 * 1) disabled, has queued what a stock change of it queues
+	 * (queue_stock_update_for_product()): the shared stock's push when its
+	 * parent keeps its stock, its own push when it keeps its own. Enabled,
+	 * that push sends it the shared stock or its own; disabled, it sends it 0
+	 * (push_pool(), push_off_variation()) - never while it is the listing's
+	 * only variation with stock. Every rule of a stock change applies:
+	 * pushes off, no connection, a push already waiting (one is enough: it
+	 * reads the stock and the status when it runs, so enabling and disabling
+	 * again before it does sends what the variation is then), and, as the
+	 * push runs, the staging block, the day's share of eBay calls and the
+	 * read at 0. One that eBay may have removed when it was set to 0 before
+	 * it had ever sold (ZEROED_META, this listing's), enabled: queued as any
+	 * other when Out-of-Stock control is known to be on - eBay keeps such a
+	 * variation at 0 then (fix round 1, review 1's M1); otherwise nothing is
+	 * queued, the log says whether eBay removed it (the import found it gone)
+	 * or may have, and the product's edit screen says an Update adds it
+	 * back. Its import changing a variation's status (eBay's own figures,
+	 * written as eBay's) sends nothing back. One log line for each. The
+	 * shop's disable is noted on the variation (SHOP_OFF_META, fix round 2),
+	 * its enable takes the note off.
+	 *
+	 * @param WC_Product $product The product saved.
+	 * @return void
+	 */
+	public function on_status_saved( $product ) {
+		if ( ! $product instanceof WC_Product ) {
+			return;
+		}
+
+		$id = (int) $product->get_id();
+		if ( empty( self::$saving[ $id ] ) ) {
+			return;
+		}
+		self::$saving[ $id ]--;
+		if ( self::$saving[ $id ] > 0 ) {
+			return;
+		}
+		unset( self::$saving[ $id ], self::$saving_obj[ $id ] );
+
+		$change = self::$changing[ $id ] ?? '';
+		unset( self::$changing[ $id ] );
+
+		// The object just saved, as saved: wc_get_product() could hand back a
+		// copy WooCommerce's product cache has not dropped yet.
+		$variation = $product;
+		$enabled   = 'publish' === (string) $variation->get_status();
+		if ( '' === $change || ( 'enable' === $change ) !== $enabled || self::is_push_suppressed() ) {
+			return;
+		}
+
+		// The shop's own disable, noted on the variation (fix round 2, review
+		// 2's LOW 3) - on eBay or not yet, as a product linked later carries
+		// it - so that the import never takes it for one an import before
+		// 3.32.0 retired (TCGiant_Sync_Mapper::SHOP_OFF_META); its enable
+		// takes the note off. Never the import's own writes, nor the
+		// plugin's: those are eBay's (is_push_suppressed(), above).
+		if ( $enabled ) {
+			delete_post_meta( $id, self::variation_mark( 'SHOP_OFF_META' ) );
+		} else {
+			update_post_meta( $id, self::variation_mark( 'SHOP_OFF_META' ), time() );
+		}
+
+		// Not on eBay: nothing to say, as a stock change of it says nothing.
+		$item_id = (string) get_post_meta( self::link_owner( $variation ), '_ebay_item_id', true );
+		if ( '' === $item_id ) {
+			return;
+		}
+
+		$sku  = (string) $variation->get_sku( 'edit' );
+		$head = sprintf( 'Variation #%d%s of WC #%d %s', $id, '' !== $sku ? ' (' . $sku . ')' : '', (int) $variation->get_parent_id(), $enabled ? 'enabled again' : 'disabled' );
+
+		// Set to 0 before it had ever sold (3.43.0's mark): with Out-of-Stock
+		// control off, eBay removed it, and no push can reach it. Known on,
+		// eBay keeps it at 0, and it is enabled as any other (fix round 1).
+		$zeroed = $enabled ? get_post_meta( $id, self::variation_mark( 'ZEROED_META' ), true ) : '';
+		if ( is_array( $zeroed ) && (string) ( $zeroed['item'] ?? '' ) === $item_id && ( ! empty( $zeroed['gone'] ) || ! self::oos_control_known_on() ) ) {
+			if ( ! empty( $zeroed['gone'] ) ) {
+				// Said here, and so not again by the import.
+				$zeroed['said'] = time();
+				update_post_meta( $id, self::variation_mark( 'ZEROED_META' ), $zeroed );
+				TCGiant_Sync_Logger::warning( sprintf( '%s: nothing queued - eBay removed it from listing %s when it was set to 0 before it had ever sold (Out-of-Stock control off), so no stock push can reach it. Update eBay Listing on the product adds it back; the other variations\' stock goes to eBay as before.', $head, $item_id ) );
+			} else {
+				TCGiant_Sync_Logger::warning( sprintf( '%s: nothing queued - eBay may have removed it from listing %s: it was set to 0 before it had ever sold, and with Out-of-Stock control off eBay removes such a variation. The next import of the listing says which: still listed, its stock is sent then; gone, Update eBay Listing on the product adds it back.', $head, $item_id ) );
+			}
+			return;
+		}
+
+		$queued = $this->queue_stock_update_for_product( $variation, false, true );
+		$holder = (int) ( $queued['holder'] ?? $id );
+
+		switch ( $queued['status'] ) {
+			case 'queued':
+				if ( ! $enabled ) {
+					$line = sprintf( '%s: %s is queued for eBay listing %s, to set it to 0 there - unless it is the listing\'s only variation with stock.', $head, $queued['target']['pool'] ? 'the shared stock\'s push' : 'its push', $item_id );
+				} elseif ( $queued['target']['pool'] ) {
+					$line = sprintf( '%s: the shared stock\'s push is queued for eBay listing %s, to send it the shared stock, %d.', $head, $item_id, (int) $queued['stock'] );
+				} else {
+					$line = sprintf( '%s: its stock, %d, is queued for eBay listing %s.', $head, (int) $queued['stock'], $item_id );
+				}
+				break;
+			case 'pending':
+				$line = sprintf( '%s: a stock push of WC #%d is already waiting for eBay listing %s, and %s.', $head, $holder, $item_id, $enabled ? 'sends it' : 'sets it to 0 there' );
+				break;
+			case 'off':
+				$line = sprintf( '%s: nothing queued for eBay listing %s - "Send website stock changes to eBay?" is No.', $head, $item_id );
+				break;
+			case 'not_connected':
+				$line = sprintf( '%s: nothing queued for eBay listing %s - this site is not connected to eBay.', $head, $item_id );
+				break;
+			case 'no_stock':
+				$line = sprintf( '%s: nothing queued for eBay listing %s - WooCommerce does not manage the stock it takes (WC #%d).', $head, $item_id, $holder );
+				break;
+			default:
+				TCGiant_Sync_Logger::warning( sprintf( '%s: nothing queued for eBay listing %s%s.', $head, $item_id, isset( $queued['why'] ) ? ' - ' . $queued['why'] : '' ) );
+				return;
+		}
+
+		TCGiant_Sync_Logger::log( $line );
 	}
 
 	/**
@@ -1803,17 +2113,21 @@ class TCGiant_Sync_Inventory {
 	 *
 	 * @param WC_Product $product Product or variation object.
 	 * @param bool       $asked   Asked for by "Send stock to eBay" (3.40.0).
+	 * @param bool       $quiet   The caller says what was queued, in one line
+	 *                            of its own (3.44.0, a variation enabled
+	 *                            again): this logs nothing. Otherwise a stock
+	 *                            change's.
 	 * @return array status - 'queued', or why not: 'suppressed', 'off',
 	 *               'not_linked', 'not_connected', 'not_sent' (push_target()
-	 *               refused it: logged), 'no_stock', 'auction' (above 0),
-	 *               'ended', 'pending' (one already waiting), 'capped'
-	 *               (today's allowance used) or 'not_queued' (asked for,
-	 *               and Action Scheduler did not save it: logged); with
+	 *               refused it: logged, and why), 'no_stock', 'auction'
+	 *               (above 0), 'ended', 'pending' (one already waiting),
+	 *               'capped' (today's allowance used) or 'not_queued' (asked
+	 *               for, and Action Scheduler did not save it: logged); with
 	 *               holder (the
 	 *               product whose stock is sent), stock and the target once
 	 *               known.
 	 */
-	private function queue_stock_update_for_product( $product, $asked = false ) {
+	private function queue_stock_update_for_product( $product, $asked = false, $quiet = false ) {
 		// This stock value came from eBay — pushing it back would be an echo.
 		if ( self::is_push_suppressed() ) {
 			return array( 'status' => 'suppressed' );
@@ -1822,7 +2136,9 @@ class TCGiant_Sync_Inventory {
 		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
 
 		if ( ! self::pushes_enabled( $settings ) ) {
-			self::note_push_off();
+			if ( ! $quiet ) {
+				self::note_push_off();
+			}
 			return array( 'status' => 'off' );
 		}
 
@@ -1844,8 +2160,10 @@ class TCGiant_Sync_Inventory {
 		}
 
 		if ( is_wp_error( $target ) ) {
-			self::log_not_pushed( (int) $product->get_id(), $target );
-			return array( 'status' => 'not_sent' );
+			if ( ! $quiet ) {
+				self::log_not_pushed( (int) $product->get_id(), $target );
+			}
+			return array( 'status' => 'not_sent', 'why' => $target->get_error_message() );
 		}
 
 		// The product whose stock is sent: itself, or for a variation whose
@@ -1870,7 +2188,7 @@ class TCGiant_Sync_Inventory {
 		// An auction is always one item, so there is no quantity to send it.
 		// Only running out matters to it - see push_auction().
 		if ( (int) $new_stock > 0 && $target['auction'] ) {
-			if ( ! $asked ) {
+			if ( ! $asked && ! $quiet ) {
 				TCGiant_Sync_Logger::log( sprintf(
 					'Real-time stock sync: WC #%d stock changed to %d. It is on eBay auction %s, which is always one item, so no quantity is sent.',
 					$product_id, $new_stock, $target['item_id']
@@ -1906,7 +2224,7 @@ class TCGiant_Sync_Inventory {
 		}
 		set_transient( $dedup_key, 1, 60 );
 
-		if ( ! $asked ) {
+		if ( ! $asked && ! $quiet ) {
 			TCGiant_Sync_Logger::log( sprintf(
 				'Real-time stock sync: WC #%d stock changed to %d - queuing eBay update for listing %s.',
 				$product_id, $new_stock, $target['item_id']
@@ -2003,12 +2321,7 @@ class TCGiant_Sync_Inventory {
 				self::said_add( $said, 'not_linked', $id );
 				continue;
 			}
-			list( $units, $disabled, $off_pool ) = self::stock_units( $product );
-			// A disabled variation keeping its own stock is not on eBay: the
-			// exporter lists enabled ones only.
-			foreach ( $disabled as $off_id ) {
-				self::said_add( $said, 'not_linked', $off_id );
-			}
+			list( $units, , $off_pool ) = self::stock_units( $product );
 			foreach ( $units as $unit ) {
 				if ( ! empty( $said['capped_out'] ) ) {
 					self::said_add( $said, 'capped', (int) $unit->get_id() );
@@ -2063,23 +2376,25 @@ class TCGiant_Sync_Inventory {
 	/**
 	 * What one chosen product sends (3.40.0): itself, or for a variable
 	 * product linked to eBay, the stock it keeps for its variations once
-	 * (a shared-stock push) when a variation takes it, and each enabled
-	 * variation keeping its own stock. A disabled variation (not published)
-	 * keeping its own stock is not on eBay, as the exporter has it (fix
-	 * round 1): it is named, not sent. One taking the parent's stock is what
+	 * (a shared-stock push) when a variation takes it, and each variation
+	 * keeping its own stock. A disabled variation (not published) keeping
+	 * its own stock was named as not on eBay, and not sent, from 3.40.0's
+	 * fix round 1 to 3.43.0; since 3.44.0 its own push is queued, as a stock
+	 * change of it would queue it, and that push sets it to 0 on eBay while
+	 * eBay still shows it with stock (push_fixed_price()). It is among what
+	 * to send, and also in the second list, which send_stock_unit() says
+	 * apart. One taking the parent's stock is what
 	 * a stock change of the parent sends to (3.43.0): the shared-stock push
 	 * is queued for it as for an enabled one, and sets it to 0 on eBay
 	 * (push_pool()) - until 3.43.0 it was named as not on eBay and, with no
 	 * enabled variation taking the stock, the push was not queued (fix round
 	 * 2), leaving eBay's figure for it as it was. One with nothing to send is
-	 * itself, and is said as a stock change of it would be; one whose
-	 * variations are all disabled and keep their own stock is said by them
-	 * alone.
+	 * itself, and is said as a stock change of it would be.
 	 *
 	 * @param WC_Product $product The product chosen.
 	 * @return array{0: WC_Product[], 1: int[], 2: int[]} What to send, the
-	 *               disabled variations keeping their own stock, and the
-	 *               disabled variations taking the shared stock.
+	 *               disabled variations keeping their own stock among them,
+	 *               and the disabled variations taking the shared stock.
 	 */
 	private static function stock_units( $product ) {
 		if ( ! $product->is_type( 'variable' ) || '' === (string) get_post_meta( (int) $product->get_id(), '_ebay_item_id', true ) ) {
@@ -2100,9 +2415,10 @@ class TCGiant_Sync_Inventory {
 				if ( 'publish' !== (string) $child->get_status() ) {
 					$off_pool[] = (int) $child_id;
 				}
-			} elseif ( 'publish' !== (string) $child->get_status() ) {
-				$disabled[] = (int) $child_id;
 			} else {
+				if ( 'publish' !== (string) $child->get_status() ) {
+					$disabled[] = (int) $child_id;
+				}
 				$units[] = $child;
 			}
 		}
@@ -2112,7 +2428,7 @@ class TCGiant_Sync_Inventory {
 			array_unshift( $units, $product );
 		}
 
-		if ( ! $units && ! $disabled ) {
+		if ( ! $units ) {
 			$units[] = $product;
 		}
 
@@ -2145,7 +2461,9 @@ class TCGiant_Sync_Inventory {
 
 		if ( 'queued' === $queued['status'] ) {
 			$sent[ $holder ] = true;
-			self::said_add( $said, self::send_stock_call( $queued['target'], (int) $queued['stock'], $auto_end ), $holder );
+			// A disabled variation keeping its own stock (3.44.0): its push
+			// sends 0, or nothing - said apart.
+			self::said_add( $said, self::own_stock_off( $product ) ? 'off_own' : self::send_stock_call( $queued['target'], (int) $queued['stock'], $auto_end ), $holder );
 			return;
 		}
 
@@ -2244,10 +2562,15 @@ class TCGiant_Sync_Inventory {
 	 * the pushes queued, by what each sends eBay, then each reason a product
 	 * was not sent.
 	 */
-	const SEND_STOCK_LISTS = array( 'revise', 'end', 'zero', 'pool', 'pool_zero', 'none', 'off_pool', 'not_linked', 'no_stock', 'auction', 'ended', 'on_way', 'denied', 'capped', 'not_sent' );
+	const SEND_STOCK_LISTS = array( 'revise', 'end', 'zero', 'pool', 'pool_zero', 'none', 'off_own', 'off_pool', 'not_linked', 'no_stock', 'auction', 'ended', 'on_way', 'denied', 'capped', 'not_sent' );
 
-	/** Of SEND_STOCK_LISTS, the pushes queued. */
-	const SEND_STOCK_QUEUED = array( 'revise', 'end', 'zero', 'pool', 'pool_zero', 'none' );
+	/**
+	 * Of SEND_STOCK_LISTS, the pushes queued. off_own (3.44.0): a disabled
+	 * variation keeping its own stock, whose push sets it to 0 on eBay while
+	 * eBay shows it with stock, unless it is the listing's only variation
+	 * with stock (push_fixed_price()) - never an end, so not a warning.
+	 */
+	const SEND_STOCK_QUEUED = array( 'revise', 'end', 'zero', 'pool', 'pool_zero', 'none', 'off_own' );
 
 	/**
 	 * Of SEND_STOCK_LISTS, neither queued nor skipped (3.43.0): disabled
@@ -2609,6 +2932,8 @@ class TCGiant_Sync_Inventory {
 			/* translators: 1: number of products, 2: their IDs */
 			'none'       => _n( '%1$d auction at 0 with "Auto-end listing when stock reaches 0" off: it is left running, and nothing is sent: %2$s.', '%1$d auctions at 0 with "Auto-end listing when stock reaches 0" off: they are left running, and nothing is sent: %2$s.', (int) $said['none']['n'], 'tcgiant-sync' ),
 			/* translators: 1: number of variations, 2: their IDs */
+			'off_own'    => _n( '%1$d disabled variation keeping its own stock: its push sets it to 0 on eBay if eBay still shows it with stock, unless it is the listing\'s last variation with stock and still has stock of its own here, when the log says so: %2$s.', '%1$d disabled variations keeping their own stock: each one\'s push sets it to 0 on eBay if eBay still shows it with stock, unless it is the listing\'s last variation with stock and still has stock of its own here, when the log says so: %2$s.', (int) $said['off_own']['n'], 'tcgiant-sync' ),
+			/* translators: 1: number of variations, 2: their IDs */
 			'off_pool'   => _n( '%1$d disabled variation taking a shared stock: the shared stock\'s push sets it to 0 on eBay if eBay still shows it with stock, unless it is the listing\'s last variation with stock, when the log says so: %2$s.', '%1$d disabled variations taking a shared stock: the shared stock\'s push sets them to 0 on eBay if eBay still shows them with stock, unless one is the listing\'s last variation with stock, when the log says so: %2$s.', (int) $said['off_pool']['n'], 'tcgiant-sync' ),
 			/* translators: 1: number of products, 2: their IDs */
 			'not_linked' => _n( '%1$d not sent: not on eBay: %2$s.', '%1$d not sent: not on eBay: %2$s.', (int) $said['not_linked']['n'], 'tcgiant-sync' ),
@@ -2680,6 +3005,7 @@ class TCGiant_Sync_Inventory {
 			'pool'       => 'shared stock (GetItem, ReviseInventoryStatus, GetItem)',
 			'pool_zero'  => 'shared stock at 0',
 			'none'       => 'auction at 0 with auto-end off, no call',
+			'off_own'    => 'disabled, keeping its own stock, sent 0 unless the listing\'s only stock',
 			'off_pool'   => 'disabled, sent 0 by the shared stock\'s push unless the listing\'s only stock',
 			'not_linked' => 'not on eBay',
 			'no_stock'   => 'stock not managed',
@@ -4905,6 +5231,12 @@ class TCGiant_Sync_Inventory {
 		$sku        = $target['var_sku'];
 		$reason     = $job['reason'];
 
+		// A variation keeping its own stock that is disabled now, as the push
+		// runs (3.44.0): never sent its stock (push_off_variation()).
+		if ( $target['variation'] && self::own_stock_off( wc_get_product( (int) $product_id ) ) ) {
+			return $this->push_off_variation( $job, $target, $wc, $auto_end );
+		}
+
 		// A stock change made in WooCommerce says what WooCommerce holds, and
 		// is sent as it is without asking eBay first. Everything else reads
 		// first: a sale, a push by hand, a try again, a mark 3.27 left, and an
@@ -4965,6 +5297,9 @@ class TCGiant_Sync_Inventory {
 						TCGiant_Sync_Logger::log( sprintf( 'Stock push for WC #%d: %s already shows %d available, so nothing was sent.', $product_id, self::listing_words( $target, $sku ), $avail ) );
 					}
 					self::landed( $job );
+					if ( $target['variation'] && $want === max( 0, (int) $wc ) ) {
+						self::forget_off( (int) $product_id );
+					}
 					return self::push_outcome( 'manual' === $reason ? 'skipped' : 'success', sprintf( 'eBay already shows %d', $avail ) );
 				}
 			}
@@ -4972,7 +5307,35 @@ class TCGiant_Sync_Inventory {
 			$want = max( 0, (int) $wc );
 		}
 
-		$resent = false;
+		$result = $this->send_to_ebay( $job, $target, $want, $sku, $auto_end );
+
+		// Its own figure on eBay (3.44.0): the 0 sent while it was disabled is
+		// eBay's figure for it no longer.
+		if ( 'success' === $result['status'] && $target['variation'] && $want === max( 0, (int) $wc ) ) {
+			self::forget_off( (int) $product_id );
+		}
+
+		return $result;
+	}
+
+	/**
+	 * Send one listing's, or one variation's, quantity, and settle eBay's
+	 * answer: taken (stock_sent()), or refused (stock_refused()), sent once
+	 * more to the SKU eBay has for it. push_fixed_price()'s, unchanged since
+	 * 3.28.0; push_off_variation() lowers a disabled variation through it
+	 * too (3.44.0).
+	 *
+	 * @param array  $job      The push.
+	 * @param array  $target   From push_target().
+	 * @param int    $want     The quantity to set.
+	 * @param string $sku      The SKU to send it for.
+	 * @param bool   $auto_end "Auto-end listing when stock reaches 0".
+	 * @return array See push_outcome().
+	 */
+	private function send_to_ebay( array $job, array $target, $want, $sku, $auto_end ) {
+		$product_id = $job['product_id'];
+		$item_id    = $target['item_id'];
+		$resent     = false;
 
 		while ( true ) {
 			$sent   = $this->send_stock( $item_id, $want, $sku, $target['variation'], $auto_end );
@@ -4998,6 +5361,351 @@ class TCGiant_Sync_Inventory {
 			}
 
 			return $failed;
+		}
+	}
+
+	/**
+	 * A variation keeping its own stock that is disabled (3.44.0; not
+	 * published - WooCommerce's disabled variation is private, and the
+	 * exporter lists published ones only): never sent its stock, as
+	 * push_pool() never sends a disabled variation the shared stock (3.43.0).
+	 * eBay is read first and its sales WooCommerce has not taken off come off
+	 * the stock (take_off_unseen()); then:
+	 *
+	 * - eBay shows it at 0, or not at all: left as it is, nothing sent;
+	 * - another of the listing's variations keeps stock on eBay - one
+	 *   enabled, or one nothing here pairs with, never another disabled one
+	 *   (others_keep_stock()): it is sent 0, once. Its record of eBay's sales
+	 *   is written first where it has none, and once eBay takes the 0 it is
+	 *   marked (OFF_META), so that the import and order sync read its 0 as no
+	 *   sale and take off only eBay's sales since that record
+	 *   (ebay_figure_not_stock()); one that had never sold is marked as one
+	 *   eBay removes with Out-of-Stock control off (ZEROED_META), whatever
+	 *   the cached preference says, which only chooses the words. eBay
+	 *   refusing the 0 never ends the listing: it is tried again, and read
+	 *   again;
+	 * - it is the listing's only variation with stock: never 0 - that would
+	 *   leave the listing nothing to sell, which eBay refuses without
+	 *   Out-of-Stock control - and never raised: kept no higher than its own
+	 *   stock (send_to_ebay(), lowering it only), and said. Its own stock run
+	 *   out, it is sent 0 all the same, as any variation's 0 (never more on
+	 *   eBay than here), by the rules for the last variation with stock.
+	 *
+	 * Enabled again, its push sends its stock as before. Enabled or disabled
+	 * (fix round 1), on_status_saved() queues its push.
+	 *
+	 * @param array $job      The push.
+	 * @param array $target   From push_target(), a variation.
+	 * @param int   $wc       Its stock.
+	 * @param bool  $auto_end "Auto-end listing when stock reaches 0".
+	 * @return array See push_outcome().
+	 */
+	private function push_off_variation( array $job, array $target, $wc, $auto_end ) {
+		$product_id = (int) $job['product_id'];
+		$item_id    = (string) $target['item_id'];
+		$done       = 'manual' === $job['reason'] ? 'skipped' : 'success';
+
+		$read = $this->read_listing( array( 'pool' => true ) + $target, $job );
+		if ( isset( $read['stop'] ) ) {
+			return $read['stop'];
+		}
+		if ( isset( $read['error'] ) ) {
+			return self::read_failed( $read['error'] );
+		}
+		if ( ! empty( $read['auction'] ) ) {
+			return $this->push_auction( $job, $target, $wc, $auto_end, $read['item'] );
+		}
+
+		$ebay  = $read['variations'];
+		$index = self::variation_on( $target, $product_id, $ebay );
+		if ( null === $index || '' === (string) $ebay[ $index ]['sku'] || null === $ebay[ $index ]['available'] ) {
+			TCGiant_Sync_Logger::log( sprintf( 'Stock push for WC #%d: disabled variation %s is not on eBay listing %s with a SKU and a quantity, so nothing was sent; it is not for sale there.', $product_id, $target['var_sku'], $item_id ) );
+			self::landed( $job );
+			return self::push_outcome( $done, 'Disabled variation not on eBay' );
+		}
+
+		$sku   = (string) $ebay[ $index ]['sku'];
+		$avail = (int) $ebay[ $index ]['available'];
+		$sold  = (int) $ebay[ $index ]['sold'];
+		$words = sprintf( 'disabled variation %s of eBay listing %s', $sku, $item_id );
+
+		$job['pre'] = array( $avail, $sold );
+		$wc         = $this->take_off_unseen( $job, array( 'item_id' => $item_id, 'avail' => $avail, 'sold' => $sold ), $wc, $sku );
+		if ( null === $wc ) {
+			return self::push_outcome( 'retry', 'WooCommerce\'s stock could not be lowered' );
+		}
+		$wc = max( 0, (int) $wc );
+
+		// At 0 on eBay: left out.
+		if ( $avail < 1 ) {
+			TCGiant_Sync_Logger::log( sprintf( 'Stock push for WC #%d: %s already shows 0, so nothing was sent: while it is disabled its stock is not sent.', $product_id, $words ) );
+			self::landed( $job );
+			return self::push_outcome( $done, 'eBay already shows 0' );
+		}
+
+		// The listing's only variation with stock: never 0, never raised -
+		// unless its own stock has run out, when eBay is told 0 as for any
+		// variation (never more on eBay than here), by its rules for the last
+		// with stock.
+		if ( ! self::others_keep_stock( (int) $target['owner_id'], $ebay, $index ) ) {
+			if ( $wc < 1 ) {
+				return $this->send_to_ebay( $job, $target, 0, $sku, $auto_end );
+			}
+			TCGiant_Sync_Logger::warning( sprintf( 'Stock push for WC #%d: %s is the only variation of that listing with stock, so it was not set to 0 - that would leave the listing nothing to sell, which eBay refuses without Out-of-Stock control. It is kept no higher than its own stock, %d. To stop it selling on eBay, end the listing in Seller Hub, or enable another variation.', $product_id, $words, $wc ) );
+			if ( $wc >= $avail ) {
+				self::landed( $job );
+				return self::push_outcome( $done, sprintf( 'eBay already shows %d', $avail ) );
+			}
+			return $this->send_to_ebay( $job, $target, $wc, $sku, $auto_end );
+		}
+
+		// Its record of eBay's sales, where it has none, before its 0: a read
+		// of it at 0 is then no sale.
+		if ( null === self::sold_seen( $product_id, $item_id, $sku ) ) {
+			self::record_sold_seen( $product_id, $item_id, $sku, $sold );
+		}
+
+		self::beat();
+		$result = TCGiant_Sync_API::instance()->revise_inventory_status( $item_id, 0, $sku );
+		if ( is_wp_error( $result ) ) {
+			if ( 'staging_blocked' === $result->get_error_code() ) {
+				return self::push_outcome( 'skipped', $result->get_error_message() );
+			}
+			$failed = self::read_failed( $result );
+			if ( 'retry' === $failed['status'] && ! TCGiant_Sync_API::is_transient_error( $result ) ) {
+				TCGiant_Sync_Logger::warning( sprintf( 'Stock push for WC #%d: eBay did not take 0 for %s (%s). A disabled variation never ends a listing: it is read again and tried again later.', $product_id, $words, $result->get_error_message() ) );
+			}
+			return $failed;
+		}
+
+		update_post_meta( $product_id, self::variation_mark( 'OFF_META' ), array( 'item' => $item_id, 'sku' => $sku, 'at' => time() ) );
+		$removed = '';
+		if ( $sold < 1 ) {
+			update_post_meta( $product_id, self::variation_mark( 'ZEROED_META' ), array( 'item' => $item_id, 'at' => time() ) );
+			if ( ! self::oos_control_known_on() ) {
+				$removed = ' It never sold on eBay: with Out-of-Stock control off, eBay removes a variation set to 0 before it has sold. To sell it again, enable it and Update the listing (push the product to eBay), which adds it back.';
+			}
+		}
+		self::landed( $job );
+		TCGiant_Sync_Logger::log( sprintf( 'Stock push for WC #%d: %s sent 0, not its stock, %d: it is not for sale on your website, so not on eBay either. While it is disabled its stock is not sent; enabled again, it is.%s', $product_id, $words, $wc, $removed ) );
+
+		return self::push_outcome( 'success', 'eBay stock set to 0 for a disabled variation' );
+	}
+
+	/**
+	 * Whether a product is a variation keeping its own stock that is disabled
+	 * (3.44.0): not published.
+	 *
+	 * @param mixed $product The product, or false.
+	 * @return bool
+	 */
+	private static function own_stock_off( $product ) {
+		return $product instanceof WC_Product && $product->is_type( 'variation' ) && ! self::stock_held_by_parent( $product )
+			&& 'publish' !== (string) $product->get_status();
+	}
+
+	/**
+	 * Which of the listing's variations is this one: by the SKU it is sent
+	 * with, else as the stock checks pair them - read_listing()'s own way,
+	 * without its error for a variation eBay does not have, which is no
+	 * error for a disabled one (3.44.0).
+	 *
+	 * @param array   $target     From push_target(), a variation.
+	 * @param int     $product_id The variation.
+	 * @param array[] $ebay       The listing's variations.
+	 * @return int|null eBay's index, or null.
+	 */
+	private static function variation_on( array $target, $product_id, array $ebay ) {
+		foreach ( $ebay as $i => $v ) {
+			if ( '' !== (string) $target['var_sku'] && (string) $v['sku'] === (string) $target['var_sku'] ) {
+				return $i;
+			}
+		}
+
+		$parent = wc_get_product( (int) $target['owner_id'] );
+		if ( $parent ) {
+			$match = TCGiant_Sync_Variations::match( $parent, $ebay );
+			foreach ( $match['pairs'] as $i => $ids ) {
+				if ( in_array( (int) $product_id, array_map( 'intval', (array) $ids ), true ) ) {
+					return $i;
+				}
+			}
+		}
+
+		return null;
+	}
+
+	/**
+	 * Whether another of the listing's variations keeps stock on eBay
+	 * (3.44.0), for a disabled variation's 0: any eBay shows with stock but
+	 * one that only disabled variations here pair with - they go to 0 too,
+	 * and two of them each counting on the other could leave the listing
+	 * nothing to sell.
+	 *
+	 * @param int     $parent_id The variable product.
+	 * @param array[] $ebay      The listing's variations.
+	 * @param int     $index     The disabled variation's.
+	 * @return bool
+	 */
+	private static function others_keep_stock( $parent_id, array $ebay, $index ) {
+		$off    = array();
+		$parent = wc_get_product( (int) $parent_id );
+		if ( $parent ) {
+			$match = TCGiant_Sync_Variations::match( $parent, $ebay );
+			foreach ( $match['pairs'] as $i => $ids ) {
+				$enabled = false;
+				foreach ( (array) $ids as $id ) {
+					$child = wc_get_product( (int) $id );
+					if ( $child && 'publish' === (string) $child->get_status() ) {
+						$enabled = true;
+					}
+				}
+				if ( ! $enabled && $ids ) {
+					$off[ $i ] = true;
+				}
+			}
+		}
+
+		foreach ( $ebay as $i => $v ) {
+			if ( $i !== $index && ! isset( $off[ $i ] ) && null !== $v['available'] && (int) $v['available'] > 0 ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Whether eBay's figure for a variation keeping its own stock is not its
+	 * stock (3.44.0), so that the import and order sync take off only eBay's
+	 * sales since its record, never setting its stock to eBay's figure: it
+	 * is disabled - unless the import itself retired it (RETIRED_META), when
+	 * eBay listing it again brings it back as ever - or a push sent it 0 on
+	 * this listing while it was (OFF_META) and eBay does not show its own
+	 * figure since. A marked variation enabled again that eBay shows at
+	 * exactly its stock - its own figure pushed, or an Update - has the mark
+	 * taken off here: eBay's figure is its stock again. Not merely a figure
+	 * above 0 (fix round 1, review 1's LOW 1): a cancelled eBay sale gives a
+	 * unit back while its own push still waits, and eBay's 1 written over
+	 * the shop's 5 took four off the website.
+	 *
+	 * @param WC_Product $variation The variation.
+	 * @param string     $item_id   The listing read.
+	 * @param int|null   $available What eBay has available of it.
+	 * @return bool
+	 */
+	public static function ebay_figure_not_stock( $variation, $item_id, $available ) {
+		if ( ! $variation instanceof WC_Product || self::stock_held_by_parent( $variation ) ) {
+			return false;
+		}
+
+		$id = (int) $variation->get_id();
+		if ( 'publish' !== (string) $variation->get_status() ) {
+			return '' === (string) get_post_meta( $id, self::variation_mark( 'RETIRED_META' ), true );
+		}
+
+		$off = get_post_meta( $id, self::variation_mark( 'OFF_META' ), true );
+		if ( ! is_array( $off ) || (string) ( $off['item'] ?? '' ) !== (string) $item_id ) {
+			return false;
+		}
+		if ( null !== $available && (int) $available === (int) $variation->get_stock_quantity() ) {
+			delete_post_meta( $id, self::variation_mark( 'OFF_META' ) );
+			return false;
+		}
+
+		return true;
+	}
+
+	/**
+	 * eBay's sales of a variation since its record (3.44.0): unseen()'s, for
+	 * the import, which takes them off a variation whose eBay figure is not
+	 * its stock (ebay_figure_not_stock()).
+	 *
+	 * @param int    $product_id The variation.
+	 * @param string $item_id    The listing.
+	 * @param string $sku        eBay's SKU for it.
+	 * @param int    $available  What eBay has available of it.
+	 * @param int    $sold       eBay's QuantitySold of it.
+	 * @return int|null Null with no record.
+	 */
+	public static function sales_since_record( $product_id, $item_id, $sku, $available, $sold ) {
+		return self::unseen( (int) $product_id, (string) $item_id, (string) $sku, (int) $available, (int) $sold, null );
+	}
+
+	/**
+	 * For the product's edit screen (3.44.0): each of its variations the
+	 * shop has enabled that was set to 0 before it had ever sold
+	 * (ZEROED_META, for the listing the product follows), and what adds it
+	 * back. Fix round 1 (review 1's M1): "eBay no longer lists" only once the
+	 * import has found it gone; before then, with Out-of-Stock control not
+	 * known to be on, that eBay may have removed it; with it known on - eBay
+	 * keeps such a variation at 0, and enabling it sent its stock - nothing.
+	 * The mark goes once the import finds it on eBay.
+	 *
+	 * @param int $product_id The variable product.
+	 * @return string[]
+	 */
+	public static function zeroed_variation_lines( $product_id ) {
+		$product = wc_get_product( (int) $product_id );
+		$item_id = (string) get_post_meta( (int) $product_id, '_ebay_item_id', true );
+		if ( ! $product || ! $product->is_type( 'variable' ) || '' === $item_id ) {
+			return array();
+		}
+
+		$lines = array();
+		foreach ( (array) $product->get_children() as $child_id ) {
+			$zeroed = get_post_meta( (int) $child_id, self::variation_mark( 'ZEROED_META' ), true );
+			$child  = is_array( $zeroed ) && (string) ( $zeroed['item'] ?? '' ) === $item_id ? wc_get_product( (int) $child_id ) : null;
+			if ( ! $child || 'publish' !== (string) $child->get_status() ) {
+				continue;
+			}
+			if ( ! empty( $zeroed['gone'] ) ) {
+				/* translators: %s: the variation's name */
+				$lines[] = sprintf( __( 'eBay no longer lists the variation %s; press Update eBay Listing to add it back.', 'tcgiant-sync' ), $child->get_name() );
+			} elseif ( ! self::oos_control_known_on() ) {
+				/* translators: %s: the variation's name */
+				$lines[] = sprintf( __( 'eBay may no longer list the variation %s: it was set to 0 there before it had ever sold. The next import of the listing will tell; if eBay removed it, press Update eBay Listing to add it back.', 'tcgiant-sync' ), $child->get_name() );
+			}
+		}
+
+		return $lines;
+	}
+
+	/**
+	 * The mapper's marks on a variation, by its constant's name
+	 * (TCGiant_Sync_Mapper::RETIRED_META, ZEROED_META, OFF_META and, fix
+	 * round 2, SHOP_OFF_META), for variation_mark() where the mapper is not
+	 * loaded.
+	 */
+	const VARIATION_MARKS = array(
+		'RETIRED_META'  => '_ebay_variation_retired',
+		'ZEROED_META'   => '_ebay_variation_zeroed',
+		'OFF_META'      => '_ebay_variation_off',
+		'SHOP_OFF_META' => '_ebay_variation_shop_off',
+	);
+
+	/**
+	 * One of the mapper's marks on a variation (3.44.0): the mapper's own
+	 * constant, which the plugin's autoloader always finds; where a caller
+	 * has loaded this class without the mapper, its value.
+	 *
+	 * @param string $name RETIRED_META, ZEROED_META, OFF_META or SHOP_OFF_META.
+	 * @return string The meta key.
+	 */
+	public static function variation_mark( $name ) {
+		return class_exists( 'TCGiant_Sync_Mapper' ) ? (string) constant( 'TCGiant_Sync_Mapper::' . $name ) : self::VARIATION_MARKS[ $name ];
+	}
+
+	/**
+	 * A push has left eBay showing a variation's own figure (3.44.0): the 0
+	 * sent while it was disabled is no longer eBay's figure for it.
+	 *
+	 * @param int $variation_id The variation.
+	 * @return void
+	 */
+	private static function forget_off( $variation_id ) {
+		if ( '' !== get_post_meta( (int) $variation_id, self::variation_mark( 'OFF_META' ), true ) ) {
+			delete_post_meta( (int) $variation_id, self::variation_mark( 'OFF_META' ) );
 		}
 	}
 
@@ -5717,6 +6425,28 @@ class TCGiant_Sync_Inventory {
 
 		foreach ( self::pending_pushes( $product_id ) as $token => $until ) {
 			if ( self::UNSENT_TOKEN !== (string) $token && (int) $until > time() + self::PUSH_PENDING_TAIL ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Whether a push of the product that sends the full figure is queued or
+	 * running (3.44.0 fix round 2): live_push(), but not a website sale's
+	 * push, which only lowers eBay's figure (a sale's token).
+	 *
+	 * @param int $product_id Product or variation.
+	 * @return bool
+	 */
+	private static function live_edit_push( $product_id ) {
+		if ( get_transient( 'tcgiant_push_tomorrow_' . (int) $product_id ) ) {
+			return false;
+		}
+
+		foreach ( self::pending_pushes( $product_id ) as $token => $until ) {
+			if ( self::UNSENT_TOKEN !== (string) $token && 0 !== strpos( (string) $token, self::SALE_TOKEN_PREFIX ) && (int) $until > time() + self::PUSH_PENDING_TAIL ) {
 				return true;
 			}
 		}

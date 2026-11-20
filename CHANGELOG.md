@@ -11,6 +11,7 @@ This file exists so the repository has a changelog where people look for one. It
 
 | Version | Date | Headline |
 |---|---|---|
+| [3.44.0](https://github.com/SurefireStudios/TCGiant-Sync/releases/tag/v3.44.0) | 2026-11-20 | Enabling or disabling a variation sends its stock to eBay; a disabled variation keeping its own stock is sent 0 on eBay, as one sharing its product's stock is |
 | [3.43.0](https://github.com/SurefireStudios/TCGiant-Sync/releases/tag/v3.43.0) | 2026-11-19 | WooCommerce's own emails no longer reach the buyers of eBay orders (unless you choose Yes); a disabled variation sharing its product's stock is sent 0 on eBay |
 | [3.42.0](https://github.com/SurefireStudios/TCGiant-Sync/releases/tag/v3.42.0) | 2026-11-19 | Send stock to eBay on each row of Stock Review's list of stock changes that never reached eBay |
 | [3.41.0](https://github.com/SurefireStudios/TCGiant-Sync/releases/tag/v3.41.0) | 2026-11-18 | Licence checks move to TCGiant's own licence server at tcgiant.com; the key and activation a site holds carry over by themselves |
