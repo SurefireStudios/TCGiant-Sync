@@ -2602,9 +2602,18 @@ foreach ( array( 'an images-only sync', 'Overwrite turned on and off', 'a photo 
 begin();
 list( $Q, $qp ) = imported( 'First photo removed on eBay, pushed 60 days ago', 'q20', 2 );
 update_post_meta( $Q, '_ebay_export_last_pushed', pushed_on( 60 ) );
+// The import's photos, made before either push - not the harness's fixed
+// post_date, which falls within a week after a push 60 days back from
+// 23 to 30 November 2026.
+foreach ( $qp as $id ) {
+	made_on( $id, time() - 90 * 86400 );
+}
 live( $Q, array( ebay_z( num( 'q20', 2 ) ) ) );
 list( $Q2, $qp2 ) = imported( 'First photo removed on eBay, pushed two days ago', 'q2b', 2 );
 update_post_meta( $Q2, '_ebay_export_last_pushed', pushed_on( 2 ) );
+foreach ( $qp2 as $id ) {
+	made_on( $id, time() - 90 * 86400 );
+}
 live( $Q2, array( ebay_z( num( 'q2b', 2 ) ) ) );
 repair();
 check( 'a listing whose first photo was removed on eBay, its photos the import\'s: never named, nothing changed', array( listed( $Q ), listed( $Q2 ), shown( $Q ), shown( $Q2 ) ), array( array( false, false ), array( false, false ), $qp, $qp2 ) );
