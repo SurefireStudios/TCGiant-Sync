@@ -17,6 +17,12 @@ if ( ! class_exists( 'TCGiant_Sync_Ebay_Price', false ) ) {
 	require_once __DIR__ . '/class-tcgiant-sync-ebay-price.php';
 }
 
+// What a push sends eBay of a stock: "Keep back from eBay" and "Show at most
+// on eBay" (3.45.0).
+if ( ! class_exists( 'TCGiant_Sync_Stock_Buffer', false ) ) {
+	require_once __DIR__ . '/class-tcgiant-sync-stock-buffer.php';
+}
+
 // What the delta remembers of each listing's categories, which a push makes
 // out of date (3.28.4).
 if ( ! class_exists( 'TCGiant_Sync_Category_Memory', false ) ) {
@@ -158,6 +164,17 @@ class TCGiant_Sync_Exporter {
 	 * @var array
 	 */
 	private $prices_sent = array();
+
+	/**
+	 * The quantities the last build_item_xml() put in its item, of each
+	 * stock it sent (3.45.0): holder, record, sku, sent and stock. Noted once
+	 * eBay has taken the item (TCGiant_Sync_Inventory::note_listing_sent()),
+	 * so that a figure a buffer kept below the stock is never read back as
+	 * the stock.
+	 *
+	 * @var array
+	 */
+	private $quantities_sent = array();
 
 	/**
 	 * Why the item the last build_item_xml() made may not be sent for its
@@ -517,6 +534,12 @@ class TCGiant_Sync_Exporter {
 
 	/** How many products bulk pushes have queued today, and which day that is. */
 	const BULK_PUSHED_OPTION = 'tcgiant_sync_bulk_pushed';
+
+	/**
+	 * Stock pushes a bulk push's Updates queued to start eBay's record of
+	 * sales (3.45.0 fix round 2), said once in its summary.
+	 */
+	const RECORD_PUSHES_OPTION = 'tcgiant_sync_record_pushes_queued';
 
 	/**
 	 * The products a bulk push counted today and queued, whichever screen
@@ -1232,6 +1255,10 @@ class TCGiant_Sync_Exporter {
 				// live to save it, links it through the same (3.28.7).
 				self::record_listing_made( $product, $result );
 
+				// What it sent of each stock (3.45.0): a figure a buffer kept
+				// below the stock is never read back as the stock.
+				self::note_record_pushes( TCGiant_Sync_Stock_Buffer::note_sent( (string) $item_id, (string) $action, $this->quantities_sent ), $product_id );
+
 				self::count_outcome( $product_id, 'total_pushed', array( 'last_item_title' => $title ) );
 
 				TCGiant_Sync_Logger::log(
@@ -1482,7 +1509,7 @@ class TCGiant_Sync_Exporter {
 
 			$stock = $product->get_stock_quantity();
 			if ( null !== $stock && '' !== $stock ) {
-				$row['ebay_quantity'] = max( 0, (int) $stock );
+				$row['ebay_quantity'] = max( 0, (int) ( $product->managing_stock() ? TCGiant_Sync_Stock_Buffer::figure( $product, (int) $stock ) : $stock ) );
 			}
 		}
 
@@ -1982,7 +2009,7 @@ class TCGiant_Sync_Exporter {
 		if ( ! self::pushes_new_listing( $product->get_id() ) && TCGiant_Sync_Motors::site_unknown( $settings ) ) {
 			$unread[] = 'site';
 		}
-		if ( $unread && ! $this->refused_without_a_read( $product ) ) {
+		if ( $unread && ! $this->refused_without_a_read( $product, $settings ) ) {
 			$read = $this->read_listing_first( $product, $unread, $settings );
 			if ( null === $read ) {
 				$settings['_live_read_failed'] = true;
@@ -2016,6 +2043,25 @@ class TCGiant_Sync_Exporter {
 			return new WP_Error(
 				'out_of_stock',
 				__( 'Cannot list on eBay: this product has no stock available. Add stock, or turn off stock management for it, then push again.', 'tcgiant-sync' )
+			);
+		}
+		// Nor one a buffer leaves nothing of for eBay (3.45.0): treated as
+		// out of stock there - never an auction, which is one item (fix round
+		// 1, review 1's H1). An Update says so in its own words.
+		if ( $this->buffer_leaves_nothing( $product, $settings ) ) {
+			return new WP_Error(
+				'out_of_stock',
+				self::pushes_new_listing( $product->get_id() )
+					? sprintf(
+						/* translators: %d: the stock */
+						__( 'Cannot list on eBay: its stock of %d, less "Keep back from eBay" (or no more than "Show at most on eBay"), leaves nothing for eBay. Change those on its eBay tab or in Settings, or add stock, then push again.', 'tcgiant-sync' ),
+						(int) $product->get_stock_quantity()
+					)
+					: sprintf(
+						/* translators: %d: the stock */
+						__( 'Not updated on eBay: its stock of %d, less "Keep back from eBay" (or no more than "Show at most on eBay"), leaves nothing for eBay. eBay still shows its last figure; Send stock to eBay sets it to 0 (or ends it). Change those on its eBay tab or in Settings, or add stock, then update it again.', 'tcgiant-sync' ),
+						(int) $product->get_stock_quantity()
+					)
 			);
 		}
 
@@ -2881,18 +2927,36 @@ class TCGiant_Sync_Exporter {
 	}
 
 	/**
-	 * Whether any published variation of a variable product has stock to sell.
+	 * Whether a product has stock for eBay once "Keep back from eBay" and
+	 * "Show at most on eBay" are taken off (3.45.0): a variable product's
+	 * variations, else its own; one whose stock is not tracked has.
 	 *
-	 * @param WC_Product $product Variable product.
+	 * @param WC_Product $product The product.
 	 * @return bool
 	 */
-	private static function any_variation_in_stock( WC_Product $product ) {
+	private static function stock_for_ebay( WC_Product $product ) {
+		if ( $product->is_type( 'variable' ) ) {
+			return self::any_variation_in_stock( $product, true );
+		}
+		return ! ( $product->managing_stock() && (int) TCGiant_Sync_Stock_Buffer::figure( $product, (int) $product->get_stock_quantity() ) < 1 );
+	}
+
+	/**
+	 * Whether any published variation of a variable product has stock to sell.
+	 *
+	 * @param WC_Product $product  Variable product.
+	 * @param bool       $for_ebay Stock as eBay is sent it: what "Keep back
+	 *                             from eBay" and "Show at most on eBay"
+	 *                             leave of it (3.45.0).
+	 * @return bool
+	 */
+	private static function any_variation_in_stock( WC_Product $product, $for_ebay = false ) {
 		foreach ( (array) $product->get_children() as $child_id ) {
 			$child = wc_get_product( $child_id );
 			if ( ! $child || 'publish' !== $child->get_status() || ! $child->is_in_stock() ) {
 				continue;
 			}
-			if ( ! $child->managing_stock() || (int) $child->get_stock_quantity() > 0 ) {
+			if ( ! $child->managing_stock() || (int) ( $for_ebay ? TCGiant_Sync_Stock_Buffer::figure( $child, (int) $child->get_stock_quantity() ) : $child->get_stock_quantity() ) > 0 ) {
 				return true;
 			}
 		}
@@ -3092,10 +3156,15 @@ class TCGiant_Sync_Exporter {
 					}
 					if ( TCGiant_Sync_Inventory::stock_held_by_parent( $child ) ) {
 						// One stock shared by every variation: no more than it
-						// holds, nor than eBay had left of this one.
-						$qty = max( $qty, min( max( 0, (int) $child->get_stock_quantity() ), (int) $ev['available'] ) );
+						// holds, nor than eBay had left of this one - no more
+						// than a buffer leaves of it either (3.45.0).
+						$one = max( 0, (int) ( $child->managing_stock() ? TCGiant_Sync_Stock_Buffer::figure( $child, (int) $child->get_stock_quantity() ) : $child->get_stock_quantity() ) );
+						$qty = max( $qty, min( $one, (int) $ev['available'] ) );
+						$this->quantities_sent[] = array( 'holder' => (int) $child->get_stock_managed_by_id(), 'record' => (int) $child_id, 'sku' => (string) $ev['sku'], 'sent' => min( $one, (int) $ev['available'] ), 'stock' => (int) $child->get_stock_quantity() );
 					} elseif ( $child->managing_stock() ) {
-						$qty = max( $qty, max( 0, (int) $child->get_stock_quantity() ) );
+						$one = max( 0, (int) TCGiant_Sync_Stock_Buffer::figure( $child, (int) $child->get_stock_quantity() ) );
+						$qty = max( $qty, $one );
+						$this->quantities_sent[] = array( 'holder' => (int) $child_id, 'record' => (int) $child_id, 'sku' => (string) $ev['sku'], 'sent' => $one, 'stock' => (int) $child->get_stock_quantity() );
 					} else {
 						$qty = max( $qty, (int) $ev['available'] );
 					}
@@ -3232,6 +3301,14 @@ class TCGiant_Sync_Exporter {
 
 		if ( ! $has_stock && ! $from_push ) {
 			return new WP_Error( 'relist_refused', __( 'it has no stock to sell', 'tcgiant-sync' ) );
+		}
+
+		// Stock here, but none a buffer leaves for eBay (3.45.0): a relist
+		// would send the 1 it floors at.
+		// Not an auction, which is one item: by its recorded type here, and
+		// by eBay's answer below.
+		if ( $has_stock && 'Chinese' !== (string) $product->get_meta( '_ebay_listing_type' ) && ! self::stock_for_ebay( $product ) ) {
+			return new WP_Error( 'relist_refused', __( 'what "Keep back from eBay" and "Show at most on eBay" leave of its stock for eBay is 0', 'tcgiant-sync' ), array( 'buffer' => 1 ) );
 		}
 
 		// Never put a listing back up on another eBay site, when the shop imports
@@ -3372,6 +3449,11 @@ class TCGiant_Sync_Exporter {
 		$type  = TCGiant_Sync_API::scalar_value( $item['ListingType'] ?? '' );
 		$fixed = '' !== $type ? 'Chinese' !== $type : $this->uses_fixed_price_calls( $product, array(), $ebay_item_id );
 		$quantity = null;
+		// What it sends of each stock (3.45.0), noted once eBay takes it.
+		$this->quantities_sent = array();
+		if ( $fixed && ( $product->is_type( 'variable' ) ? self::any_variation_in_stock( $product ) : ( $product->is_in_stock() && ! ( $product->managing_stock() && (int) $product->get_stock_quantity() < 1 ) ) ) && ! self::stock_for_ebay( $product ) ) {
+			return new WP_Error( 'relist_refused', __( 'what "Keep back from eBay" and "Show at most on eBay" leave of its stock for eBay is 0', 'tcgiant-sync' ), array( 'buffer' => 1 ) );
+		}
 
 		// An auction is always one item; a variation listing carries its own
 		// quantities. Otherwise the shop's figure, or its default when it does
@@ -3379,7 +3461,10 @@ class TCGiant_Sync_Exporter {
 		if ( $fixed && ! $product->is_type( 'variable' ) ) {
 			$settings = $this->get_export_settings( $product_id );
 			$stock    = $product->get_stock_quantity();
-			$quantity = null !== $stock ? max( 1, (int) $stock ) : max( 1, (int) ( $settings['default_quantity'] ?? 1 ) );
+			$quantity = null !== $stock ? max( 1, (int) ( $product->managing_stock() ? TCGiant_Sync_Stock_Buffer::figure( $product, (int) $stock ) : $stock ) ) : max( 1, (int) ( $settings['default_quantity'] ?? 1 ) );
+			if ( null !== $stock && $product->managing_stock() ) {
+				$this->quantities_sent[] = array( 'holder' => (int) $product_id, 'record' => (int) $product_id, 'sku' => '', 'sent' => $quantity, 'stock' => (int) $stock );
+			}
 		}
 
 		// The eBay price where it changed here while the listing was ended
@@ -3600,6 +3685,12 @@ class TCGiant_Sync_Exporter {
 
 		update_post_meta( $product_id, '_ebay_item_id', $new_id );
 		update_post_meta( $product_id, '_ebay_listing_status', 'Active' );
+		// What it sent of each stock (3.45.0): a figure a buffer kept below
+		// the stock is never read back as the stock.
+		if ( $this->quantities_sent ) {
+			TCGiant_Sync_Stock_Buffer::note_sent( (string) $new_id, 'relisted', $this->quantities_sent );
+			$this->quantities_sent = array();
+		}
 		// The prices the relist sent, as eBay's last known (3.31.1), as a
 		// push notes its own: the next import does not take them for a
 		// change made on eBay.
@@ -4189,6 +4280,7 @@ class TCGiant_Sync_Exporter {
 		// as before, unless the product has an eBay price of its own, or the
 		// shop has a rule, tax or postage to take off.
 		$this->prices_sent   = array();
+		$this->quantities_sent = array();
 		$this->price_refused = null;
 		$price               = TCGiant_Sync_Ebay_Price::for_product( $product );
 		// And why its identifiers may not go (3.30.3), decided below.
@@ -4231,7 +4323,9 @@ class TCGiant_Sync_Exporter {
 		$stock = $product->get_stock_quantity();
 
 		if ( null !== $stock && '' !== $stock ) {
-			$quantity = max( 1, (int) $stock );
+			// What a buffer leaves of it for eBay (3.45.0); the stock itself
+			// with none.
+			$quantity = max( 1, (int) ( $product->managing_stock() ? TCGiant_Sync_Stock_Buffer::figure( $product, (int) $stock ) : $stock ) );
 		} else {
 			$quantity = max( 1, (int) ( $settings['default_quantity'] ?? 1 ) );
 		}
@@ -4353,6 +4447,9 @@ class TCGiant_Sync_Exporter {
 					$this->price_refused                     = TCGiant_Sync_Ebay_Price::floor_refusal( $product, $price );
 				}
 				$xml .= '<Quantity>' . $qty . '</Quantity>' . "\n";
+				if ( ! $is_auction && null !== $stock && '' !== $stock && $product->managing_stock() ) {
+					$this->quantities_sent[] = array( 'holder' => (int) $product->get_id(), 'record' => (int) $product->get_id(), 'sku' => '', 'sent' => $qty, 'stock' => (int) $stock );
+				}
 			}
 			if ( ! empty( $sku ) ) {
 				$xml .= '<SKU>' . esc_xml( $sku ) . '</SKU>' . "\n";
@@ -4617,7 +4714,13 @@ class TCGiant_Sync_Exporter {
 				$xml        .= "\t\t<StartPrice>" . esc_attr( $child_price ) . "</StartPrice>\n";
 				$this->prices_sent[ $child_id ] = $child_price;
 				$this->price_refused            = $this->price_refused ? $this->price_refused : TCGiant_Sync_Ebay_Price::floor_refusal( $child, $child_price );
-				$xml .= "\t\t<Quantity>" . max( 0, (int) $child->get_stock_quantity() ) . "</Quantity>\n";
+				// What a buffer leaves of its stock, or of the stock the
+				// variations share (3.45.0).
+				$child_qty = max( 0, (int) ( $child->managing_stock() ? TCGiant_Sync_Stock_Buffer::figure( $child, (int) $child->get_stock_quantity() ) : $child->get_stock_quantity() ) );
+				$xml      .= "\t\t<Quantity>" . $child_qty . "</Quantity>\n";
+				if ( $child->managing_stock() && null !== $child->get_stock_quantity() ) {
+					$this->quantities_sent[] = array( 'holder' => 0, 'record' => (int) $child_id, 'sku' => (string) $child->get_sku(), 'sent' => $child_qty, 'stock' => (int) $child->get_stock_quantity() );
+				}
 				
 				$xml .= "\t\t<VariationSpecifics>\n";
 				$child_attrs = $child->get_variation_attributes();
@@ -5848,14 +5951,15 @@ class TCGiant_Sync_Exporter {
 	 * read of an unread value (live_unknown_groups()) is not made then, and
 	 * do_push()'s own checks refuse it, at no call, as before.
 	 *
-	 * @param WC_Product $product Product being pushed.
+	 * @param WC_Product $product  Product being pushed.
+	 * @param array      $settings Its settings, for the format it goes as.
 	 * @return bool
 	 */
-	private function refused_without_a_read( WC_Product $product ) {
+	private function refused_without_a_read( WC_Product $product, array $settings = array() ) {
 		if ( class_exists( 'TCGiant_Sync_Environment' ) && null !== TCGiant_Sync_Environment::write_block() ) {
 			return true;
 		}
-		if ( ! $product->is_type( 'variable' ) && $product->managing_stock() && (int) $product->get_stock_quantity() < 1 ) {
+		if ( $this->buffer_leaves_nothing( $product, $settings ) ) {
 			return true;
 		}
 		if ( TCGiant_Sync_Listing_Link::find_products_sharing_item_id( $product->get_id(), (string) $product->get_meta( '_ebay_item_id' ) ) ) {
@@ -6580,6 +6684,76 @@ class TCGiant_Sync_Exporter {
 		}
 
 		return array( $format, $live_auction, $live_type );
+	}
+
+	/**
+	 * Stock pushes an Update queued to start eBay's record of sales (3.45.0
+	 * fix round 2, review 2's R2-L1; TCGiant_Sync_Inventory::
+	 * note_listing_sent()): said in one line - while an export's bulk push
+	 * is queued or pushing, counted and said once in its summary
+	 * (say_record_pushes()), a product pushed by itself meanwhile counted
+	 * with them (review 3's R3-L2, accepted); for any other Update - the
+	 * Listings screen's bulk Update's too - for its product,
+	 * at once.
+	 *
+	 * @param int $queued     How many it queued.
+	 * @param int $product_id The product pushed.
+	 * @return void
+	 */
+	private static function note_record_pushes( $queued, $product_id ) {
+		if ( (int) $queued < 1 ) {
+			return;
+		}
+		$state = self::get_export_state();
+		if ( in_array( $state['status'] ?? '', array( 'queued', 'pushing' ), true ) ) {
+			update_option( self::RECORD_PUSHES_OPTION, (int) get_option( self::RECORD_PUSHES_OPTION, 0 ) + (int) $queued, false );
+			return;
+		}
+		TCGiant_Sync_Logger::log( sprintf(
+			'Update of WC #%d: its stock push was queued to start eBay\'s record of sales for the listing, which "Keep back from eBay" or "Show at most on eBay" sends less than the stock (one call).',
+			(int) $product_id
+		) );
+	}
+
+	/**
+	 * A bulk push's count of those stock pushes, said once in its summary
+	 * and cleared.
+	 *
+	 * @return void
+	 */
+	private static function say_record_pushes() {
+		$queued = (int) get_option( self::RECORD_PUSHES_OPTION, 0 );
+		if ( $queued < 1 ) {
+			return;
+		}
+		delete_option( self::RECORD_PUSHES_OPTION );
+		TCGiant_Sync_Logger::log( sprintf(
+			'Export: %d stock push(es) queued to start eBay\'s record of sales, for listings "Keep back from eBay" or "Show at most on eBay" sends less than the stock (one call each).',
+			$queued
+		) );
+	}
+
+	/**
+	 * Whether "Keep back from eBay" and "Show at most on eBay" leave nothing
+	 * of a product's stock for eBay (3.45.0): a product, not a variable one,
+	 * whose stock WooCommerce manages - never one that goes as an auction,
+	 * which is always one item (fix round 1, review 1's H1): by the format its
+	 * body is sent as, or the live listing's recorded one on an Update
+	 * (sent_format(), which reads the product's own format through the push's
+	 * settings). A product whose last listing was an auction, listed again as
+	 * fixed price, is refused as any other.
+	 *
+	 * @param WC_Product $product  The product.
+	 * @param array      $settings Its settings.
+	 * @return bool
+	 */
+	private function buffer_leaves_nothing( WC_Product $product, array $settings ) {
+		if ( $product->is_type( 'variable' ) || ! $product->managing_stock()
+			|| (int) TCGiant_Sync_Stock_Buffer::figure( $product, (int) $product->get_stock_quantity() ) >= 1 ) {
+			return false;
+		}
+		list( $format, , $live_type ) = $this->sent_format( $product, $settings, ! self::pushes_new_listing( $product->get_id() ) );
+		return 'Chinese' !== $format && 'Chinese' !== $live_type;
 	}
 
 	/**
@@ -10179,6 +10353,8 @@ class TCGiant_Sync_Exporter {
 			// screen, until the next bulk push.
 			'product_ids'    => null,
 		) );
+
+		self::say_record_pushes();
 
 		if ( 0 === $unfinished ) {
 			TCGiant_Sync_Logger::log( sprintf(

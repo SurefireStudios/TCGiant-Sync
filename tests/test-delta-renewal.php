@@ -173,6 +173,11 @@ check( 'a Listings row for another listing: full path', full_path( array(), func
 check( 'photos not downloaded yet: full path, where they heal', full_path( array(), function ( $pid ) { $GLOBALS['META'][ $pid ]['_tcgiant_images_localized'] = 0; } ), array( 1, 1 ) );
 check( 'a placeholder for a featured image: full path', full_path( array(), function ( $pid ) { $GLOBALS['META'][ $pid ]['_harness_placeholder'] = 1; } ), array( 1, 1 ) );
 check( 'stock not managed: full path', full_path( array(), function ( $pid ) { $GLOBALS['META'][ $pid ]['_manage_stock'] = 'no'; } ), array( 1, 1 ) );
+$BUFFERED_SOLD = array( 'Quantity' => '5', 'SellingStatus' => array( 'QuantitySold' => '2' ) );
+$BUFFERED_HELD = function ( $pid ) { $GLOBALS['META'][ $pid ]['_stock'] = 5; $GLOBALS['META'][ $pid ]['_ebay_stock_buffered'] = array( 'item' => '1', 'at' => time() ); };
+check( 'eBay sent what "Keep back from eBay" leaves of the stock (3.45.0 fix round 1): eBay\'s 3 of a stock of 5, Keep back 2 - light, no GetItem', full_path( $BUFFERED_SOLD, $BUFFERED_HELD, array( 'stock_keep_back' => '2' ), $BUFFERED_SOLD ), array( 0, 0 ) );
+check( '  the same, the listing not marked as sent less than the stock: full path', full_path( $BUFFERED_SOLD, function ( $pid ) { $GLOBALS['META'][ $pid ]['_stock'] = 5; }, array( 'stock_keep_back' => '2' ), $BUFFERED_SOLD ), array( 1, 1 ) );
+check( '  marked, but what it leaves is not eBay\'s (Keep back 1 leaves 4): full path', full_path( $BUFFERED_SOLD, $BUFFERED_HELD, array( 'stock_keep_back' => '1' ), $BUFFERED_SOLD ), array( 1, 1 ) );
 $pids = shop( array( '39' ), array(), array( 'disable_image_localization' => '1' ) );
 $META[ $pids['39'] ]['_tcgiant_images_localized'] = 0;
 $META[ $pids['39'] ]['_harness_placeholder']      = 1;

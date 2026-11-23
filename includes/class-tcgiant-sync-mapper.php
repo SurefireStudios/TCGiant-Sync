@@ -17,6 +17,12 @@ if ( ! class_exists( 'TCGiant_Sync_Ebay_Price', false ) ) {
 	require_once __DIR__ . '/class-tcgiant-sync-ebay-price.php';
 }
 
+// "Keep back from eBay" and "Show at most on eBay" (3.45.0): eBay's figure is
+// then not the stock.
+if ( ! class_exists( 'TCGiant_Sync_Stock_Buffer', false ) ) {
+	require_once __DIR__ . '/class-tcgiant-sync-stock-buffer.php';
+}
+
 // eBay's own values for each listing, and who made it, which the import
 // records (3.28.8).
 if ( ! class_exists( 'TCGiant_Sync_Ebay_Live', false ) ) {
@@ -2055,6 +2061,33 @@ class TCGiant_Sync_Mapper {
 		$sale_base   = null !== $held_now ? $held_now : ( ! $is_new && $product->managing_stock() ? $product->get_stock_quantity() : null );
 		$hold        = null !== $sale_base && ! $stock_kept ? self::sale_hold( $product->get_id() ) : null;
 		$unsent_sent = false;
+		$top_up      = false;
+
+		// eBay was sent less than the stock on this listing (3.45.0, "Keep
+		// back from eBay", "Show at most on eBay"): eBay's figure is not the
+		// stock, and written as it the stock came down by the buffer at every
+		// sync. Only eBay's sales since its record come off - a website sale,
+		// sent or not, is already in the stock - and a quantity raised in
+		// Seller Hub is not brought in: the stock is the shop's, and its next
+		// push sends what the buffer leaves of it. A sale still on its way is
+		// kept as before.
+		$buffered = null !== $sale_base && ! $stock_kept && 'sale' !== $hold && $product->get_id() > 0
+			? TCGiant_Sync_Stock_Buffer::stock_beside( $product, (string) $item_id, '', (int) $product_data['stock_quantity'], null !== ( $product_data['quantity_sold'] ?? null ) ? (int) $product_data['quantity_sold'] : null )
+			: null;
+		if ( null !== $buffered ) {
+			$ebay_left_now    = (int) $product_data['stock_quantity'];
+			$sync_decisions[] = $buffered < (int) $sale_base
+				? 'Stock set to ' . $buffered . ': eBay sold ' . ( (int) $sale_base - $buffered ) . ' since its record, taken off the stock - not eBay\'s ' . (int) $product_data['stock_quantity'] . ', which "Keep back from eBay" or "Show at most on eBay" keeps below the stock'
+				: 'Stock kept at ' . $buffered . ': eBay\'s ' . (int) $product_data['stock_quantity'] . ' is what "Keep back from eBay" or "Show at most on eBay" left of it, not the stock';
+			// A sale that never reached eBay is in the stock, and eBay is told.
+			// eBay's own sale where "Show at most on eBay" now leaves more than
+			// eBay shows (fix round 1, review 1's H3) is topped up: a raise
+			// (fix round 2, review 2's R2-M1).
+			$unsent_sent                    = is_int( $hold ) && $hold > 0;
+			$top_up                         = $buffered < (int) $sale_base && max( 0, (int) TCGiant_Sync_Stock_Buffer::figure( $product, $buffered ) ) > $ebay_left_now;
+			$product_data['stock_quantity'] = $buffered;
+			$hold                           = null;
+		}
 		if ( null !== $hold ) {
 			$figure                         = self::held_figure( $hold, (int) $sale_base, (int) $product_data['stock_quantity'] );
 			$stock_kept                     = $figure['kept'];
@@ -2120,7 +2153,7 @@ class TCGiant_Sync_Mapper {
 		} elseif ( ! $is_new ) {
 			$sync_decisions[] = 'Weight/Dimensions skipped (WooCommerce won)';
 		}
-		if ( ! $stock_kept ) {
+		if ( ! $stock_kept && null === $buffered ) {
 			$sync_decisions[] = 'Stock synced to ' . $product_data['stock_quantity'] . ' (eBay won)';
 		}
 		
@@ -2515,6 +2548,8 @@ class TCGiant_Sync_Mapper {
 		// the unsent mark off (fix round 4).
 		if ( $saved_id && $unsent_sent ) {
 			TCGiant_Sync_Inventory::queue_after_ebay_sale( (int) $saved_id );
+		} elseif ( $saved_id && $top_up ) {
+			TCGiant_Sync_Inventory::queue_top_up( (int) $saved_id );
 		}
 
 		// eBay's figure is the stock now: every eBay sale so far is in it. A
@@ -2883,8 +2918,9 @@ class TCGiant_Sync_Mapper {
 			$taken  = is_array( $taken ) ? max( 0, (int) ( $taken[ (string) $item_id ] ?? 0 ) ) : 0;
 			$unseen = null === $sold ? 0 : max( 0, (int) $sold - $taken );
 			$figure = max( 0, (int) $held_now - $unseen );
-			// An auction is one item: only its running out is ever sent.
-			$push   = $live && ( $auction ? ( 0 === $figure && $ebay_left > 0 ) : $figure !== $ebay_left );
+			// An auction is one item: only its running out is ever sent. A
+			// listing is sent what a buffer leaves of the stock (3.45.0).
+			$push   = $live && ( $auction ? ( 0 === $figure && $ebay_left > 0 ) : (int) TCGiant_Sync_Stock_Buffer::figure( $product, (int) $figure ) !== $ebay_left );
 			$said   = $unseen > 0
 				? sprintf( 'Stock set to %1$d: WooCommerce\'s %2$d less the %3$d eBay sold of this listing that it had not taken off', $figure, (int) $held_now, $unseen )
 				: sprintf( 'Stock kept at %d: WooCommerce had taken off every eBay sale of this listing', $figure );
@@ -2919,6 +2955,14 @@ class TCGiant_Sync_Mapper {
 			TCGiant_Sync_Runtime::unguard_loops();
 			TCGiant_Sync_Inventory::end_ebay_origin();
 			TCGiant_Sync_Inventory::disarm_record( $armed );
+		}
+
+		// eBay already shows what "Keep back from eBay" and "Show at most on
+		// eBay" leave of the stock (fix round 1, review 1's M1): the listing
+		// is marked as sent that, so the next import does not read it as the
+		// stock.
+		if ( null !== $held_now && ! $auction && ! $push && $ebay_left < $figure ) {
+			TCGiant_Sync_Stock_Buffer::landed( $product, (string) $item_id, $ebay_left, $figure );
 		}
 
 		return array(
@@ -3739,7 +3783,12 @@ class TCGiant_Sync_Mapper {
 		if ( $review && 'Ended' === $facts['status'] && ! $sold_out ) {
 			$now = null;
 			if ( $counted && (int) $r_sold > 0 ) {
-				$now = TCGiant_Sync_Inventory::lower_stock_to( $product_id, max( 0, (int) $r_listed - (int) $r_sold ) );
+				// Its listing sent less than the stock (3.45.0): eBay relisted
+				// that, so the relist's sales come off the stock, never its
+				// figure.
+				$now = TCGiant_Sync_Stock_Buffer::marked( $product_id, (string) $parent ) && null !== $held
+					? TCGiant_Sync_Inventory::lower_stock_to( $product_id, max( 0, (int) $held - (int) $r_sold ) )
+					: TCGiant_Sync_Inventory::lower_stock_to( $product_id, max( 0, (int) $r_listed - (int) $r_sold ) );
 				if ( null !== $now && null !== $held && $now < $held ) {
 					delete_transient( 'tcgiant_restocked_after_sale' );
 				}
@@ -3833,6 +3882,22 @@ class TCGiant_Sync_Mapper {
 	 * @return void
 	 */
 	private function warn_about_relist_stock( $product_id, $item_id, $parent_id, $offers, $held_before, $review_order ) {
+		// eBay was sent less than the stock (3.45.0 fix round 1, review 1's
+		// L5): eBay's figure is not the stock, and the stock stands.
+		$buffered = TCGiant_Sync_Stock_Buffer::marked( (int) $product_id, (string) $item_id );
+		if ( $review_order && $buffered ) {
+			TCGiant_Sync_Logger::warning( sprintf(
+				'WC #%1$d now follows eBay listing %2$s, a relist of %3$s. It looks as though it sold on your website (order #%4$d) and an older version of this plugin put it back in stock. Its stock stands, as "Keep back from eBay" and "Show at most on eBay" keep eBay below it; if it has gone, set the stock to 0, which ends listing %2$s.',
+				$product_id,
+				$item_id,
+				$parent_id,
+				$review_order
+			) );
+			return;
+		}
+		if ( $buffered ) {
+			return;
+		}
 		if ( $review_order ) {
 			TCGiant_Sync_Logger::warning( sprintf(
 				'WC #%1$d now follows eBay listing %2$s, a relist of %3$s, which offers %4$d. It looks as though it sold on your website (order #%5$d) and an older version of this plugin put it back in stock. eBay\'s figure applies, as for any live listing; if it has gone, set the stock to 0, which ends listing %2$s.',
@@ -4718,6 +4783,7 @@ class TCGiant_Sync_Mapper {
 			// there holds only as far as its units (sale_hold()).
 			$var_kept        = false;
 			$var_unsent_sent = false;
+			$var_top_up      = false;
 			$var_hold        = ! $pooled_var && ! $is_new_variation && $variation->managing_stock() && null !== $variation->get_stock_quantity()
 				? self::sale_hold( $variation_id )
 				: null;
@@ -4762,6 +4828,15 @@ class TCGiant_Sync_Mapper {
 				&& TCGiant_Sync_Inventory::ebay_figure_not_stock( $variation, $var_item, (int) $var_data['stock_quantity'] )
 				? TCGiant_Sync_Inventory::sales_since_record( $variation_id, $var_item, $ebay_var_sku, (int) $var_data['stock_quantity'], (int) $var_data['sold'] )
 				: null;
+			// eBay was sent less than its own stock on this listing (3.45.0,
+			// "Keep back from eBay", "Show at most on eBay"): eBay's figure is
+			// not its stock. Only eBay's sales since its record come off; a
+			// website sale, sent or not, is already in it; a sale still on its
+			// way is kept as before.
+			$var_buffered = null === $var_off_since && ! $pooled_var && ! $is_new_variation && 'sale' !== $var_hold
+				&& $variation->managing_stock() && null !== $variation->get_stock_quantity()
+				? TCGiant_Sync_Stock_Buffer::stock_beside( $variation, $var_item, $ebay_var_sku, (int) $var_data['stock_quantity'], null !== ( $var_data['sold'] ?? null ) ? (int) $var_data['sold'] : null )
+				: null;
 			if ( null !== $var_off_since ) {
 				$var_off_kept = max( 0, (int) $variation->get_stock_quantity() - $var_off_since );
 				if ( $var_off_since > 0 ) {
@@ -4774,6 +4849,23 @@ class TCGiant_Sync_Mapper {
 					) );
 				}
 				$var_data['stock_quantity'] = $var_off_kept;
+			} elseif ( null !== $var_buffered ) {
+				if ( $var_buffered < (int) $variation->get_stock_quantity() ) {
+					TCGiant_Sync_Logger::log( sprintf(
+						'Variation #%d set to %d: eBay sold %d of it since its record, taken off its own stock - not eBay\'s %d, which "Keep back from eBay" or "Show at most on eBay" keeps below its stock.',
+						$variation_id,
+						$var_buffered,
+						(int) $variation->get_stock_quantity() - $var_buffered,
+						(int) $var_data['stock_quantity']
+					) );
+				}
+				// A sale of it that never reached eBay is in its stock, and
+				// eBay is told; eBay's own sale where "Show at most on eBay"
+				// now leaves more than eBay shows (fix round 1, H3) is topped
+				// up: a raise (fix round 2, R2-M1).
+				$var_unsent_sent            = is_int( $var_hold ) && $var_hold > 0;
+				$var_top_up                 = $var_buffered < (int) $variation->get_stock_quantity() && max( 0, (int) TCGiant_Sync_Stock_Buffer::figure( $variation, $var_buffered ) ) > (int) $var_data['stock_quantity'];
+				$var_data['stock_quantity'] = $var_buffered;
 			} elseif ( null !== $var_hold ) {
 				$figure = self::held_figure( $var_hold, (int) $variation->get_stock_quantity(), (int) $var_data['stock_quantity'] );
 				if ( 'sale' === $var_hold ) {
@@ -4887,6 +4979,8 @@ class TCGiant_Sync_Mapper {
 				// is told (fix round 4).
 				if ( $var_unsent_sent ) {
 					TCGiant_Sync_Inventory::queue_after_ebay_sale( (int) $saved_var_id );
+				} elseif ( $var_top_up ) {
+					TCGiant_Sync_Inventory::queue_top_up( (int) $saved_var_id );
 				}
 
 				// eBay's figure for the variation is its stock now: every eBay
@@ -4942,6 +5036,30 @@ class TCGiant_Sync_Mapper {
 
 			$var_to_retire = wc_get_product( $existing_id );
 			if ( ! $var_to_retire ) {
+				continue;
+			}
+
+			// eBay removed it after "Keep back from eBay" or "Show at most on
+			// eBay" left it 0 before it had sold (3.45.0 fix round 1, review
+			// 1's H2): its stock here - its own, or the stock it shares - is
+			// the shop's, kept back from eBay. Never wiped or hidden; marked
+			// as eBay's removal at 0 (ZEROED_META, 3.43.0's), so its pushes
+			// send nothing and its edit screen says how to add it back, and
+			// said once.
+			$retire_item   = (string) get_post_meta( $parent_id, '_ebay_item_id', true );
+			$retire_pooled = TCGiant_Sync_Inventory::stock_held_by_parent( $var_to_retire );
+			$retire_holder = $retire_pooled ? wc_get_product( $parent_id ) : $var_to_retire;
+			if ( 'publish' === (string) $var_to_retire->get_status() && ! is_array( get_post_meta( (int) $existing_id, self::ZEROED_META, true ) )
+				&& $retire_holder && $retire_holder->managing_stock() && (int) $retire_holder->get_stock_quantity() > 0
+				&& TCGiant_Sync_Stock_Buffer::marked( $retire_pooled ? (int) $parent_id : (int) $existing_id, $retire_item ) ) {
+				update_post_meta( (int) $existing_id, self::ZEROED_META, array( 'item' => $retire_item, 'at' => time(), 'gone' => time(), 'said' => time(), 'buffer' => 1 ) );
+				TCGiant_Sync_Logger::warning( sprintf(
+					'Variation #%d of WC #%d is not on eBay listing %s any more: eBay removed it when "Keep back from eBay" or "Show at most on eBay" left it 0 before it had ever sold (Out-of-Stock control off), unless you removed it in Seller Hub. Its stock here, %d, is kept, and it stays on your website: Update the listing to add it back once they leave it some, or, if you removed it on purpose, disable it here.',
+					(int) $existing_id,
+					(int) $parent_id,
+					$retire_item,
+					(int) $retire_holder->get_stock_quantity()
+				) );
 				continue;
 			}
 

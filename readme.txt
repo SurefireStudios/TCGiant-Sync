@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.44.0
+Stable tag: 3.45.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -148,6 +148,14 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.45.0 - 2026-11-23 =
+* NEW: "Keep back from eBay" and "Show at most on eBay" (Settings, with the stock settings), for stock you also sell elsewhere. eBay is sent your stock less the first, no more than the second, never below 0: with 10 in stock, keeping back 2 shows 8 on eBay; showing at most 5 shows 5. Both are empty unless you fill them in, and empty or 0 is none, so nothing changes until you do. A product's eBay tab can set its own: empty takes the shop's, 0 is none for that product. Each variation keeping its own stock is sent what they leave of its stock; a stock the variations share is buffered once, and each variation is sent that. The bulk edit of eBay fields can set them on many products at once.
+* NOTE: They apply to every quantity TCGiant Sync sends eBay of a stock WooCommerce manages: a stock change, a website sale, Send stock to eBay, a new listing, an Update and a relist. Never an auction, which is one item, nor a stock WooCommerce does not manage, nor "Quantity When Stock Is Not Tracked". If they leave 0 for eBay while you still hold stock, the listing is treated as out of stock, as "Auto-end listing when stock reaches 0" says; a new listing, an Update or a relist is not made. A variation they leave at 0 that eBay then removes (Out-of-Stock control off, before it ever sold) keeps its stock here and stays on your website: the log says so once, and Update eBay Listing adds it back once they leave it some.
+* NOTE: After each eBay sale under "Show at most on eBay", eBay is topped up again (one push when the import or the sale check takes the sale, as a stock edit's: it waits while the day's eBay calls are near their limit, or while a stock edit's push of the product is on its way) - but with a cap of 1 and Out-of-Stock control off, eBay ends the listing at the sale.
+* NOTE: Changing either in Settings sends nothing by itself: each listing takes the new figure at its next stock change, or at once with Send stock to eBay (Bulk actions). Saving a product's own on its eBay tab sends that product's stock, as a stock change would; the bulk edit sends nothing.
+* CHANGE: Once eBay has been sent less than your stock, eBay's quantity is no longer read as your stock: the import, the sale check and an ended listing's settle take only eBay's own sales off it, so a sync never brings your stock down to what eBay shows. A quantity changed on eBay (raised or lowered in Seller Hub) is not brought in while it lasts: your stock decides, and its next push sends what the settings leave of it. A listing that sells out on eBay while stock is kept back here is not moved to the trash. The weekly stock check only reports, comparing eBay with what is sent.
+* NOTE: A cancelled eBay sale is not put back on your stock while "Keep back from eBay" or "Show at most on eBay" keeps eBay below it: the log says so, and you add the unit back by hand if you have it. A listing linked again - after Unlink, by SKU, or a Sell Similar copy the import matches by SKU - starts afresh: its first import takes eBay's figure as your stock, as any link does, so check the stock after one.
 
 = 3.44.0 - 2026-11-20 =
 * CHANGE: A variation you enable again in WooCommerce has its stock sent to eBay, as a stock change of it would send it: one sharing its variable product's stock gets the shared stock again (until now it stayed at 0 on eBay until the next stock edit), and one keeping its own stock gets its own. A variation you disable is sent 0 on eBay the same way, unless it is the listing's only variation with stock and still has stock of its own here (or, sharing its product's stock, the shared stock). However you enable or disable it - the variation's Enabled box, the variations' bulk action "Toggle "Enabled"", or WooCommerce's REST API - the usual rules of a stock change apply, and the log says what each queued.
@@ -1750,6 +1758,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.45.0 =
+New: "Keep back from eBay" and "Show at most on eBay", in Settings and on a product's eBay tab, to show eBay less than you hold. Both are empty, so nothing changes until you fill them in.
 
 = 3.44.0 =
 A variation you disable is now set to 0 on eBay, and one you enable again has its stock sent, as a stock change would - one keeping its own stock included, which is no longer sent its stock while disabled. The import leaves a disabled variation disabled.

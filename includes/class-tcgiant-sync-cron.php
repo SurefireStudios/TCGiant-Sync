@@ -1087,6 +1087,10 @@ class TCGiant_Sync_Cron {
 		// The listings left this run as ended by the seller on eBay (3.28.5):
 		// each said once.
 		$left_by_shop = array();
+		// Those left because "Keep back from eBay" or "Show at most on eBay"
+		// leaves eBay nothing of their stock (3.45.0 fix round 1, review 1's
+		// L5): counted for the summary.
+		$kept_back = 0;
 
 		foreach ( $ended_products as $row ) {
 			$product_id   = (int) ( $row['product_id'] ?? $row['post_id'] ?? 0 );
@@ -1152,6 +1156,9 @@ class TCGiant_Sync_Cron {
 				// with End Listing here: said, once a listing a run, as nothing
 				// else in the log would say why it stays ended.
 				$ended = $result->get_error_data();
+				if ( is_array( $ended ) && ! empty( $ended['buffer'] ) ) {
+					$kept_back++;
+				}
 				if ( is_array( $ended ) && ! empty( $ended['ended_by_shop'] ) && ! isset( $left_by_shop[ (string) $ended['ended_by_shop'] ] ) ) {
 					$left_by_shop[ (string) $ended['ended_by_shop'] ] = true;
 					TCGiant_Sync_Logger::log( sprintf(
@@ -1176,7 +1183,10 @@ class TCGiant_Sync_Cron {
 		TCGiant_Sync_Logger::log( sprintf(
 			'Auto-Relist: Complete. %d relisted, %d not relisted (no stock, sold out on eBay, ended by you on eBay, already live, on another eBay site, or its last push is still under way or did not finish).',
 			$relisted, $skipped
-		), $relisted > 0 ? 'success' : 'info' );
+		) . ( $kept_back > 0 ? sprintf(
+			' %d of them not relisted because "Keep back from eBay" or "Show at most on eBay" leaves eBay none of its stock.',
+			$kept_back
+		) : '' ), $relisted > 0 ? 'success' : 'info' );
 	}
 
 	// ───────────────────────────────────────────────────────────────────────────

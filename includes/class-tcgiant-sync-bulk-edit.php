@@ -54,6 +54,11 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+// "Keep back from eBay" and "Show at most on eBay" (3.45.0).
+if ( ! class_exists( 'TCGiant_Sync_Stock_Buffer', false ) ) {
+	require_once __DIR__ . '/class-tcgiant-sync-stock-buffer.php';
+}
+
 /**
  * TCGiant_Sync_Bulk_Edit class.
  */
@@ -140,7 +145,8 @@ class TCGiant_Sync_Bulk_Edit {
 	 * Kinds: select (a choice, or the shop's setting), category (the shop's
 	 * list, a typed ID, or the shop's setting), second (the shop's list, a
 	 * typed ID, or Clear), text, note (a text of lines), price (Set to or
-	 * Clear), tick (ticked or not).
+	 * Clear), tick (ticked or not), count (Set to a whole number, 0 for none
+	 * for the product, or Clear for the shop's: 3.45.0's stock buffer).
 	 *
 	 * @return array<string,array{kind: string, label: string, metas: string[]}>
 	 */
@@ -163,6 +169,9 @@ class TCGiant_Sync_Bulk_Edit {
 			'reserve'          => array( 'kind' => 'price', 'label' => __( 'Reserve price', 'tcgiant-sync' ), 'metas' => array( TCGiant_Sync_Listing_Options::RESERVE_META ) ),
 			'brand'            => array( 'kind' => 'text', 'label' => __( 'Brand', 'tcgiant-sync' ), 'metas' => array( TCGiant_Sync_Listing_Options::BRAND_META ) ),
 			'mpn'              => array( 'kind' => 'text', 'label' => __( 'MPN', 'tcgiant-sync' ), 'metas' => array( TCGiant_Sync_Listing_Options::MPN_META ) ),
+			// The stock buffer (3.45.0): saved only, nothing queued.
+			'stock_keep_back'    => array( 'kind' => 'count', 'label' => __( 'Keep back from eBay', 'tcgiant-sync' ), 'metas' => array( TCGiant_Sync_Stock_Buffer::KEEP_META ) ),
+			'stock_show_at_most' => array( 'kind' => 'count', 'label' => __( 'Show at most on eBay', 'tcgiant-sync' ), 'metas' => array( TCGiant_Sync_Stock_Buffer::CAP_META ) ),
 		);
 	}
 
@@ -277,6 +286,10 @@ class TCGiant_Sync_Bulk_Edit {
 		}
 		if ( 'tick' === $kind ) {
 			return 'yes' === $change['choice'] ? __( 'ticked', 'tcgiant-sync' ) : __( 'unticked', 'tcgiant-sync' );
+		}
+		if ( 'count' === $kind ) {
+			/* translators: %s: the figure set */
+			return sprintf( __( 'set to %s', 'tcgiant-sync' ), (string) $change['value'] );
 		}
 		if ( 'select' === $kind ) {
 			foreach ( self::choices( $field ) as $group ) {
@@ -403,6 +416,21 @@ class TCGiant_Sync_Bulk_Edit {
 
 			case 'tick':
 				return in_array( $choice, array( 'yes', 'no' ), true ) ? array( 'choice' => $choice, 'value' => 'yes' === $choice ? '1' : '' ) : 'choice';
+
+			case 'count':
+				// A whole number of 0 or more (0: none for the product), or
+				// Clear: the shop's (3.45.0).
+				if ( self::CLEAR === $choice ) {
+					return array( 'choice' => self::CLEAR, 'value' => '' );
+				}
+				if ( self::SET !== $choice ) {
+					return 'choice';
+				}
+				$count = TCGiant_Sync_Stock_Buffer::typed( $typed );
+				if ( '' === $count ) {
+					return '' === $typed ? 'empty' : 'not_count';
+				}
+				return array( 'choice' => self::SET, 'value' => $count );
 
 			default:
 				if ( self::CLEAR === $choice ) {
@@ -669,6 +697,17 @@ class TCGiant_Sync_Bulk_Edit {
 			case 'identifier_none':
 				TCGiant_Sync_Identifiers::set_none( $id, '1' === $change['value'] );
 				return;
+			case 'stock_keep_back':
+			case 'stock_show_at_most':
+				// The tab's own save, as posted there; nothing queued: the
+				// listing takes it at its next stock change, or Send stock to
+				// eBay (3.45.0).
+				$meta = 'stock_keep_back' === $field ? TCGiant_Sync_Stock_Buffer::KEEP_META : TCGiant_Sync_Stock_Buffer::CAP_META;
+				TCGiant_Sync_Stock_Buffer::save_posted( $id, array(
+					TCGiant_Sync_Stock_Buffer::KEEP_META . '_shown' => '1',
+					$meta                                           => (string) $change['value'],
+				) );
+				return;
 		}
 		$posted = array(
 			TCGiant_Sync_Listing_Options::SUBTITLE_META . '_shown' => '1',
@@ -795,6 +834,9 @@ class TCGiant_Sync_Bulk_Edit {
 			case 'not_category':
 				/* translators: %s: what was typed */
 				return sprintf( __( '"%s" is not an eBay category ID', 'tcgiant-sync' ), $typed );
+			case 'not_count':
+				// The settings' own words (fix round 1, review 1's L6).
+				return TCGiant_Sync_Stock_Buffer::refused_words( $typed );
 		}
 		return __( 'it is not one of its choices', 'tcgiant-sync' );
 	}
@@ -900,6 +942,10 @@ class TCGiant_Sync_Bulk_Edit {
 		foreach ( self::lines( $said ) as $line ) {
 			echo '<li>' . esc_html( $line ) . '</li>';
 		}
+		// The stock buffer changed (3.45.0): sent at the next stock change.
+		if ( ! empty( $said['fields']['stock_keep_back']['changed'] ) || ! empty( $said['fields']['stock_show_at_most']['changed'] ) ) {
+			echo '<li>' . esc_html__( '"Keep back from eBay" and "Show at most on eBay" were not sent to eBay either: each listing takes the new figure at its next stock change. To apply it now, use Bulk actions, Send stock to eBay.', 'tcgiant-sync' ) . '</li>';
+		}
 		echo '</ul><p>' . esc_html__( 'These fields were not sent to eBay: a product linked to an eBay listing takes the change there at its next push or Update. A stock left at No change is sent only for a product whose last stock change or website sale never reached eBay. To send a stock as it is, use Bulk actions, Send stock to eBay.', 'tcgiant-sync' )
 			. ' <a href="' . esc_url( admin_url( 'admin.php?page=tcgiant-listings' ) ) . '">' . esc_html__( 'Listings', 'tcgiant-sync' ) . '</a></p></div>';
 	}
@@ -976,6 +1022,10 @@ class TCGiant_Sync_Bulk_Edit {
 					<?php elseif ( 'note' === $def['kind'] ) : ?>
 						<label class="tcgiant-bulk-input" style="display:none;">
 							<textarea name="<?php echo esc_attr( $name . '_value' ); ?>" rows="3" maxlength="<?php echo (int) TCGiant_Sync_Listing_Options::CONDITION_NOTE_MAX; ?>"></textarea>
+						</label>
+					<?php elseif ( 'count' === $def['kind'] ) : ?>
+						<label class="tcgiant-bulk-input" style="display:none;">
+							<input type="number" min="0" step="1" class="text" name="<?php echo esc_attr( $name . '_value' ); ?>" value="">
 						</label>
 					<?php elseif ( in_array( $def['kind'], array( 'text', 'price' ), true ) ) : ?>
 						<?php

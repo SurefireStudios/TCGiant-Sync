@@ -828,6 +828,24 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 						</div>
 						<p class="tc-hint"><?php esc_html_e( 'When stock changes here - a website sale, a cancelled order, or an edit by hand, import or another plugin - the linked eBay listing is updated to match. A product that allows backorders is treated the same: at 0 or below, its eBay listing is ended, as "Auto-end listing" below decides. Turn this off only if something else keeps eBay\'s quantities up to date.', 'tcgiant-sync' ); ?></p>
 					</div>
+					<?php // A stock buffer for eBay (3.45.0): TCGiant_Sync_Stock_Buffer, empty unless the shop fills it in. ?>
+					<?php if ( TCGiant_Sync_Stock_Buffer::available() ) : ?>
+						<?php $tc_buffer_said = get_transient( TCGiant_Sync_Admin::BUFFER_SAID ); ?>
+						<?php if ( $tc_buffer_said ) : ?>
+							<?php delete_transient( TCGiant_Sync_Admin::BUFFER_SAID ); ?>
+							<div class="notice notice-info inline" style="margin:0 0 10px;"><p><?php esc_html_e( '"Keep back from eBay" or "Show at most on eBay" changed. Nothing was sent to eBay: each listing takes the new figure at its next stock change. To apply it now, use Send stock to eBay (Bulk actions).', 'tcgiant-sync' ); ?></p></div>
+						<?php endif; ?>
+						<div class="tc-field">
+							<label class="tc-label" for="tc_stock_keep_back"><?php esc_html_e( 'Keep back from eBay', 'tcgiant-sync' ); ?></label>
+							<input type="number" min="0" step="1" class="tc-input" id="tc_stock_keep_back" style="max-width:120px;" name="tcgiant_sync_ebay_settings[<?php echo esc_attr( TCGiant_Sync_Stock_Buffer::KEEP_SETTING ); ?>]" value="<?php echo esc_attr( TCGiant_Sync_Stock_Buffer::typed( $settings[ TCGiant_Sync_Stock_Buffer::KEEP_SETTING ] ?? '' ) ); ?>">
+							<p class="tc-hint"><?php esc_html_e( 'eBay is sent your stock less this many, never below 0 - for stock you also sell elsewhere. Empty or 0: none. If this leaves 0 for eBay, the listing is treated as out of stock. A product\'s eBay tab can set its own.', 'tcgiant-sync' ); ?></p>
+						</div>
+						<div class="tc-field">
+							<label class="tc-label" for="tc_stock_show_at_most"><?php esc_html_e( 'Show at most on eBay', 'tcgiant-sync' ); ?></label>
+							<input type="number" min="0" step="1" class="tc-input" id="tc_stock_show_at_most" style="max-width:120px;" name="tcgiant_sync_ebay_settings[<?php echo esc_attr( TCGiant_Sync_Stock_Buffer::CAP_SETTING ); ?>]" value="<?php echo esc_attr( TCGiant_Sync_Stock_Buffer::typed( $settings[ TCGiant_Sync_Stock_Buffer::CAP_SETTING ] ?? '' ) ); ?>">
+							<p class="tc-hint"><?php esc_html_e( 'eBay is sent no more than this many, whatever your stock, and topped up again after each eBay sale - but with 1 and Out-of-Stock control off, eBay ends the listing at the sale. Empty or 0: no limit. With both, eBay is sent your stock less "Keep back from eBay", no more than this. For products whose stock WooCommerce tracks, never an auction. Changing either sends nothing by itself: each listing takes the new figure at its next stock change. To apply it now, use Send stock to eBay (Bulk actions). eBay\'s quantity is then not your stock: an import or a sync takes only eBay\'s own sales off it.', 'tcgiant-sync' ); ?></p>
+						</div>
+					<?php endif; ?>
 					<div class="tc-field">
 						<label class="tc-label"><?php esc_html_e( 'Take eBay sales off stock for products not linked to a listing?', 'tcgiant-sync' ); ?></label>
 						<div class="tc-radio-group">

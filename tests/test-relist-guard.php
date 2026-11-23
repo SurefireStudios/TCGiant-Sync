@@ -3297,5 +3297,30 @@ $META[676]['_thumbnail_id'] = '6762';
 TCGiant_Sync_Cron::instance()->auto_relist_ended_items();
 check( '  another main photo chosen: asked again, and relisted with its photos', array( array_column( $ebay->calls_about( $item ), 0 ), count( $ebay->photos ), meta( 676, '_ebay_item_id' ) ), array( array( 'GetItem', 'RelistFixedPriceItem' ), 1, '9' . substr( $item, 1 ) ) );
 
+
+echo "\nAUTO-RELIST NAMES A BUFFER THAT LEAVES EBAY NONE OF THE STOCK (3.45.0 FIX ROUND 1)\n" . str_repeat( '=', 126 ) . "\n";
+
+$ebay = fresh_shop();
+$OPTIONS['tcgiant_sync_ebay_settings'] = $only_us + array( 'stock_keep_back' => '3' );
+$ENDED_ROWS = array();
+$kept_coin    = coin( 960, array( '_ebay_site' => 'US' ) );
+$ENDED_ROWS[] = array( 'product_id' => '960', 'ebay_item_id' => $kept_coin );
+$own_coin     = coin( 961, array( '_ebay_site' => 'US', '_ebay_export_stock_keep_back' => '0' ) );
+$ENDED_ROWS[] = array( 'product_id' => '961', 'ebay_item_id' => $own_coin );
+$ebay->items   = array(
+	$kept_coin => ebay_says_on( 'US', 'Completed', 3, 0 ),
+	$own_coin  => ebay_says_on( 'US', 'Completed', 3, 0 ),
+);
+$ebay->relists = function ( $item_id ) { return relisted_as( '9' . substr( $item_id, 1 ) ); };
+TCGiant_Sync_Cron::instance()->auto_relist_ended_items();
+check( 'stock 3, Keep back from eBay 3: not relisted, and eBay asked nothing about it', array( $ebay->relists_of( $kept_coin ), $ebay->calls_about( $kept_coin ) ), array( array(), array() ) );
+check( '  its own Keep back 0 beside it: relisted with its 3', $ebay->relists_of( $own_coin ), array( array( 'RelistFixedPriceItem', $own_coin, 3 ) ) );
+check( '  the summary names the buffer as the reason', logged( 'Auto-Relist: Complete. 1 relisted, 1 not relisted (no stock, sold out on eBay, ended by you on eBay, already live, on another eBay site, or its last push is still under way or did not finish). 1 of them not relisted because "Keep back from eBay" or "Show at most on eBay" leaves eBay none of its stock.' ), true );
+$ebay = fresh_shop();
+$OPTIONS['tcgiant_sync_ebay_settings'] = $only_us;
+$ENDED_ROWS = array( array( 'product_id' => '960', 'ebay_item_id' => coin( 960, array( '_ebay_site' => 'US', '_stock' => '0', '_stock_status' => 'outofstock' ) ) ) );
+TCGiant_Sync_Cron::instance()->auto_relist_ended_items();
+check( '  with no buffer, a coin with no stock: the summary as before, no buffer named', array( logged( 'Auto-Relist: Complete. 0 relisted, 1 not relisted (no stock, sold out on eBay, ended by you on eBay, already live, on another eBay site, or its last push is still under way or did not finish).' ), logged( 'Keep back from eBay' ) ), array( true, false ) );
+
 printf( "\n  %d passed, %d failed\n\n", $pass, $fail );
 exit( $fail > 0 ? 1 : 0 );

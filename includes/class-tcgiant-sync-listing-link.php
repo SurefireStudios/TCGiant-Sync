@@ -110,6 +110,9 @@ class TCGiant_Sync_Listing_Link {
 			// eBay's sales of that listing the stock has taken off, and the
 			// listing its type was read for (3.28.0).
 			'_ebay_sold_seen',
+			// That listing was sent less than the stock (3.45.0,
+			// TCGiant_Sync_Inventory::BUFFERED_META).
+			'_ebay_stock_buffered',
 			'_ebay_listing_type_item',
 			// Stock pushes under way for it, and the units of a sale that
 			// never reached it.

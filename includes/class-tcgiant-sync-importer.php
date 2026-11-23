@@ -28,6 +28,12 @@ if ( ! class_exists( 'TCGiant_Sync_Shop_Categories', false ) ) {
 	require_once __DIR__ . '/class-tcgiant-sync-shop-categories.php';
 }
 
+// "Keep back from eBay" and "Show at most on eBay" (3.45.0): eBay's figure is
+// then not the stock. Where it is not there, eBay's figure is read as ever.
+if ( ! class_exists( 'TCGiant_Sync_Stock_Buffer', false ) && file_exists( __DIR__ . '/class-tcgiant-sync-stock-buffer.php' ) ) {
+	require_once __DIR__ . '/class-tcgiant-sync-stock-buffer.php';
+}
+
 // The new listings the free limit held back, kept for a move to Pro (3.36.0).
 if ( ! class_exists( 'TCGiant_Sync_Limit_Held', false ) ) {
 	require_once __DIR__ . '/class-tcgiant-sync-limit-held.php';
@@ -4613,9 +4619,11 @@ class TCGiant_Sync_Importer {
 
 		// Holding eBay's figure, with eBay's sales so far recorded as taken
 		// off it: a full read would write the same.
+		// eBay sent less than the stock (3.45.0 fix round 1, review 1's M6):
+		// eBay's figure is what the buffer leaves of the stock.
 		$product = wc_get_product( $pid );
 		if ( ! $product || ! $product->is_type( 'simple' ) || ! $product->managing_stock()
-			|| null === $product->get_stock_quantity() || (int) $product->get_stock_quantity() !== $available
+			|| null === $product->get_stock_quantity() || self::stock_as_sent( $product, $item_id ) !== $available
 			|| TCGiant_Sync_Inventory::sold_seen( $pid, $item_id ) !== (int) $sold ) {
 			return 0;
 		}
@@ -9027,7 +9035,11 @@ class TCGiant_Sync_Importer {
 			$done->absorbed = true;
 			TCGiant_Sync_Inventory::absorb_sold( $existing_id, $item_id, '', (int) $sold, (int) $was - (int) $now, $ebay_left );
 		};
-		$now = TCGiant_Sync_Inventory::lower_stock_to( $existing_id, max( 0, $ebay_left - $unsent ), null === $was ? null : $absorb );
+		// eBay was sent less than the stock (3.45.0): its figure is not the
+		// stock - only its sales since the record come off, and a website
+		// sale is already in the stock.
+		$buffered = null !== $was ? self::stock_beside_buffer( $existing_id, $item_id, '', $ebay_left, (int) $sold ) : null;
+		$now      = TCGiant_Sync_Inventory::lower_stock_to( $existing_id, null !== $buffered ? $buffered : max( 0, $ebay_left - $unsent ), null === $was ? null : $absorb );
 
 		if ( null !== $now ) {
 			// Nothing to lower: the record moves on all the same.
@@ -9039,9 +9051,15 @@ class TCGiant_Sync_Importer {
 			// the push that tells it, as the import queues (fix round 4) -
 			// whether or not this lowered anything. WooCommerce may already be
 			// lower for another change eBay never got, an edit whose push gave
-			// up (release fix round 3).
-			if ( $unsent > 0 && $ebay_left > $now ) {
+			// up (release fix round 3). Above what a buffer leaves of it
+			// (3.45.0).
+			if ( $unsent > 0 && $ebay_left > ( null !== $buffered ? self::sent_of( $existing_id, (int) $now ) : $now ) ) {
 				TCGiant_Sync_Inventory::queue_after_ebay_sale( $existing_id );
+			} elseif ( null !== $buffered && null !== $was && $now < $was && $ebay_left < self::sent_of( $existing_id, (int) $now ) ) {
+				// eBay's sales came off where "Show at most on eBay" leaves
+				// more than eBay shows (fix round 1, review 1's H3): one push
+				// tops eBay up - a raise (fix round 2, review 2's R2-M1).
+				TCGiant_Sync_Inventory::queue_top_up( $existing_id );
 			}
 
 			TCGiant_Sync_Logger::log( sprintf(
@@ -9049,6 +9067,51 @@ class TCGiant_Sync_Importer {
 				$source, $item_id, $existing_id, $now, (int) $listed, (int) $sold
 			) );
 		}
+	}
+
+	/**
+	 * The stock eBay's figure leaves a product at where eBay was sent less
+	 * than its stock (3.45.0, TCGiant_Sync_Stock_Buffer::stock_beside()), or
+	 * null: eBay's figure is the stock - and null where the buffer is not
+	 * loaded.
+	 *
+	 * @param int|object $product   The product whose stock it is.
+	 * @param string     $item_id   The listing read.
+	 * @param string     $sku       eBay's variation SKU, or ''.
+	 * @param int        $available What eBay has available.
+	 * @param int|null   $sold      eBay's QuantitySold.
+	 * @return int|null
+	 */
+	private static function stock_beside_buffer( $product, $item_id, $sku, $available, $sold ) {
+		return class_exists( 'TCGiant_Sync_Stock_Buffer' ) ? TCGiant_Sync_Stock_Buffer::stock_beside( $product, $item_id, $sku, $available, $sold ) : null;
+	}
+
+	/**
+	 * A product's stock as eBay shows it when nothing has changed (fix round
+	 * 1, review 1's M6): what "Keep back from eBay" and "Show at most on
+	 * eBay" leave of it where eBay was sent that, else the stock itself.
+	 *
+	 * @param WC_Product $product The product.
+	 * @param string     $item_id The listing.
+	 * @return int
+	 */
+	private static function stock_as_sent( $product, $item_id ) {
+		$stock = (int) $product->get_stock_quantity();
+		return class_exists( 'TCGiant_Sync_Stock_Buffer' ) && TCGiant_Sync_Stock_Buffer::marked( (int) $product->get_id(), (string) $item_id )
+			? (int) TCGiant_Sync_Stock_Buffer::figure( $product, $stock )
+			: $stock;
+	}
+
+	/**
+	 * What eBay is sent of a stock (3.45.0): never below 0, the stock itself
+	 * with no buffer.
+	 *
+	 * @param int $product_id The product.
+	 * @param int $stock      Its stock.
+	 * @return int
+	 */
+	private static function sent_of( $product_id, $stock ) {
+		return max( 0, (int) ( class_exists( 'TCGiant_Sync_Stock_Buffer' ) ? TCGiant_Sync_Stock_Buffer::figure( (int) $product_id, (int) $stock ) : $stock ) );
 	}
 
 	/**
@@ -10578,9 +10641,17 @@ class TCGiant_Sync_Importer {
 					$done->absorbed = true;
 					TCGiant_Sync_Inventory::absorb_sold( $product_id, $item_id, '', $sold_n, (int) $before - (int) $now, $left );
 				};
-				$now    = TCGiant_Sync_Inventory::lower_stock_to( $product_id, (int) $item['Quantity'] - (int) $item['SellingStatus']['QuantitySold'], null === $before ? null : $absorb );
+				// Not to eBay's figure where eBay was sent less than the stock
+				// (3.45.0): its sales since the record only.
+				$buffer = null !== $before ? self::stock_beside_buffer( $product_id, $item_id, '', $left, $sold_n ) : null;
+				$now    = TCGiant_Sync_Inventory::lower_stock_to( $product_id, null !== $buffer ? $buffer : (int) $item['Quantity'] - (int) $item['SellingStatus']['QuantitySold'], null === $before ? null : $absorb );
 				if ( null !== $before && null !== $now && ! $done->absorbed ) {
 					$absorb( $now );
+				}
+				// A cap topped up after eBay's sales (fix round 1, H3): a
+				// raise (fix round 2, R2-M1).
+				if ( null !== $buffer && null !== $before && null !== $now && $now < (int) $before && $left < self::sent_of( $product_id, (int) $now ) ) {
+					TCGiant_Sync_Inventory::queue_top_up( $product_id );
 				}
 				if ( null !== $before && null !== $now && $now < (int) $before ) {
 					TCGiant_Sync_Logger::log( sprintf(
@@ -10650,7 +10721,22 @@ class TCGiant_Sync_Importer {
 					if ( ! self::is_live_listing( $new ) ) {
 						self::settle_ended_listing( $adopted, $new, (string) $new['SellingStatus']['ListingStatus'], 'Inventory pruning' );
 					} elseif ( empty( $new['Variations'] ) && isset( $new['Quantity'], $new['SellingStatus']['QuantitySold'] ) ) {
-						$now = TCGiant_Sync_Inventory::lower_stock_to( $adopted, (int) $new['Quantity'] - (int) $new['SellingStatus']['QuantitySold'] );
+						// Not to eBay's figure where the relist carries a buffer's
+						// (3.45.0): its sales since its record only.
+						$buffer = self::stock_beside_buffer( $adopted, (string) $new_id, '', max( 0, (int) $new['Quantity'] - (int) $new['SellingStatus']['QuantitySold'] ), (int) $new['SellingStatus']['QuantitySold'] );
+						// Its record moves on with the sales it takes off (fix
+						// round 1, review 1's M3), as the live listing's above:
+						// the sale check after it does not take them again.
+						$new_sold = (int) $new['SellingStatus']['QuantitySold'];
+						$new_left = max( 0, (int) $new['Quantity'] - $new_sold );
+						$new_was  = wc_get_product( $adopted );
+						$new_was  = $new_was && $new_was->managing_stock() ? (int) $new_was->get_stock_quantity() : null;
+						$new_rec  = null !== $buffer && null !== $new_was
+							? function ( $now ) use ( $adopted, $new_id, $new_sold, $new_was, $new_left ) {
+								TCGiant_Sync_Inventory::absorb_sold( $adopted, (string) $new_id, '', $new_sold, (int) $new_was - (int) $now, $new_left );
+							}
+							: null;
+						$now    = TCGiant_Sync_Inventory::lower_stock_to( $adopted, null !== $buffer ? $buffer : (int) $new['Quantity'] - (int) $new['SellingStatus']['QuantitySold'], $new_rec );
 						if ( null !== $now ) {
 							TCGiant_Sync_Logger::log( sprintf(
 								'Inventory pruning: eBay item %s - WC #%d stock now %d (eBay: %d listed, %d sold).',

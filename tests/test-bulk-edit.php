@@ -404,14 +404,14 @@ $names = panel_names();
 $want  = array();
 foreach ( TCGiant_Sync_Bulk_Edit::fields() as $field => $def ) {
 	$want[] = 'tcgiant_bulk_' . $field;
-	if ( in_array( $def['kind'], array( 'category', 'second', 'note', 'text', 'price' ), true ) ) {
+	if ( in_array( $def['kind'], array( 'category', 'second', 'note', 'text', 'price', 'count' ), true ) ) {
 		$want[] = 'tcgiant_bulk_' . $field . '_value';
 	}
 }
 check( 'every field, in its order: a choice, and a box beside a text, price or category', $names, $want );
-check( 'the fields: steps 1 to 4, eBay price, the identifier\'s "does not apply", the seven 3.38.0 fields', array_keys( TCGiant_Sync_Bulk_Edit::fields() ), array( 'item_type', 'category', 'condition_type', 'grader', 'condition_id', 'listing_type', 'listing_duration', 'fulfillment', 'ebay_price', 'identifier_none', 'subtitle', 'condition_note', 'second_category', 'buy_it_now', 'reserve', 'brand', 'mpn' ) );
+check( 'the fields: steps 1 to 4, eBay price, the identifier\'s "does not apply", the seven 3.38.0 fields, and the stock buffer\'s two (3.45.0)', array_keys( TCGiant_Sync_Bulk_Edit::fields() ), array( 'item_type', 'category', 'condition_type', 'grader', 'condition_id', 'listing_type', 'listing_duration', 'fulfillment', 'ebay_price', 'identifier_none', 'subtitle', 'condition_note', 'second_category', 'buy_it_now', 'reserve', 'brand', 'mpn', 'stock_keep_back', 'stock_show_at_most' ) );
 preg_match_all( '#<select class="tcgiant-bulk-change" name="([a-z_]+)">\s*<option value="">([^<]*)</option>#', $page, $first );
-check( 'every select starts at "— No change —", the value ""', array( count( $first[1] ), array_unique( $first[2] ) ), array( 17, array( '— No change —' ) ) );
+check( 'every select starts at "— No change —", the value ""', array( count( $first[1] ), array_unique( $first[2] ) ), array( 19, array( '— No change —' ) ) );
 preg_match_all( '#<select class="tcgiant-bulk-change" name="tcgiant_bulk_([a-z_]+)">(.*?)</select>#s', $page, $sel, PREG_SET_ORDER );
 $opts = array();
 foreach ( $sel as $s ) {
@@ -447,7 +447,7 @@ check( 'the rules line: set Listing duration with Auction', false !== strpos( ht
 // No change - each select, every box and text area emptied, the boxes hidden.
 // Pinned in its source here; tools/check-bulk-edit-js.js runs it in jsdom.
 check( 'the group\'s script: Set to and a typed ID show their box; each Bulk Edit opened resets every select, box and text area, and hides the boxes', array( substr_count( $page, "box.on( 'change', 'select.tcgiant-bulk-change', function () {" ), substr_count( $page, "\$( '#wpbody' ).on( 'click', '#doaction, #doaction2', function () {\n\t\t\t\tbox.find( 'select.tcgiant-bulk-change' ).val( '' );\n\t\t\t\tbox.find( 'input.text, textarea' ).val( '' );\n\t\t\t\tbox.find( '.tcgiant-bulk-input' ).hide();\n\t\t\t} );" ) ), array( 1, 1 ) );
-check( 'the boxes beside start hidden and empty; the text boxes keep eBay\'s lengths', array( substr_count( $page, 'class="tcgiant-bulk-input" style="display:none;"' ), substr_count( $page, 'value="" maxlength="55"' ), substr_count( $page, 'value="" maxlength="65"' ), substr_count( $page, 'maxlength="1000"></textarea>' ) ), array( 9, 1, 2, 1 ) );
+check( 'the boxes beside start hidden and empty; the text boxes keep eBay\'s lengths', array( substr_count( $page, 'class="tcgiant-bulk-input" style="display:none;"' ), substr_count( $page, 'value="" maxlength="55"' ), substr_count( $page, 'value="" maxlength="65"' ), substr_count( $page, 'maxlength="1000"></textarea>' ) ), array( 11, 1, 2, 1 ) );
 $GLOBALS['W']['caps']['edit_products'] = false;
 check( 'not drawn for a user who may not edit products', panel(), '' );
 unset( $GLOBALS['W']['caps']['edit_products'] );
@@ -879,6 +879,32 @@ fresh();
 product( 1011, array() );
 bulk( array( 1011 ), array( 'subtitle' => 'set', 'subtitle_value' => '   ' ) );
 check( 'a value refused, nothing skipped or denied: a warning notice, not a success', ( function () { ob_start(); TCGiant_Sync_Bulk_Edit::bulk_edit_notice(); $h = (string) ob_get_clean(); return array( false !== strpos( $h, 'notice-warning' ), false !== strpos( $h, 'notice-success' ) ); } )(), array( true, false ) );
+
+// -----------------------------------------------------------------------------
+echo "\n== The stock buffer's two fields (3.45.0)\n";
+
+// Saved as the eBay tab's save keeps them (TCGiant_Sync_Stock_Buffer::
+// save_posted()); nothing queued or sent - the listing takes the figure at
+// its next stock change, or Send stock to eBay.
+fresh();
+product( 1020, array() );
+product( 1021, array( TCGiant_Sync_Stock_Buffer::KEEP_META => '5' ) );
+bulk( array( 1020, 1021 ), array( 'stock_keep_back' => 'set', 'stock_keep_back_value' => '2', 'stock_show_at_most' => 'set', 'stock_show_at_most_value' => '0' ) );
+check( 'Keep back set to 2, Show at most to 0 (none for the product): both products, nothing queued or sent', array( m( 1020, TCGiant_Sync_Stock_Buffer::KEEP_META ), m( 1021, TCGiant_Sync_Stock_Buffer::KEEP_META ), m( 1020, TCGiant_Sync_Stock_Buffer::CAP_META ), sent() ), array( '2', '2', '0', array() ) );
+$words = notice();
+check( '  the notice: set, and how to apply it now', array( false !== strpos( $words, 'Keep back from eBay: set to 2 on 2 products.' ), false !== strpos( $words, 'were not sent to eBay either: each listing takes the new figure at its next stock change. To apply it now, use Bulk actions, Send stock to eBay.' ) ), array( true, true ) );
+fresh();
+bulk( array( 1020, 1021 ), array( 'stock_keep_back' => 'clear' ) );
+check( 'Clear: the shop\'s again, nothing sent', array( m( 1020, TCGiant_Sync_Stock_Buffer::KEEP_META ), m( 1021, TCGiant_Sync_Stock_Buffer::KEEP_META ), sent() ), array( null, null, array() ) );
+fresh();
+bulk( array( 1020 ), array( 'stock_keep_back' => 'set', 'stock_keep_back_value' => 'two' ) );
+check( 'a figure that is not a whole number: nothing changed, said', array( m( 1020, TCGiant_Sync_Stock_Buffer::KEEP_META ), bulk_lines() ), array( null, array( 'Bulk edit of eBay fields (WooCommerce Bulk Edit, user #1): 0 of 1 products changed. Keep back from eBay: not changed - "two" is not a whole number of 0 or more. These fields were not sent to eBay. A stock left at No change is sent only for a product whose last stock change or website sale never reached eBay; to send a stock as it is, use Send stock to eBay.' ) ) );
+fresh();
+bulk( array( 1020 ), array( 'stock_keep_back' => 'set', 'stock_keep_back_value' => '1234567890' ) );
+check( 'a figure too long (3.45.0 fix round 1): nothing changed, said in the words of Settings', array( m( 1020, TCGiant_Sync_Stock_Buffer::KEEP_META ), false !== strpos( implode( ' ', bulk_lines() ), 'Keep back from eBay: not changed - "1234567890" is more than 999999999, the most it takes.' ) ), array( null, true ) );
+fresh();
+bulk( array( 1020 ), array( 'stock_keep_back' => '' ) );
+check( 'left at No change: nothing read or written', array( m( 1020, TCGiant_Sync_Stock_Buffer::KEEP_META ), bulk_lines() ), array( null, array() ) );
 
 // -----------------------------------------------------------------------------
 echo "\n== The shared rules\n";

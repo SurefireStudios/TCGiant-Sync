@@ -13,6 +13,12 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+// "Keep back from eBay" and "Show at most on eBay" (3.45.0): what each push
+// sends of a stock. Where it is not there, every figure is the stock.
+if ( ! class_exists( 'TCGiant_Sync_Stock_Buffer', false ) && file_exists( __DIR__ . '/class-tcgiant-sync-stock-buffer.php' ) ) {
+	require_once __DIR__ . '/class-tcgiant-sync-stock-buffer.php';
+}
+
 /**
  * TCGiant_Sync_Inventory class
  */
@@ -271,6 +277,19 @@ class TCGiant_Sync_Inventory {
 	const AUCTION_LISTED_KEY = '_ebay_auction_listed_item';
 
 	/**
+	 * eBay was sent less than this product's stock (3.45.0,
+	 * TCGiant_Sync_Stock_Buffer): array( item, at ), on the product whose
+	 * stock it is - a product, a variation keeping its own, or the variable
+	 * product keeping a stock its variations share - for the listing it was
+	 * sent to. While it is on, eBay's figure for that listing is not the
+	 * stock, and only eBay's own sales come off it (stock_beside_buffer()).
+	 * Written when a figure below the stock lands on eBay, taken off when
+	 * eBay is left showing the stock itself (note_landed()). A setting
+	 * changed since never decides it: eBay's figure is what was sent.
+	 */
+	const BUFFERED_META = '_ebay_stock_buffered';
+
+	/**
 	 * The variations whose save under way enables or disables them (3.44.0),
 	 * by ID: 'enable' or 'disable', noted as WooCommerce begins the outermost
 	 * save of the variation (note_status_change()), acted on and taken off as
@@ -523,6 +542,13 @@ class TCGiant_Sync_Inventory {
 		// reason for an end is taken as the shop's own only then.
 		$had_stock = $product->managing_stock() ? (int) $product->get_stock_quantity() > 0 : $product->is_in_stock();
 
+		// eBay was sent less than the stock on this listing (3.45.0): what it
+		// had left is not the stock - a buffer kept the rest back here. Only
+		// eBay's sales since its record come off, and its record moves on to
+		// them; nothing is noted as unsold.
+		$item_id  = is_array( $item ) && isset( $item['ItemID'] ) && is_scalar( $item['ItemID'] ) ? (string) $item['ItemID'] : (string) get_post_meta( $product_id, '_ebay_item_id', true );
+		$buffered = self::stock_beside_buffer( $product, $item_id, '', $ebay_remaining, (int) $sold );
+
 		// eBay has already accounted for its own sales, so nothing written here
 		// may travel back to eBay as a stock change of ours.
 		self::begin_ebay_origin();
@@ -536,20 +562,29 @@ class TCGiant_Sync_Inventory {
 		try {
 			if ( $product->managing_stock() ) {
 				$current = $product->get_stock_quantity();
-				$held    = null === $current ? $ebay_remaining : min( (int) $current, $ebay_remaining );
+				$held    = null === $current ? $ebay_remaining : min( (int) $current, null !== $buffered ? $buffered : $ebay_remaining );
 
 				// Recorded when the shop still holds some, for a shop that sells
 				// only on eBay to review. Not when it holds none: that is the
 				// website sale whose listing the plugin then ended, and offering
 				// eBay's figure for it would invite putting a sold item back.
-				if ( null !== $current && (int) $current > 0 && $ebay_remaining > (int) $current ) {
+				if ( null === $buffered && null !== $current && (int) $current > 0 && $ebay_remaining > (int) $current ) {
 					self::note_unsold_at_end( $product_id, $ebay_remaining, (int) $current );
 				} else {
 					delete_post_meta( $product_id, '_ebay_unsold_at_end' );
 				}
 
+				// Under the mark, the record of eBay's sales written with the
+				// stock (fix round 1, review 1's L2), as lower_stock_to() does.
+				$armed = null !== $buffered && null !== $current && $held < (int) $current && null !== self::own_record( $product_id, $item_id, '' )
+					? self::arm_record( $product, (int) $current, function () use ( $product_id, $item_id, $sold ) {
+						self::record_sold_seen( $product_id, $item_id, '', (int) $sold );
+					} )
+					: null;
+
 				if ( null === $current || $held < (int) $current ) {
 					wc_update_product_stock( $product_id, $held, 'set' );
+					self::disarm_record( $armed );
 
 					// Confirm the quantity landed before touching anything else.
 					//
@@ -576,6 +611,11 @@ class TCGiant_Sync_Inventory {
 				// for the same reason the quantity never rises.
 				if ( $held <= 0 ) {
 					wc_update_product_stock_status( $product_id, 'outofstock' );
+				}
+
+				// The buffered listing's sales are in the stock now (3.45.0).
+				if ( null !== $buffered && null !== self::own_record( $product_id, $item_id, '' ) ) {
+					self::record_sold_seen( $product_id, $item_id, '', (int) $sold );
 				}
 			} else {
 				// No quantity to compare, only a status: eBay can say it sold out,
@@ -1154,6 +1194,15 @@ class TCGiant_Sync_Inventory {
 				if ( null !== $since ) {
 					$to = max( 0, (int) $before - $since );
 				}
+				// eBay sent less than its stock (3.45.0): eBay's figure is not
+				// its stock either - only eBay's sales since its record come
+				// off, and a website sale, sent or not, is already in it.
+				$buffered = null === $since && null !== $before
+					? self::stock_beside_buffer( $variation, $item_id, (string) $ebay[ $i ]['sku'], (int) $available, null === $ebay[ $i ]['sold'] ? null : (int) $ebay[ $i ]['sold'] )
+					: null;
+				if ( null !== $buffered ) {
+					$to = $buffered;
+				}
 				// What this takes off is eBay's sales reaching the stock: the
 				// stock push must not take them off again (sold_seen()).
 				// Written with the stock (lower_stock_to()), and once:
@@ -1175,9 +1224,14 @@ class TCGiant_Sync_Inventory {
 				// eBay still above WooCommerce with a sale that never got
 				// there: the push that tells it, as the import queues (fix
 				// round 4), whether or not this lowered anything (release fix
-				// round 3).
-				if ( $units > 0 && null !== $now && (int) $available > $now ) {
+				// round 3). Above what a buffer leaves of it (3.45.0).
+				if ( $units > 0 && null !== $now && (int) $available > ( null !== $buffered ? self::sends( $variation, $now ) : $now ) ) {
 					self::queue_after_ebay_sale( $variation_id );
+				} elseif ( null !== $buffered && null !== $now && null !== $before && $now < (int) $before && self::sends( $variation, $now ) > (int) $available ) {
+					// eBay's sales came off where "Show at most on eBay" leaves
+					// more than eBay shows (fix round 1, review 1's H3): one
+					// push tops eBay up - a raise (fix round 2, R2-M1).
+					self::queue_top_up( $variation_id );
 				}
 
 				if ( null === $now ) {
@@ -1341,9 +1395,10 @@ class TCGiant_Sync_Inventory {
 			return array( 'was' => $pool, 'now' => $pool );
 		}
 
-		$pooled = self::pooled_variations( $parent_id, $ebay );
-		$unseen = 0;
-		$known  = array();
+		$pooled   = self::pooled_variations( $parent_id, $ebay );
+		$unseen   = 0;
+		$known    = array();
+		$buffered = self::buffered_on( (int) $parent_id, (string) $item_id );
 
 		foreach ( $pooled as $i => $p ) {
 			if ( '' === $p['sku'] || null === $p['available'] ) {
@@ -1353,7 +1408,12 @@ class TCGiant_Sync_Inventory {
 			if ( null === $record && 'unrecorded' === $hold ) {
 				continue;
 			}
-			$u = self::unseen( $p['wc_id'], $item_id, $p['sku'], (int) $p['available'], (int) $p['sold'], null === $record ? $pool : null );
+			// eBay sent less than the shared stock (3.45.0): a variation with
+			// no record is not read against the stock; it is recorded below,
+			// its sales so far taken as in the stock, as an import takes them.
+			$u = null === $record && $buffered
+				? 0
+				: self::unseen( $p['wc_id'], $item_id, $p['sku'], (int) $p['available'], (int) $p['sold'], null === $record ? $pool : null );
 			if ( null !== $u ) {
 				$unseen     += $u;
 				$known[ $i ] = true;
@@ -1444,6 +1504,52 @@ class TCGiant_Sync_Inventory {
 			'item'       => (string) $target['item_id'],
 			'token'      => self::mark_push_pending( $holder_id ),
 		) ), self::PUSH_GROUP );
+	}
+
+	/**
+	 * "Show at most on eBay" topped up after eBay's sales (3.45.0 fix round
+	 * 1, review 1's H3): a raise of eBay's figure, never a sale's, so it is
+	 * queued as queue_after_import() queues one (fix round 2, review 2's
+	 * R2-M1) - no sale's priority, so it waits at the 80% ceiling - and not
+	 * at all while a push of the product that sends the full figure is queued
+	 * or running (live_edit_push()): that one sends it. A website sale's push
+	 * is no reason to wait (fix round 3, review 3's R3-M1): it only lowers
+	 * eBay's figure, never raises it, and while it was tried again every eBay
+	 * sale read went untopped, so a small cap could run down to 0 and end the
+	 * listing. Either order is safe: the top-up sends what the buffer leaves
+	 * of the stock as it then stands. One a minute at most (the 60-second
+	 * mark).
+	 *
+	 * @param int $product_id Product or variation whose stock was lowered.
+	 * @return bool Whether a push was queued.
+	 */
+	public static function queue_top_up( $product_id ) {
+		$product  = wc_get_product( (int) $product_id );
+		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
+		if ( ! $product || ! self::pushes_enabled( $settings ) || ! self::may_queue( $settings ) ) {
+			return false;
+		}
+
+		$target = self::instance()->push_target( $product, false );
+		if ( is_wp_error( $target ) ) {
+			return false;
+		}
+
+		$holder_id = (int) $target['product_id'];
+		$dedup_key = 'tcgiant_stock_pending_' . $holder_id;
+		if ( get_transient( $dedup_key ) || self::live_edit_push( $holder_id ) ) {
+			return false;
+		}
+		set_transient( $dedup_key, 1, 60 );
+
+		as_enqueue_async_action( self::PUSH_HOOK, array( array(
+			'product_id' => $holder_id,
+			'reason'     => 'edit',
+			'item'       => (string) $target['item_id'],
+			'token'      => self::mark_push_pending( $holder_id ),
+		) ), self::PUSH_GROUP );
+
+		return true;
 	}
 
 	/**
@@ -2463,7 +2569,9 @@ class TCGiant_Sync_Inventory {
 			$sent[ $holder ] = true;
 			// A disabled variation keeping its own stock (3.44.0): its push
 			// sends 0, or nothing - said apart.
-			self::said_add( $said, self::own_stock_off( $product ) ? 'off_own' : self::send_stock_call( $queued['target'], (int) $queued['stock'], $auto_end ), $holder );
+			// By what eBay is sent: a buffer's figure at 0 is at 0 there
+			// (3.45.0); an auction's own stock.
+			self::said_add( $said, self::own_stock_off( $product ) ? 'off_own' : self::send_stock_call( $queued['target'], $queued['target']['auction'] ? (int) $queued['stock'] : self::own_figure( $holder, (int) $queued['stock'] ), $auto_end ), $holder );
 			return;
 		}
 
@@ -4772,7 +4880,9 @@ class TCGiant_Sync_Inventory {
 		self::$beat_run = $safety ? array( (int) $job['product_id'], (string) $safety['run'] ) : null;
 
 		try {
-			$result = ( self::is_priority( $job, $wc ) )
+			// Going to 0 is going to 0 on eBay, where a buffer leaves it
+			// nothing (3.45.0); an auction's own stock as ever.
+			$result = ( self::is_priority( $job, $target['auction'] ? $wc : self::own_figure( $product, $wc ) ) )
 				? TCGiant_Sync_API::instance()->with_stock_priority( $push )
 				: $push();
 		} catch ( Throwable $e ) {
@@ -5163,7 +5273,9 @@ class TCGiant_Sync_Inventory {
 		$product_id = $job['product_id'];
 		$item_id    = (string) $read['item_id'];
 		$sold       = (int) $read['sold'];
-		$before     = 'order' === $job['reason'] && isset( $job['before'] ) ? (int) $job['before'] : null;
+		// Not eBay's figure against the stock before a sale where eBay was
+		// sent less than the stock (3.45.0): the record decides.
+		$before     = self::before_unbuffered( (int) $product_id, $item_id, 'order' === $job['reason'] && isset( $job['before'] ) ? (int) $job['before'] : null );
 
 		$unseen = ! empty( $job['relisted'] ) && null === self::own_record( $product_id, $item_id, $ledger_sku )
 			? 0
@@ -5237,6 +5349,31 @@ class TCGiant_Sync_Inventory {
 			return $this->push_off_variation( $job, $target, $wc, $auto_end );
 		}
 
+		// A variation marked as removed by eBay after "Keep back from eBay" or
+		// "Show at most on eBay" left it 0 (3.45.0 fix round 1, review 1's
+		// H2) is read once first (fix round 2, review 2's R2-H1): the mark may
+		// come from an answer that left it out while eBay still lists it, or
+		// stand from before an Update put it back. Still on eBay: the mark
+		// goes, and the push goes on as any. Not on eBay: nothing is sent, no
+		// try again. One GetItem, only for such a variation; a read that fails
+		// is tried again, as any push's.
+		if ( $target['variation'] && self::removed_at_buffer( (int) $product_id, (string) $item_id ) ) {
+			$read = $this->read_listing( array( 'pool' => true ) + $target, $job );
+			if ( isset( $read['stop'] ) ) {
+				return $read['stop'];
+			}
+			if ( isset( $read['error'] ) ) {
+				return self::read_failed( $read['error'] );
+			}
+			$on = empty( $read['auction'] ) ? self::variation_on( $target, (int) $product_id, (array) ( $read['variations'] ?? array() ) ) : null;
+			if ( null === $on ) {
+				TCGiant_Sync_Logger::log( sprintf( 'Stock push for WC #%d: variation %s is not on eBay listing %s - eBay removed it when "Keep back from eBay" or "Show at most on eBay" left it 0 before it had sold - so nothing was sent. Update eBay Listing on the product adds it back.', $product_id, $sku, $item_id ) );
+				return self::push_outcome( 'manual' === $reason ? 'skipped' : 'success', 'Variation removed by eBay at the buffer\'s 0' );
+			}
+			delete_post_meta( (int) $product_id, self::variation_mark( 'ZEROED_META' ) );
+			TCGiant_Sync_Logger::log( sprintf( 'Stock push for WC #%d: variation %s is on eBay listing %s, so the mark of its removal by eBay was taken off and its stock is sent.', $product_id, $sku, $item_id ) );
+		}
+
 		// A stock change made in WooCommerce says what WooCommerce holds, and
 		// is sent as it is without asking eBay first. Everything else reads
 		// first: a sale, a push by hand, a try again, a mark 3.27 left, and an
@@ -5248,11 +5385,16 @@ class TCGiant_Sync_Inventory {
 		// "Send stock to eBay" at 0 reads first too (3.40.0 fix round 1, the
 		// owner's decision): a listing, or a variation, eBay already shows at
 		// 0 is left as it is; one showing more goes on as a stock change to 0.
+		//
+		// At 0 is at 0 on eBay: what a buffer leaves of the stock (3.45.0,
+		// TCGiant_Sync_Stock_Buffer), which is the stock itself with none.
+		$holder      = wc_get_product( (int) $product_id );
+		$on_ebay     = self::own_figure( $holder, $wc );
 		$reads_first = 'edit' !== $reason
 			|| (int) $job['attempt'] > 1
 			|| ! empty( $job['check_ended'] )
-			|| ( ! empty( $job['asked'] ) && (int) $wc <= 0 )
-			|| ( (int) $wc <= 0 && ! $target['variation'] && $auto_end && ! self::type_confirmed_fixed( $target['owner_id'], $item_id )
+			|| ( ! empty( $job['asked'] ) && $on_ebay <= 0 )
+			|| ( $on_ebay <= 0 && ! $target['variation'] && $auto_end && ! self::type_confirmed_fixed( $target['owner_id'], $item_id )
 				&& ( ! self::type_says_fixed( $target['owner_id'] ) || self::shop_may_have_auctions() ) );
 
 		if ( $reads_first ) {
@@ -5266,7 +5408,7 @@ class TCGiant_Sync_Inventory {
 				// eBay's answer never said how many: on the last try the shop's
 				// own figure is sent rather than nothing at all.
 				if ( 'no_quantity' === $read['error']->get_error_code() && (int) $job['attempt'] > count( self::PUSH_RETRY_DELAYS ) ) {
-					$want = max( 0, (int) $wc );
+					$want = self::sends( $holder, $wc );
 				} else {
 					return self::read_failed( $read['error'] );
 				}
@@ -5286,9 +5428,11 @@ class TCGiant_Sync_Inventory {
 				}
 
 				// A sale, or a push by hand, never puts a unit back on eBay; a
-				// stock change made in WooCommerce sends what it says.
-				$want = 'edit' === $reason ? max( 0, $wc ) : max( 0, min( $avail, $wc ) );
-				$job  = self::record_once_landed( $job, $item_id, $target['variation'] ? $sku : '', (int) $read['sold'], $want, $wc );
+				// stock change made in WooCommerce sends what it says - what a
+				// buffer leaves of it (3.45.0), the stock itself with none.
+				$sends = self::sends( $holder, $wc );
+				$want  = 'edit' === $reason ? $sends : max( 0, min( $avail, $sends ) );
+				$job   = self::record_once_landed( $job, $item_id, $target['variation'] ? $sku : '', (int) $read['sold'], $want, self::own_figure( $holder, $wc ) );
 
 				if ( $want === $avail ) {
 					if ( ! empty( $job['asked'] ) && 0 === $want ) {
@@ -5297,21 +5441,22 @@ class TCGiant_Sync_Inventory {
 						TCGiant_Sync_Logger::log( sprintf( 'Stock push for WC #%d: %s already shows %d available, so nothing was sent.', $product_id, self::listing_words( $target, $sku ), $avail ) );
 					}
 					self::landed( $job );
-					if ( $target['variation'] && $want === max( 0, (int) $wc ) ) {
+					self::note_landed( $holder, $item_id, $want, (int) $wc );
+					if ( $target['variation'] && $want === $sends ) {
 						self::forget_off( (int) $product_id );
 					}
 					return self::push_outcome( 'manual' === $reason ? 'skipped' : 'success', sprintf( 'eBay already shows %d', $avail ) );
 				}
 			}
 		} else {
-			$want = max( 0, (int) $wc );
+			$want = self::sends( $holder, $wc );
 		}
 
 		$result = $this->send_to_ebay( $job, $target, $want, $sku, $auto_end );
 
 		// Its own figure on eBay (3.44.0): the 0 sent while it was disabled is
 		// eBay's figure for it no longer.
-		if ( 'success' === $result['status'] && $target['variation'] && $want === max( 0, (int) $wc ) ) {
+		if ( 'success' === $result['status'] && $target['variation'] && $want === self::sends( $holder, $wc ) ) {
 			self::forget_off( (int) $product_id );
 		}
 
@@ -5336,6 +5481,11 @@ class TCGiant_Sync_Inventory {
 		$product_id = $job['product_id'];
 		$item_id    = $target['item_id'];
 		$resent     = false;
+
+		// Marked before the call (fix round 1, review 1's M1): an answer lost
+		// on the way must not leave eBay's buffered figure to be read as the
+		// stock.
+		self::mark_before_send( (int) $product_id, (string) $item_id, (int) $want, array( $target['variation'] ? (string) $sku : '' ), array( (int) $product_id ) );
 
 		while ( true ) {
 			$sent   = $this->send_stock( $item_id, $want, $sku, $target['variation'], $auto_end );
@@ -5448,15 +5598,18 @@ class TCGiant_Sync_Inventory {
 		// variation (never more on eBay than here), by its rules for the last
 		// with stock.
 		if ( ! self::others_keep_stock( (int) $target['owner_id'], $ebay, $index ) ) {
-			if ( $wc < 1 ) {
+			// No higher than what a buffer leaves of its own stock (3.45.0),
+			// which is its own stock with none.
+			$keep = self::sends( (int) $product_id, $wc );
+			if ( $keep < 1 ) {
 				return $this->send_to_ebay( $job, $target, 0, $sku, $auto_end );
 			}
-			TCGiant_Sync_Logger::warning( sprintf( 'Stock push for WC #%d: %s is the only variation of that listing with stock, so it was not set to 0 - that would leave the listing nothing to sell, which eBay refuses without Out-of-Stock control. It is kept no higher than its own stock, %d. To stop it selling on eBay, end the listing in Seller Hub, or enable another variation.', $product_id, $words, $wc ) );
-			if ( $wc >= $avail ) {
+			TCGiant_Sync_Logger::warning( sprintf( 'Stock push for WC #%d: %s is the only variation of that listing with stock, so it was not set to 0 - that would leave the listing nothing to sell, which eBay refuses without Out-of-Stock control. It is kept no higher than its own stock, %d%s. To stop it selling on eBay, end the listing in Seller Hub, or enable another variation.', $product_id, $words, $keep, self::buffer_said( $wc, $keep ) ) );
+			if ( $keep >= $avail ) {
 				self::landed( $job );
 				return self::push_outcome( $done, sprintf( 'eBay already shows %d', $avail ) );
 			}
-			return $this->send_to_ebay( $job, $target, $wc, $sku, $auto_end );
+			return $this->send_to_ebay( $job, $target, $keep, $sku, $auto_end );
 		}
 
 		// Its record of eBay's sales, where it has none, before its 0: a read
@@ -5608,7 +5761,9 @@ class TCGiant_Sync_Inventory {
 		if ( ! is_array( $off ) || (string) ( $off['item'] ?? '' ) !== (string) $item_id ) {
 			return false;
 		}
-		if ( null !== $available && (int) $available === (int) $variation->get_stock_quantity() ) {
+		// Its own figure: what a buffer leaves of its stock (3.45.0), the
+		// stock itself with none.
+		if ( null !== $available && (int) $available === self::own_figure( $variation, (int) $variation->get_stock_quantity() ) ) {
 			delete_post_meta( $id, self::variation_mark( 'OFF_META' ) );
 			return false;
 		}
@@ -5630,6 +5785,418 @@ class TCGiant_Sync_Inventory {
 	 */
 	public static function sales_since_record( $product_id, $item_id, $sku, $available, $sold ) {
 		return self::unseen( (int) $product_id, (string) $item_id, (string) $sku, (int) $available, (int) $sold, null );
+	}
+
+	// ───────────────────────────────────────────────────────────────────────────
+	// "Keep back from eBay" and "Show at most on eBay" (3.45.0)
+	//
+	// Every quantity a push sends eBay of a tracked stock goes through
+	// TCGiant_Sync_Stock_Buffer::figure(): with neither set it is the stock
+	// exactly, and every push is what it was. With one set, eBay shows less
+	// than the shop holds, so eBay's figure is no longer the stock. Once such
+	// a figure has landed on a listing (BUFFERED_META), every place that read
+	// eBay's figure as the stock - the import, order sync's settle, an ended
+	// listing's settle, a push's read - takes off only eBay's own sales since
+	// its record (stock_beside_buffer()), so a sync never brings the stock
+	// down to the buffered figure, and a setting changed since decides
+	// nothing until the next push sends the new figure.
+	// ───────────────────────────────────────────────────────────────────────────
+
+	/**
+	 * What eBay is sent of a stock, never below 0: with no buffer,
+	 * max( 0, stock ), as every push sent it before 3.45.0.
+	 *
+	 * @param object|int $product The product or variation the stock is sent for.
+	 * @param int        $stock   The stock.
+	 * @return int
+	 */
+	public static function sends( $product, $stock ) {
+		return max( 0, self::own_figure( $product, $stock ) );
+	}
+
+	/**
+	 * A product's own figure on eBay - what a push leaves eBay showing when
+	 * it has sent the stock: with no buffer, the stock itself, below 0
+	 * included, as the checks against it compared it before 3.45.0.
+	 *
+	 * @param object|int $product The product or variation.
+	 * @param int        $stock   Its stock.
+	 * @return int
+	 */
+	public static function own_figure( $product, $stock ) {
+		return class_exists( 'TCGiant_Sync_Stock_Buffer' ) ? (int) TCGiant_Sync_Stock_Buffer::figure( $product, (int) $stock ) : (int) $stock;
+	}
+
+	/**
+	 * For a push's log line: TCGiant_Sync_Stock_Buffer::words(), '' where
+	 * eBay is sent the stock.
+	 *
+	 * @param int $stock  The stock.
+	 * @param int $figure What eBay is sent.
+	 * @return string
+	 */
+	private static function buffer_said( $stock, $figure ) {
+		return class_exists( 'TCGiant_Sync_Stock_Buffer' ) ? TCGiant_Sync_Stock_Buffer::words( (int) $stock, (int) $figure ) : '';
+	}
+
+	/**
+	 * Whether eBay was last sent less than this product's stock on this
+	 * listing (BUFFERED_META).
+	 *
+	 * @param int    $holder_id The product whose stock it is.
+	 * @param string $item_id   The listing.
+	 * @return bool
+	 */
+	public static function buffered_on( $holder_id, $item_id ) {
+		if ( '' === (string) $item_id ) {
+			return false;
+		}
+		$mark = get_post_meta( (int) $holder_id, self::BUFFERED_META, true );
+		return is_array( $mark ) && (string) ( $mark['item'] ?? '' ) === (string) $item_id;
+	}
+
+	/**
+	 * A figure has landed on eBay for this product's stock: marked when it is
+	 * below a stock the buffer keeps some of back (BUFFERED_META), the mark
+	 * taken off when eBay is left showing the stock itself. Neither for a
+	 * figure a sale's push kept below the stock with no buffer set: eBay's
+	 * figure is the stock there as ever.
+	 *
+	 * @param object|int $holder  The product whose stock it is, or its ID.
+	 * @param string     $item_id The listing.
+	 * @param int        $figure  What eBay was left showing.
+	 * @param int|null   $stock   The stock, or null to read it.
+	 * @return void
+	 */
+	public static function note_landed( $holder, $item_id, $figure, $stock = null ) {
+		$holder = is_object( $holder ) ? $holder : wc_get_product( (int) $holder );
+		if ( ! $holder || '' === (string) $item_id ) {
+			return;
+		}
+		$id = (int) $holder->get_id();
+		if ( null === $stock ) {
+			if ( ! $holder->managing_stock() || null === $holder->get_stock_quantity() ) {
+				return;
+			}
+			$stock = (int) $holder->get_stock_quantity();
+		}
+
+		if ( (int) $figure >= (int) $stock ) {
+			if ( self::buffered_on( $id, $item_id ) ) {
+				delete_post_meta( $id, self::BUFFERED_META );
+			}
+			return;
+		}
+
+		// Only a stock WooCommerce manages is buffered (fix round 2, review
+		// 2's R2-L2): every read of eBay's figure needs it too.
+		if ( $holder->managing_stock() && self::sends( $holder, (int) $stock ) < (int) $stock ) {
+			update_post_meta( $id, self::BUFFERED_META, array( 'item' => (string) $item_id, 'at' => time() ) );
+		}
+	}
+
+	/**
+	 * The stock eBay's figure leaves a product at, when eBay was sent less
+	 * than its stock on this listing (BUFFERED_META): its stock less eBay's
+	 * own sales since its record (unseen()) - never eBay's figure, which a
+	 * buffer keeps below the stock. With no record, its stock as it is: eBay's
+	 * sales so far are taken as in it, as an import takes them, and recorded
+	 * from now on - never for a variable product, whose variations each keep
+	 * their own record. Null when no buffered figure was sent to this
+	 * listing: eBay's figure is the stock, and the caller's own rule stands.
+	 *
+	 * @param object|int $product   The product whose stock it is, or its ID.
+	 * @param string     $item_id   The listing read.
+	 * @param string     $sku       eBay's variation SKU, or '' for the listing.
+	 * @param int        $available What eBay has available.
+	 * @param int|null   $sold      eBay's QuantitySold, null when not known.
+	 * @return int|null
+	 */
+	public static function stock_beside_buffer( $product, $item_id, $sku, $available, $sold ) {
+		$product = is_object( $product ) ? $product : wc_get_product( (int) $product );
+		if ( ! $product || ! self::buffered_on( (int) $product->get_id(), $item_id )
+			|| ! $product->managing_stock() || null === $product->get_stock_quantity() ) {
+			return null;
+		}
+
+		$id    = (int) $product->get_id();
+		$stock = (int) $product->get_stock_quantity();
+		$seen  = self::sold_seen( $id, (string) $item_id, (string) $sku );
+
+		// Fewer sold than recorded: a cancelled eBay sale (fix round 1, review
+		// 1's M5). Not put back while eBay is sent less than the stock: no
+		// code here puts an eBay order's unit back (WooCommerce never took it
+		// off), but the shop may have restocked it by hand, and a unit put back
+		// twice is one the shop does not have; eBay's figure, kept below the
+		// stock, cannot tell which (review 2). The record follows eBay's count
+		// down (the caller's absorb, or the import's record), so eBay's next
+		// sale comes off as ever. Said plainly.
+		if ( null !== $seen && null !== $sold && (int) $sold < $seen ) {
+			TCGiant_Sync_Logger::warning( sprintf(
+				'WC #%d: eBay now says listing %s%s has sold %d, fewer than the %d recorded - a cancelled eBay sale. While "Keep back from eBay" or "Show at most on eBay" keeps eBay below the stock, a cancelled eBay sale is not put back on the stock here: add the unit back by hand if you have it.',
+				$id,
+				(string) $item_id,
+				'' !== (string) $sku ? ' (variation ' . $sku . ')' : '',
+				(int) $sold,
+				$seen
+			) );
+			return $stock;
+		}
+
+		$since = null === $sold ? null : self::unseen( $id, (string) $item_id, (string) $sku, (int) $available, (int) $sold, null );
+
+		if ( null === $since ) {
+			if ( null !== $sold && ! $product->is_type( 'variable' ) ) {
+				self::record_sold_seen( $id, (string) $item_id, (string) $sku, (int) $sold );
+			}
+			return $stock;
+		}
+
+		return min( $stock, max( 0, $stock - (int) $since ) );
+	}
+
+	/**
+	 * A website sale's stock before it, for unseen()'s reading of eBay's
+	 * figure against it where nothing is recorded - unless eBay was sent less
+	 * than the stock on this listing: eBay's figure says nothing of the sale
+	 * then, and null leaves eBay's sales to the record.
+	 *
+	 * @param int      $holder_id The product whose stock it is.
+	 * @param string   $item_id   The listing.
+	 * @param int|null $before    The sale's stock before it.
+	 * @return int|null
+	 */
+	private static function before_unbuffered( $holder_id, $item_id, $before ) {
+		return null !== $before && self::buffered_on( $holder_id, $item_id ) ? null : $before;
+	}
+
+	/**
+	 * Mark a listing as sent less than the stock before the call that sends
+	 * it (fix round 1, review 1's M1), where a record of eBay's sales for it
+	 * exists: an answer lost on the way, or a host that stops the request,
+	 * then leaves no buffered figure on eBay to be read as the stock. A mark
+	 * the call never made true costs only a Seller Hub change being ignored -
+	 * the record still takes eBay's own sales - and goes once eBay is seen
+	 * showing the stock itself (note_landed()). Never with no record, which
+	 * would leave eBay's sales unread.
+	 *
+	 * @param int      $holder_id The product whose stock it is.
+	 * @param string   $item_id   The listing.
+	 * @param int      $want      What is about to be sent.
+	 * @param string[] $skus      The SKUs whose records count ('' for the listing's).
+	 * @param int[]    $records   The products those records are on, in step.
+	 * @return void
+	 */
+	private static function mark_before_send( $holder_id, $item_id, $want, array $skus, array $records ) {
+		$holder = wc_get_product( (int) $holder_id );
+		if ( ! $holder || ! $holder->managing_stock() || null === $holder->get_stock_quantity() || self::buffered_on( (int) $holder_id, $item_id ) ) {
+			return;
+		}
+		$stock = (int) $holder->get_stock_quantity();
+		if ( (int) $want >= $stock || self::sends( $holder, $stock ) >= $stock ) {
+			return;
+		}
+		foreach ( array_values( $records ) as $i => $record_id ) {
+			if ( null !== self::own_record( (int) $record_id, (string) $item_id, (string) ( array_values( $skus )[ $i ] ?? '' ) ) ) {
+				update_post_meta( (int) $holder_id, self::BUFFERED_META, array( 'item' => (string) $item_id, 'at' => time() ) );
+				return;
+			}
+		}
+	}
+
+	/**
+	 * Whether eBay removed this variation from the listing after "Keep back
+	 * from eBay" or "Show at most on eBay" left it 0 before it had sold (fix
+	 * round 1, review 1's H2): the import found it gone and marked it
+	 * (3.43.0's ZEROED_META, with 'buffer').
+	 *
+	 * @param int    $variation_id The variation.
+	 * @param string $item_id      The listing.
+	 * @return bool
+	 */
+	private static function removed_at_buffer( $variation_id, $item_id ) {
+		$zeroed = get_post_meta( (int) $variation_id, self::variation_mark( 'ZEROED_META' ), true );
+		return is_array( $zeroed ) && ! empty( $zeroed['buffer'] ) && ! empty( $zeroed['gone'] ) && (string) ( $zeroed['item'] ?? '' ) === (string) $item_id;
+	}
+
+	/**
+	 * For a push's log line, where a buffer sent eBay less than the stock:
+	 * TCGiant_Sync_Stock_Buffer::words(). '' with none.
+	 *
+	 * @param int $holder_id The product whose stock it is.
+	 * @return string
+	 */
+	private static function buffer_words( $holder_id ) {
+		$holder = wc_get_product( (int) $holder_id );
+		if ( ! $holder || ! class_exists( 'TCGiant_Sync_Stock_Buffer' ) || ! TCGiant_Sync_Stock_Buffer::applies( $holder ) || ! $holder->managing_stock() || null === $holder->get_stock_quantity() ) {
+			return '';
+		}
+		$stock = (int) $holder->get_stock_quantity();
+		return self::buffer_said( $stock, self::sends( $holder, $stock ) );
+	}
+
+	/**
+	 * A new listing, an Update or a relist has sent eBay its quantities
+	 * (TCGiant_Sync_Exporter): each stock's mark (note_landed()); and a new
+	 * listing, or a relist, sent a buffered figure starts its record of
+	 * eBay's sales at 0, which it has - so the first import of it reads its
+	 * figure as eBay's sales only. An Update keeps the record it has.
+	 *
+	 * @param string $item_id The listing eBay took them for.
+	 * @param string $action  created, updated or relisted.
+	 * @param array  $sent    Each stock sent: holder (0 for a variation's,
+	 *                        worked out here: its product's for a stock they
+	 *                        share), record (the product its record is on),
+	 *                        sku, sent and stock.
+	 * @return int The stock pushes queued to start eBay's record of sales
+	 *             (M4; fix round 2, review 2's R2-L1).
+	 */
+	public static function note_listing_sent( $item_id, $action, array $sent ) {
+		$queued = array();
+		foreach ( $sent as $entry ) {
+			if ( ! is_array( $entry ) || ! isset( $entry['holder'], $entry['sent'], $entry['stock'] ) ) {
+				continue;
+			}
+			$holder = (int) $entry['holder'];
+			if ( $holder < 1 ) {
+				$one    = wc_get_product( (int) ( $entry['record'] ?? 0 ) );
+				$holder = $one && self::stock_held_by_parent( $one ) ? (int) $one->get_parent_id() : (int) ( $entry['record'] ?? 0 );
+			}
+			self::note_landed( $holder, (string) $item_id, (int) $entry['sent'], (int) $entry['stock'] );
+			$record = (int) ( $entry['record'] ?? $holder );
+			$sku    = (string) ( $entry['sku'] ?? '' );
+			// A variation the Update or relist sent some of is on eBay again
+			// (fix round 2, review 2's R2-H1): the mark of its removal at the
+			// buffer's 0 goes. One sent 0 keeps it: its next push reads eBay
+			// first and takes it off if eBay kept it.
+			if ( (int) $entry['sent'] > 0 && $record > 0 && self::removed_at_buffer( $record, (string) $item_id ) ) {
+				delete_post_meta( $record, self::variation_mark( 'ZEROED_META' ) );
+			}
+			// An Update leaving the mark on a listing with no record of eBay's
+			// sales (fix round 1, review 1's M4): its stock's push is queued,
+			// once, and eBay's answer to it starts the record - one call, only
+			// then.
+			if ( 'updated' === (string) $action ) {
+				if ( self::buffered_on( $holder, (string) $item_id ) && null === self::own_record( $record, (string) $item_id, $sku ) && ! isset( $queued[ $holder ] ) ) {
+					$queued[ $holder ] = true;
+					$one               = wc_get_product( $holder );
+					if ( $one ) {
+						self::instance()->queue_stock_update_for_product( $one, false, true );
+					}
+				}
+				continue;
+			}
+			if ( ! self::buffered_on( $holder, (string) $item_id ) ) {
+				continue;
+			}
+			if ( null === self::own_record( $record, (string) $item_id, $sku ) ) {
+				self::record_sold_seen( $record, (string) $item_id, $sku, 0 );
+			}
+		}
+
+		// How many stock pushes it queued to start eBay's record of sales
+		// (fix round 2, review 2's R2-L1), for the Update's own line.
+		return count( $queued );
+	}
+
+	/**
+	 * A product follows a relist of its listing (follow_relist()): a mark
+	 * that eBay was sent less than its stock goes to the new listing - eBay
+	 * relists the quantity the old one had - for the product and each
+	 * variation keeping its own stock, each starting a record of the new
+	 * listing's sales at 0 where it has none.
+	 *
+	 * @param int    $product_id  The product.
+	 * @param string $old_item_id The listing it followed.
+	 * @param string $new_item_id The relist.
+	 * @return void
+	 */
+	private static function carry_buffered( $product_id, $old_item_id, $new_item_id ) {
+		$ids     = array( (int) $product_id );
+		$product = wc_get_product( (int) $product_id );
+		if ( $product && $product->is_type( 'variable' ) ) {
+			$ids = array_merge( $ids, array_map( 'intval', (array) $product->get_children() ) );
+		}
+		foreach ( $ids as $id ) {
+			if ( ! self::buffered_on( $id, $old_item_id ) ) {
+				continue;
+			}
+			update_post_meta( $id, self::BUFFERED_META, array( 'item' => (string) $new_item_id, 'at' => time() ) );
+			if ( $id === (int) $product_id && $product && $product->is_type( 'variable' ) ) {
+				// The stock its variations share (fix round 1, review 1's M2):
+				// each variation taking it starts its record of the relist's
+				// sales at 0, by its eBay SKU, so the relist's first sales come
+				// off the shared stock.
+				foreach ( (array) $product->get_children() as $child_id ) {
+					$child = wc_get_product( (int) $child_id );
+					if ( ! $child || ! self::stock_held_by_parent( $child ) ) {
+						continue;
+					}
+					$old = get_post_meta( (int) $child_id, self::SOLD_SEEN_KEY, true );
+					$sku = is_array( $old ) && (string) ( $old['item'] ?? '' ) === (string) $old_item_id ? (string) ( $old['sku'] ?? '' ) : (string) get_post_meta( (int) $child_id, '_ebay_variation_sku', true );
+					$sku = '' !== $sku ? $sku : (string) $child->get_sku( 'edit' );
+					if ( '' !== $sku && null === self::own_record( (int) $child_id, (string) $new_item_id, $sku ) ) {
+						self::record_sold_seen( (int) $child_id, (string) $new_item_id, $sku, 0 );
+					}
+				}
+				continue;
+			}
+			$old = get_post_meta( $id, self::SOLD_SEEN_KEY, true );
+			$sku = is_array( $old ) && (string) ( $old['item'] ?? '' ) === (string) $old_item_id ? (string) ( $old['sku'] ?? '' ) : '';
+			// A variation keeping its own stock with no record of the old
+			// listing (fix round 2, review 2's R2-M2): by its eBay SKU, as the
+			// shared stock's variations above.
+			$one = $id !== (int) $product_id ? wc_get_product( $id ) : null;
+			if ( '' === $sku && $one ) {
+				$sku = (string) get_post_meta( $id, '_ebay_variation_sku', true );
+				$sku = '' !== $sku ? $sku : (string) $one->get_sku( 'edit' );
+			}
+			if ( null === self::own_record( $id, (string) $new_item_id, $sku ) ) {
+				self::record_sold_seen( $id, (string) $new_item_id, $sku, 0 );
+			}
+		}
+	}
+
+	/**
+	 * A product's own "Keep back from eBay" or "Show at most on eBay" saved
+	 * on its eBay tab (TCGiant_Sync_Stock_Buffer::save_product_field()): a
+	 * stock change of it, so its push is queued as a stock edit's would be -
+	 * for a variable product, each variation keeping its own stock and the
+	 * stock its variations share, as Send stock to eBay queues them. One
+	 * line. A change to the shop's settings queues nothing.
+	 *
+	 * @param int $product_id The product.
+	 * @return string[] What each push queued said: queued, pending, or why not.
+	 */
+	public static function buffer_changed( $product_id ) {
+		$product = wc_get_product( (int) $product_id );
+		if ( ! $product ) {
+			return array();
+		}
+
+		list( $units ) = self::stock_units( $product );
+		$out           = array();
+		foreach ( $units as $unit ) {
+			$queued = self::instance()->queue_stock_update_for_product( $unit, false, true );
+			$out[ (int) $unit->get_id() ] = (string) $queued['status'];
+		}
+
+		$said = array_count_values( $out );
+		if ( isset( $said['not_linked'] ) && count( $said ) === 1 ) {
+			return $out;
+		}
+		if ( ! empty( $said['queued'] ) ) {
+			$line = sprintf( 'WC #%d: "Keep back from eBay" or "Show at most on eBay" changed on its eBay tab - its stock push is queued, to send eBay the new figure.', (int) $product_id );
+		} elseif ( ! empty( $said['pending'] ) ) {
+			$line = sprintf( 'WC #%d: "Keep back from eBay" or "Show at most on eBay" changed on its eBay tab - a stock push of it is already waiting, and sends eBay the new figure.', (int) $product_id );
+		} elseif ( ! empty( $said['off'] ) ) {
+			$line = sprintf( 'WC #%d: "Keep back from eBay" or "Show at most on eBay" changed on its eBay tab - nothing queued: "Send website stock changes to eBay?" is No.', (int) $product_id );
+		} else {
+			$line = sprintf( 'WC #%d: "Keep back from eBay" or "Show at most on eBay" changed on its eBay tab - nothing queued (%s); its next stock change, or Send stock to eBay, sends the new figure.', (int) $product_id, implode( ', ', array_keys( $said ) ) );
+		}
+		TCGiant_Sync_Logger::log( $line );
+
+		return $out;
 	}
 
 	/**
@@ -5795,6 +6362,10 @@ class TCGiant_Sync_Inventory {
 
 		self::landed( $job );
 
+		// What eBay shows of the stock now, against the stock (3.45.0): below
+		// it by a buffer, or the stock itself again.
+		self::note_landed( (int) $product_id, (string) $target['item_id'], 'EndItem' === $call ? 0 : (int) $want );
+
 		// The only place a push writes Ended: eBay said the listing ended.
 		if ( 'EndItem' === $call ) {
 			self::record_stock_end( $target['owner_id'], $target['item_id'], $result );
@@ -5802,7 +6373,7 @@ class TCGiant_Sync_Inventory {
 			return self::push_outcome( 'success', 'eBay listing ended (sold out)' );
 		}
 
-		TCGiant_Sync_Logger::log( sprintf( 'Stock push for WC #%d: %s set to %d available.', $product_id, self::listing_words( $target, $sku ), $want ), 'success' );
+		TCGiant_Sync_Logger::log( sprintf( 'Stock push for WC #%d: %s set to %d available%s.', $product_id, self::listing_words( $target, $sku ), $want, self::buffer_words( (int) $product_id ) ), 'success' );
 
 		// eBay takes a quantity only for a fixed-price listing.
 		self::confirm_fixed_price( $target );
@@ -5877,7 +6448,9 @@ class TCGiant_Sync_Inventory {
 
 		$record();
 
-		$again = 'edit' === $job['reason'] ? max( 0, (int) $now ) : max( 0, min( (int) $want, (int) $now ) );
+		// What a buffer leaves of it (3.45.0); the stock itself with none.
+		$now_sends = self::sends( $product, (int) $now );
+		$again     = 'edit' === $job['reason'] ? $now_sends : max( 0, min( (int) $want, $now_sends ) );
 
 		TCGiant_Sync_Logger::log( sprintf(
 			'Stock push for WC #%d: eBay had sold %d on %s that WooCommerce had not heard of, and the change just sent put them back. WooCommerce lowered from %d to %d; eBay sent %d.',
@@ -6384,14 +6957,15 @@ class TCGiant_Sync_Inventory {
 			if ( ! $child || 'publish' !== $child->get_status() || self::stock_held_by_parent( $child ) ) {
 				continue;
 			}
-			$at_zero = $child->managing_stock() && (int) $child->get_stock_quantity() > 0
+			// Stock for eBay here: what a buffer leaves of it (3.45.0).
+			$at_zero = $child->managing_stock() && self::own_figure( $child, (int) $child->get_stock_quantity() ) > 0
 				&& isset( $paired[ $child_id ] ) && '' !== (string) $paired[ $child_id ]['sku']
 				&& 0 === (int) $paired[ $child_id ]['available'];
 			if ( $pool_next > 0 && self::live_push( $child_id ) && ( ! ( $sent_once && $at_zero ) || self::own_push_on_its_way( $child_id, $pool_next ) ) ) {
 				$out['waiting'][] = $child_id;
 				continue;
 			}
-			if ( ! $child->managing_stock() || (int) $child->get_stock_quantity() <= 0 ) {
+			if ( ! $child->managing_stock() || self::own_figure( $child, (int) $child->get_stock_quantity() ) <= 0 ) {
 				continue;
 			}
 			if ( isset( $paired[ $child_id ] ) && '' !== (string) $paired[ $child_id ]['sku'] ) {
@@ -6685,7 +7259,7 @@ class TCGiant_Sync_Inventory {
 			if ( ! $child || 'publish' !== $child->get_status() ) {
 				continue;
 			}
-			if ( ( $child->managing_stock() && (int) $child->get_stock_quantity() > 0 ) || self::pending_pushes( $child_id ) ) {
+			if ( ( $child->managing_stock() && self::own_figure( $child, (int) $child->get_stock_quantity() ) > 0 ) || self::pending_pushes( $child_id ) ) {
 				return $child_id;
 			}
 		}
@@ -7032,7 +7606,9 @@ class TCGiant_Sync_Inventory {
 		// off: each variation's since its own record. Each pooled variation
 		// shows the whole pool on eBay, so with no record a sale's push looks
 		// at each one against the stock before the sale - never at their sum.
-		$before = 'order' === $job['reason'] && isset( $job['before'] ) ? (int) $job['before'] : null;
+		// Not where eBay was sent less than the shared stock (3.45.0): the
+		// records decide.
+		$before = self::before_unbuffered( (int) $product_id, (string) $item_id, 'order' === $job['reason'] && isset( $job['before'] ) ? (int) $job['before'] : null );
 		$unseen = 0;
 		$known  = array();
 		foreach ( $pooled as $i => $p ) {
@@ -7065,7 +7641,9 @@ class TCGiant_Sync_Inventory {
 		}
 		$records();
 
-		$want    = max( 0, (int) $wc );
+		// The shared stock as eBay is sent it: less a buffer, once, and each
+		// variation taking it sent that (3.45.0); the stock itself with none.
+		$want    = self::sends( (int) $product_id, $wc );
 		$changes = array();
 		$no_sku  = 0;
 
@@ -7116,6 +7694,7 @@ class TCGiant_Sync_Inventory {
 			// so each one's sales so far are in it.
 			self::record_pool_landed( $job, $pooled, $item_id, $want );
 			self::landed( $job );
+			self::note_landed( (int) $product_id, (string) $item_id, $want, (int) $wc );
 			return self::push_outcome( 'manual' === $job['reason'] ? 'skipped' : 'success', sprintf( 'eBay already shows %d for each variation', $want ) );
 		}
 
@@ -7128,6 +7707,10 @@ class TCGiant_Sync_Inventory {
 				self::record_sold_seen( $variation_id, $item_id, $p['sku'], (int) $p['sold'] );
 			}
 		}
+
+		// Marked before the calls (fix round 1, review 1's M1), as a single
+		// stock's push is.
+		self::mark_before_send( (int) $product_id, (string) $item_id, (int) $want, array_column( $pooled, 'sku' ), array_column( $pooled, 'wc_id' ) );
 
 		// Those with stock first, then the zeros: eBay refuses only the last
 		// variation with stock, so it is the last one sent.
@@ -7252,10 +7835,11 @@ class TCGiant_Sync_Inventory {
 
 		self::record_pool_landed( $job, self::pooled_variations( $product_id, $check['variations'] ), $item_id, $want );
 		self::landed( $job );
+		self::note_landed( (int) $product_id, (string) $item_id, $want, (int) $wc );
 		// The shared figure's own sends: a disabled variation's 0 is said above.
 		$shared = count( $changes ) - count( $off_zero );
 		if ( $shared > 0 ) {
-			TCGiant_Sync_Logger::log( sprintf( 'Stock push for WC #%d: the shared stock, %d, sent to %d variation(s) of eBay listing %s.', $product_id, $want, $shared, $item_id ), 'success' );
+			TCGiant_Sync_Logger::log( sprintf( 'Stock push for WC #%d: the shared stock, %d, sent to %d variation(s) of eBay listing %s%s.', $product_id, $want, $shared, $item_id, self::buffer_said( (int) $wc, $want ) ), 'success' );
 		} else {
 			TCGiant_Sync_Logger::log( sprintf( 'Stock push for WC #%d: eBay listing %s already showed the shared stock, %d, for each enabled variation.', $product_id, $item_id, $want ), 'success' );
 		}
@@ -8335,6 +8919,10 @@ class TCGiant_Sync_Inventory {
 
 		self::follow_item_number_sku( $product_id, $old_item_id, $new_item_id );
 
+		// eBay relists what the old listing had: one sent less than the stock
+		// goes on so on the relist (3.45.0).
+		self::carry_buffered( $product_id, $old_item_id, $new_item_id );
+
 		TCGiant_Sync_DB::upsert( array(
 			'product_id'      => $product_id,
 			'ebay_item_id'    => $new_item_id,
@@ -8476,6 +9064,15 @@ class TCGiant_Sync_Inventory {
 		}
 
 		if ( (int) $listed < 1 || (int) $sold < (int) $listed ) {
+			return false;
+		}
+
+		// eBay sold out of what it was sent, but a buffer kept stock back
+		// here (3.45.0): the product still has it to sell, and stays.
+		$product = wc_get_product( $product_id );
+		if ( $product && $product->managing_stock() && (int) $product->get_stock_quantity() > 0
+			&& self::buffered_on( $product_id, (string) get_post_meta( $product_id, '_ebay_item_id', true ) ) ) {
+			self::log_removal_refused( $product_id, sprintf( 'eBay sold every one it was sent, but "Keep back from eBay" or "Show at most on eBay" kept %d of its stock back here, still for sale', (int) $product->get_stock_quantity() ) );
 			return false;
 		}
 
@@ -10089,11 +10686,16 @@ class TCGiant_Sync_Inventory {
 			$wc_qty = (int) $product->get_stock_quantity();
 			$checked++;
 
-			if ( $wc_qty !== $ebay_available ) {
+			// eBay against what the plugin sends it: the stock, less what
+			// "Keep back from eBay" and "Show at most on eBay" keep back
+			// (3.45.0).
+			$for_ebay = 'Chinese' === (string) TCGiant_Sync_API::scalar_value( $item['ListingType'] ?? '' ) || self::is_auction_listing( $product ) ? $wc_qty : self::own_figure( $product, $wc_qty );
+			if ( $for_ebay !== $ebay_available ) {
 				$mismatches++;
 				TCGiant_Sync_Logger::warning( sprintf(
-					'Reconciliation mismatch: "%s" (eBay #%s, WC #%d) — WC stock: %d, eBay available: %d',
-					$title, $item_id, $product_id, $wc_qty, $ebay_available
+					'Reconciliation mismatch: "%s" (eBay #%s, WC #%d) — WC stock: %d, eBay available: %d%s',
+					$title, $item_id, $product_id, $wc_qty, $ebay_available,
+					$for_ebay !== $wc_qty ? sprintf( ', sent to eBay: %d ("Keep back from eBay" and "Show at most on eBay")', $for_ebay ) : ''
 				) );
 			}
 		}

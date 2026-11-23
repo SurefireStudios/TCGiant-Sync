@@ -28,6 +28,12 @@ if ( ! class_exists( 'TCGiant_Sync_Listing_Options', false ) ) {
 	require_once dirname( __DIR__ ) . '/includes/class-tcgiant-sync-listing-options.php';
 }
 
+// "Keep back from eBay" and "Show at most on eBay", on the Settings screen
+// and a product's eBay tab (3.45.0).
+if ( ! class_exists( 'TCGiant_Sync_Stock_Buffer', false ) ) {
+	require_once dirname( __DIR__ ) . '/includes/class-tcgiant-sync-stock-buffer.php';
+}
+
 /**
  * TCGiant_Sync_Admin class
  */
@@ -82,6 +88,9 @@ class TCGiant_Sync_Admin {
 			// WooCommerce's emails to eBay buyers (3.43.0,
 			// TCGiant_Sync_Order_Followthrough::EMAILS_SETTING).
 			'ebay_buyer_emails',
+			// "Keep back from eBay" and "Show at most on eBay" (3.45.0,
+			// TCGiant_Sync_Stock_Buffer::KEEP_SETTING and CAP_SETTING).
+			'stock_keep_back', 'stock_show_at_most',
 		),
 		'export' => array(
 			'export_category_id', 'export_category_name', 'export_category_typed', 'export_condition_type', 'export_grader_id', 'export_grade_value',
@@ -1429,6 +1438,23 @@ class TCGiant_Sync_Admin {
 					$sanitized[ $clean_key ] = map_deep( $value, 'sanitize_text_field' );
 				} elseif ( 'custom_saved_categories' === $clean_key ) {
 					$sanitized[ $clean_key ] = sanitize_textarea_field( $value );
+				} elseif ( TCGiant_Sync_Stock_Buffer::KEEP_SETTING === $clean_key || TCGiant_Sync_Stock_Buffer::CAP_SETTING === $clean_key ) {
+					// A whole number of 0 or more, or none (3.45.0). A figure
+					// it cannot take is not saved - the setting stays as it
+					// was - and said (fix round 1, review 1's L6).
+					$typed_raw = trim( sanitize_text_field( (string) $value ) );
+					$typed_now = TCGiant_Sync_Stock_Buffer::typed( $typed_raw );
+					if ( '' !== $typed_raw && '' === $typed_now ) {
+						$stored_now              = get_option( 'tcgiant_sync_ebay_settings', array() );
+						$sanitized[ $clean_key ] = TCGiant_Sync_Stock_Buffer::typed( is_array( $stored_now ) ? ( $stored_now[ $clean_key ] ?? '' ) : '' );
+						$refused_line            = sprintf( '"%s" was not saved: %s. It stays as it was.', TCGiant_Sync_Stock_Buffer::KEEP_SETTING === $clean_key ? 'Keep back from eBay' : 'Show at most on eBay', TCGiant_Sync_Stock_Buffer::refused_words( $typed_raw ) );
+						if ( function_exists( 'add_settings_error' ) ) {
+							add_settings_error( 'tcgiant_sync_ebay_settings', 'tcgiant_stock_buffer_' . $clean_key, $refused_line );
+						}
+						TCGiant_Sync_Logger::warning( 'Settings: ' . $refused_line );
+					} else {
+						$sanitized[ $clean_key ] = $typed_now;
+					}
 				} elseif ( TCGiant_Sync_Sites::SETTING === $clean_key ) {
 					// A closed set: anything but "only my Primary eBay
 					// Marketplace" is all sites, which is what a shop that
@@ -1467,6 +1493,13 @@ class TCGiant_Sync_Admin {
 					// held since an Emergency Stop, goes again (3.37.0).
 					if ( class_exists( 'TCGiant_Sync_Order_Followthrough' ) ) {
 						TCGiant_Sync_Order_Followthrough::resume( 'the order settings were saved' );
+					}
+					// "Keep back from eBay" or "Show at most on eBay" changed
+					// (3.45.0): nothing is sent, and the screen says so once.
+					if ( TCGiant_Sync_Stock_Buffer::shop_limits( $kept ) !== TCGiant_Sync_Stock_Buffer::shop_limits( $sanitized ) ) {
+						set_transient( self::BUFFER_SAID, 1, 300 );
+						list( $tc_keep, $tc_cap ) = TCGiant_Sync_Stock_Buffer::shop_limits( $sanitized );
+						TCGiant_Sync_Logger::log( sprintf( 'Settings: "Keep back from eBay" is now %s and "Show at most on eBay" %s. Nothing was sent to eBay: each listing takes the new figure at its next stock change, or at once with Send stock to eBay.', $tc_keep > 0 ? (string) $tc_keep : 'none', $tc_cap > 0 ? (string) $tc_cap : 'none' ) );
 					}
 				}
 
@@ -2018,6 +2051,13 @@ class TCGiant_Sync_Admin {
 	 * once: the counts never travel in the address.
 	 */
 	const FOLLOW_SAID = 'tcgiant_sync_follow_said_';
+
+	/**
+	 * Transient: "Keep back from eBay" or "Show at most on eBay" changed at
+	 * the last save of the Settings screen (3.45.0), said once beside them -
+	 * nothing was sent to eBay.
+	 */
+	const BUFFER_SAID = 'tcgiant_sync_buffer_said';
 
 	/**
 	 * Products a Listings screen job (TCGiant_Sync_Jobs) changes in one
@@ -5104,6 +5144,12 @@ class TCGiant_Sync_Admin {
 		// == eBay PRICE: what a push sends eBay, and the product's own (3.29.0) ==
 		if ( $product ) {
 			TCGiant_Sync_Ebay_Price::render_product_section( $product );
+		}
+
+		// == STOCK ON eBay: "Keep back from eBay" and "Show at most on eBay",
+		// the product's own (3.45.0) ==
+		if ( $product && TCGiant_Sync_Stock_Buffer::available() ) {
+			TCGiant_Sync_Stock_Buffer::render_product_section( $product );
 		}
 
 		// == PRODUCT IDENTIFIER: its UPC, EAN or ISBN, or none (3.30.3) ==

@@ -267,6 +267,7 @@ $tcgiant_options = array(
 	'tcgiant_sync_bulk_push_cap',      // The daily cap on bulk pushes.
 	'tcgiant_sync_bulk_pushed',        // Bulk pushes counted today.
 	'tcgiant_sync_bulk_waiting',       // Bulk pushes counted today and still waiting.
+	'tcgiant_sync_record_pushes_queued', // Stock pushes a bulk push's Updates queued to start eBay's record of sales, 3.45.0.
 	'tcgiant_sync_send_stock_today',   // Send stock to eBay: pushes counted today on the free plan, 3.40.0.
 	'tcgiant_sync_jobs',               // Bulk job progress records.
 	'tcgiant_export_state',            // Export state machine.
