@@ -268,6 +268,8 @@ $tcgiant_options = array(
 	'tcgiant_sync_bulk_pushed',        // Bulk pushes counted today.
 	'tcgiant_sync_bulk_waiting',       // Bulk pushes counted today and still waiting.
 	'tcgiant_sync_record_pushes_queued', // Stock pushes a bulk push's Updates queued to start eBay's record of sales, 3.45.0.
+	'tcgiant_sync_end_zero_since',     // When "When you end a listing on eBay, set its website stock to 0?" was switched to Yes, 3.46.0.
+	'tcgiant_sync_own_ends',           // The listings TCGiant Sync asked eBay to end while it is Yes, 3.46.0.
 	'tcgiant_sync_send_stock_today',   // Send stock to eBay: pushes counted today on the free plan, 3.40.0.
 	'tcgiant_sync_jobs',               // Bulk job progress records.
 	'tcgiant_export_state',            // Export state machine.

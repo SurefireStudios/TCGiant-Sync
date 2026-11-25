@@ -91,6 +91,9 @@ class TCGiant_Sync_Admin {
 			// "Keep back from eBay" and "Show at most on eBay" (3.45.0,
 			// TCGiant_Sync_Stock_Buffer::KEEP_SETTING and CAP_SETTING).
 			'stock_keep_back', 'stock_show_at_most',
+			// "When you end a listing on eBay, set its website stock to 0?"
+			// (3.46.0, TCGiant_Sync_Inventory::END_ZERO_SETTING).
+			'end_zeroes_stock',
 		),
 		'export' => array(
 			'export_category_id', 'export_category_name', 'export_category_typed', 'export_condition_type', 'export_grader_id', 'export_grade_value',

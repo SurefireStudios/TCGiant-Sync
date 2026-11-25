@@ -4,7 +4,7 @@ Tags: ebay, woocommerce, sync, inventory, tcg
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.45.0
+Stable tag: 3.46.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -148,6 +148,10 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 7. Category auto-suggestion pills from product title.
 
 == Changelog ==
+
+= 3.46.0 - 2026-11-25 =
+* NEW: "When you end a listing on eBay, set its website stock to 0?" (Settings, with "Remove products when their eBay listing sells out?"), No unless you choose Yes. With Yes, a listing you end yourself on eBay - in Seller Hub, or with another tool - while your website still has stock has its website stock set to 0 when the sync brings the end in, so it stops selling on your website too. eBay's own reason for the end decides: never an eBay sale (even one that ended a listing with units left), never a listing TCGiant Sync ends itself (at 0, or with End Listing here), and only listings you end after choosing Yes - nothing that ended before is changed. Once a listing, and never stock added back after you end it: raise the stock after the end and it is not set to 0 (when the sync brings the end in it still lowers the stock to what eBay had left unsold, as before); raise it after the sync set it to 0 and it stays. For a variable product, a raise of any one of its stocks on the listing keeps all of them from being set to 0. Nothing is sent to eBay. A variable product's variations on the listing go to 0 too, and its shared stock, with every variation that sells from it; a variation that keeps its own stock and is not on the listing, or that you disabled, keeps it. With "Keep back from eBay" or "Show at most on eBay", the stock kept back goes to 0 as well. If you end a listing to list it again (Sell Similar, or a new format), its website stock may go to 0 until the sync imports the new listing: matched to the product by SKU, the product then takes the new listing's stock.
+* NOTE: It acts when the sync first brings the end in - the delta sync, the full sync, order sync's sale check, the hourly ended-listing check, an import, a stock push (a website sale's, say), or Stock Review's Settle. eBay says why a listing ended only when it is asked about that listing, so while the setting is Yes the delta sync and the full sync read an ended listing with unsold units once from eBay, to see whether you ended it: one eBay call for each listing that ends with units unsold while your website has stock - your own ends, eBay's and relists alike - within the usual daily limits; none for a listing that sold out, one TCGiant Sync ended, a fixed-length listing the full sync sees ran its time, or one with no stock left here. A shop that ends listings and lists them again with Sell Similar every day pays that read for each one, each time, and each product sits at 0 until its new listing is imported. If eBay cannot be asked (the day's calls used up, say), that listing's stock is left as before, and the log says so. A Relist, Push to eBay or Auto-Relist that reaches the ended listing first leaves the stock as before too, and so does any raise of the stock after the end - WooCommerce's own restock of a cancelled, failed or refunded order included. The log names each product set to 0, with what it held before the sync brought the end in, and WooCommerce sends its own out-of-stock email for each, as for any stock that reaches 0. A listing eBay says you relisted is left: its stock follows the relist. A known limit: a stray copy that a push your host stopped part-way left on eBay, ended by you before the sync linked it, is linked to its product when the sync finds it, and can set that product to 0 too.
 
 = 3.45.0 - 2026-11-23 =
 * NEW: "Keep back from eBay" and "Show at most on eBay" (Settings, with the stock settings), for stock you also sell elsewhere. eBay is sent your stock less the first, no more than the second, never below 0: with 10 in stock, keeping back 2 shows 8 on eBay; showing at most 5 shows 5. Both are empty unless you fill them in, and empty or 0 is none, so nothing changes until you do. A product's eBay tab can set its own: empty takes the shop's, 0 is none for that product. Each variation keeping its own stock is sent what they leave of its stock; a stock the variations share is buffered once, and each variation is sent that. The bulk edit of eBay fields can set them on many products at once.
@@ -1758,6 +1762,9 @@ TCGiant Sync is optimized for trading card game (TCG) collectibles and coins. It
 * Marketplace Account Deletion notification support.
 
 == Upgrade Notice ==
+
+= 3.46.0 =
+New: "When you end a listing on eBay, set its website stock to 0?" (Settings), for a shop that ends listings on eBay and wants them off its website too. It is No, so nothing changes until you choose Yes.
 
 = 3.45.0 =
 New: "Keep back from eBay" and "Show at most on eBay", in Settings and on a product's eBay tab, to show eBay less than you hold. Both are empty, so nothing changes until you fill them in.

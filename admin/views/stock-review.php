@@ -771,7 +771,7 @@ $tc_nonce    = wp_create_nonce( 'tcgiant_sync_ajax' );
 				<?php esc_html_e( 'These are most likely items that sold on eBay before the stock fault was fixed. A listing that holds one of something ends the moment it sells, and an ended listing is never imported again, so nothing in the ordinary sync can correct these on its own.', 'tcgiant-sync' ); ?>
 			</p>
 			<p>
-				<?php esc_html_e( 'Settling asks eBay what each listing held and what sold, then sets the WooCommerce stock to the difference. A listing that sold out leaves nothing in stock; one you ended yourself with items unsold keeps them, because they are still yours to sell. Where eBay will not report the figures, the stock is left alone rather than guessed at, and the product stays on this list.', 'tcgiant-sync' ); ?>
+				<?php esc_html_e( 'Settling asks eBay what each listing held and what sold, then sets the WooCommerce stock to the difference. A listing that sold out leaves nothing in stock; one you ended yourself with items unsold keeps them, because they are still yours to sell - unless you chose Yes for "When you end a listing on eBay, set its website stock to 0?" (Settings) before you ended it, which sets that stock to 0. Where eBay will not report the figures, the stock is left alone rather than guessed at, and the product stays on this list.', 'tcgiant-sync' ); ?>
 			</p>
 		</div>
 

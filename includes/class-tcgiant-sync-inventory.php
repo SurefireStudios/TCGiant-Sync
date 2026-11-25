@@ -467,6 +467,12 @@ class TCGiant_Sync_Inventory {
 		// (DISCONNECTED_OPTION).
 		add_action( 'update_option_tcgiant_sync_ebay_settings', array( __CLASS__, 'connection_saved' ), 10, 2 );
 
+		// "When you end a listing on eBay, set its website stock to 0?"
+		// switched on or off by any write of the settings (3.46.0 fix round
+		// 2): the moment it was switched on.
+		add_action( 'update_option_tcgiant_sync_ebay_settings', array( __CLASS__, 'end_zero_option_updated' ), 10, 2 );
+		add_action( 'add_option_tcgiant_sync_ebay_settings', array( __CLASS__, 'end_zero_option_added' ), 10, 2 );
+
 		// A product on a running eBay auction cannot be bought here: a website
 		// sale took it at whatever the bidding had reached, and then either
 		// sold it twice or ended the auction and cancelled every bid. The
@@ -542,6 +548,17 @@ class TCGiant_Sync_Inventory {
 		// reason for an end is taken as the shop's own only then.
 		$had_stock = $product->managing_stock() ? (int) $product->get_stock_quantity() > 0 : $product->is_in_stock();
 
+		// "When you end a listing on eBay, set its website stock to 0?"
+		// (3.46.0): only at the settle that first brings this listing's end
+		// in, judged before it writes anything - see end_zero_first().
+		$zero_first = is_array( $item ) && self::end_zero_on() && self::end_zero_first( $product_id );
+		// With it: the stock as the settle finds it, for the line and the
+		// record (fix round 2, review 1's M2), and 3.28's record of eBay's
+		// higher figure held back until the setting has acted - a 0 leaves
+		// nothing for Stock Review's "Use eBay's figure" to put back (M1).
+		$zero_before = $zero_first && $product->managing_stock() ? $product->get_stock_quantity() : null;
+		$unsold_note = null;
+
 		// eBay was sent less than the stock on this listing (3.45.0): what it
 		// had left is not the stock - a buffer kept the rest back here. Only
 		// eBay's sales since its record come off, and its record moves on to
@@ -569,7 +586,11 @@ class TCGiant_Sync_Inventory {
 				// website sale whose listing the plugin then ended, and offering
 				// eBay's figure for it would invite putting a sold item back.
 				if ( null === $buffered && null !== $current && (int) $current > 0 && $ebay_remaining > (int) $current ) {
-					self::note_unsold_at_end( $product_id, $ebay_remaining, (int) $current );
+					if ( $zero_first ) {
+						$unsold_note = array( $ebay_remaining, (int) $current );
+					} else {
+						self::note_unsold_at_end( $product_id, $ebay_remaining, (int) $current );
+					}
 				} else {
 					delete_post_meta( $product_id, '_ebay_unsold_at_end' );
 				}
@@ -672,6 +693,19 @@ class TCGiant_Sync_Inventory {
 		// end made in Seller Hub, which nothing here recorded.
 		if ( is_array( $item ) ) {
 			self::note_ebay_end( $product_id, $item );
+
+			// The seller ended it on eBay with stock here, and the shop asked
+			// for that to set the website stock to 0 (3.46.0).
+			if ( $zero_first && self::zero_at_shop_end( $product_id, $item, (int) $listed, (int) $sold, $zero_before ) ) {
+				$held = 0;
+				delete_post_meta( $product_id, '_ebay_unsold_at_end' );
+				$unsold_note = null;
+			}
+		}
+
+		// Not set to 0: 3.28's record and its line, as without the setting.
+		if ( null !== $unsold_note ) {
+			self::note_unsold_at_end( $product_id, $unsold_note[0], $unsold_note[1] );
 		}
 
 		return $held;
@@ -836,6 +870,525 @@ class TCGiant_Sync_Inventory {
 		update_post_meta( $product_id, '_ebay_listing_status', 'Ended' );
 		update_post_meta( $product_id, '_ebay_end_time', '' !== $end ? $end : gmdate( 'Y-m-d\TH:i:s.000\Z' ) );
 		self::note_end_reason( $product_id, (string) $item_id, self::END_BY_SHOP, true );
+	}
+
+	// ───────────────────────────────────────────────────────────────────────────
+	// "When you end a listing on eBay, set its website stock to 0?" (3.46.0)
+	// ───────────────────────────────────────────────────────────────────────────
+
+	/**
+	 * The setting's key in tcgiant_sync_ebay_settings: '1' is Yes; anything
+	 * else - unset, the default - is No, and then nothing below acts.
+	 * TCGiant_Sync_API::END_ZERO_SETTING is the same key, read there for the
+	 * mark of the plugin's own ends.
+	 */
+	const END_ZERO_SETTING = 'end_zeroes_stock';
+
+	/**
+	 * When the setting was last switched to Yes, a Unix time: only a listing
+	 * eBay says ended after it is ever set to 0, so an update, or switching
+	 * it on, never zeroes listings that ended before. Deleted at No.
+	 */
+	const END_ZERO_SINCE_OPTION = 'tcgiant_sync_end_zero_since';
+
+	/**
+	 * What the setting did on a product (the variable product, for its
+	 * variations): item (the listing), at (when), unsold (eBay's units left
+	 * on it) and was (each stock before it, by product ID: a number, or 'in
+	 * stock' for one WooCommerce does not count). Written once a listing,
+	 * before the stock: a later settle of that listing never sets it to 0
+	 * again. Kept as a record when the product moves on.
+	 */
+	const END_ZERO_META = '_ebay_end_zeroed';
+
+	/**
+	 * Whether "When you end a listing on eBay, set its website stock to 0?"
+	 * is Yes.
+	 *
+	 * @return bool
+	 */
+	public static function end_zero_on() {
+		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
+
+		return self::end_zero_value( is_array( $settings ) ? $settings : array() );
+	}
+
+	/**
+	 * The setting's Yes, in a settings array.
+	 *
+	 * @param array $settings The plugin's settings.
+	 * @return bool
+	 */
+	private static function end_zero_value( array $settings ) {
+		$value = $settings[ self::END_ZERO_SETTING ] ?? '';
+
+		return is_scalar( $value ) && '1' === (string) $value;
+	}
+
+	/**
+	 * The settings written, the setting switched (end_zero_option_updated()
+	 * and end_zero_option_added(): any write - the Settings screen, WP-CLI,
+	 * another plugin; fix round 2): switched to Yes, when is recorded; to
+	 * No, that is forgotten, and the plugin's own ends with it. One log line
+	 * either way; a write that leaves the setting as it was, none. Nothing
+	 * is sent to eBay, and no stock changes.
+	 *
+	 * @param array $before The settings as stored.
+	 * @param array $after  The settings being saved.
+	 * @return void
+	 */
+	public static function end_zero_saved( array $before, array $after ) {
+		$was = self::end_zero_value( $before );
+		$now = self::end_zero_value( $after );
+
+		if ( $was === $now ) {
+			return;
+		}
+
+		if ( $now ) {
+			update_option( self::END_ZERO_SINCE_OPTION, time(), false );
+			TCGiant_Sync_Logger::log( 'Settings: "When you end a listing on eBay, set its website stock to 0?" is now Yes. A listing you end on eBay from now on - in Seller Hub, or with another tool - has its website stock set to 0 when the sync brings its end in. Nothing that ended before now is changed, and nothing is sent to eBay.' );
+			return;
+		}
+
+		delete_option( self::END_ZERO_SINCE_OPTION );
+		TCGiant_Sync_API::forget_own_ends();
+		TCGiant_Sync_Logger::log( 'Settings: "When you end a listing on eBay, set its website stock to 0?" is now No: a listing you end on eBay keeps its website stock, as before.' );
+	}
+
+	/**
+	 * When the setting was switched to Yes, as end_zero_saved() recorded it
+	 * from the write that switched it. One switched on with no such write -
+	 * the database's row edited by hand - counts from the first settle that
+	 * asks, so nothing that ended before then is set to 0 either.
+	 *
+	 * @return int Unix time.
+	 */
+	private static function end_zero_since() {
+		$since = (int) get_option( self::END_ZERO_SINCE_OPTION, 0 );
+		if ( $since > 0 ) {
+			return $since;
+		}
+
+		$since = time();
+		update_option( self::END_ZERO_SINCE_OPTION, $since, false );
+
+		return $since;
+	}
+
+	/**
+	 * Whether a settle about to run is the first of the listing the product
+	 * follows, with nothing recorded about its end yet: the only settle at
+	 * which the setting acts. Never:
+	 *
+	 * - a listing settled already (listing_already_settled()) - by the sync,
+	 *   by Stock Review, or by the plugin's own end at 0, which settles it
+	 *   there and then (record_stock_end()). A stock the shop raises after
+	 *   that first settle stays.
+	 * - a listing whose end a reason recorded here already explains: the
+	 *   plugin's own end at 0 (END_STOCK_ZERO); End Listing here, on the
+	 *   product or the Listings screen (END_BY_SHOP, record_shop_end()); or
+	 *   a relist, a push or Auto-Relist that read eBay's reason before its
+	 *   settle (TCGiant_Sync_Exporter::ended_listing_check() notes it first) -
+	 *   each a request to list it again, which a 0 would turn into a refusal.
+	 *
+	 * @param int $product_id Product about to be settled.
+	 * @return bool
+	 */
+	private static function end_zero_first( $product_id ) {
+		$item_id = (string) get_post_meta( $product_id, '_ebay_item_id', true );
+
+		return '' !== $item_id
+			&& ! self::listing_already_settled( $product_id, $item_id )
+			&& ! ( $item_id === (string) get_post_meta( $product_id, '_ebay_end_reason_item', true )
+				&& '' !== (string) get_post_meta( $product_id, '_ebay_end_reason', true ) );
+	}
+
+	/**
+	 * The listing a row was read with GetItem for, for eBay's reason it ended
+	 * (end_zero_ask_reason()): never read twice for one listing.
+	 */
+	const END_ZERO_ASKED_META = '_ebay_end_zero_asked';
+
+	/**
+	 * When the shop's own write last raised a stock (a Unix time), on the
+	 * product holding it - a hand edit, a CSV import, a REST write; never a
+	 * write the plugin makes from eBay. Written only while "When you end a
+	 * listing on eBay, set its website stock to 0?" is Yes, and read only
+	 * by zero_at_shop_end(): a stock raised after eBay's EndTime is the
+	 * shop's restock, and is never set to 0 (fix round 2, review 1's M2).
+	 */
+	const STOCK_RAISED_META = '_ebay_stock_raised_at';
+
+	/**
+	 * Note a raise of a stock by the shop's own write (STOCK_RAISED_META):
+	 * from the stock hooks, after the eBay-origin test, given the stock as
+	 * it was before the write (take_stock_before(); no _stock row before
+	 * counts as 0). A write WooCommerce did not announce has no "before",
+	 * and is not noted; nor is a write the plugin makes from eBay
+	 * (is_push_suppressed(): an import, Stock Review's "Use eBay's figure",
+	 * the link's stock - fix round 3, review 2's MEDIUM 1), which is not the
+	 * shop's restock. WooCommerce's own restock of an order (cancelled,
+	 * failed, refunded) is a raise like any other, and noted.
+	 *
+	 * @param WC_Product $product The product whose stock was written.
+	 * @param array      $before  take_stock_before()'s answer.
+	 * @return void
+	 */
+	private static function note_stock_raised( $product, array $before ) {
+		if ( empty( $before[0] ) || self::is_push_suppressed() || ! $product->managing_stock() || ! self::end_zero_on() ) {
+			return;
+		}
+
+		$holder = method_exists( $product, 'get_stock_managed_by_id' ) ? (int) $product->get_stock_managed_by_id() : (int) $product->get_id();
+		if ( (int) $product->get_stock_quantity() > (int) ( $before[1] ?? 0 ) ) {
+			update_post_meta( $holder, self::STOCK_RAISED_META, time() );
+		}
+	}
+
+	/**
+	 * Hooks: update_option_tcgiant_sync_ebay_settings and
+	 * add_option_tcgiant_sync_ebay_settings (fix round 2, review 1's LOW 1).
+	 * Every write of the settings - the Settings screen, WP-CLI, another
+	 * plugin, the REST settings route - records or forgets the moment the
+	 * setting was switched to Yes, through end_zero_saved().
+	 *
+	 * @param mixed $old_value The settings as they were.
+	 * @param mixed $value     The settings now.
+	 * @return void
+	 */
+	public static function end_zero_option_updated( $old_value, $value ) {
+		self::end_zero_saved( is_array( $old_value ) ? $old_value : array(), is_array( $value ) ? $value : array() );
+	}
+
+	/**
+	 * Hook: add_option_tcgiant_sync_ebay_settings - the settings written for
+	 * the first time.
+	 *
+	 * @param string $option The option's name.
+	 * @param mixed  $value  The settings.
+	 * @return void
+	 */
+	public static function end_zero_option_added( $option, $value ) {
+		self::end_zero_saved( array(), is_array( $value ) ? $value : array() );
+	}
+
+	/**
+	 * Whether the settle of an ended listing from a row that cannot say why
+	 * it ended - eBay's list of changes (the delta: GetSellerEvents' details
+	 * are only its start and end times) or the full sync's pages
+	 * (GetSellerList) - is to read the listing once with GetItem, whose
+	 * answer alone carries EndingReason (3.46.0 fix round 1). Only while the
+	 * setting is Yes, and only for a listing the setting could set to 0:
+	 *
+	 * - its first settle, with no reason recorded for it (end_zero_first());
+	 * - the product's link still that listing, and the row giving no reason;
+	 * - the row's EndTime after the switch to Yes, or no EndTime (GetItem's
+	 *   then decides);
+	 * - the row not showing a listing that ran its time (ran_its_time(): the
+	 *   full sync's rows carry its length; the delta's do not);
+	 * - eBay's figures leaving units unsold, or not saying;
+	 * - not the plugin's own end (TCGiant_Sync_API::own_end());
+	 * - not read for this listing before (END_ZERO_ASKED_META, written here);
+	 * - and the product holding stock here.
+	 *
+	 * The settle then reads it through TCGiant_Sync_API::get_item(), every
+	 * budget rule of a GetItem with it, and settles from that answer, as for
+	 * a row missing its figures; refused or failed, from the row, so nothing
+	 * is set to 0. At most one call for each listing the seller ends while
+	 * the setting is Yes.
+	 *
+	 * @param int   $product_id Product linked to the listing.
+	 * @param array $row        The row.
+	 * @return bool
+	 */
+	public static function end_zero_ask_reason( $product_id, array $row ) {
+		$product_id = (int) $product_id;
+		$item_id    = (string) get_post_meta( $product_id, '_ebay_item_id', true );
+
+		if ( ! self::end_zero_on() || ! self::end_zero_first( $product_id )
+			|| TCGiant_Sync_API::scalar_value( $row['ItemID'] ?? '' ) !== $item_id
+			|| '' !== TCGiant_Sync_API::scalar_value( $row['ListingDetails']['EndingReason'] ?? '' ) ) {
+			return false;
+		}
+
+		$end = strtotime( TCGiant_Sync_API::scalar_value( $row['ListingDetails']['EndTime'] ?? '' ) );
+		if ( false !== $end && ( $end <= self::end_zero_since() || self::ran_its_time( $row, $end ) ) ) {
+			return false;
+		}
+
+		$listed = TCGiant_Sync_API::scalar_value( $row['Quantity'] ?? '' );
+		$sold   = TCGiant_Sync_API::scalar_value( $row['SellingStatus']['QuantitySold'] ?? '' );
+		if ( is_numeric( $listed ) && is_numeric( $sold ) && (int) $listed - (int) $sold < 1 ) {
+			return false;
+		}
+
+		if ( TCGiant_Sync_API::own_end( $item_id ) || $item_id === (string) get_post_meta( $product_id, self::END_ZERO_ASKED_META, true ) ) {
+			return false;
+		}
+
+		$product = wc_get_product( $product_id );
+		if ( ! $product || ! ( $product->managing_stock() ? (int) $product->get_stock_quantity() > 0 : $product->is_in_stock() ) ) {
+			return false;
+		}
+
+		update_post_meta( $product_id, self::END_ZERO_ASKED_META, $item_id );
+
+		return true;
+	}
+
+	/**
+	 * Whether a row shows a listing of fixed length that ended at its
+	 * scheduled end - its EndTime its StartTime plus ListingDuration's days,
+	 * to the minute - so it ran its time and was not ended early, by the
+	 * seller or anyone (fix round 2, review 1's LOW 2). An auction or a
+	 * fixed-price listing of 1 to 30 days; never Good 'Til Cancelled, and
+	 * never a row without those fields (the delta's: GetSellerEvents sends no
+	 * ListingDuration), which are read as before.
+	 *
+	 * @param array $row The row.
+	 * @param int   $end Its EndTime.
+	 * @return bool
+	 */
+	private static function ran_its_time( array $row, $end ) {
+		$start = strtotime( TCGiant_Sync_API::scalar_value( $row['ListingDetails']['StartTime'] ?? '' ) );
+		if ( false === $start || ! preg_match( '/^Days_(\d{1,2})$/', TCGiant_Sync_API::scalar_value( $row['ListingDuration'] ?? '' ), $days ) ) {
+			return false;
+		}
+
+		return (int) $end >= $start + (int) $days[1] * 86400 - 60;
+	}
+
+	/**
+	 * Set the website stock to 0 because the seller ended its eBay listing,
+	 * at that listing's first settle (end_zero_first()), from eBay's answer
+	 * the settle already has (for a row of the delta or the full sync, the
+	 * one GetItem end_zero_ask_reason() asks for). Only when all of these
+	 * hold:
+	 *
+	 * - the answer is for the listing the product follows, over (never
+	 *   Active), and names no relist: a product moved on to a relist, a Sell
+	 *   Similar copy or another listing, or one eBay says was relisted, is
+	 *   left, so the 0 never reaches a live listing;
+	 * - eBay's reason is the seller's (EBAY_ENDS_BY_SHOP), never a sale
+	 *   (EBAY_ENDS_SOLD), even one with units left;
+	 * - eBay's figures leave units unsold;
+	 * - eBay's EndTime is after the setting was switched to Yes
+	 *   (end_zero_since()); an answer without one is left;
+	 * - the plugin did not ask eBay to end it (TCGiant_Sync_API::own_end());
+	 * - not done for this listing already (END_ZERO_META);
+	 * - and the product still holds stock here, as the settle left it.
+	 *
+	 * Then every stock of the product on the listing goes to 0 through
+	 * lower_stock_to(), an eBay-origin write that queues nothing for eBay,
+	 * and one WooCommerce does not count is set out of stock: a simple
+	 * product's; a variable product's shared stock, and each enabled
+	 * variation on the listing keeping its own (end_zero_held()). Under
+	 * "Keep back from eBay" or "Show at most on eBay" (3.45.0) the kept-back
+	 * units go too; the mark (BUFFERED_META) and the record of eBay's sales
+	 * stay the ended listing's, as after any settle, so a later settle takes
+	 * nothing more and a restock stays. What it held is recorded
+	 * (END_ZERO_META) before the stock is written, and said in one log line.
+	 *
+	 * Never a stock the shop raised after eBay's EndTime (fix round 2, review
+	 * 1's M2): a hand edit, a CSV import or a REST write that put stock back
+	 * after the end - STOCK_RAISED_META, written by the stock hooks while the
+	 * setting is Yes - is the shop's own restock, whatever reaches the
+	 * listing first (the delta, or the push that restock queued). It is
+	 * settled as without the setting, and said.
+	 *
+	 * @param int      $product_id Product just settled.
+	 * @param array    $item       eBay's answer for the listing.
+	 * @param int      $listed     Its Quantity.
+	 * @param int      $sold       Its QuantitySold.
+	 * @param int|null $found      A simple product's managed stock as the
+	 *                             settle found it, for the line and the
+	 *                             record (fix round 2).
+	 * @return bool Whether every stock it found is now 0.
+	 */
+	private static function zero_at_shop_end( $product_id, array $item, $listed, $sold, $found = null ) {
+		$item_id = (string) get_post_meta( $product_id, '_ebay_item_id', true );
+		$unsold  = (int) $listed - (int) $sold;
+		$end     = strtotime( TCGiant_Sync_API::scalar_value( $item['ListingDetails']['EndTime'] ?? '' ) );
+
+		if ( '' === $item_id || TCGiant_Sync_API::scalar_value( $item['ItemID'] ?? '' ) !== $item_id
+			|| 'Active' === TCGiant_Sync_API::scalar_value( $item['SellingStatus']['ListingStatus'] ?? '' )
+			|| '' !== TCGiant_Sync_API::scalar_value( $item['ListingDetails']['RelistedItemID'] ?? '' )
+			|| ! in_array( TCGiant_Sync_API::scalar_value( $item['ListingDetails']['EndingReason'] ?? '' ), self::EBAY_ENDS_BY_SHOP, true )
+			|| $unsold < 1 || false === $end ) {
+			return false;
+		}
+
+		if ( $end <= self::end_zero_since() || TCGiant_Sync_API::own_end( $item_id ) ) {
+			return false;
+		}
+
+		$done = get_post_meta( $product_id, self::END_ZERO_META, true );
+		if ( is_array( $done ) && $item_id === (string) ( $done['item'] ?? '' ) ) {
+			return false;
+		}
+
+		$was = self::end_zero_held( $product_id, $item );
+		if ( ! $was ) {
+			return false;
+		}
+
+		// The shop put stock back after the end: its restock stands.
+		foreach ( array_keys( $was ) as $id ) {
+			if ( (int) get_post_meta( $id, self::STOCK_RAISED_META, true ) > $end ) {
+				TCGiant_Sync_Logger::log( sprintf(
+					'WC #%d: you ended eBay listing %s, but its website stock was raised after that (#%d), so "When you end a listing on eBay, set its website stock to 0?" left it as it is.',
+					$product_id,
+					$item_id,
+					$id
+				) );
+				return false;
+			}
+		}
+
+		// A simple product's stock as the settle found it, not as it left it.
+		if ( null !== $found && array( (int) $product_id ) === array_keys( $was ) && is_int( $was[ $product_id ] ) ) {
+			$was[ $product_id ] = max( (int) $found, $was[ $product_id ] );
+		}
+
+		update_post_meta( $product_id, self::END_ZERO_META, array(
+			'item'   => $item_id,
+			'at'     => time(),
+			'unsold' => $unsold,
+			'was'    => $was,
+		) );
+
+		$kept = array();
+		foreach ( $was as $id => $before ) {
+			if ( is_int( $before ) ) {
+				if ( 0 !== self::lower_stock_to( $id, 0 ) ) {
+					$kept[] = '#' . $id;
+				}
+				continue;
+			}
+
+			// No quantity to set: out of stock, as an end on eBay is said.
+			self::begin_ebay_origin();
+			TCGiant_Sync_Runtime::guard_loops();
+			try {
+				wc_update_product_stock_status( $id, 'outofstock' );
+			} finally {
+				TCGiant_Sync_Runtime::unguard_loops();
+				self::end_ebay_origin();
+			}
+			$after = wc_get_product( $id );
+			if ( ! $after || $after->is_in_stock() ) {
+				$kept[] = '#' . $id;
+			}
+		}
+
+		// A variable product's stock status follows its variations; not a
+		// change to send anywhere.
+		$product  = wc_get_product( $product_id );
+		$variable = $product && $product->is_type( 'variable' );
+		if ( $variable && class_exists( 'WC_Product_Variable' ) ) {
+			self::begin_ebay_origin();
+			try {
+				WC_Product_Variable::sync( $product_id );
+			} finally {
+				self::end_ebay_origin();
+			}
+		}
+
+		$said = sprintf(
+			'WC #%d: you ended eBay listing %s with %d unsold, and "When you end a listing on eBay, set its website stock to 0?" is on, so its website stock was set to 0 (it was %s)',
+			$product_id,
+			$item_id,
+			$unsold,
+			self::end_zero_words( $product_id, $was, $variable )
+		);
+
+		if ( $kept ) {
+			TCGiant_Sync_Logger::warning( sprintf( '%s - but not %s: its stock did not change, as something else on this site is holding it. Set it to 0 by hand.', $said, implode( ', ', $kept ) ) );
+			return false;
+		}
+
+		TCGiant_Sync_Logger::log( $said . '.' );
+
+		return true;
+	}
+
+	/**
+	 * The stocks of a product on an ended listing that hold something, by
+	 * product ID: a number, or 'in stock' for one WooCommerce does not
+	 * count. A simple product's own; a variable product's shared stock, when
+	 * it keeps one, and each enabled variation eBay's answer pairs with one
+	 * of the listing's (TCGiant_Sync_Variations::match()) keeping its own. A
+	 * variation not on the listing - or eBay's answer naming none - is left,
+	 * and so is a disabled one: it is not for sale here, and its count is
+	 * the shop's (3.44.0).
+	 *
+	 * @param int   $product_id Product settled.
+	 * @param array $item       eBay's answer for the listing.
+	 * @return array
+	 */
+	private static function end_zero_held( $product_id, array $item ) {
+		$product = wc_get_product( $product_id );
+		if ( ! $product ) {
+			return array();
+		}
+
+		$ids = array( (int) $product_id );
+
+		if ( $product->is_type( 'variable' ) ) {
+			$ids   = $product->managing_stock() ? array( (int) $product_id ) : array();
+			$ebay  = TCGiant_Sync_Variations::from_item( $item );
+			$pairs = $ebay ? TCGiant_Sync_Variations::match( $product, $ebay )['pairs'] : array();
+
+			foreach ( $pairs as $pair ) {
+				foreach ( $pair as $variation_id ) {
+					$variation = wc_get_product( $variation_id );
+					if ( $variation && 'publish' === $variation->get_status() && ! self::stock_held_by_parent( $variation ) ) {
+						$ids[] = (int) $variation_id;
+					}
+				}
+			}
+		}
+
+		$was = array();
+		foreach ( array_unique( $ids ) as $id ) {
+			$unit = wc_get_product( $id );
+			if ( ! $unit ) {
+				continue;
+			}
+			if ( $unit->managing_stock() ) {
+				if ( (int) $unit->get_stock_quantity() > 0 ) {
+					$was[ $id ] = (int) $unit->get_stock_quantity();
+				}
+			} elseif ( $unit->is_in_stock() ) {
+				$was[ $id ] = 'in stock';
+			}
+		}
+
+		return $was;
+	}
+
+	/**
+	 * What a product held, for the log line: "3", "in stock", or for a
+	 * variable product each of its stocks - "the shared stock 3; #12 2;
+	 * #13 in stock".
+	 *
+	 * @param int   $product_id Product settled.
+	 * @param array $was        From end_zero_held().
+	 * @param bool  $variable   Whether it is a variable product.
+	 * @return string
+	 */
+	private static function end_zero_words( $product_id, array $was, $variable ) {
+		if ( ! $variable ) {
+			return (string) reset( $was );
+		}
+
+		$words = array();
+		foreach ( $was as $id => $before ) {
+			$words[] = ( (int) $id === (int) $product_id ? 'the shared stock ' : '#' . $id . ' ' ) . $before;
+		}
+
+		return implode( '; ', $words );
 	}
 
 	/**
@@ -1651,6 +2204,9 @@ class TCGiant_Sync_Inventory {
 			return;
 		}
 
+		// The shop's own raise, for the setting (3.46.0 fix round 2).
+		self::note_stock_raised( $product, $before );
+
 		// A website order's own reduction: the order's push sends it. Only
 		// that order's products: another product's change in the same
 		// request - a refund, a hand edit, another order's line edited - is
@@ -1686,6 +2242,8 @@ class TCGiant_Sync_Inventory {
 		if ( $this->is_ebay_origin_change( $variation->get_id() ) ) {
 			return;
 		}
+
+		self::note_stock_raised( $variation, $before );
 
 		if ( self::reduced_by_order( $variation ) ) {
 			return;

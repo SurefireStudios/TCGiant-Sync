@@ -2713,6 +2713,10 @@ class TCGiant_Sync_Importer {
 				$listing_status = $ebay_item['SellingStatus']['ListingStatus'] ?? '';
 				if ( '' !== $listing_status && 'Active' !== $listing_status ) {
 					$existing_id = self::find_live_product_for_item( $item_id );
+					// Whether $ebay_item is still eBay's row, not GetItem's
+					// answer: the relist check below may read it (3.46.0 fix
+					// round 1).
+					$asked_before = $fallback_count;
 
 					// Nothing follows it - but it may be a relist of a listing
 					// something does, made and sold since the last sync. Then
@@ -2751,7 +2755,7 @@ class TCGiant_Sync_Importer {
 
 					self::$ended_read_error = null;
 					if ( $existing_id && '' !== $listing_status && 'Active' !== $listing_status
-						&& self::settle_ended_listing( $existing_id, $ebay_item, $listing_status, 'Delta' ) ) {
+						&& self::settle_ended_listing( $existing_id, $ebay_item, $listing_status, 'Delta', ! $whole_item && $asked_before === $fallback_count ) ) {
 						$fallback_count++;
 					}
 
@@ -7332,7 +7336,7 @@ class TCGiant_Sync_Importer {
 					$existing_id = self::link_ended_push( $item );
 				}
 				if ( $existing_id ) {
-					self::settle_ended_listing( $existing_id, $item, (string) $item['SellingStatus']['ListingStatus'], 'Full sync' );
+					self::settle_ended_listing( $existing_id, $item, (string) $item['SellingStatus']['ListingStatus'], 'Full sync', true );
 				}
 				continue;
 			}
@@ -8000,9 +8004,14 @@ class TCGiant_Sync_Importer {
 	 * @param array  $ebay_item      The listing as eBay sent it.
 	 * @param string $listing_status eBay's ListingStatus.
 	 * @param string $source         Prefix for the log lines.
+	 * @param bool   $from_row       $ebay_item is a row of eBay's list of
+	 *                               changes (the delta) or of the full sync's
+	 *                               pages, not GetItem's answer: neither
+	 *                               carries why a listing ended (3.46.0 fix
+	 *                               round 1).
 	 * @return bool Whether a GetItem call was needed for the figures.
 	 */
-	private static function settle_ended_listing( $existing_id, array $ebay_item, $listing_status, $source ) {
+	private static function settle_ended_listing( $existing_id, array $ebay_item, $listing_status, $source, $from_row = false ) {
 		TCGiant_Sync_Runtime::stage( 'settling the ended listing\'s stock' );
 
 		$existing_id = (int) $existing_id;
@@ -8059,7 +8068,16 @@ class TCGiant_Sync_Importer {
 
 		// The events feed is often partial, and never carries a variation's
 		// figures. Ask for the item outright rather than guess at a quantity.
-		if ( null === $listed || null === $sold || ( $is_variable && ! $vars_done && empty( $ebay_item['Variations']['Variation'] ) ) ) {
+		$for_figures = null === $listed || null === $sold || ( $is_variable && ! $vars_done && empty( $ebay_item['Variations']['Variation'] ) );
+
+		// Nor why it ended: only GetItem's answer says the seller ended it.
+		// With "When you end a listing on eBay, set its website stock to 0?"
+		// Yes, a row that may be the seller's end of a listing this product
+		// still holds stock for is read once (3.46.0 fix round 1) - see
+		// TCGiant_Sync_Inventory::end_zero_ask_reason(). With No, never.
+		$for_reason = ! $for_figures && $from_row && self::end_zero_asks( $existing_id, $ebay_item );
+
+		if ( $for_figures || $for_reason ) {
 			$ended_detail = TCGiant_Sync_API::instance()->get_item( $item_id );
 			if ( ! is_wp_error( $ended_detail ) && isset( $ended_detail['Item'] ) && is_array( $ended_detail['Item'] ) ) {
 				$used_get  = true;
@@ -8067,6 +8085,17 @@ class TCGiant_Sync_Importer {
 				TCGiant_Sync_Category_Memory::note( $ebay_item );
 				$listed    = $ebay_item['Quantity'] ?? null;
 				$sold      = $ebay_item['SellingStatus']['QuantitySold'] ?? null;
+			} elseif ( $for_reason ) {
+				// Refused or failed: settled from the row, as before, with no
+				// reason - so the stock is left. Never asked again.
+				TCGiant_Sync_Logger::warning( sprintf(
+					'%s: eBay item %s is %s — eBay could not be asked why it ended (%s), so the website stock of WC #%d was left as it is: "When you end a listing on eBay, set its website stock to 0?" acts only on eBay\'s word that you ended it.',
+					$source,
+					$item_id,
+					$listing_status,
+					is_wp_error( $ended_detail ) ? $ended_detail->get_error_message() : 'eBay returned nothing',
+					$existing_id
+				) );
 			} elseif ( is_wp_error( $ended_detail ) ) {
 				$read_error = $ended_detail;
 			}
@@ -8127,6 +8156,26 @@ class TCGiant_Sync_Importer {
 		) );
 
 		return $used_get;
+	}
+
+	/**
+	 * Whether a row of eBay's list of changes, or of the full sync's pages,
+	 * for an ended listing is to be read with GetItem for eBay's reason it
+	 * ended (3.46.0 fix round 1): only with "When you end a listing on eBay,
+	 * set its website stock to 0?" Yes - its key, end_zeroes_stock
+	 * (TCGiant_Sync_Inventory::END_ZERO_SETTING), read here first, so with
+	 * No nothing else is asked - and as
+	 * TCGiant_Sync_Inventory::end_zero_ask_reason() decides.
+	 *
+	 * @param int   $product_id Product linked to the listing.
+	 * @param array $row        The row.
+	 * @return bool
+	 */
+	private static function end_zero_asks( $product_id, array $row ) {
+		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
+		$on       = is_array( $settings ) ? ( $settings['end_zeroes_stock'] ?? '' ) : '';
+
+		return is_scalar( $on ) && '1' === (string) $on && TCGiant_Sync_Inventory::end_zero_ask_reason( $product_id, $row );
 	}
 
 	/**

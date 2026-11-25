@@ -1765,6 +1765,11 @@ class TCGiant_Sync_API {
 <ItemID>' . esc_attr( $item_id ) . '</ItemID>
 <EndingReason>NotAvailable</EndingReason>';
 
+		// Marked before it is sent (3.46.0): eBay gives the plugin's own end
+		// the reason a seller gives, and an answer lost on the way leaves no
+		// other sign of whose end it was. See own_end().
+		self::note_own_end( $item_id );
+
 		$result = $this->trading_api_request( 'EndItem', $xml );
 
 		if ( ! is_wp_error( $result ) ) {
@@ -1775,6 +1780,82 @@ class TCGiant_Sync_API {
 		}
 
 		return $result;
+	}
+
+	/**
+	 * "When you end a listing on eBay, set its website stock to 0?" (3.46.0):
+	 * its key in tcgiant_sync_ebay_settings, as
+	 * TCGiant_Sync_Inventory::END_ZERO_SETTING.
+	 */
+	const END_ZERO_SETTING = 'end_zeroes_stock';
+
+	/**
+	 * The listings the plugin asked eBay to end while that setting is Yes,
+	 * item => when: not autoloaded, the last 30 days' and at most
+	 * OWN_ENDS_KEPT of them. Deleted when it is switched to No.
+	 */
+	const OWN_ENDS_OPTION = 'tcgiant_sync_own_ends';
+
+	/** How many of the plugin's own ends are kept. */
+	const OWN_ENDS_KEPT = 1000;
+
+	/** How long one is kept, in seconds: 30 days. */
+	const OWN_ENDS_FOR = 2592000;
+
+	/**
+	 * Mark a listing the plugin is about to ask eBay to end (end_item()), so
+	 * the setting never sets the stock to 0 for it: an end at 0 by a stock
+	 * push, an auction's, eBay refusing 0, End Listing on the product or the
+	 * Listings screen - every EndItem the plugin sends goes through
+	 * end_item(). eBay says NotAvailable for each, as for the seller's own,
+	 * and an answer lost on the way is settled before anything else records
+	 * whose end it was. Only while the setting is Yes: an end before it was
+	 * switched on is never set to 0 anyway.
+	 *
+	 * @param string $item_id The listing.
+	 * @return void
+	 */
+	public static function note_own_end( $item_id ) {
+		$item_id  = (string) $item_id;
+		$settings = get_option( 'tcgiant_sync_ebay_settings', array() );
+		$on       = is_array( $settings ) ? ( $settings[ self::END_ZERO_SETTING ] ?? '' ) : '';
+
+		if ( '' === $item_id || ! is_scalar( $on ) || '1' !== (string) $on ) {
+			return;
+		}
+
+		$ends = get_option( self::OWN_ENDS_OPTION, array() );
+		$ends = is_array( $ends ) ? $ends : array();
+		$now  = time();
+
+		$ends[ $item_id ] = $now;
+		$ends             = array_filter( $ends, function ( $at ) use ( $now ) {
+			return is_numeric( $at ) && (int) $at > $now - self::OWN_ENDS_FOR;
+		} );
+		arsort( $ends );
+
+		update_option( self::OWN_ENDS_OPTION, array_slice( $ends, 0, self::OWN_ENDS_KEPT, true ), false );
+	}
+
+	/**
+	 * Whether the plugin asked eBay to end this listing (note_own_end()).
+	 *
+	 * @param string $item_id The listing.
+	 * @return bool
+	 */
+	public static function own_end( $item_id ) {
+		$ends = get_option( self::OWN_ENDS_OPTION, array() );
+
+		return '' !== (string) $item_id && is_array( $ends ) && isset( $ends[ (string) $item_id ] );
+	}
+
+	/**
+	 * Forget the plugin's own ends: the setting was switched to No.
+	 *
+	 * @return void
+	 */
+	public static function forget_own_ends() {
+		delete_option( self::OWN_ENDS_OPTION );
 	}
 
 	/**

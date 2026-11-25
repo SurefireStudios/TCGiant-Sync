@@ -930,7 +930,15 @@ $is_custom_cat = $current_category !== '' && ! array_key_exists( $current_catego
 							<label><input type="radio" name="tcgiant_sync_ebay_settings[remove_sold_products]" value="1" <?php checked( $settings['remove_sold_products'] ?? '1', '1' ); ?>> Yes</label>
 							<label><input type="radio" name="tcgiant_sync_ebay_settings[remove_sold_products]" value="0" <?php checked( $settings['remove_sold_products'] ?? '1', '0' ); ?>> No</label>
 						</div>
-						<p class="tc-hint"><?php esc_html_e( 'Moves the product to the trash once its listing has sold out, so sold items leave your shop on their own. Only applies to listings that actually sold: one that ran out or that you ended yourself keeps its product and whatever stock was unsold. Products you pushed to eBay yourself are never removed, and neither is anything in your Preserve Categories.', 'tcgiant-sync' ); ?></p>
+						<p class="tc-hint"><?php esc_html_e( 'Moves the product to the trash once its listing has sold out, so sold items leave your shop on their own. Only applies to listings that actually sold: one that ran out keeps its product and whatever stock was unsold, and so does one you ended yourself - unless you chose Yes for "When you end a listing on eBay, set its website stock to 0?" below, which sets that stock to 0. Products you pushed to eBay yourself are never removed, and neither is anything in your Preserve Categories.', 'tcgiant-sync' ); ?></p>
+					</div>
+					<div class="tc-field">
+						<label class="tc-label"><?php esc_html_e( 'When you end a listing on eBay, set its website stock to 0?', 'tcgiant-sync' ); ?></label>
+						<div class="tc-radio-group">
+							<label><input type="radio" name="tcgiant_sync_ebay_settings[end_zeroes_stock]" value="1" <?php checked( $settings['end_zeroes_stock'] ?? '0', '1' ); ?>> Yes</label>
+							<label><input type="radio" name="tcgiant_sync_ebay_settings[end_zeroes_stock]" value="0" <?php checked( $settings['end_zeroes_stock'] ?? '0', '0' ); ?>> No</label>
+						</div>
+						<p class="tc-hint"><?php esc_html_e( 'For a listing you end yourself on eBay, in Seller Hub or another tool, while your website still has stock: once the sync brings the end in, the website stock is set to 0, so it stops selling here too. Never for an eBay sale, a listing TCGiant Sync ends, or stock you add back after the end. Only listings you end after choosing Yes. While your website has stock, the sync reads an ended listing with unsold units once from eBay, to see whether you ended it: one eBay call each, eBay\'s own ends and relists included. If you end a listing to list it again (Sell Similar, say), its website stock may go to 0 until the sync imports the new listing.', 'tcgiant-sync' ); ?></p>
 					</div>
 					<div class="tc-field">
 						<label class="tc-label"><?php esc_html_e( 'Auto-relist ended listings?', 'tcgiant-sync' ); ?></label>

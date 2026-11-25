@@ -11,6 +11,7 @@ This file exists so the repository has a changelog where people look for one. It
 
 | Version | Date | Headline |
 |---|---|---|
+| [3.46.0](https://github.com/SurefireStudios/TCGiant-Sync/releases/tag/v3.46.0) | 2026-11-25 | "When you end a listing on eBay, set its website stock to 0?" (off by default): a listing you end yourself on eBay with stock left stops selling on your website too |
 | [3.45.0](https://github.com/SurefireStudios/TCGiant-Sync/releases/tag/v3.45.0) | 2026-11-23 | "Keep back from eBay" and "Show at most on eBay": eBay is sent your stock less a number kept back, no more than a cap, in Settings or per product; eBay's lower figure is never read back as your stock |
 | [3.44.0](https://github.com/SurefireStudios/TCGiant-Sync/releases/tag/v3.44.0) | 2026-11-20 | Enabling or disabling a variation sends its stock to eBay; a disabled variation keeping its own stock is sent 0 on eBay, as one sharing its product's stock is |
 | [3.43.0](https://github.com/SurefireStudios/TCGiant-Sync/releases/tag/v3.43.0) | 2026-11-19 | WooCommerce's own emails no longer reach the buyers of eBay orders (unless you choose Yes); a disabled variation sharing its product's stock is sent 0 on eBay |
